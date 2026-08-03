@@ -1,0 +1,2063 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b1220">
+<title>Hermes 3D Engine — Web</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231a56b8'/%3E%3Cpath d='M16 5l10 5.6v11L16 27 6 21.6v-11z' fill='none' stroke='%23cfe6ff' stroke-width='2.2' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    height: 100dvh;
+    overflow: hidden;
+    background: #0b1220;
+    overscroll-behavior: none;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    color: #e8eef7;
+  }
+
+  #view {
+    display: block;
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+  }
+
+  /* ---------- HUD ---------- */
+  #hud {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 11px;
+    font-size: 13px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    background: rgba(8, 14, 24, 0.5);
+    border: 1px solid rgba(160, 200, 255, 0.16);
+    border-radius: 8px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    pointer-events: none;
+    white-space: pre;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+    z-index: 10;
+  }
+  #hud .k { color: #7fa8d8; }
+  #hud .v { color: #eaf2ff; }
+
+  #crosshair {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    width: 18px;
+    height: 18px;
+    margin: -9px 0 0 -9px;
+    pointer-events: none;
+    opacity: 0.55;
+    z-index: 9;
+  }
+  #crosshair::before, #crosshair::after {
+    content: "";
+    position: absolute;
+    background: #fff;
+    box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+  }
+  #crosshair::before { left: 50%; top: 0; width: 1.5px; height: 100%; margin-left: -0.75px; }
+  #crosshair::after  { top: 50%; left: 0; height: 1.5px; width: 100%; margin-top: -0.75px; }
+  body.touch #crosshair { opacity: 0.3; }
+
+  #sprint {
+    position: fixed;
+    top: calc(12px + env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%) scale(0.9);
+    padding: 5px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    border-radius: 999px;
+    background: rgba(255, 168, 60, 0.18);
+    border: 1px solid rgba(255, 190, 110, 0.55);
+    color: #ffd7a0;
+    opacity: 0;
+    transition: opacity 0.12s ease, transform 0.12s ease;
+    pointer-events: none;
+    z-index: 10;
+  }
+  #sprint.on { opacity: 1; transform: translateX(-50%) scale(1); }
+
+  /* Tint that fades in while the camera is under the water surface. */
+  #underwater {
+    position: fixed;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.28s ease;
+    background:
+      radial-gradient(ellipse at 50% 45%, rgba(60, 170, 220, 0.10), rgba(6, 52, 84, 0.50) 76%),
+      linear-gradient(180deg, rgba(70, 180, 230, 0.16), rgba(4, 34, 60, 0.40));
+  }
+  #underwater.on { opacity: 1; }
+
+  /* On a narrow phone the centred pill would collide with the HUD panel. */
+  @media (max-width: 620px) {
+    #hud { font-size: 11px; padding: 6px 9px; }
+    #sprint {
+      top: auto;
+      bottom: calc(26px + env(safe-area-inset-bottom));
+    }
+  }
+
+  /* ---------- Touch controls ---------- */
+  #touch-ui { display: none; }
+  body.touch #touch-ui { display: block; }
+
+  #stick-base {
+    position: fixed;
+    left: 28px;
+    bottom: calc(34px + env(safe-area-inset-bottom));
+    width: 132px;
+    height: 132px;
+    margin: 0;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 50%, rgba(120, 170, 230, 0.10), rgba(120, 170, 230, 0.03) 70%);
+    border: 1.5px solid rgba(150, 195, 245, 0.28);
+    opacity: 0.5;
+    transition: opacity 0.15s ease;
+    pointer-events: none;
+    z-index: 8;
+  }
+  #stick-base.active { opacity: 0.95; transition: none; }
+
+  #stick-knob {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 58px;
+    height: 58px;
+    margin: -29px 0 0 -29px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 38% 32%, rgba(235, 245, 255, 0.85), rgba(130, 175, 225, 0.5));
+    border: 1.5px solid rgba(230, 242, 255, 0.7);
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+  }
+
+  .fly-btn {
+    position: fixed;
+    right: calc(26px + env(safe-area-inset-right));
+    width: 76px;
+    height: 76px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    line-height: 1;
+    color: #dce9f8;
+    background: rgba(20, 34, 54, 0.5);
+    border: 1.5px solid rgba(150, 195, 245, 0.35);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    touch-action: none;
+    z-index: 12;
+  }
+  .fly-btn.down { background: rgba(90, 160, 235, 0.55); border-color: rgba(220, 240, 255, 0.85); color: #fff; }
+  #btn-up   { bottom: calc(130px + env(safe-area-inset-bottom)); }
+  #btn-down { bottom: calc(40px + env(safe-area-inset-bottom)); }
+
+  /* Fly/zoom pad only in free + top-down; action pad only in first/third. */
+  #touch-ui .fly-btn { display: none; }
+  #touch-ui .act-btn { display: none; }
+  body.touch.pad-fly #touch-ui .fly-btn { display: flex; }
+  body.touch.pad-act #touch-ui .act-btn { display: flex; }
+
+  .act-btn {
+    position: fixed;
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    color: #dce9f8;
+    background: rgba(20, 34, 54, 0.5);
+    border: 1.5px solid rgba(150, 195, 245, 0.35);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    touch-action: none;
+    z-index: 12;
+  }
+  .act-btn .glyph { font-size: 20px; }
+  .act-btn.down { background: rgba(90, 160, 235, 0.55); border-color: rgba(220, 240, 255, 0.85); color: #fff; }
+  #btn-jump {
+    right: calc(24px + env(safe-area-inset-right));
+    bottom: calc(44px + env(safe-area-inset-bottom));
+    width: 90px; height: 90px; font-size: 12px;
+  }
+  #btn-crouch {
+    right: calc(124px + env(safe-area-inset-right));
+    bottom: calc(40px + env(safe-area-inset-bottom));
+    width: 72px; height: 72px;
+  }
+  #btn-sprint {
+    right: calc(34px + env(safe-area-inset-right));
+    bottom: calc(146px + env(safe-area-inset-bottom));
+    width: 72px; height: 72px;
+  }
+  #btn-sprint.down { background: rgba(255, 168, 60, 0.5); border-color: rgba(255, 210, 150, 0.9); color: #fff; }
+
+  /* ---------- Mode UI ---------- */
+  #mode-btn {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    padding: 11px 18px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #06101f;
+    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
+    border: none;
+    border-radius: 999px;
+    box-shadow: 0 4px 18px rgba(90, 150, 220, 0.35);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #mode-btn.game { background: linear-gradient(180deg, #ffd9a8, #f0a054); }
+  #mode-btn:active { transform: translateY(1px); }
+
+  #cam-mode {
+    position: fixed;
+    top: calc(62px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #9ecbff;
+    background: rgba(8, 14, 24, 0.5);
+    border: 1px solid rgba(160, 200, 255, 0.16);
+    border-radius: 7px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 10;
+  }
+
+  #instructions {
+    position: fixed;
+    top: calc(58px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    width: 216px;
+    max-width: 46vw;
+    padding: 9px 11px;
+    font-size: 11px;
+    line-height: 1.45;
+    background: rgba(8, 14, 24, 0.5);
+    border: 1px solid rgba(160, 200, 255, 0.16);
+    border-radius: 8px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    pointer-events: none;
+    z-index: 10;
+  }
+  #instructions .title {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+  #instructions .row { display: flex; gap: 8px; justify-content: space-between; }
+  #instructions b { color: #9ecbff; font-weight: 600; white-space: nowrap; }
+  #instructions span { color: #b9c9dc; text-align: right; }
+
+  @media (max-width: 620px) {
+    #mode-btn { font-size: 11px; padding: 9px 14px; }
+    #cam-mode { top: calc(52px + env(safe-area-inset-top)); font-size: 10px; }
+    #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
+  }
+
+  /* ---------- Start / pause overlay ---------- */
+  #overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    padding: 28px;
+    text-align: center;
+    background: radial-gradient(ellipse at 50% 40%, rgba(24, 44, 78, 0.82), rgba(6, 10, 18, 0.94));
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+  }
+  #overlay.hidden { display: none; }
+
+  #overlay h1 {
+    font-size: clamp(22px, 6vw, 36px);
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    background: linear-gradient(180deg, #ffffff, #8fc0f0);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  #overlay .sub {
+    font-size: 12px;
+    letter-spacing: 0.24em;
+    color: #6f92bd;
+    text-transform: uppercase;
+    margin-top: -14px;
+  }
+
+  #keys {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 7px 18px;
+    font-size: 13px;
+    text-align: left;
+    padding: 18px 22px;
+    border-radius: 12px;
+    background: rgba(10, 18, 32, 0.55);
+    border: 1px solid rgba(140, 185, 240, 0.18);
+    max-width: 100%;
+  }
+  #keys b { color: #9ecbff; font-weight: 600; white-space: nowrap; }
+  #keys span { color: #b9c9dc; }
+
+  #start-btn {
+    padding: 14px 34px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #06101f;
+    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
+    border: none;
+    border-radius: 999px;
+    box-shadow: 0 6px 24px rgba(90, 150, 220, 0.35);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #start-btn:active { transform: translateY(1px); }
+
+  #loading {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0b1220;
+    color: #7fa8d8;
+    font-size: 13px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    z-index: 60;
+  }
+  #loading.hidden { display: none; }
+  #err {
+    padding: 24px;
+    color: #ffb4b4;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    text-align: left;
+  }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="hud"><span class="k">FPS</span> <span class="v" id="fps">--</span>
+<span class="k">POS</span> <span class="v" id="pos">--</span></div>
+
+<div id="cam-mode">Cam &mdash; Free</div>
+<div id="instructions"></div>
+<button id="mode-btn">Game Mode</button>
+
+<div id="underwater"></div>
+<div id="crosshair"></div>
+<div id="sprint">SPRINT</div>
+
+<div id="touch-ui">
+  <div id="stick-base"><div id="stick-knob"></div></div>
+  <div class="fly-btn" id="btn-up">&#9650;</div>
+  <div class="fly-btn" id="btn-down">&#9660;</div>
+  <div class="act-btn" id="btn-jump"><span class="glyph">&#8679;</span>JUMP</div>
+  <div class="act-btn" id="btn-crouch"><span class="glyph">&#8681;</span>CROUCH</div>
+  <div class="act-btn" id="btn-sprint"><span class="glyph">&#187;</span>SPRINT</div>
+</div>
+
+<div id="overlay">
+  <div>
+    <h1>Hermes 3D</h1>
+  </div>
+  <div class="sub">Engine &mdash; Web Edition</div>
+  <div id="keys"></div>
+  <button id="start-btn">Enter</button>
+</div>
+
+<div id="loading">Loading&hellip;</div>
+
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+// dist/cannon-es.js is a pure ES module (named exports, no UMD wrapper), so a
+// plain <script src> tag would define no global. Import it here and publish the
+// namespace on window so it is reachable from the console like THREE is.
+import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js';
+window.CANNON = CANNON;
+
+// ---------------------------------------------------------------------------
+// Constants — mirrored from engine.py
+// ---------------------------------------------------------------------------
+const MOUSE_SENSITIVITY = 0.15;   // degrees of rotation per pixel of pointer motion
+const MOVE_SPEED        = 14.0;   // world units / second
+const SPRINT_MULT       = 3.0;
+const TOUCH_LOOK_MULT   = 1.6;    // finger drags cover fewer pixels than a mouse
+const START_POS         = new THREE.Vector3(0, 12, -35);
+const START_YAW         = 180;    // degrees — faces the scene (see notes below)
+const START_PITCH       = -10;    // degrees
+
+// ----- character controller -----
+const SPAWN      = new THREE.Vector3(0, 2, 30);
+const SPAWN_YAW  = 195;           // degrees — faces the showcase course
+const PHYS_STEP  = 1 / 60;        // fixed physics timestep
+const PLAYER = {
+  radius:       0.4,
+  standCenter:  0.8,              // body origin above the feet, standing
+  crouchCenter: 0.4,              // ... and crouched
+  standEye:     1.7,
+  // The crouch tunnel has 0.85 of clearance, so the eye has to stay below that
+  // or the camera ends up inside the roof slab and renders through its backface.
+  crouchEye:    0.72,
+  walk:         4.6,
+  sprintMult:   2.0,
+  crouchSpeed:  2.0,
+  jumpSpeed:    6.2,
+  groundAccel:  18.0,
+  airAccel:     7.0,
+  coyote:       0.12,             // seconds of grace after leaving the ground
+  maxSlope:     45,               // degrees — steeper than this and you slide
+};
+// A contact counts as walkable ground when its normal is within maxSlope of up.
+// The threshold is nudged 1 degree past 45 so the 45-degree lane is climbable.
+const GROUND_DOT = Math.cos((PLAYER.maxSlope + 1) * Math.PI / 180);
+const THIRD_DIST = 5.0;           // third-person boom length
+
+// ----- swim water -----
+// An axis-aligned volume; the walls, floor and visible water are all built from
+// these bounds, and the physics loop tests the player body against them.
+const WATER = {
+  minX: 5, maxX: 23,
+  minZ: 33, maxZ: 48,
+  floorY: 0,
+  surfaceY: 3.0,
+  gravityScale: 0.20,   // buoyancy — only a fifth of gravity reaches you in here
+  speedMult: 0.60,      // swimming is slower than walking
+  accel: 6.0,           // how fast you reach swim speed; doubles as water drag
+  swimIn:  0.55,        // submerged fraction where walking becomes swimming ...
+  swimOut: 0.42,        // ... and where swimming hands back to walking
+};
+const WATER_FOG = 0x11506f;
+const inWaterColumn = (x, z) =>
+  x > WATER.minX && x < WATER.maxX && z > WATER.minZ && z < WATER.maxZ;
+
+const CUBES = [
+  [0xdc3232, [ 10, 1,  10]], [0x3232dc, [-15, 1,  20]],
+  [0x32b432, [ 25, 1, -10]], [0xdcdc32, [-20, 1, -15]],
+  [0xdc8232, [  5, 1, -25]], [0x9632c8, [-30, 1,   5]],
+  [0x32c8c8, [ 35, 1,  15]], [0xdc6496, [-10, 1,  30]],
+  [0xc8c8c8, [ 20, 1,  30]], [0x8c5a32, [-25, 1, -30]],
+];
+const SPHERES = [
+  [0xff6464, [  0, 2,   0]], [0x64ff64, [ 40, 2,   0]],
+  [0x6464ff, [-40, 2,   0]], [0xffff64, [  0, 2,  40]],
+  [0xff64ff, [  0, 2, -40]],
+];
+const PILLAR_X = [-35, 0, 35];
+const TREES = [[-50, -50], [50, -50], [-50, 50], [50, 50], [0, -60], [-60, 0]];
+
+const SUN = new THREE.Vector3(0.45, 0.72, 0.52).normalize();
+const SKY_ZENITH  = new THREE.Color(0x1a56b8);
+const SKY_HORIZON = new THREE.Color(0xbdd6ec);
+const SKY_GROUND  = new THREE.Color(0x64798a);
+const FOG_COLOR   = 0xb8d1e8;
+
+const DEG = Math.PI / 180;
+const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
+// ---------------------------------------------------------------------------
+// Renderer / scene / camera
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: true,
+  powerPreference: 'high-performance',
+  stencil: false,
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isTouchDevice ? 2 : 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(FOG_COLOR, 0.0042);
+
+const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+camera.rotation.order = 'YXZ';
+camera.position.copy(START_POS);
+
+// ---------------------------------------------------------------------------
+// Gradient sky (custom shader dome that rides along with the camera)
+// ---------------------------------------------------------------------------
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide,
+  depthWrite: false,
+  uniforms: {
+    uZenith:  { value: SKY_ZENITH },
+    uHorizon: { value: SKY_HORIZON },
+    uGround:  { value: SKY_GROUND },
+    uSunDir:  { value: SUN.clone() },
+    uSunCol:  { value: new THREE.Color(0xfff0cf) },
+  },
+  vertexShader: /* glsl */`
+    varying vec3 vDir;
+    void main() {
+      vDir = position;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3 vDir;
+    uniform vec3 uZenith, uHorizon, uGround, uSunDir, uSunCol;
+    void main() {
+      vec3 d = normalize(vDir);
+      float up = clamp(d.y, 0.0, 1.0);
+      float dn = clamp(-d.y, 0.0, 1.0);
+      vec3 col = mix(uHorizon, uZenith, pow(up, 0.48));
+      col = mix(col, uGround, pow(dn, 0.30));
+
+      float sd = max(dot(d, normalize(uSunDir)), 0.0);
+      col += uSunCol * (pow(sd, 900.0) * 6.0 + pow(sd, 30.0) * 0.35 + pow(sd, 4.0) * 0.10);
+
+      gl_FragColor = vec4(col, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }
+  `,
+});
+const sky = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 32), skyMat);
+sky.scale.setScalar(600);
+sky.renderOrder = -1000;
+sky.frustumCulled = false;
+scene.add(sky);
+
+// ---------------------------------------------------------------------------
+// Environment map for PBR reflections (procedural equirect -> PMREM)
+// ---------------------------------------------------------------------------
+function buildEnvTexture() {
+  const W = 1024, H = 512;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0.00, '#2f6ec4');
+  g.addColorStop(0.38, '#7fb0e2');
+  g.addColorStop(0.49, '#cfe1f2');
+  g.addColorStop(0.52, '#8fa08a');
+  g.addColorStop(1.00, '#3d5236');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  const u = ((Math.atan2(SUN.x, SUN.z) / (2 * Math.PI)) + 0.5) * W;
+  const v = (1 - (Math.asin(THREE.MathUtils.clamp(SUN.y, -1, 1)) / Math.PI + 0.5)) * H;
+  const rg = ctx.createRadialGradient(u, v, 0, u, v, 200);
+  rg.addColorStop(0.00, 'rgba(255, 248, 226, 1)');
+  rg.addColorStop(0.18, 'rgba(255, 240, 205, 0.60)');
+  rg.addColorStop(1.00, 'rgba(255, 238, 200, 0)');
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = rg;
+  ctx.fillRect(0, 0, W, H);
+
+  const tex = new THREE.Texture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envSrc = buildEnvTexture();
+scene.environment = pmrem.fromEquirectangular(envSrc).texture;
+envSrc.dispose();
+pmrem.dispose();
+
+// ---------------------------------------------------------------------------
+// Lighting
+// ---------------------------------------------------------------------------
+// The shadow frustum is centred on the middle of the playable area rather than
+// the origin, so the showcase course out at +X/+Z stays inside it.
+const SHADOW_CENTER = new THREE.Vector3(35, 0, 40);
+const SHADOW_HALF   = 115;
+const SUN_DIST      = 190;
+
+const sun = new THREE.DirectionalLight(0xfff4e0, 2.9);
+sun.position.copy(SUN).multiplyScalar(SUN_DIST).add(SHADOW_CENTER);
+sun.castShadow = true;
+sun.shadow.mapSize.set(isTouchDevice ? 2048 : 4096, isTouchDevice ? 2048 : 4096);
+// near/far hug the actual depth range of the scene along the light direction.
+// The old 1..400 range meant one unit of depth bias was worth ~0.2 world units,
+// which is what detached shadows from the objects casting them and left a bright
+// seam at every contact point.
+sun.shadow.camera.near = 25;
+sun.shadow.camera.far  = 360;
+sun.shadow.camera.left = -SHADOW_HALF;
+sun.shadow.camera.right = SHADOW_HALF;
+sun.shadow.camera.top = SHADOW_HALF;
+sun.shadow.camera.bottom = -SHADOW_HALF;
+// With the tight frustum the constant bias can be an order of magnitude smaller;
+// the remaining acne is handled by normalBias, which offsets along the surface
+// normal (~half a shadow texel) instead of along the light and so does not open
+// a gap where an object meets the floor.
+sun.shadow.bias = -0.00004;
+sun.shadow.normalBias = isTouchDevice ? 0.055 : 0.03;
+sun.shadow.radius = 2;
+sun.target.position.copy(SHADOW_CENTER);
+scene.add(sun);
+scene.add(sun.target);
+
+scene.add(new THREE.HemisphereLight(0xbcd8f5, 0x4a5a3c, 0.55));
+scene.add(new THREE.AmbientLight(0xffffff, 0.18));
+
+// ---------------------------------------------------------------------------
+// Physics world (cannon-es)
+// ---------------------------------------------------------------------------
+const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+world.broadphase = new CANNON.SAPBroadphase(world);
+world.allowSleep = true;
+world.solver.iterations = 10;
+world.defaultContactMaterial.friction = 0.4;
+world.defaultContactMaterial.restitution = 0.0;
+
+const physWorld  = new CANNON.Material('world');
+const physProp   = new CANNON.Material('prop');
+const physPlayer = new CANNON.Material('player');
+
+// The character drives its own horizontal velocity, so friction against the
+// level would only fight the controller — zero it and let the code decide when
+// the player sticks (walkable ground) and when they slide (steep ground).
+world.addContactMaterial(new CANNON.ContactMaterial(physPlayer, physWorld, { friction: 0.0, restitution: 0.0 }));
+world.addContactMaterial(new CANNON.ContactMaterial(physPlayer, physProp,  { friction: 0.0, restitution: 0.0 }));
+world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physWorld, { friction: 0.45, restitution: 0.06 }));
+world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physProp,  { friction: 0.4,  restitution: 0.06 }));
+
+// Meshes that need to follow their body every frame (dynamic + kinematic only —
+// static bodies never move, so syncing them would be pure overhead).
+const syncList = [];
+function linkBody(mesh, body) {
+  // Body.addShape() computes the AABB while the body is still at the origin and
+  // clears aabbNeedsUpdate. Only integrate() ever raises the flag again, and a
+  // static body never integrates — so without this its AABB stays in local space
+  // forever. Collisions still work (SAP broadphase defaults to bounding spheres),
+  // but World.raycast* queries the AABBs and would miss the entire level.
+  body.updateAABB();
+  world.addBody(body);
+  mesh.userData.body = body;
+  if (body.type !== CANNON.Body.STATIC) syncList.push({ mesh, body });
+  return body;
+}
+
+// Infinite ground plane, matching the visual ground quad at y = 0.
+const groundBody = new CANNON.Body({ mass: 0, material: physWorld, shape: new CANNON.Plane() });
+groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+groundBody.updateAABB();
+world.addBody(groundBody);
+
+// ---------------------------------------------------------------------------
+// Ground — procedural grid/noise texture instead of a flat green quad
+// ---------------------------------------------------------------------------
+function buildGroundTexture() {
+  const S = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+
+  ctx.fillStyle = '#4f9a3f';
+  ctx.fillRect(0, 0, S, S);
+
+  // Fine grain only — anything larger-scale would read as an obvious repeat at
+  // 100 tiles across. Broad variation comes from the vertex colours instead.
+  const img = ctx.getImageData(0, 0, S, S), d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (Math.random() - 0.5) * 24;
+    d[i]     = Math.max(0, Math.min(255, d[i]     + n * 0.7));
+    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
+    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n * 0.5));
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // grid lines along two edges of the tile
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(22, 54, 22, 0.34)';
+  ctx.beginPath();
+  ctx.moveTo(0, 1.5); ctx.lineTo(S, 1.5);
+  ctx.moveTo(1.5, 0); ctx.lineTo(1.5, S);
+  ctx.stroke();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(220, 245, 205, 0.22)';
+  ctx.beginPath();
+  ctx.moveTo(0, 4.5); ctx.lineTo(S, 4.5);
+  ctx.moveTo(4.5, 0); ctx.lineTo(4.5, S);
+  ctx.stroke();
+
+  const tex = new THREE.Texture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(100, 100);          // 400 world units / 100 = one 4-unit cell per tile
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// Large-scale, non-repeating tonal variation baked into vertex colours so the
+// 4-unit detail tile never reads as a stamped pattern.
+const groundGeo = new THREE.PlaneGeometry(400, 400, 96, 96);
+{
+  const p = groundGeo.attributes.position;
+  const col = new Float32Array(p.count * 3);
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = -p.getY(i);   // plane is rotated -90deg about X
+    const n = (
+      Math.sin(x * 0.0290) * Math.cos(z * 0.0255) +
+      Math.sin(x * 0.0810 + 1.3) * Math.cos(z * 0.0705 - 0.7) * 0.5 +
+      Math.sin(x * 0.1730 - 2.1) * Math.cos(z * 0.1910 + 0.4) * 0.25
+    ) / 1.75;
+    col[i * 3 + 0] = 1.0 + n * 0.17;
+    col[i * 3 + 1] = 1.0 + n * 0.10;
+    col[i * 3 + 2] = 1.0 - n * 0.07;
+  }
+  groundGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+}
+
+const ground = new THREE.Mesh(
+  groundGeo,
+  new THREE.MeshStandardMaterial({
+    map: buildGroundTexture(),
+    color: 0xffffff,
+    vertexColors: true,
+    roughness: 0.94,
+    metalness: 0.0,
+    envMapIntensity: 0.55,
+  })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Scene objects — same layout as engine.py, PBR materials
+// ---------------------------------------------------------------------------
+const boxGeo    = new THREE.BoxGeometry(1, 1, 1);
+const sphereGeo = new THREE.SphereGeometry(1, 48, 32);
+const objects = new THREE.Group();
+scene.add(objects);
+
+// opts: { rx, ry, rz } rotation in degrees, { mass } (0 = static), { phys: false }
+// to skip the collider entirely, { prop: true } to use the higher-friction
+// contact material used by loose objects.
+function addBox(x, y, z, sx, sy, sz, mat, opts = {}) {
+  const rx = (opts.rx || 0) * DEG, ry = (opts.ry || 0) * DEG, rz = (opts.rz || 0) * DEG;
+  const m = new THREE.Mesh(boxGeo, mat);
+  m.position.set(x, y, z);
+  m.scale.set(sx, sy, sz);
+  m.rotation.set(rx, ry, rz);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  objects.add(m);
+  if (opts.phys === false) return m;
+
+  const body = new CANNON.Body({
+    mass: opts.mass || 0,
+    material: opts.prop ? physProp : physWorld,
+    shape: new CANNON.Box(new CANNON.Vec3(sx / 2, sy / 2, sz / 2)),
+    linearDamping: opts.mass ? 0.04 : 0,
+    angularDamping: opts.mass ? 0.2 : 0,
+  });
+  body.position.set(x, y, z);
+  body.quaternion.setFromEuler(rx, ry, rz);
+  if (opts.kinematic) body.type = CANNON.Body.KINEMATIC;
+  linkBody(m, body);
+  return m;
+}
+
+function addSphere(x, y, z, r, mat, opts = {}) {
+  const m = new THREE.Mesh(sphereGeo, mat);
+  m.position.set(x, y, z);
+  m.scale.setScalar(r);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  objects.add(m);
+  if (opts.phys === false) return m;
+
+  const body = new CANNON.Body({
+    mass: opts.mass || 0,
+    material: opts.prop ? physProp : physWorld,
+    shape: new CANNON.Sphere(r),
+    linearDamping: opts.mass ? 0.04 : 0,
+    angularDamping: opts.mass ? 0.25 : 0,
+  });
+  body.position.set(x, y, z);
+  linkBody(m, body);
+  return m;
+}
+
+// Slab whose *top face* runs from (x0, y0) to (x1, y1) — the surface you walk
+// on is the one you specify, so ramps line up flush with the ledges they meet.
+const RAMP_T = 0.5;
+function addRampX(x0, y0, x1, y1, z, width, mat) {
+  const ang = Math.atan2(y1 - y0, x1 - x0);
+  const len = Math.hypot(x1 - x0, y1 - y0);
+  return addBox(
+    (x0 + x1) / 2 + (RAMP_T / 2) * Math.sin(ang),
+    (y0 + y1) / 2 - (RAMP_T / 2) * Math.cos(ang),
+    z, len, RAMP_T, width, mat, { rz: ang / DEG }
+  );
+}
+function addRampZ(z0, y0, z1, y1, x, width, mat) {
+  const ang = Math.atan2(y1 - y0, z1 - z0);
+  const len = Math.hypot(z1 - z0, y1 - y0);
+  return addBox(
+    x,
+    (y0 + y1) / 2 - (RAMP_T / 2) * Math.cos(ang),
+    (z0 + z1) / 2 + (RAMP_T / 2) * Math.sin(ang),
+    width, RAMP_T, len, mat, { rx: -ang / DEG }
+  );
+}
+
+const mat = (color, roughness, metalness, extra = {}) => new THREE.MeshStandardMaterial(
+  Object.assign({
+    color, roughness, metalness, envMapIntensity: 0.85,
+    // Casting from backfaces keeps depth-bias needs tiny on closed solids, which
+    // is the other half of the shadow-seam fix.
+    shadowSide: THREE.BackSide,
+  }, extra)
+);
+
+// 10 painted cubes (2x2x2 @ y=1) — static
+for (const [color, [x, y, z]] of CUBES) {
+  addBox(x, y, z, 2, 2, 2, mat(color, 0.32, 0.18));
+}
+
+// 5 spheres (r=3) — glossy, lightly metallic, and now dynamic (mass 1). They
+// spawn resting on the ground rather than at the original y=2, which was half a
+// radius below it; dropping them there would just pop them up on frame one.
+for (const [color, [x, , z]] of SPHERES) {
+  addSphere(x, 3, z, 3, mat(color, 0.18, 0.45, { envMapIntensity: 1.1 }), { mass: 1, prop: true });
+}
+
+// 3 pillars (3x20x3 @ z=-35) — matte stone
+const pillarMat = mat(0xb4b4be, 0.72, 0.06);
+for (const x of PILLAR_X) addBox(x, 10, -35, 3, 20, 3, pillarMat);
+
+// Ramp (6 x 0.5 x 14 @ 15,1.5,0, tilted 15 degrees) — brushed metal
+addBox(15, 1.5, 0, 6, 0.5, 14, mat(0xa0a0aa, 0.34, 0.72, { envMapIntensity: 1.0 }), { rx: 15 });
+
+// Floating platform (15 x 0.6 x 15 @ y=20)
+addBox(0, 20, 0, 15, 0.6, 15, mat(0xc8c8dc, 0.28, 0.65, { envMapIntensity: 1.0 }));
+
+// Trees: 1x6x1 trunk + r=5 canopy
+const trunkMat  = mat(0x644628, 0.92, 0.0);
+const canopyMat = mat(0x288c28, 0.88, 0.0, { envMapIntensity: 0.6, flatShading: false });
+for (const [x, z] of TREES) {
+  addBox(x, 3, z, 1, 6, 1, trunkMat);
+  addSphere(x, 7.5, z, 5, canopyMat);
+}
+
+// ---------------------------------------------------------------------------
+// Showcase course — everything the character controller can do, laid out along
+// the z = 55 line running east from spawn (0, 30).
+// ---------------------------------------------------------------------------
+const matConcrete = mat(0x9aa6b2, 0.86, 0.04);
+const matAccent   = mat(0xe2833c, 0.55, 0.12);
+const matEasy     = mat(0x4fbf5a, 0.62, 0.08);
+const matEdge     = mat(0x36cfc4, 0.40, 0.22, { emissive: 0x0b4a46, emissiveIntensity: 0.7 });
+const matSteep    = mat(0xd2453c, 0.68, 0.06);
+const matCrate    = mat(0xb98a4e, 0.78, 0.02);
+
+// --- (a) crouch tunnel: 0.85 of clearance, straddling the path east of spawn.
+addBox(7, 1.2, 52.5, 6, 2.4, 1, matConcrete);          // south wall
+addBox(7, 1.2, 57.5, 6, 2.4, 1, matConcrete);          // north wall
+addBox(7, 1.2, 55, 6, 0.7, 5, matConcrete);            // roof — underside at 0.85
+addBox(4.1, 1.75, 55, 0.35, 0.4, 5, matAccent, { phys: false });   // entry marker
+addBox(9.9, 1.75, 55, 0.35, 0.4, 5, matAccent, { phys: false });
+
+// --- (b) slope lanes: three ramps to a common ledge at y = 4. 45 degrees is the
+// controller's limit, so the green and teal lanes walk and the red one slides.
+const LEDGE_Y = 4, LEDGE_X = 34;
+addBox(37, 3.6, 55, 6, 0.8, 22, matConcrete);          // top ledge
+for (const [deg, z, m] of [[25, 47, matEasy], [45, 55, matEdge], [55, 63, matSteep]]) {
+  const run = LEDGE_Y / Math.tan(deg * DEG);
+  addRampX(LEDGE_X - run, 0, LEDGE_X, LEDGE_Y, z, 6.4, m);
+}
+addBox(29, 0.3, 51, 12, 0.6, 0.5, matConcrete);        // lane dividers
+addBox(29, 0.3, 59, 12, 0.6, 0.5, matConcrete);
+
+// --- (c) jump gaps. A 6.2 jump under 9.82 gravity peaks at 1.96 and hangs for
+// 1.26s, so walking (4.6) carries ~5.8 and sprinting (9.2) carries ~11.6. The
+// gaps are sized against those numbers: hop, sprint-hop, then a block that needs
+// both the sprint and the height of the arc.
+addBox(45.5, 3.6, 55, 5, 0.8, 6, matAccent);           // gap 3.0, top y = 4.0
+addBox(56.5, 4.2, 55, 5, 0.8, 6, matAccent);           // gap 6.0, top y = 4.6
+addBox(68, 3.1, 55, 7, 6.2, 6, matAccent);             // gap 5.5 + 1.6 up, top y = 6.2
+addRampX(71.5, 6.2, 84, 0, 55, 6, matConcrete);        // way back down
+
+// --- (d) sprint corridor: 60 units of straight, with a gate on a 5.4s cycle.
+addBox(118, 1.75, 50.5, 60, 3.5, 1, matConcrete);
+addBox(118, 1.75, 59.5, 60, 3.5, 1, matConcrete);
+addBox(88.5, 1.9, 55, 0.5, 3.8, 8, matEdge, { phys: false });      // start line
+for (let x = 98; x <= 138; x += 10) {
+  addBox(x, 0.03, 55, 0.5, 0.06, 8, matAccent, { phys: false });   // distance markers
+}
+const gateMesh = addBox(130, 2.0, 55, 1, 4, 8, matSteep, { kinematic: true });
+const gateBody = gateMesh.userData.body;
+gateBody.allowSleep = false;
+const GATE_CYCLE = 5.4, GATE_OPEN = 2.2, GATE_DOWN_Y = 2.0, GATE_UP_Y = 6.6;
+
+// --- (e) physics playground: a pen of loose crates west of spawn.
+const PEN = new THREE.Vector3(-25, 0, 55);
+addBox(PEN.x, 0.5, PEN.z - 9, 18, 1, 1, matConcrete);
+addBox(PEN.x, 0.5, PEN.z + 9, 18, 1, 1, matConcrete);
+addBox(PEN.x - 9, 0.5, PEN.z, 1, 1, 18, matConcrete);
+addBox(PEN.x + 9, 0.5, PEN.z - 6, 1, 1, 6, matConcrete);           // gap = entrance
+addBox(PEN.x + 9, 0.5, PEN.z + 6, 1, 1, 6, matConcrete);
+// Loose singles sit straight across the entrance so the first thing you touch is
+// something that actually gets shoved; the stacks are off to the sides.
+for (const [dx, dz] of [[3, -1], [1.5, 1.5], [0, -2.5], [-1, 0.5], [-2.5, 2], [-4, -1.5], [-5.5, 1], [-7, -0.5]]) {
+  addBox(PEN.x + dx, 0.55, PEN.z + dz, 1, 1, 1, matCrate, { mass: 1.2, prop: true });
+}
+for (let row = 0; row < 3; row++) {                      // pyramid, tucked south
+  for (let i = 0; i < 3 - row; i++) {
+    addBox(PEN.x - 5.5 + (row * 0.55) + i * 1.1, 0.55 + row * 1.06, PEN.z - 6.5,
+      1, 1, 1, matCrate, { mass: 1.2, prop: true });
+  }
+}
+for (let i = 0; i < 5; i++) {                            // topple-me tower, north
+  // Spacing barely over the 1.6 crate height — any more and the stack settles
+  // through the gaps and knocks itself over before the player arrives.
+  addBox(PEN.x - 5, 0.81 + i * 1.61, PEN.z + 6, 1.6, 1.6, 1.6, matAccent, { mass: 3, prop: true });
+}
+for (let i = 0; i < 6; i++) {                            // things that roll
+  addSphere(PEN.x - 1 + i * 1.5, 0.7, PEN.z + 3.5, 0.7, matEdge, { mass: 0.9, prop: true });
+}
+
+// --- (f) third-person bridge: 1.1 wide at 7 up — worth flipping the camera out.
+addRampZ(62, 0, 74, 7, 0, 3.5, matConcrete);           // approach
+addBox(0, 6.8, 89, 1.1, 0.4, 30, matEdge);             // the plank itself
+for (const z of [78, 84, 90, 96, 102]) addBox(0, 3.4, z, 0.35, 6.8, 0.35, matConcrete);
+addBox(0, 6.8, 107, 5, 0.4, 6, matConcrete);           // far landing
+addRampZ(110, 7, 122, 0, 0, 3.5, matConcrete);         // way back down
+
+// ---------------------------------------------------------------------------
+// Swim water — a stone basin filled to WATER.surfaceY, north-east of spawn and
+// in plain sight from it. The world floor is one infinite plane at y = 0, so
+// there is nothing to dig a depression out of: the basin is built up instead,
+// with a ramp on the spawn side and a submerged step to climb back out on.
+// ---------------------------------------------------------------------------
+const matPool = mat(0x93a2ae, 0.82, 0.05);
+// Sea-glass rather than white: a bright bottom washes the water out to grey.
+const matTile = mat(0x8fb6c4, 0.46, 0.06, { envMapIntensity: 1.0 });
+
+const POOL_CX = (WATER.minX + WATER.maxX) / 2;
+const POOL_CZ = (WATER.minZ + WATER.maxZ) / 2;
+const POOL_W  = WATER.maxX - WATER.minX;
+const POOL_D  = WATER.maxZ - WATER.minZ;
+{
+  const RIM = 1.6;                                 // wall thickness — wide enough to walk
+  const RIM_Y = WATER.surfaceY + 0.4;              // ... and standing proud of the water
+
+  addBox(POOL_CX, RIM_Y / 2, WATER.minZ - RIM / 2, POOL_W + RIM * 2, RIM_Y, RIM, matPool);
+  addBox(POOL_CX, RIM_Y / 2, WATER.maxZ + RIM / 2, POOL_W + RIM * 2, RIM_Y, RIM, matPool);
+  addBox(WATER.minX - RIM / 2, RIM_Y / 2, POOL_CZ, RIM, RIM_Y, POOL_D, matPool);
+  addBox(WATER.maxX + RIM / 2, RIM_Y / 2, POOL_CZ, RIM, RIM_Y, POOL_D, matPool);
+  for (const z of [WATER.minZ - RIM / 2, WATER.maxZ + RIM / 2]) {   // teal edge caps
+    addBox(POOL_CX, RIM_Y + 0.04, z, POOL_W + RIM * 2, 0.08, RIM, matEdge, { phys: false });
+  }
+
+  addBox(POOL_CX, WATER.floorY + 0.06, POOL_CZ, POOL_W, 0.12, POOL_D, matTile);   // tiled bottom
+  // 28-degree approach from the spawn side, landing flush on the rim.
+  addRampZ(WATER.minZ - RIM - 6.4, 0, WATER.minZ - RIM, RIM_Y, POOL_CX, 5, matPool);
+  // Shallow step inside the near wall: waist-deep, so you can wade out and hop
+  // the 0.8 back onto the rim without needing to swim up over it.
+  addBox(POOL_CX, 1.3, WATER.minZ + 1.5, 12, 2.6, 3, matTile);
+}
+
+// The water itself: an unlit-by-physics volume plus a separately animated
+// surface. Both live directly in the scene rather than in `objects`, so the
+// third-person boom raycast does not pull the camera in when you swim.
+const waterTime = { value: 0 };
+{
+  const bot = WATER.floorY + 0.16;                 // clear of the tiled bottom at 0.12
+  const top = WATER.surfaceY - 0.16;               // clears the trough of the waves
+
+  // Inset a hair on every side: sharing a plane with the walls and the tiled
+  // bottom is what makes the depth buffer stripe them.
+  const vol = new THREE.Mesh(
+    new THREE.BoxGeometry(POOL_W - 0.08, top - bot, POOL_D - 0.08),
+    new THREE.MeshPhysicalMaterial({
+      color: 0x1a6996,
+      transparent: true,
+      opacity: isTouchDevice ? 0.62 : 0.54,
+      roughness: 0.16,
+      metalness: 0.0,
+      // Transmission costs a full extra scene render, so phones get plain alpha.
+      transmission: isTouchDevice ? 0.0 : 0.72,
+      thickness: 2.6,
+      ior: 1.333,
+      attenuationColor: new THREE.Color(0x14618c),
+      attenuationDistance: 5.5,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      envMapIntensity: 1.0,
+    })
+  );
+  vol.position.set(POOL_CX, (bot + top) / 2, POOL_CZ);
+  vol.receiveShadow = true;
+  vol.castShadow = false;
+  scene.add(vol);
+
+  // Pre-rotated so object-space Y is up: the wave shader can then displace
+  // `transformed.y` directly and read the swell phase off position.xz.
+  const surfGeo = new THREE.PlaneGeometry(POOL_W, POOL_D, 44, 38);
+  surfGeo.rotateX(-Math.PI / 2);
+
+  const surfMat = new THREE.MeshPhysicalMaterial({
+    color: 0x2e86b8,
+    transparent: true,
+    opacity: isTouchDevice ? 0.82 : 0.7,
+    roughness: 0.07,
+    metalness: 0.0,
+    transmission: isTouchDevice ? 0.0 : 0.6,
+    thickness: 1.2,
+    ior: 1.333,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.08,
+    side: THREE.DoubleSide,
+    envMapIntensity: 1.4,
+  });
+  // Three crossing swells, displaced in the vertex shader with an analytic
+  // normal so the highlights travel with the waves instead of staying flat.
+  surfMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = waterTime;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', /* glsl */`
+        #include <common>
+        uniform float uTime;
+        // returns (height, dH/dx, dH/dz)
+        vec3 waterWave(vec2 p) {
+          float h = 0.0, gx = 0.0, gz = 0.0, ph, c;
+          vec2 k; float a;
+          k = vec2( 0.42,  0.26); a = 0.070; ph = dot(p, k) + uTime * 1.15;
+          h += a * sin(ph); c = a * cos(ph); gx += c * k.x; gz += c * k.y;
+          k = vec2(-0.31,  0.53); a = 0.048; ph = dot(p, k) + uTime * 1.55;
+          h += a * sin(ph); c = a * cos(ph); gx += c * k.x; gz += c * k.y;
+          k = vec2( 0.95, -0.72); a = 0.018; ph = dot(p, k) + uTime * 2.60;
+          h += a * sin(ph); c = a * cos(ph); gx += c * k.x; gz += c * k.y;
+          return vec3(h, gx, gz);
+        }
+      `)
+      .replace('#include <beginnormal_vertex>', /* glsl */`
+        #include <beginnormal_vertex>
+        vec3 wave = waterWave(position.xz);
+        objectNormal = normalize(vec3(-wave.y, 1.0, -wave.z));
+      `)
+      .replace('#include <begin_vertex>', /* glsl */`
+        #include <begin_vertex>
+        transformed.y += wave.x;
+      `);
+  };
+
+  const surf = new THREE.Mesh(surfGeo, surfMat);
+  surf.position.set(POOL_CX, WATER.surfaceY, POOL_CZ);
+  surf.receiveShadow = true;
+  surf.castShadow = false;
+  scene.add(surf);
+}
+
+// Caustics on every wetted surface — the tiled bottom, the step, and the inside
+// of the basin walls. Sunlight refracted through the swell focuses into a moving
+// net of bright filaments; the pattern is traced from the same three swells that
+// shape the surface, so what crawls over the stone lines up with the waves
+// overhead. Both materials are shared with dry geometry (the walls have outside
+// faces, the approach ramp is the same stone), so the effect is masked in world
+// space rather than per mesh: under the waterline and inside the footprint.
+//
+// Light leaves the surface along the refracted sun direction, not straight down.
+// Snell at the air/water boundary turns the sun's 44 degrees from vertical into
+// 31, which is 0.64 of the horizontal run per unit of depth.
+const CAUST_SLANT = new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y).multiplyScalar(0.64);
+
+function addPoolCaustics(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime      = waterTime;
+    shader.uniforms.uWaterY    = { value: WATER.surfaceY };
+    shader.uniforms.uCaustCol  = { value: new THREE.Color(0xa8e4ff) };
+    shader.uniforms.uCaustSlant = { value: CAUST_SLANT };
+    shader.uniforms.uSunDir    = { value: SUN.clone() };
+    shader.uniforms.uPoolC     = { value: new THREE.Vector2(POOL_CX, POOL_CZ) };
+    // Half extents, opened a hair: the inner wall faces sit exactly on the bound.
+    shader.uniforms.uPoolH     = { value: new THREE.Vector2(POOL_W / 2 + 0.05, POOL_D / 2 + 0.05) };
+
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', /* glsl */`
+        #include <common>
+        varying vec3 vCaustPos;
+        varying vec3 vCaustNrm;
+      `)
+      .replace('#include <begin_vertex>', /* glsl */`
+        #include <begin_vertex>
+        vCaustPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        vCaustNrm = normalize(mat3(modelMatrix) * objectNormal);
+      `);
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', /* glsl */`
+        #include <common>
+        uniform float uTime;
+        uniform float uWaterY;
+        uniform vec3  uCaustCol;
+        uniform vec3  uSunDir;
+        uniform vec2  uCaustSlant;
+        uniform vec2  uPoolC;
+        uniform vec2  uPoolH;
+        varying vec3 vCaustPos;
+        varying vec3 vCaustNrm;
+        // Light piles up along the zero crossings of the crossing swells; raising
+        // the fold to a power is what turns those bands into thin filaments.
+        float caustNet(vec2 p, float t) {
+          float c = sin(dot(p, vec2( 0.42,  0.26) * 6.4) + t * 1.15)
+                  + sin(dot(p, vec2(-0.31,  0.53) * 7.7) - t * 1.55)
+                  + sin(dot(p, vec2( 0.95, -0.72) * 5.1) + t * 2.20);
+          return pow(max(0.0, 1.0 - abs(c) * 0.55), 8.0);
+        }
+      `)
+      // getShadowMask() lives in a chunk the lit materials do not pull in; adding
+      // it after the shadow varyings it reads keeps the caustics out of the band
+      // of shadow the rim walls lay across the floor.
+      .replace('#include <shadowmap_pars_fragment>', /* glsl */`
+        #include <shadowmap_pars_fragment>
+        #include <shadowmask_pars_fragment>
+      `)
+      .replace('#include <emissivemap_fragment>', /* glsl */`
+        #include <emissivemap_fragment>
+        {
+          float below = uWaterY - vCaustPos.y;
+          // Walk back up the light path to the water plane: that is the patch of
+          // surface whose lensing lights this point. On the floor it only shifts
+          // the pattern, but it is what makes the net climb the walls instead of
+          // streaking straight down them.
+          vec2 q = vCaustPos.xz + uCaustSlant * below;
+          vec2 e = abs(vCaustPos.xz - uPoolC) - uPoolH;
+          float wet = step(0.0, below) * (1.0 - step(0.0, max(e.x, e.y)));
+          // Faces turned away from the sun catch none of it — which is exactly
+          // the two inner walls that lie in their own shadow.
+          float facing = clamp(dot(vCaustNrm, uSunDir), 0.0, 1.0) * 2.2;
+          // A hand's depth of water barely focuses; a couple of metres does.
+          float depth = clamp(below / 2.0, 0.0, 1.0);
+          // Strong enough to still read from above, through 3 m of tinted water.
+          float caust = caustNet(q, uTime) * 1.15
+                      + caustNet(q * 1.9 + vec2(7.3, 2.1), uTime * 1.35) * 0.65;
+          // Caustics are light landing on the surface, so what you see is what
+          // the surface reflects: without the albedo term the dark wall stone
+          // lights up harder than the pale tile it stands on.
+          totalEmissiveRadiance += uCaustCol * diffuseColor.rgb
+            * caust * wet * facing * (0.35 + 0.65 * depth) * getShadowMask();
+        }
+      `);
+  };
+}
+addPoolCaustics(matTile);
+addPoolCaustics(matPool);
+
+// Submerging the camera swaps the sky and the distance fog for a dense blue one
+// (the sky dome is a custom shader and ignores scene.fog, so it is hidden and a
+// flat background colour takes over).
+const UNDER_BG = new THREE.Color(WATER_FOG);
+let underwater = false;
+function updateWaterVisuals() {
+  const c = camera.position;
+  const wet = c.y < WATER.surfaceY && c.y > WATER.floorY - 2 && inWaterColumn(c.x, c.z);
+  if (wet === underwater) return;
+  underwater = wet;
+  scene.fog.color.setHex(wet ? WATER_FOG : FOG_COLOR);
+  scene.fog.density = wet ? 0.11 : 0.0042;
+  scene.background = wet ? UNDER_BG : null;
+  sky.visible = !wet;
+  document.getElementById('underwater').classList.toggle('on', wet);
+}
+
+// ---------------------------------------------------------------------------
+// Camera state + input
+// ---------------------------------------------------------------------------
+const state = {
+  pos: START_POS.clone(),
+  yaw: START_YAW * DEG,
+  pitch: START_PITCH * DEG,
+  sprint: false,
+  flyUp: false,
+  flyDown: false,
+  joyX: 0,
+  joyY: 0,
+  touchActive: false,
+  // character controller — touch buttons latch, keyboard equivalents are held
+  jumpQueued: false,
+  jumpHeld: false,          // held state too, so JUMP can drive a swim upwards
+  crouchBtn: false,
+  sprintBtn: false,
+};
+const PITCH_LIMIT = 89 * DEG;
+const keys = new Set();
+
+// ----- keyboard -----
+const TRACKED = new Set([
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
+  'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+]);
+window.addEventListener('keydown', (e) => {
+  if (e.repeat) return;
+  if (TRACKED.has(e.code)) { keys.add(e.code); e.preventDefault(); }
+  if (e.code === 'KeyV') cycleCamera();
+  else if (e.code === 'KeyG') toggleGameMode();
+  else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
+  else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
+}, { passive: false });
+window.addEventListener('keyup', (e) => {
+  if (TRACKED.has(e.code)) { keys.delete(e.code); e.preventDefault(); }
+}, { passive: false });
+window.addEventListener('blur', () => keys.clear());
+
+// ----- pointer lock / mouse look -----
+function requestLock() {
+  if (isTouchDevice) return;
+  const el = renderer.domElement;
+  const fn = el.requestPointerLock || el.mozRequestPointerLock;
+  if (fn) {
+    const r = fn.call(el);
+    if (r && typeof r.catch === 'function') r.catch(() => {});
+  }
+}
+const isLocked = () => document.pointerLockElement === renderer.domElement;
+
+renderer.domElement.addEventListener('mousedown', () => { if (!isLocked()) requestLock(); });
+
+document.addEventListener('mousemove', (e) => {
+  if (!isLocked()) return;
+  state.yaw   -= (e.movementX || 0) * MOUSE_SENSITIVITY * DEG;
+  state.pitch -= (e.movementY || 0) * MOUSE_SENSITIVITY * DEG;
+  state.pitch = THREE.MathUtils.clamp(state.pitch, -PITCH_LIMIT, PITCH_LIMIT);
+});
+
+document.addEventListener('pointerlockchange', () => {
+  if (!isLocked() && !isTouchDevice) {
+    keys.clear();
+    showOverlay();
+  }
+});
+
+// ----- touch: left half = joystick, right half = look, 2 fingers/side = sprint -----
+const stickBase = document.getElementById('stick-base');
+const stickKnob = document.getElementById('stick-knob');
+const STICK_R = 55;
+const stickHome = { left: stickBase.style.left, bottom: stickBase.style.bottom };
+
+const touches = new Map();   // identifier -> { zone, role }
+let moveId = null;
+let lookId = null;
+let moveOrigin = { x: 0, y: 0 };
+
+const zoneOf = (x) => (x < window.innerWidth * 0.5 ? 'left' : 'right');
+
+function updateSprint() {
+  let l = 0, r = 0;
+  for (const t of touches.values()) (t.zone === 'left' ? l++ : r++);
+  state.sprint = (l >= 2 || r >= 2);
+  sprintEl.classList.toggle('on', state.sprint || keys.has('ShiftLeft') || keys.has('ShiftRight'));
+}
+
+function placeStick(x, y) {
+  stickBase.style.left = (x - 66) + 'px';
+  stickBase.style.top = (y - 66) + 'px';
+  stickBase.style.bottom = 'auto';
+}
+
+function resetStick() {
+  stickBase.classList.remove('active');
+  stickBase.style.left = stickHome.left || '28px';
+  stickBase.style.top = 'auto';
+  stickBase.style.bottom = stickHome.bottom || 'calc(34px + env(safe-area-inset-bottom))';
+  stickKnob.style.transform = 'translate(0px, 0px)';
+  state.joyX = state.joyY = 0;
+}
+
+function enableTouchUI() {
+  if (state.touchActive) return;
+  state.touchActive = true;
+  document.body.classList.add('touch');
+}
+
+function onTouchStart(e) {
+  e.preventDefault();
+  enableTouchUI();
+  for (const t of e.changedTouches) {
+    const zone = zoneOf(t.clientX);
+    let role = 'extra';
+    if (zone === 'left' && moveId === null) {
+      role = 'move';
+      moveId = t.identifier;
+      moveOrigin = { x: t.clientX, y: t.clientY };
+      placeStick(t.clientX, t.clientY);
+      stickBase.classList.add('active');
+    } else if (zone === 'right' && lookId === null) {
+      role = 'look';
+      lookId = t.identifier;
+    }
+    touches.set(t.identifier, { zone, role, x: t.clientX, y: t.clientY });
+  }
+  updateSprint();
+}
+
+function onTouchMove(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const rec = touches.get(t.identifier);
+    if (!rec) continue;
+
+    if (rec.role === 'look') {
+      const dx = t.clientX - rec.x;
+      const dy = t.clientY - rec.y;
+      state.yaw   -= dx * MOUSE_SENSITIVITY * TOUCH_LOOK_MULT * DEG;
+      state.pitch -= dy * MOUSE_SENSITIVITY * TOUCH_LOOK_MULT * DEG;
+      state.pitch = THREE.MathUtils.clamp(state.pitch, -PITCH_LIMIT, PITCH_LIMIT);
+    } else if (rec.role === 'move') {
+      let dx = t.clientX - moveOrigin.x;
+      let dy = t.clientY - moveOrigin.y;
+      const len = Math.hypot(dx, dy);
+      if (len > STICK_R) { dx = dx / len * STICK_R; dy = dy / len * STICK_R; }
+      stickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+      state.joyX = dx / STICK_R;
+      state.joyY = dy / STICK_R;
+    }
+    rec.x = t.clientX;
+    rec.y = t.clientY;
+  }
+}
+
+function onTouchEnd(e) {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const rec = touches.get(t.identifier);
+    if (!rec) continue;
+    touches.delete(t.identifier);
+    if (t.identifier === moveId) { moveId = null; resetStick(); }
+    if (t.identifier === lookId) { lookId = null; }
+  }
+  // promote a leftover finger so control never gets stuck after a multi-touch
+  if (lookId === null) {
+    for (const [id, rec] of touches) {
+      if (rec.role === 'extra' && rec.zone === 'right') { rec.role = 'look'; lookId = id; break; }
+    }
+  }
+  if (moveId === null) {
+    for (const [id, rec] of touches) {
+      if (rec.role === 'extra' && rec.zone === 'left') {
+        rec.role = 'move';
+        moveId = id;
+        moveOrigin = { x: rec.x, y: rec.y };
+        placeStick(rec.x, rec.y);
+        stickBase.classList.add('active');
+        break;
+      }
+    }
+  }
+  updateSprint();
+}
+
+canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+window.addEventListener('touchmove', onTouchMove, { passive: false });
+window.addEventListener('touchend', onTouchEnd, { passive: false });
+window.addEventListener('touchcancel', onTouchEnd, { passive: false });
+
+// kill browser pinch-zoom / scroll / long-press menus
+for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) {
+  document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+}
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
+
+// ----- on-screen fly buttons -----
+function bindHold(el, on, off) {
+  const press = (e) => { e.preventDefault(); e.stopPropagation(); el.classList.add('down'); on(); };
+  const release = (e) => { e.preventDefault(); e.stopPropagation(); el.classList.remove('down'); off(); };
+  el.addEventListener('touchstart', press, { passive: false });
+  el.addEventListener('touchend', release, { passive: false });
+  el.addEventListener('touchcancel', release, { passive: false });
+  el.addEventListener('mousedown', press);
+  window.addEventListener('mouseup', () => { el.classList.remove('down'); off(); });
+}
+bindHold(document.getElementById('btn-up'),   () => state.flyUp = true,   () => state.flyUp = false);
+bindHold(document.getElementById('btn-down'), () => state.flyDown = true, () => state.flyDown = false);
+
+// ----- on-screen action buttons (first / third person) -----
+const btnJump   = document.getElementById('btn-jump');
+const btnCrouch = document.getElementById('btn-crouch');
+const btnSprint = document.getElementById('btn-sprint');
+
+bindHold(btnJump,
+  () => { state.jumpQueued = true; state.jumpHeld = true; },
+  () => { state.jumpHeld = false; });
+function bindToggle(el, get, set) {
+  const press = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    set(!get());
+    el.classList.toggle('down', get());
+  };
+  el.addEventListener('touchstart', press, { passive: false });
+  el.addEventListener('mousedown', press);
+}
+bindToggle(btnCrouch, () => state.crouchBtn, (v) => state.crouchBtn = v);
+bindToggle(btnSprint, () => state.sprintBtn, (v) => state.sprintBtn = v);
+
+const isSprinting = () =>
+  state.sprint || state.sprintBtn || keys.has('ShiftLeft') || keys.has('ShiftRight');
+
+// ---------------------------------------------------------------------------
+// Character controller — a cannon-es body whose velocity is driven by input
+// rather than by forces, so the movement stays crisp and predictable.
+// ---------------------------------------------------------------------------
+const playerBody = new CANNON.Body({
+  // Heavier than the crates on purpose. The controller sets velocity directly so
+  // mass never affects how the character itself moves — it only decides how much
+  // authority the body has in contact impulses, i.e. whether walking into a crate
+  // shoves it or stalls against it.
+  mass: 6,
+  material: physPlayer,
+  fixedRotation: true,
+  linearDamping: 0,
+  angularDamping: 1,
+  allowSleep: false,
+});
+let crouched = false;
+let swimming = false;
+
+function setPlayerShape(crouch) {
+  while (playerBody.shapes.length) playerBody.removeShape(playerBody.shapes[0]);
+  const r = PLAYER.radius;
+  if (crouch) {
+    playerBody.addShape(new CANNON.Sphere(r));                            // 0.8 tall
+  } else {
+    // Three stacked spheres stand in for a 1.6-tall capsule (cannon has no
+    // capsule primitive). Rounded feet ride over kerbs and up ramps without a
+    // dedicated step-up hack.
+    playerBody.addShape(new CANNON.Sphere(r), new CANNON.Vec3(0, -0.4, 0));
+    playerBody.addShape(new CANNON.Sphere(r), new CANNON.Vec3(0,  0.0, 0));
+    playerBody.addShape(new CANNON.Sphere(r), new CANNON.Vec3(0,  0.4, 0));
+  }
+  playerBody.updateBoundingRadius();
+  playerBody.updateMassProperties();   // honours fixedRotation, keeps mass = 1
+}
+setPlayerShape(false);
+playerBody.position.set(SPAWN.x, SPAWN.y, SPAWN.z);
+playerBody.updateAABB();
+world.addBody(playerBody);
+
+// Visible body — hidden in first person, shown everywhere else.
+const playerGeoStand  = new THREE.CapsuleGeometry(PLAYER.radius, 0.8, 6, 18);
+const playerGeoCrouch = new THREE.CapsuleGeometry(PLAYER.radius, 0.0, 6, 18);
+const playerMesh = new THREE.Mesh(
+  playerGeoStand,
+  mat(0x63b9ff, 0.42, 0.28, { emissive: 0x0d2c4a, emissiveIntensity: 0.55 })
+);
+playerMesh.castShadow = true;
+playerMesh.receiveShadow = true;
+const visor = new THREE.Mesh(
+  new THREE.BoxGeometry(0.34, 0.12, 0.14),
+  mat(0xffe6a8, 0.3, 0.1, { emissive: 0x6a4a10, emissiveIntensity: 0.9 })
+);
+visor.position.set(0, 0.42, -0.34);
+playerMesh.add(visor);
+scene.add(playerMesh);
+
+// Steepest-upward contact normal touching the player, refreshed every substep.
+// A contact whose normal is within maxSlope of straight up is walkable ground.
+let groundNy = 0;
+world.addEventListener('postStep', () => {
+  let best = 0;
+  for (const c of world.contacts) {
+    let ny;
+    if (c.bi === playerBody) ny = -c.ni.y;        // ni runs from bi to bj
+    else if (c.bj === playerBody) ny = c.ni.y;
+    else continue;
+    if (ny > best) best = ny;
+  }
+  groundNy = best;
+});
+
+let coyote = 0;                       // grace period for late jump presses
+let jumpLock = 0;                     // contacts survive a step after take-off
+let eyeH = PLAYER.standEye;           // smoothed, so crouching ducks the view
+let playerYaw = SPAWN_YAW * DEG;
+const wishDir = new THREE.Vector3();
+
+const centerOffset = () => (crouched ? PLAYER.crouchCenter : PLAYER.standCenter);
+
+// Is there room to stand back up, or are we under the crouch tunnel?
+function hasHeadroom() {
+  const p = playerBody.position;
+  const from = new CANNON.Vec3(p.x, p.y, p.z);
+  const to   = new CANNON.Vec3(p.x, p.y + 1.35, p.z);
+  let blocked = false;
+  world.raycastAll(from, to, {}, (res) => { if (res.body !== playerBody) blocked = true; });
+  return !blocked;
+}
+
+function respawn() {
+  playerBody.position.set(SPAWN.x, SPAWN.y, SPAWN.z);
+  playerBody.velocity.setZero();
+  playerBody.wakeUp();
+  state.yaw = SPAWN_YAW * DEG;
+  state.pitch = 0;
+}
+
+function updatePlayer(dt) {
+  const p = playerBody.position, v = playerBody.velocity;
+
+  // --- how much of the body is under the pool surface (0 = dry, 1 = under) ---
+  const bodyH = crouched ? PLAYER.crouchEye : PLAYER.standEye;
+  const submerged = inWaterColumn(p.x, p.z)
+    ? THREE.MathUtils.clamp((WATER.surfaceY - (p.y - centerOffset())) / bodyH, 0, 1)
+    : 0;
+  // Hysteresis: bobbing across a single threshold would flip between swimming and
+  // walking once a frame, and every walking frame would drop the player.
+  swimming = submerged > (swimming ? WATER.swimOut : WATER.swimIn);
+
+  // --- crouch: held on desktop, latched on touch (in water C swims down) ---
+  const wantCrouch = (keys.has('KeyC') || state.crouchBtn) && !swimming;
+  if (wantCrouch && !crouched) {
+    setPlayerShape(true);
+    p.y -= PLAYER.standCenter - PLAYER.crouchCenter;   // keep the feet planted
+    crouched = true;
+  } else if (!wantCrouch && crouched && hasHeadroom()) {
+    setPlayerShape(false);
+    p.y += PLAYER.standCenter - PLAYER.crouchCenter;
+    crouched = false;
+  }
+
+  jumpLock = Math.max(0, jumpLock - dt);
+  const grounded = groundNy > GROUND_DOT && jumpLock === 0;
+  const onSteep  = !grounded && groundNy > 0.05 && groundNy <= GROUND_DOT;
+  coyote = grounded ? PLAYER.coyote : Math.max(0, coyote - dt);
+
+  // --- wish direction ---
+  const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
+  let wishY = 0;
+  wishDir.set(0, 0, 0);
+  if (camMode === CAM.TOP) {
+    // Top-down drives the world axes directly — the camera has no heading to be
+    // relative to, so W is north rather than "forward".
+    if (keys.has('KeyW') || keys.has('ArrowUp'))    wishDir.z -= 1;
+    if (keys.has('KeyS') || keys.has('ArrowDown'))  wishDir.z += 1;
+    if (keys.has('KeyA') || keys.has('ArrowLeft'))  wishDir.x -= 1;
+    if (keys.has('KeyD') || keys.has('ArrowRight')) wishDir.x += 1;
+    wishDir.x += state.joyX;
+    wishDir.z += state.joyY;
+  } else {
+    let fwd = 0, str = 0;
+    if (keys.has('KeyW') || keys.has('ArrowUp'))    fwd += 1;
+    if (keys.has('KeyS') || keys.has('ArrowDown'))  fwd -= 1;   // backpedal
+    if (keys.has('KeyD') || keys.has('ArrowRight')) str += 1;
+    if (keys.has('KeyA') || keys.has('ArrowLeft'))  str -= 1;
+    fwd -= state.joyY;                                          // stick up = forward
+    str += state.joyX;
+    // Swimming steers with the camera pitch as well, so you dive where you look.
+    const cp = swimming ? Math.cos(state.pitch) : 1;
+    wishDir.set(-sy * fwd * cp + cy * str, 0, -cy * fwd * cp - sy * str);
+    if (swimming) {
+      if (keys.has('Space') || state.jumpHeld)     wishY += 1;
+      if (keys.has('KeyC')  || state.crouchBtn)    wishY -= 1;
+      wishDir.y = Math.sin(state.pitch) * fwd + wishY;
+    }
+  }
+  const wl = wishDir.length();
+  if (wl > 1) wishDir.divideScalar(wl);
+
+  // Wading drags on you, and past the swim threshold it hands over to the (much
+  // slower) swim speed at roughly the same value, so the change of gait is smooth.
+  const wade = 1 - 0.42 * Math.min(1, submerged / WATER.swimIn);
+  const speed = swimming
+    ? PLAYER.walk * WATER.speedMult
+    : (crouched ? PLAYER.crouchSpeed : PLAYER.walk * (isSprinting() ? PLAYER.sprintMult : 1)) * wade;
+
+  // Sprint drives forward and strafe only: whatever part of the target velocity
+  // points behind the camera is trimmed back to the walk speed, so you can back
+  // up but never backpedal at a sprint. Top-down has no camera heading to be
+  // behind, so it keeps driving the world axes as before.
+  let tx = wishDir.x * speed, tz = wishDir.z * speed;
+  if (camMode !== CAM.TOP) {
+    const backCap = Math.min(speed, PLAYER.walk * (swimming ? 1 : wade));
+    const along = tx * -sy + tz * -cy;      // + ahead of the camera, - behind it
+    if (along < -backCap) {
+      const over = along + backCap;         // negative — the excess to take out
+      tx += sy * over;                      // i.e. t -= over * forward
+      tz += cy * over;
+    }
+  }
+
+  if (swimming) {
+    // No ground to push off, so all three axes are driven the same way and the
+    // lerp itself provides the drag.
+    const k = 1 - Math.exp(-WATER.accel * dt);
+    v.x += (tx - v.x) * k;
+    v.z += (tz - v.z) * k;
+    v.y += (wishDir.y * speed - v.y) * k;
+    // Buoyancy: hand back most of the gravity the solver is about to apply.
+    v.y += 9.82 * (1 - WATER.gravityScale) * dt;
+    // Left alone near the top you settle at the surface and ride the swell. A
+    // deliberate dive gives way — but a couple of degrees of look-down does not,
+    // or you would sink every time you swam along the surface off the level.
+    if (Math.abs(wishDir.y) < 0.25) {
+      const bob = Math.sin(elapsed * 1.9) * 0.055 + Math.sin(elapsed * 1.07 + 2.1) * 0.035;
+      const rest = WATER.surfaceY + bob - bodyH * 0.85 + centerOffset();
+      const d = rest - p.y;
+      if (Math.abs(d) < 1.4) {
+        v.y += (THREE.MathUtils.clamp(d * 3.2, -1.2, 1.2) - v.y) * (1 - Math.exp(-6 * dt));
+      }
+    }
+    playerBody.wakeUp();
+  } else if (grounded) {
+    const k = 1 - Math.exp(-PLAYER.groundAccel * dt);
+    v.x += (tx - v.x) * k;
+    v.z += (tz - v.z) * k;
+  } else if (!onSteep) {
+    // Reduced authority in the air; never scrubs speed you already carried, so a
+    // sprint jump keeps its momentum even if shift is released mid-flight.
+    const hs0 = Math.hypot(v.x, v.z);
+    v.x += wishDir.x * PLAYER.airAccel * dt;
+    v.z += wishDir.z * PLAYER.airAccel * dt;
+    const hs = Math.hypot(v.x, v.z);
+    const cap = Math.max(hs0, Math.hypot(tx, tz));
+    if (hs > cap) { v.x = v.x / hs * cap; v.z = v.z / hs * cap; }
+  }
+  // Steeper than maxSlope: no input authority at all. Player/level friction is
+  // zero, so gravity simply slides you back down — that is the red 55-degree lane.
+
+  // --- jump (in water Space is the swim-up key instead) ---
+  if ((state.jumpQueued || keys.has('Space')) && coyote > 0 && !crouched && !swimming) {
+    v.y = PLAYER.jumpSpeed;
+    coyote = 0;
+    groundNy = 0;
+    jumpLock = 0.15;
+    playerBody.wakeUp();
+  }
+  state.jumpQueued = false;
+
+  if (p.y < -25) respawn();
+
+  // --- derived view state ---
+  const targetEye = crouched ? PLAYER.crouchEye : PLAYER.standEye;
+  eyeH += (targetEye - eyeH) * (1 - Math.exp(-14 * dt));
+
+  if (camMode === CAM.TOP) {
+    if (Math.hypot(v.x, v.z) > 0.4) playerYaw = Math.atan2(-v.x, -v.z);
+  } else {
+    playerYaw = state.yaw;
+  }
+
+  // In top-down the fly pad and E/Q become zoom controls.
+  if (camMode === CAM.TOP) {
+    const out = state.flyUp   || keys.has('KeyE');
+    const inn = state.flyDown || keys.has('KeyQ');
+    if (out) topZoom = Math.min(90, topZoom + 22 * dt);
+    if (inn) topZoom = Math.max(8, topZoom - 22 * dt);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Camera modes
+// ---------------------------------------------------------------------------
+const CAM = { FIRST: 0, THIRD: 1, TOP: 2, FREE: 3 };
+const CAM_NAMES = ['First Person', 'Third Person', 'Top Down', 'Free Camera'];
+let camMode = CAM.FREE;               // start exactly as the old build did
+let lastGameCam = CAM.FIRST;
+let topZoom = 26;
+let blendT = 1;                        // 1 = settled, <1 = mid transition
+const BLEND_DUR = 0.42;
+const blendPos = new THREE.Vector3();
+const blendQuat = new THREE.Quaternion();
+
+function setCamMode(next) {
+  if (next === camMode) return;
+  let snap = false;
+
+  if (next === CAM.FREE) {
+    lastGameCam = camMode;
+    // Hand the flying camera the transform we are already looking through so
+    // detaching from physics is seamless; yaw/pitch are shared already.
+    state.pos.copy(camera.position);
+  } else if (camMode === CAM.FREE) {
+    snap = true;                       // re-attaching jumps straight to the body
+    playerBody.wakeUp();
+  }
+
+  camMode = next;
+  if (snap) {
+    blendT = 1;
+  } else {
+    blendPos.copy(camera.position);
+    blendQuat.copy(camera.quaternion);
+    blendT = 0;
+  }
+  refreshModeUI();
+}
+function cycleCamera()   { setCamMode((camMode + 1) % 4); }
+function toggleGameMode() { setCamMode(camMode === CAM.FREE ? lastGameCam : CAM.FREE); }
+
+const desiredPos  = new THREE.Vector3();
+const desiredQuat = new THREE.Quaternion();
+const camEuler    = new THREE.Euler(0, 0, 0, 'YXZ');
+const camTarget   = new THREE.Vector3();
+const camBack     = new THREE.Vector3();
+const boomRay     = new THREE.Raycaster();
+
+function updateCamera(dt) {
+  const p = playerBody.position;
+  const feetY = p.y - centerOffset();
+
+  if (camMode === CAM.FREE) {
+    desiredPos.copy(state.pos);
+    camEuler.set(state.pitch, state.yaw, 0);
+  } else if (camMode === CAM.TOP) {
+    desiredPos.set(p.x, feetY + topZoom, p.z);
+    camEuler.set(-Math.PI / 2, 0, 0);
+  } else {
+    camEuler.set(state.pitch, state.yaw, 0);
+    if (camMode === CAM.FIRST) {
+      desiredPos.set(p.x, feetY + eyeH, p.z);
+    } else {
+      camTarget.set(p.x, feetY + eyeH * 0.86, p.z);
+      camBack.set(0, 0, 1).applyEuler(camEuler);      // straight back along view
+      let dist = THIRD_DIST;
+      boomRay.set(camTarget, camBack);
+      boomRay.far = dist + 0.5;
+      const hit = boomRay.intersectObjects(objects.children, false)[0];
+      if (hit) dist = Math.max(1.1, hit.distance - 0.35);   // pull in through walls
+      desiredPos.copy(camTarget).addScaledVector(camBack, dist);
+    }
+  }
+  desiredQuat.setFromEuler(camEuler);
+
+  if (blendT < 1) {
+    blendT = Math.min(1, blendT + dt / BLEND_DUR);
+    const s = blendT * blendT * (3 - 2 * blendT);       // smoothstep
+    camera.position.lerpVectors(blendPos, desiredPos, s);
+    camera.quaternion.slerpQuaternions(blendQuat, desiredQuat, s);
+  } else {
+    camera.position.copy(desiredPos);
+    camera.quaternion.copy(desiredQuat);
+  }
+
+  playerMesh.visible = camMode !== CAM.FIRST;
+  playerMesh.geometry = crouched ? playerGeoCrouch : playerGeoStand;
+  visor.position.y = crouched ? 0.10 : 0.42;
+  playerMesh.position.set(p.x, p.y, p.z);
+  playerMesh.rotation.y = playerYaw;
+}
+
+window.addEventListener('wheel', (e) => {
+  if (camMode !== CAM.TOP) return;
+  topZoom = THREE.MathUtils.clamp(topZoom + e.deltaY * 0.03, 8, 90);
+  e.preventDefault();
+}, { passive: false });
+
+// ---------------------------------------------------------------------------
+// Mode UI
+// ---------------------------------------------------------------------------
+const camModeEl = document.getElementById('cam-mode');
+const instrEl   = document.getElementById('instructions');
+const modeBtn   = document.getElementById('mode-btn');
+
+const HELP_DESKTOP = {
+  [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['Space / C', 'Swim up / down'],
+                ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn']],
+  [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['Space / C', 'Swim up / down'],
+                ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn']],
+  [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
+                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['V', 'Next camera'],
+                ['G', 'Free camera']],
+  [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
+                ['Mouse', 'Look'], ['V', 'Next camera'], ['G', 'Enter game'], ['Esc', 'Release mouse']],
+};
+const HELP_TOUCH = {
+  [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump / swim up'],
+                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint']],
+  [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump / swim up'],
+                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint']],
+  [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in']],
+  [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
+                ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)']],
+};
+
+function refreshModeUI() {
+  const inGame = camMode !== CAM.FREE;
+  camModeEl.innerHTML = 'Cam &mdash; ' + CAM_NAMES[camMode];
+  modeBtn.textContent = inGame ? 'Free Camera' : 'Game Mode';
+  modeBtn.classList.toggle('game', inGame);
+
+  const rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
+  instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
+    rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
+
+  // Fly pad doubles as the top-down zoom pad; action pad is for on-foot modes.
+  document.body.classList.toggle('pad-fly', camMode === CAM.FREE || camMode === CAM.TOP);
+  document.body.classList.toggle('pad-act', camMode === CAM.FIRST || camMode === CAM.THIRD);
+  document.getElementById('crosshair').style.display = (camMode === CAM.THIRD || camMode === CAM.TOP) ? 'none' : '';
+}
+
+modeBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  toggleGameMode();
+  modeBtn.blur();                       // otherwise Space would re-press the button
+  if (!isTouchDevice && camMode !== CAM.FREE) requestLock();
+});
+modeBtn.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+refreshModeUI();
+
+// ---------------------------------------------------------------------------
+// Overlay
+// ---------------------------------------------------------------------------
+const overlay = document.getElementById('overlay');
+const sprintEl = document.getElementById('sprint');
+
+const KEY_ROWS_DESKTOP = [
+  ['W A S D', 'Fly (free camera)'],
+  ['Mouse', 'Look'],
+  ['E / Q', 'Fly up / down'],
+  ['Shift', 'Sprint (3&times;)'],
+  ['G', 'Enter game mode'],
+  ['V', 'Cycle camera'],
+  ['Esc', 'Release mouse'],
+];
+const KEY_ROWS_TOUCH = [
+  ['Left half', 'Virtual joystick &mdash; move'],
+  ['Right half', 'Drag to look'],
+  ['2 fingers', 'Same side &rarr; sprint (3&times;)'],
+  ['&#9650; / &#9660;', 'Fly up / down'],
+  ['Game Mode', 'Top-right button &rarr; play on foot'],
+];
+document.getElementById('keys').innerHTML =
+  (isTouchDevice ? KEY_ROWS_TOUCH : KEY_ROWS_DESKTOP)
+    .map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join('');
+document.getElementById('start-btn').textContent = isTouchDevice ? 'Tap to fly' : 'Enter';
+
+function hideOverlay() {
+  overlay.classList.add('hidden');
+  if (!isTouchDevice) requestLock();
+}
+function showOverlay() { overlay.classList.remove('hidden'); }
+
+overlay.addEventListener('pointerdown', (e) => { e.preventDefault(); hideOverlay(); }, { passive: false });
+overlay.addEventListener('touchstart', (e) => { e.preventDefault(); hideOverlay(); }, { passive: false });
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+function resize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const aspect = w / Math.max(h, 1);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(w, h, false);
+  camera.aspect = aspect;
+  // Original used a 90-degree vertical FOV at 16:9. Here the horizontal FOV is
+  // pinned near 90 degrees and the vertical is derived, so portrait phones keep
+  // a usable view instead of a keyhole.
+  camera.fov = THREE.MathUtils.clamp(
+    2 * Math.atan(Math.tan(45 * DEG) / aspect) / DEG, 55, 95
+  );
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+resize();
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+const fpsEl = document.getElementById('fps');
+const posEl = document.getElementById('pos');
+const clock = new THREE.Clock();
+let frames = 0, fpsAccum = 0, fps = 0, hudAccum = 0;
+
+const forward = new THREE.Vector3();
+const right = new THREE.Vector3();
+const move = new THREE.Vector3();
+let elapsed = 0;
+
+// The original flying camera, untouched apart from living in its own function.
+function updateFreeCam(dt) {
+  const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
+  forward.set(-sy, 0, -cy);   // camera looks down -Z at yaw 0
+  right.set(cy, 0, -sy);
+
+  move.set(0, 0, 0);
+  if (keys.has('KeyW') || keys.has('ArrowUp'))    move.addScaledVector(forward, 1);
+  if (keys.has('KeyS') || keys.has('ArrowDown'))  move.addScaledVector(forward, -1);
+  if (keys.has('KeyD') || keys.has('ArrowRight')) move.addScaledVector(right, 1);
+  if (keys.has('KeyA') || keys.has('ArrowLeft'))  move.addScaledVector(right, -1);
+  if (keys.has('KeyE') || state.flyUp)   move.y += 1;
+  if (keys.has('KeyQ') || state.flyDown) move.y -= 1;
+
+  if (state.joyX || state.joyY) {
+    move.addScaledVector(right, state.joyX);
+    move.addScaledVector(forward, -state.joyY);   // finger up = forward
+  }
+
+  const len = move.length();
+  if (len > 0) {
+    const mag = Math.min(1, len);                 // analog on stick, full tilt on keys
+    const step = MOVE_SPEED * (isSprinting() ? SPRINT_MULT : 1) * dt * mag / len;
+    state.pos.addScaledVector(move, step);
+  }
+}
+
+// Sprint-corridor gate: kinematic, so it shoves the player rather than being
+// shoved. Cannon integrates kinematic bodies from velocity, so steer that.
+function updateGate() {
+  const open = (elapsed % GATE_CYCLE) < GATE_OPEN;
+  const target = open ? GATE_UP_Y : GATE_DOWN_Y;
+  gateBody.velocity.set(0, THREE.MathUtils.clamp((target - gateBody.position.y) * 8, -9, 9), 0);
+}
+
+function tick() {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  elapsed += dt;
+
+  if (camMode === CAM.FREE) {
+    updateFreeCam(dt);
+    // Nobody is driving the character — park it so it does not creep away.
+    playerBody.velocity.x = 0;
+    playerBody.velocity.z = 0;
+  } else {
+    updatePlayer(dt);
+  }
+  updateGate();
+
+  // --- physics: fixed 60 Hz steps, sub-stepped to catch up with the frame ---
+  world.step(PHYS_STEP, dt, 4);
+  for (let i = 0; i < syncList.length; i++) {
+    const s = syncList[i];
+    s.mesh.position.copy(s.body.position);
+    s.mesh.quaternion.copy(s.body.quaternion);
+  }
+
+  updateCamera(dt);
+  waterTime.value = elapsed;
+  updateWaterVisuals();
+  sky.position.copy(camera.position);
+  sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
+
+  // --- HUD ---
+  frames++;
+  fpsAccum += dt;
+  hudAccum += dt;
+  if (fpsAccum >= 0.5) {
+    fps = frames / fpsAccum;
+    frames = 0;
+    fpsAccum = 0;
+  }
+  if (hudAccum >= 0.1) {
+    hudAccum = 0;
+    fpsEl.textContent = fps.toFixed(0).padStart(3, ' ');
+    const p = camMode === CAM.FREE
+      ? state.pos
+      : { x: playerBody.position.x, y: playerBody.position.y - centerOffset(), z: playerBody.position.z };
+    posEl.textContent =
+      p.x.toFixed(1).padStart(6, ' ') + ',' +
+      p.y.toFixed(1).padStart(6, ' ') + ',' +
+      p.z.toFixed(1).padStart(6, ' ');
+  }
+
+  renderer.render(scene, camera);
+}
+
+// Debug handle — handy from the console / remote inspector on a phone.
+window.hermes = {
+  THREE, CANNON, scene, camera, renderer, state, keys, world, playerBody,
+  CAM, setCamMode, cycleCamera, toggleGameMode, respawn,
+  // live read-outs of the controller internals (module-scoped `let`s)
+  status: () => ({
+    cam: CAM_NAMES[camMode],
+    crouched,
+    swimming,
+    underwater,
+    groundNy,
+    eyeH,
+    grounded: groundNy > GROUND_DOT,
+    pos: playerBody.position.toArray(),
+    vel: playerBody.velocity.toArray(),
+  }),
+};
+
+renderer.setAnimationLoop(tick);
+renderer.compile(scene, camera);
+document.getElementById('loading').classList.add('hidden');
+</script>
+
+<script>
+// Surface module-load failures (bad network / blocked CDN) instead of a black screen.
+window.addEventListener('error', (e) => {
+  const el = document.getElementById('loading');
+  if (!el || el.classList.contains('hidden')) return;
+  el.innerHTML = '<div id="err">Failed to start.\n' +
+    String((e && (e.message || e.error)) || 'Unknown error') +
+    '\n\nThree.js (unpkg.com) and cannon-es (cdn.jsdelivr.net) are loaded from CDNs — ' +
+    'check the network connection.</div>';
+}, true);
+</script>
+</body>
+</html>

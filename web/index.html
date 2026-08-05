@@ -392,6 +392,20 @@
     white-space: pre-wrap;
     text-align: left;
   }
+
+  #center-dot {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    margin: -4px 0 0 -4px;
+    border-radius: 50%;
+    background: #ff3333;
+    box-shadow: 0 0 6px rgba(255, 50, 50, 0.7);
+    pointer-events: none;
+    z-index: 20;
+  }
 </style>
 </head>
 <body>
@@ -425,6 +439,8 @@
   <div id="keys"></div>
   <button id="start-btn">Enter</button>
 </div>
+
+<div id="center-dot"></div>
 
 <div id="loading">Loading&hellip;</div>
 

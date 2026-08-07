@@ -2196,6 +2196,14 @@ const CLOUD_FRAG = /* glsl */`
     float lit = clamp(0.16 + 0.46 * up + 0.34 * pow(sun, 1.4) + 0.36 * vH, 0.0, 1.0);
     vec3 col = mix(uBot, uTop, lit) * mix(0.7, 1.0, transmit);
 
+    // Extra luminosity on the crown: strongly upward-facing, thin (well-lit)
+    // patches push past the flat top colour into a proper glow, which is what
+    // gives fluffy tops their sunlit puffiness instead of a flat matte white.
+    col += uTop * pow(max(up, 0.0), 5.0) * 0.30 * mix(0.5, 1.0, transmit);
+    // Undersides read as darker, heavier mass by contrast — cheap but the
+    // single biggest lever for the "fluffy top, moody bottom" silhouette.
+    col *= mix(0.55, 1.05, up);
+
     // Forward scatter through the cloud body, brightest looking through thin,
     // backlit mass toward the sun.
     float cosTheta = dot(v, -uSunDir);
@@ -2208,10 +2216,17 @@ const CLOUD_FRAG = /* glsl */`
     col += uSunCol * backlit * 0.55;
 
     // Fresnel silver lining: grazing, sun-facing rims catch the most light.
+    // Wider and hotter than a physically-tight rim so it reads clearly at a
+    // distance rather than as a single blown-out pixel.
     float fresnel = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
-    col += uSunCol * fresnel * pow(max(sun, 0.0), 2.0) * 0.7;
-    // Original tight hot rim, kept for the sharp highlight right at the sun.
-    col += vec3(0.20, 0.19, 0.16) * pow(max(sun, 0.0), 9.0);
+    col += uSunCol * fresnel * pow(max(sun, 0.0), 1.7) * 1.15;
+    // Tight hot rim, kept for the sharp highlight right at the sun.
+    col += vec3(0.34, 0.30, 0.22) * pow(max(sun, 0.0), 7.0);
+    // Golden-hour warmth: a soft amber cast where that rim catches raking
+    // sunlight, so lit edges skew warm rather than the same cool white as the
+    // rest of the mass.
+    vec3 warm = vec3(1.0, 0.66, 0.32);
+    col += warm * fresnel * pow(max(sun, 0.0), 1.6) * 0.4;
 
     // Severe cells go sickly green-yellow underneath. It is a cast over the
     // charcoal, not a coat of paint — enough to read as "that one is dangerous"
@@ -2221,7 +2236,7 @@ const CLOUD_FRAG = /* glsl */`
     col += vec3(0.80, 0.84, 1.0) * uFlash * (1.15 - vH * 0.55);
     // The scene's own fog would swallow these at a third of the range they are
     // meant to be legible from, so they carry their own much thinner haze.
-    float haze = uHazeMax * smoothstep(500.0, 2700.0, distance(vW, cameraPosition));
+    float haze = uHazeMax * smoothstep(420.0, 2500.0, distance(vW, cameraPosition));
     col = mix(col, uHaze, haze);
 
     // Soft alpha: thin, grazing edges fade toward transparent instead of
@@ -2237,12 +2252,12 @@ const CLOUD_FRAG = /* glsl */`
 // Colour by weather scale: white and bright at 1, charcoal with almost no light
 // left in the base by 10.
 const CLOUD_KEYS = [
-  { s: 1,  top: 0xffffff, bot: 0xdae5f2 },
-  { s: 3,  top: 0xfbfdff, bot: 0xc2cedd },
-  { s: 5,  top: 0xeceff4, bot: 0x8d99a8 },
-  { s: 7,  top: 0xc6ccd5, bot: 0x4e5764 },
-  { s: 9,  top: 0xa2a9b4, bot: 0x2e343e },
-  { s: 10, top: 0x8d939e, bot: 0x1f242c },
+  { s: 1,  top: 0xffffff, bot: 0xd2e0f0 },
+  { s: 3,  top: 0xfefeff, bot: 0xb3c2d4 },
+  { s: 5,  top: 0xf4f7fb, bot: 0x7c8998 },
+  { s: 7,  top: 0xd2d7de, bot: 0x3c434f },
+  { s: 9,  top: 0xacb2bc, bot: 0x21252c },
+  { s: 10, top: 0x969ba6, bot: 0x14171c },
 ];
 function cloudColors(s) {
   let i = 0;
@@ -2275,9 +2290,12 @@ function cloudMaterial(scale) {
       uSunDir:    { value: SUN.clone() },
       uSunCol:    { value: CLOUD_SUN_COLOR.clone() },
       uHaze:      { value: CLOUD_HAZE.clone() },
-      uHazeMax:   { value: 0.58 },
+      uHazeMax:   { value: 0.66 },
       uFlash:     { value: 0 },
-      uThickness: { value: 0.8 + scale * 0.12 },
+      // Storm cells thicken faster than fair-weather puffs, which is what
+      // makes the high end of the scale read as distinctly darker and more
+      // ominous rather than just a tinted version of a bright cloud.
+      uThickness: { value: 0.75 + scale * 0.16 },
     },
   });
 }
@@ -2438,10 +2456,16 @@ function strike(c, dist) {
 // Streaks in a column that rides with the camera. Which cloud is overhead only
 // decides how hard it is falling, so a storm cell arriving reads as the rain
 // building rather than as a wall of water switching on.
-const RAIN_N   = isTouchDevice ? 1500 : 3200;
-const RAIN_R   = 44;
-const RAIN_H   = 42;
-const RAIN_LEN = 2.6;
+//
+// Each drop is a camera-facing quad rather than a GL line: line thickness is
+// ignored by almost every desktop GPU driver, so a real streak needs two
+// triangles billboarded off the camera's own right vector to read as more
+// than a hairline.
+const RAIN_N     = isTouchDevice ? 3000 : 7000;
+const RAIN_R     = 44;
+const RAIN_H     = 42;
+const RAIN_LEN   = 4.2;
+const RAIN_WIDTH = 0.075;
 
 const rainMat = new THREE.ShaderMaterial({
   transparent: true,
@@ -2449,13 +2473,15 @@ const rainMat = new THREE.ShaderMaterial({
   uniforms: {
     uTime:      { value: 0 },
     uCam:       { value: new THREE.Vector3() },
+    uCamRight:  { value: new THREE.Vector3(1, 0, 0) },
     uIntensity: { value: 0 },
-    uCol:       { value: new THREE.Color(0xcfe0ee) },
+    uCol:       { value: new THREE.Color(0xf0f6fb) },
   },
   vertexShader: /* glsl */`
-    attribute float aTip;
+    attribute vec2 aCorner;   // x: -1/+1 across the streak's width, y: 0 at the head, 1 at the wind-drawn tail
     uniform float uTime;
     uniform vec3 uCam;
+    uniform vec3 uCamRight;
     varying float vA;
     void main() {
       vec3 p = position;
@@ -2463,8 +2489,9 @@ const rainMat = new THREE.ShaderMaterial({
       float j = fract(sin(p.x * 12.9898 + p.z * 78.233) * 43758.5453);
       float y = mod(p.y - uTime * 26.0 * (0.8 + 0.5 * j), ${RAIN_H.toFixed(1)});
       vec3 w = uCam + vec3(p.x, y - ${(RAIN_H * 0.55).toFixed(2)}, p.z);
-      w += aTip * vec3(1.6, -${RAIN_LEN.toFixed(2)}, 0.9);   // the streak, wind-slanted
-      vA = 1.0 - aTip * 0.5;
+      w += aCorner.y * vec3(1.6, -${RAIN_LEN.toFixed(2)}, 0.9);   // the streak, wind-slanted
+      w += uCamRight * aCorner.x * ${RAIN_WIDTH.toFixed(3)};      // billboarded width
+      vA = 1.0 - aCorner.y * 0.5;
       gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
     }
   `,
@@ -2472,27 +2499,34 @@ const rainMat = new THREE.ShaderMaterial({
     uniform float uIntensity;
     uniform vec3 uCol;
     varying float vA;
-    void main() { gl_FragColor = vec4(uCol, vA * 0.42 * uIntensity); }
+    void main() { gl_FragColor = vec4(uCol, vA * 0.72 * uIntensity); }
   `,
 });
 
 const rainObj = (() => {
-  const pos = new Float32Array(RAIN_N * 2 * 3);
-  const tip = new Float32Array(RAIN_N * 2);
+  const pos = new Float32Array(RAIN_N * 4 * 3);
+  const corner = new Float32Array(RAIN_N * 4 * 2);
+  const idx = new Uint32Array(RAIN_N * 6);
   for (let i = 0; i < RAIN_N; i++) {
     const a = Math.random() * Math.PI * 2;
     const r = Math.sqrt(Math.random()) * RAIN_R;
     const x = Math.cos(a) * r, z = Math.sin(a) * r, y = Math.random() * RAIN_H;
-    for (let v = 0; v < 2; v++) {
-      const o = (i * 2 + v) * 3;
+    const corners = [[-1, 0], [1, 0], [-1, 1], [1, 1]];
+    for (let v = 0; v < 4; v++) {
+      const o = (i * 4 + v) * 3;
       pos[o] = x; pos[o + 1] = y; pos[o + 2] = z;
-      tip[i * 2 + v] = v;
+      corner[(i * 4 + v) * 2] = corners[v][0];
+      corner[(i * 4 + v) * 2 + 1] = corners[v][1];
     }
+    const base = i * 4, o6 = i * 6;
+    idx[o6] = base; idx[o6 + 1] = base + 1; idx[o6 + 2] = base + 2;
+    idx[o6 + 3] = base + 2; idx[o6 + 4] = base + 1; idx[o6 + 5] = base + 3;
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('aTip', new THREE.BufferAttribute(tip, 1));
-  const o = new THREE.LineSegments(geo, rainMat);
+  geo.setAttribute('aCorner', new THREE.BufferAttribute(corner, 2));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  const o = new THREE.Mesh(geo, rainMat);
   o.frustumCulled = false;      // it is always around the camera by construction
   o.visible = false;
   scene.add(o);
@@ -2610,7 +2644,12 @@ function updateWeather(dt) {
   if (rainObj.visible) {
     rainMat.uniforms.uTime.value = wxTime;
     rainMat.uniforms.uCam.value.copy(camera.position);
-    rainMat.uniforms.uIntensity.value = rainAmt;
+    // Column 0 of the camera's world matrix is its right vector — billboarding
+    // the streak quads off it is what gives the lines real screen-space width.
+    rainMat.uniforms.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
+    // A gentle floor keeps even a light drizzle legible instead of fading to a
+    // near-invisible haze, while heavier cells still read as visibly heavier.
+    rainMat.uniforms.uIntensity.value = 0.35 + 0.65 * rainAmt;
   }
 }
 

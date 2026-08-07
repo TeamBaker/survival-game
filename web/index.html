@@ -392,20 +392,6 @@
     white-space: pre-wrap;
     text-align: left;
   }
-
-  #center-dot {
-    position: fixed;
-    left: 50%;
-    top: 50%;
-    width: 8px;
-    height: 8px;
-    margin: -4px 0 0 -4px;
-    border-radius: 50%;
-    background: #ff3333;
-    box-shadow: 0 0 6px rgba(255, 50, 50, 0.7);
-    pointer-events: none;
-    z-index: 20;
-  }
 </style>
 </head>
 <body>
@@ -440,8 +426,6 @@
   <button id="start-btn">Enter</button>
 </div>
 
-<div id="center-dot"></div>
-
 <div id="loading">Loading&hellip;</div>
 
 <script type="module">
@@ -459,21 +443,21 @@ const MOUSE_SENSITIVITY = 0.15;   // degrees of rotation per pixel of pointer mo
 const MOVE_SPEED        = 14.0;   // world units / second
 const SPRINT_MULT       = 3.0;
 const TOUCH_LOOK_MULT   = 1.6;    // finger drags cover fewer pixels than a mouse
-const START_POS         = new THREE.Vector3(0, 12, -35);
-const START_YAW         = 180;    // degrees — faces the scene (see notes below)
-const START_PITCH       = -10;    // degrees
+const START_POS         = new THREE.Vector3(0, 52, -168);
+const START_YAW         = 180;    // degrees — faces the island (see notes below)
+const START_PITCH       = -13;    // degrees
 
 // ----- character controller -----
-const SPAWN      = new THREE.Vector3(0, 2, 30);
-const SPAWN_YAW  = 195;           // degrees — faces the showcase course
+// Offshore until the terrain exists — the island generator moves the spawn onto
+// solid ground in the middle of the landmass once it knows how high that is.
+const SPAWN      = new THREE.Vector3(0, 2, 0);
+const SPAWN_YAW  = 20;            // degrees
 const PHYS_STEP  = 1 / 60;        // fixed physics timestep
 const PLAYER = {
   radius:       0.4,
   standCenter:  0.8,              // body origin above the feet, standing
   crouchCenter: 0.4,              // ... and crouched
   standEye:     1.7,
-  // The crouch tunnel has 0.85 of clearance, so the eye has to stay below that
-  // or the camera ends up inside the roof slab and renders through its backface.
   crouchEye:    0.72,
   walk:         4.6,
   sprintMult:   2.0,
@@ -489,14 +473,13 @@ const PLAYER = {
 const GROUND_DOT = Math.cos((PLAYER.maxSlope + 1) * Math.PI / 180);
 const THIRD_DIST = 5.0;           // third-person boom length
 
-// ----- swim water -----
-// An axis-aligned volume; the walls, floor and visible water are all built from
-// these bounds, and the physics loop tests the player body against them.
+// ----- the sea -----
+// There is no basin any more: the ocean is everywhere and the island rises out
+// of it, so the swim tests only ever care about how deep you are, never about
+// whether you are inside some footprint.
 const WATER = {
-  minX: 5, maxX: 23,
-  minZ: 33, maxZ: 48,
-  floorY: 0,
-  surfaceY: 3.0,
+  floorY: -60,          // only bounds the underwater tint; the sea floor is terrain
+  surfaceY: 0.0,        // sea level, and the datum every height below is measured from
   gravityScale: 0.20,   // buoyancy — only a fifth of gravity reaches you in here
   speedMult: 0.60,      // swimming is slower than walking
   accel: 6.0,           // how fast you reach swim speed; doubles as water drag
@@ -504,32 +487,41 @@ const WATER = {
   swimOut: 0.42,        // ... and where swimming hands back to walking
 };
 const WATER_FOG = 0x11506f;
-const inWaterColumn = (x, z) =>
-  x > WATER.minX && x < WATER.maxX && z > WATER.minZ && z < WATER.maxZ;
+const inWaterColumn = () => true;
 
-const CUBES = [
-  [0xdc3232, [ 10, 1,  10]], [0x3232dc, [-15, 1,  20]],
-  [0x32b432, [ 25, 1, -10]], [0xdcdc32, [-20, 1, -15]],
-  [0xdc8232, [  5, 1, -25]], [0x9632c8, [-30, 1,   5]],
-  [0x32c8c8, [ 35, 1,  15]], [0xdc6496, [-10, 1,  30]],
-  [0xc8c8c8, [ 20, 1,  30]], [0x8c5a32, [-25, 1, -30]],
-];
-const SPHERES = [
-  [0xff6464, [  0, 2,   0]], [0x64ff64, [ 40, 2,   0]],
-  [0x6464ff, [-40, 2,   0]], [0xffff64, [  0, 2,  40]],
-  [0xff64ff, [  0, 2, -40]],
-];
-const PILLAR_X = [-35, 0, 35];
-const TREES = [[-50, -50], [50, -50], [-50, 50], [50, 50], [0, -60], [-60, 0]];
+// ----- island -----
+const TERRAIN_SIZE = 400;    // square heightfield, centred on the origin
+const TERRAIN_SEGS = 200;    // 2-unit cells — the mesh and the collider share them
+const ISLAND_R     = 116;    // mean radius of the shoreline
+const PEAK_H       = 34;     // how high the hills get above sea level
+const SEABED_DEPTH = 16;     // how far the sea floor drops away offshore
 
 const SUN = new THREE.Vector3(0.45, 0.72, 0.52).normalize();
 const SKY_ZENITH  = new THREE.Color(0x1a56b8);
 const SKY_HORIZON = new THREE.Color(0xbdd6ec);
 const SKY_GROUND  = new THREE.Color(0x64798a);
 const FOG_COLOR   = 0xb8d1e8;
+// Thinner than the old courtyard scene needed: the island is 200 units across
+// and is meant to be legible from offshore, but the haze still has to swallow
+// the ocean before its edge reaches the far plane. This one is ~97% opaque by
+// 700 units, and barely touches anything inside 150.
+const FOG_DENSITY = 0.0028;
 
 const DEG = Math.PI / 180;
 const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
+// ----- the visible sea -----
+// The surface is a disc that rides with the camera, so there is always ocean out
+// to the horizon whichever way you look and however far you swim. Its rings are
+// spaced geometrically: dense enough under your feet to carry the surf, coarse
+// far out where the fog has already swallowed everything anyway.
+const OCEAN_R      = 1180;   // radius of the surface disc — 2360 across
+const OCEAN_R0     = 0.9;    // radius of the innermost ring
+const OCEAN_RINGS  = isTouchDevice ? 96 : 148;
+const OCEAN_SPOKES = isTouchDevice ? 128 : 192;
+// Kept comfortably inside the disc so the surface is always the thing that
+// draws the horizon; the bed only has to cover the gap the heightfield leaves.
+const DEEP_SIZE    = 1400;   // the flat bed under the lot
 
 // ---------------------------------------------------------------------------
 // Renderer / scene / camera
@@ -549,7 +541,7 @@ renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(FOG_COLOR, 0.0042);
+scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
 
 const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
 camera.rotation.order = 'YXZ';
@@ -644,10 +636,10 @@ pmrem.dispose();
 // ---------------------------------------------------------------------------
 // Lighting
 // ---------------------------------------------------------------------------
-// The shadow frustum is centred on the middle of the playable area rather than
-// the origin, so the showcase course out at +X/+Z stays inside it.
-const SHADOW_CENTER = new THREE.Vector3(35, 0, 40);
-const SHADOW_HALF   = 115;
+// The island is centred on the origin, so the shadow frustum is too — it is
+// sized to swallow the landmass and a margin of the water around it.
+const SHADOW_CENTER = new THREE.Vector3(0, 6, 0);
+const SHADOW_HALF   = 132;
 const SUN_DIST      = 190;
 
 const sun = new THREE.DirectionalLight(0xfff4e0, 2.9);
@@ -658,8 +650,8 @@ sun.shadow.mapSize.set(isTouchDevice ? 2048 : 4096, isTouchDevice ? 2048 : 4096)
 // The old 1..400 range meant one unit of depth bias was worth ~0.2 world units,
 // which is what detached shadows from the objects casting them and left a bright
 // seam at every contact point.
-sun.shadow.camera.near = 25;
-sun.shadow.camera.far  = 360;
+sun.shadow.camera.near = 30;
+sun.shadow.camera.far  = 380;
 sun.shadow.camera.left = -SHADOW_HALF;
 sun.shadow.camera.right = SHADOW_HALF;
 sun.shadow.camera.top = SHADOW_HALF;
@@ -667,9 +659,11 @@ sun.shadow.camera.bottom = -SHADOW_HALF;
 // With the tight frustum the constant bias can be an order of magnitude smaller;
 // the remaining acne is handled by normalBias, which offsets along the surface
 // normal (~half a shadow texel) instead of along the light and so does not open
-// a gap where an object meets the floor.
-sun.shadow.bias = -0.00004;
-sun.shadow.normalBias = isTouchDevice ? 0.055 : 0.03;
+// a gap where an object meets the floor. The terrain shadows itself across the
+// whole island, and gentle slopes lit near-edge-on are where acne shows up, so
+// the normal offset is a good deal larger than it needed to be for boxes.
+sun.shadow.bias = -0.00008;
+sun.shadow.normalBias = isTouchDevice ? 0.16 : 0.10;
 sun.shadow.radius = 2;
 sun.target.position.copy(SHADOW_CENTER);
 scene.add(sun);
@@ -716,98 +710,11 @@ function linkBody(mesh, body) {
   return body;
 }
 
-// Infinite ground plane, matching the visual ground quad at y = 0.
-const groundBody = new CANNON.Body({ mass: 0, material: physWorld, shape: new CANNON.Plane() });
-groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-groundBody.updateAABB();
-world.addBody(groundBody);
-
 // ---------------------------------------------------------------------------
-// Ground — procedural grid/noise texture instead of a flat green quad
-// ---------------------------------------------------------------------------
-function buildGroundTexture() {
-  const S = 256;
-  const c = document.createElement('canvas');
-  c.width = c.height = S;
-  const ctx = c.getContext('2d');
-
-  ctx.fillStyle = '#4f9a3f';
-  ctx.fillRect(0, 0, S, S);
-
-  // Fine grain only — anything larger-scale would read as an obvious repeat at
-  // 100 tiles across. Broad variation comes from the vertex colours instead.
-  const img = ctx.getImageData(0, 0, S, S), d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const n = (Math.random() - 0.5) * 24;
-    d[i]     = Math.max(0, Math.min(255, d[i]     + n * 0.7));
-    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
-    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n * 0.5));
-  }
-  ctx.putImageData(img, 0, 0);
-
-  // grid lines along two edges of the tile
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = 'rgba(22, 54, 22, 0.34)';
-  ctx.beginPath();
-  ctx.moveTo(0, 1.5); ctx.lineTo(S, 1.5);
-  ctx.moveTo(1.5, 0); ctx.lineTo(1.5, S);
-  ctx.stroke();
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = 'rgba(220, 245, 205, 0.22)';
-  ctx.beginPath();
-  ctx.moveTo(0, 4.5); ctx.lineTo(S, 4.5);
-  ctx.moveTo(4.5, 0); ctx.lineTo(4.5, S);
-  ctx.stroke();
-
-  const tex = new THREE.Texture(c);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(100, 100);          // 400 world units / 100 = one 4-unit cell per tile
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  tex.needsUpdate = true;
-  return tex;
-}
-
-// Large-scale, non-repeating tonal variation baked into vertex colours so the
-// 4-unit detail tile never reads as a stamped pattern.
-const groundGeo = new THREE.PlaneGeometry(400, 400, 96, 96);
-{
-  const p = groundGeo.attributes.position;
-  const col = new Float32Array(p.count * 3);
-  for (let i = 0; i < p.count; i++) {
-    const x = p.getX(i), z = -p.getY(i);   // plane is rotated -90deg about X
-    const n = (
-      Math.sin(x * 0.0290) * Math.cos(z * 0.0255) +
-      Math.sin(x * 0.0810 + 1.3) * Math.cos(z * 0.0705 - 0.7) * 0.5 +
-      Math.sin(x * 0.1730 - 2.1) * Math.cos(z * 0.1910 + 0.4) * 0.25
-    ) / 1.75;
-    col[i * 3 + 0] = 1.0 + n * 0.17;
-    col[i * 3 + 1] = 1.0 + n * 0.10;
-    col[i * 3 + 2] = 1.0 - n * 0.07;
-  }
-  groundGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-}
-
-const ground = new THREE.Mesh(
-  groundGeo,
-  new THREE.MeshStandardMaterial({
-    map: buildGroundTexture(),
-    color: 0xffffff,
-    vertexColors: true,
-    roughness: 0.94,
-    metalness: 0.0,
-    envMapIntensity: 0.55,
-  })
-);
-ground.rotation.x = -Math.PI / 2;
-ground.receiveShadow = true;
-scene.add(ground);
-
-// ---------------------------------------------------------------------------
-// Scene objects — same layout as engine.py, PBR materials
+// Scene object helpers — shared geometry, PBR materials, matched colliders
 // ---------------------------------------------------------------------------
 const boxGeo    = new THREE.BoxGeometry(1, 1, 1);
-const sphereGeo = new THREE.SphereGeometry(1, 48, 32);
+const sphereGeo = new THREE.SphereGeometry(1, 32, 20);
 const objects = new THREE.Group();
 scene.add(objects);
 
@@ -834,7 +741,6 @@ function addBox(x, y, z, sx, sy, sz, mat, opts = {}) {
   });
   body.position.set(x, y, z);
   body.quaternion.setFromEuler(rx, ry, rz);
-  if (opts.kinematic) body.type = CANNON.Body.KINEMATIC;
   linkBody(m, body);
   return m;
 }
@@ -860,29 +766,6 @@ function addSphere(x, y, z, r, mat, opts = {}) {
   return m;
 }
 
-// Slab whose *top face* runs from (x0, y0) to (x1, y1) — the surface you walk
-// on is the one you specify, so ramps line up flush with the ledges they meet.
-const RAMP_T = 0.5;
-function addRampX(x0, y0, x1, y1, z, width, mat) {
-  const ang = Math.atan2(y1 - y0, x1 - x0);
-  const len = Math.hypot(x1 - x0, y1 - y0);
-  return addBox(
-    (x0 + x1) / 2 + (RAMP_T / 2) * Math.sin(ang),
-    (y0 + y1) / 2 - (RAMP_T / 2) * Math.cos(ang),
-    z, len, RAMP_T, width, mat, { rz: ang / DEG }
-  );
-}
-function addRampZ(z0, y0, z1, y1, x, width, mat) {
-  const ang = Math.atan2(y1 - y0, z1 - z0);
-  const len = Math.hypot(z1 - z0, y1 - y0);
-  return addBox(
-    x,
-    (y0 + y1) / 2 - (RAMP_T / 2) * Math.cos(ang),
-    (z0 + z1) / 2 + (RAMP_T / 2) * Math.sin(ang),
-    width, RAMP_T, len, mat, { rx: -ang / DEG }
-  );
-}
-
 const mat = (color, roughness, metalness, extra = {}) => new THREE.MeshStandardMaterial(
   Object.assign({
     color, roughness, metalness, envMapIntensity: 0.85,
@@ -892,340 +775,739 @@ const mat = (color, roughness, metalness, extra = {}) => new THREE.MeshStandardM
   }, extra)
 );
 
-// 10 painted cubes (2x2x2 @ y=1) — static
-for (const [color, [x, y, z]] of CUBES) {
-  addBox(x, y, z, 2, 2, 2, mat(color, 0.32, 0.18));
-}
-
-// 5 spheres (r=3) — glossy, lightly metallic, and now dynamic (mass 1). They
-// spawn resting on the ground rather than at the original y=2, which was half a
-// radius below it; dropping them there would just pop them up on frame one.
-for (const [color, [x, , z]] of SPHERES) {
-  addSphere(x, 3, z, 3, mat(color, 0.18, 0.45, { envMapIntensity: 1.1 }), { mass: 1, prop: true });
-}
-
-// 3 pillars (3x20x3 @ z=-35) — matte stone
-const pillarMat = mat(0xb4b4be, 0.72, 0.06);
-for (const x of PILLAR_X) addBox(x, 10, -35, 3, 20, 3, pillarMat);
-
-// Ramp (6 x 0.5 x 14 @ 15,1.5,0, tilted 15 degrees) — brushed metal
-addBox(15, 1.5, 0, 6, 0.5, 14, mat(0xa0a0aa, 0.34, 0.72, { envMapIntensity: 1.0 }), { rx: 15 });
-
-// Floating platform (15 x 0.6 x 15 @ y=20)
-addBox(0, 20, 0, 15, 0.6, 15, mat(0xc8c8dc, 0.28, 0.65, { envMapIntensity: 1.0 }));
-
-// Trees: 1x6x1 trunk + r=5 canopy
-const trunkMat  = mat(0x644628, 0.92, 0.0);
-const canopyMat = mat(0x288c28, 0.88, 0.0, { envMapIntensity: 0.6, flatShading: false });
-for (const [x, z] of TREES) {
-  addBox(x, 3, z, 1, 6, 1, trunkMat);
-  addSphere(x, 7.5, z, 5, canopyMat);
-}
-
 // ---------------------------------------------------------------------------
-// Showcase course — everything the character controller can do, laid out along
-// the z = 55 line running east from spawn (0, 30).
+// Island — one heightmap drives all of it: the visible mesh, its colours, the
+// physics collider, where the player spawns and where the props may stand.
 // ---------------------------------------------------------------------------
-const matConcrete = mat(0x9aa6b2, 0.86, 0.04);
-const matAccent   = mat(0xe2833c, 0.55, 0.12);
-const matEasy     = mat(0x4fbf5a, 0.62, 0.08);
-const matEdge     = mat(0x36cfc4, 0.40, 0.22, { emissive: 0x0b4a46, emissiveIntensity: 0.7 });
-const matSteep    = mat(0xd2453c, 0.68, 0.06);
-const matCrate    = mat(0xb98a4e, 0.78, 0.02);
 
-// --- (a) crouch tunnel: 0.85 of clearance, straddling the path east of spawn.
-addBox(7, 1.2, 52.5, 6, 2.4, 1, matConcrete);          // south wall
-addBox(7, 1.2, 57.5, 6, 2.4, 1, matConcrete);          // north wall
-addBox(7, 1.2, 55, 6, 0.7, 5, matConcrete);            // roof — underside at 0.85
-addBox(4.1, 1.75, 55, 0.35, 0.4, 5, matAccent, { phys: false });   // entry marker
-addBox(9.9, 1.75, 55, 0.35, 0.4, 5, matAccent, { phys: false });
-
-// --- (b) slope lanes: three ramps to a common ledge at y = 4. 45 degrees is the
-// controller's limit, so the green and teal lanes walk and the red one slides.
-const LEDGE_Y = 4, LEDGE_X = 34;
-addBox(37, 3.6, 55, 6, 0.8, 22, matConcrete);          // top ledge
-for (const [deg, z, m] of [[25, 47, matEasy], [45, 55, matEdge], [55, 63, matSteep]]) {
-  const run = LEDGE_Y / Math.tan(deg * DEG);
-  addRampX(LEDGE_X - run, 0, LEDGE_X, LEDGE_Y, z, 6.4, m);
+// Deterministic PRNG. The seed is drawn fresh on every load, so each visit gets
+// a different island, but feeding the same seed back reproduces one exactly —
+// it is published on window.hermes for that.
+const SEED = (Math.random() * 0xffffffff) >>> 0;
+function mulberry32(a) {
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
-addBox(29, 0.3, 51, 12, 0.6, 0.5, matConcrete);        // lane dividers
-addBox(29, 0.3, 59, 12, 0.6, 0.5, matConcrete);
+const rand = mulberry32(SEED);
 
-// --- (c) jump gaps. A 6.2 jump under 9.82 gravity peaks at 1.96 and hangs for
-// 1.26s, so walking (4.6) carries ~5.8 and sprinting (9.2) carries ~11.6. The
-// gaps are sized against those numbers: hop, sprint-hop, then a block that needs
-// both the sprint and the height of the arc.
-addBox(45.5, 3.6, 55, 5, 0.8, 6, matAccent);           // gap 3.0, top y = 4.0
-addBox(56.5, 4.2, 55, 5, 0.8, 6, matAccent);           // gap 6.0, top y = 4.6
-addBox(68, 3.1, 55, 7, 6.2, 6, matAccent);             // gap 5.5 + 1.6 up, top y = 6.2
-addRampX(71.5, 6.2, 84, 0, 55, 6, matConcrete);        // way back down
-
-// --- (d) sprint corridor: 60 units of straight, with a gate on a 5.4s cycle.
-addBox(118, 1.75, 50.5, 60, 3.5, 1, matConcrete);
-addBox(118, 1.75, 59.5, 60, 3.5, 1, matConcrete);
-addBox(88.5, 1.9, 55, 0.5, 3.8, 8, matEdge, { phys: false });      // start line
-for (let x = 98; x <= 138; x += 10) {
-  addBox(x, 0.03, 55, 0.5, 0.06, 8, matAccent, { phys: false });   // distance markers
-}
-const gateMesh = addBox(130, 2.0, 55, 1, 4, 8, matSteep, { kinematic: true });
-const gateBody = gateMesh.userData.body;
-gateBody.allowSleep = false;
-const GATE_CYCLE = 5.4, GATE_OPEN = 2.2, GATE_DOWN_Y = 2.0, GATE_UP_Y = 6.6;
-
-// --- (e) physics playground: a pen of loose crates west of spawn.
-const PEN = new THREE.Vector3(-25, 0, 55);
-addBox(PEN.x, 0.5, PEN.z - 9, 18, 1, 1, matConcrete);
-addBox(PEN.x, 0.5, PEN.z + 9, 18, 1, 1, matConcrete);
-addBox(PEN.x - 9, 0.5, PEN.z, 1, 1, 18, matConcrete);
-addBox(PEN.x + 9, 0.5, PEN.z - 6, 1, 1, 6, matConcrete);           // gap = entrance
-addBox(PEN.x + 9, 0.5, PEN.z + 6, 1, 1, 6, matConcrete);
-// Loose singles sit straight across the entrance so the first thing you touch is
-// something that actually gets shoved; the stacks are off to the sides.
-for (const [dx, dz] of [[3, -1], [1.5, 1.5], [0, -2.5], [-1, 0.5], [-2.5, 2], [-4, -1.5], [-5.5, 1], [-7, -0.5]]) {
-  addBox(PEN.x + dx, 0.55, PEN.z + dz, 1, 1, 1, matCrate, { mass: 1.2, prop: true });
-}
-for (let row = 0; row < 3; row++) {                      // pyramid, tucked south
-  for (let i = 0; i < 3 - row; i++) {
-    addBox(PEN.x - 5.5 + (row * 0.55) + i * 1.1, 0.55 + row * 1.06, PEN.z - 6.5,
-      1, 1, 1, matCrate, { mass: 1.2, prop: true });
+// Sum-of-sines noise: each octave is three plane waves pointing in random
+// directions, which is what stops the result lining up with the x/z axes the way
+// a sin(x) * cos(z) lattice does. Smooth by construction, so slopes can be read
+// off it with plain finite differences.
+//
+// Waves with independent phases only rarely line up, so dividing by the total
+// amplitude would leave the output cowering around a quarter of full scale and
+// the island would come out a smooth dome. The extra factor puts the spread
+// where the callers below assume it is: std ~0.45, peaks around 1, and the odd
+// excursion past it (the terrain code clamps where that would matter).
+function makeNoise(octaves, baseFreq, lacunarity = 2.07, gain = 0.5) {
+  const waves = [];
+  let f = baseFreq, a = 1, norm = 0;
+  for (let o = 0; o < octaves; o++) {
+    for (let k = 0; k < 3; k++) {
+      const ang = rand() * Math.PI * 2;
+      waves.push({ kx: Math.cos(ang) * f, kz: Math.sin(ang) * f, ph: rand() * Math.PI * 2, a: a / 3 });
+    }
+    norm += a;
+    f *= lacunarity;
+    a *= gain;
   }
-}
-for (let i = 0; i < 5; i++) {                            // topple-me tower, north
-  // Spacing barely over the 1.6 crate height — any more and the stack settles
-  // through the gaps and knocks itself over before the player arrives.
-  addBox(PEN.x - 5, 0.81 + i * 1.61, PEN.z + 6, 1.6, 1.6, 1.6, matAccent, { mass: 3, prop: true });
-}
-for (let i = 0; i < 6; i++) {                            // things that roll
-  addSphere(PEN.x - 1 + i * 1.5, 0.7, PEN.z + 3.5, 0.7, matEdge, { mass: 0.9, prop: true });
+  const inv = 1.75 / norm;
+  return (x, z) => {
+    let s = 0;
+    for (let i = 0; i < waves.length; i++) {
+      const w = waves[i];
+      s += w.a * Math.sin(w.kx * x + w.kz * z + w.ph);
+    }
+    return s * inv;
+  };
 }
 
-// --- (f) third-person bridge: 1.1 wide at 7 up — worth flipping the camera out.
-addRampZ(62, 0, 74, 7, 0, 3.5, matConcrete);           // approach
-addBox(0, 6.8, 89, 1.1, 0.4, 30, matEdge);             // the plank itself
-for (const z of [78, 84, 90, 96, 102]) addBox(0, 3.4, z, 0.35, 6.8, 0.35, matConcrete);
-addBox(0, 6.8, 107, 5, 0.4, 6, matConcrete);           // far landing
-addRampZ(110, 7, 122, 0, 0, 3.5, matConcrete);         // way back down
+// The base frequencies matter more than they look: a first octave longer than
+// the island itself is a constant across it — a per-seed bias that shifts the
+// whole landmass up or down instead of shaping it. These start at wavelengths of
+// 200-300 units, a touch wider than the island, so the coarsest octave still
+// swings from one side of it to the other.
+const nCoast  = makeNoise(3, 0.0200, 2.3, 0.55);   // bays and headlands
+const nHills  = makeNoise(4, 0.0300);              // the broad shape of the land
+const nRidge  = makeNoise(3, 0.0260);              // creases that read as ridgelines
+const nDetail = makeNoise(3, 0.0520, 2.15, 0.48);  // bumps you notice on foot
+
+const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+
+// The high ground is pushed off-centre, which keeps the island from reading as a
+// symmetric cone and puts the spawn clearing on a shoulder rather than on top of
+// the tallest thing on the map.
+const SUMMIT_A = rand() * Math.PI * 2;
+const SUMMIT_D = 26 + rand() * 32;
+const SUMMIT_X = Math.cos(SUMMIT_A) * SUMMIT_D;
+const SUMMIT_Z = Math.sin(SUMMIT_A) * SUMMIT_D;
+
+function rawHeight(x, z) {
+  // A wobbly radius, so the coast comes out as bays and points rather than a disc.
+  const rr = Math.hypot(x, z) + nCoast(x, z) * 34;
+
+  const land  = smooth((ISLAND_R - rr) / 82);       // 1 inland .. 0 at the water
+  const shelf = smooth((rr - ISLAND_R + 34) / 76);  // 0 at the shore .. 1 out to sea
+
+  // A broad rise towards the summit carries the relief that every seed is
+  // guaranteed to get; the noise on top of it is what makes each one different.
+  const dome = smooth((104 - Math.hypot(x - SUMMIT_X, z - SUMMIT_Z)) / 108);
+
+  // Ridged noise (1 - |n|) creases along its zero crossings, which is what turns
+  // a smooth cone into spurs with gullies between them. Both factors are floored
+  // at zero: past the clamp they would dig pits rather than flatten. The mask is
+  // squared over the lot, so the ground stays low and nearly flat for the last
+  // stretch before the water — that band is the beach.
+  const shape = Math.max(0, 0.42 + 0.58 * nHills(x, z))
+              * Math.max(0, 1 - Math.abs(nRidge(x, z)));
+  let h = PEAK_H * land * land * (0.42 * dome + Math.max(-0.12, 1.50 * (shape - 0.26)));
+  h += land * 4.6;                                  // gentle rise out of the sand
+  h += nDetail(x, z) * 1.9 * land;                  // enough to break up the slopes
+
+  // Sea floor: away from the island it settles at a flat -SEABED_DEPTH so it
+  // meets the deep-water plane without a step. The ripple is faded out at both
+  // ends of the shelf for the same reason.
+  h -= SEABED_DEPTH * shelf;
+  h += nDetail(x * 0.7, z * 0.7) * 2.4 * shelf * (1 - shelf);
+
+  return h;
+}
+
+// A clearing in the middle: the player has to land on solid, walkable ground, and
+// a spawn dropped straight onto raw noise can be a cliff face or a puddle. The
+// floor of 7 keeps the clearing well clear of the tideline even when the noise
+// happens to put a hollow at the origin.
+const CENTER_H = Math.max(rawHeight(0, 0), 7);
+function terrainHeight(x, z) {
+  const flat = smooth((34 - Math.hypot(x, z)) / 26) * 0.88;
+  return rawHeight(x, z) * (1 - flat) + CENTER_H * flat;
+}
+
+// Slope as a gradient magnitude (0 = flat, 1 = 45 degrees, which is also the
+// controller's limit) — used to keep the props off the cliffs.
+function slopeAt(x, z) {
+  const d = 1.6;
+  const dx = terrainHeight(x + d, z) - terrainHeight(x - d, z);
+  const dz = terrainHeight(x, z + d) - terrainHeight(x, z - d);
+  return Math.hypot(dx, dz) / (2 * d);
+}
+
+const HALF = TERRAIN_SIZE / 2;
+const CELL = TERRAIN_SIZE / TERRAIN_SEGS;
+
+// Sampled once, on the lattice both the mesh and the collider use, so the two
+// agree exactly — anything else and the ground you see is not the ground you
+// stand on. HEIGHTS[i][j] is the height at x = -HALF + i*CELL, z = HALF - j*CELL,
+// which is the layout cannon's Heightfield wants once it is rotated flat.
+const HEIGHTS = [];
+for (let i = 0; i <= TERRAIN_SEGS; i++) {
+  const col = new Float64Array(TERRAIN_SEGS + 1);
+  const x = -HALF + i * CELL;
+  for (let j = 0; j <= TERRAIN_SEGS; j++) col[j] = terrainHeight(x, HALF - j * CELL);
+  HEIGHTS.push(col);
+}
+const gridClamp = (n) => (n < 0 ? 0 : n > TERRAIN_SEGS ? TERRAIN_SEGS : n);
+const gridHeight = (x, z) => HEIGHTS
+  [gridClamp(Math.round((x + HALF) / CELL))]
+  [gridClamp(Math.round((HALF - z) / CELL))];
 
 // ---------------------------------------------------------------------------
-// Swim water — a stone basin filled to WATER.surfaceY, north-east of spawn and
-// in plain sight from it. The world floor is one infinite plane at y = 0, so
-// there is nothing to dig a depression out of: the basin is built up instead,
-// with a ramp on the spawn side and a submerged step to climb back out on.
+// Shader library — value noise, the shore wave, and a palette helper. The
+// terrain and the sea both pull from this, which is what makes their shorelines
+// agree: the sand knows where the wash is because it evaluates the same wave
+// the water surface is displaced by.
 // ---------------------------------------------------------------------------
-const matPool = mat(0x93a2ae, 0.82, 0.05);
-// Sea-glass rather than white: a bright bottom washes the water out to grey.
-const matTile = mat(0x8fb6c4, 0.46, 0.06, { envMapIntensity: 1.0 });
 
-const POOL_CX = (WATER.minX + WATER.maxX) / 2;
-const POOL_CZ = (WATER.minZ + WATER.maxZ) / 2;
-const POOL_W  = WATER.maxX - WATER.minX;
-const POOL_D  = WATER.maxZ - WATER.minZ;
+// Hex literals are authored in sRGB; the shaders work in the linear space three
+// converts them to, so bake the conversion in rather than doing it per pixel.
+function glslColor(hex) {
+  const c = new THREE.Color(hex);
+  return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
+}
+
+const NOISE_GLSL = /* glsl */`
+  float hash21(vec2 p) {
+    p = fract(p * vec2(127.31, 311.7));
+    p += dot(p, p + 34.23);
+    return fract(p.x * p.y);
+  }
+  // Smoothed value noise — one lattice cell per unit, so callers scale by the
+  // feature size they want.
+  float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+  // Four octaves is the point where another one stops being visible under the
+  // lighting. Output sits in 0..1 with a mean near 0.5.
+  float fbm(vec2 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 4; i++) { s += a * vnoise(p); p = p * 2.07 + 13.1; a *= 0.5; }
+    return s;
+  }
+  // Octaves with independent phases rarely agree, so fbm huddles inside about
+  // 0.35..0.6 and mixing on it raw comes out flat. Everything that picks a
+  // colour uses this instead: same field, stretched to actually reach 0 and 1.
+  float fbmC(vec2 p) { return clamp((fbm(p) - 0.47) * 2.7 + 0.5, 0.0, 1.0); }
+  // One travelling sine: (height, dH/dx, dH/dz). Displacing by .x and building a
+  // normal from .yz keeps the highlights riding the waves instead of sitting
+  // still on a flat sheet.
+  vec3 waveOct(vec2 p, vec2 k, float a, float speed, float t) {
+    float ph = dot(p, k) + t * speed;
+    float c = a * cos(ph);
+    return vec3(a * sin(ph), c * k.x, c * k.y);
+  }
+  // Rollers running in at the coast, unit amplitude. Crests are rings around the
+  // island, warped by a slow noise so they arrive at an angle in the bays rather
+  // than as a perfect bullseye. The gradient ignores the warp — the error is a
+  // few degrees of tilt and nothing reads it.
+  vec3 shoreRoller(vec2 p, float t) {
+    float r = max(length(p), 1.0);
+    // ~39 units between crests: long enough that the mesh still resolves them
+    // when the beach is a couple of hundred units away across the bay.
+    float ph = -(r + fbm(p * 0.012) * 26.0) * 0.16 + t * 0.62;
+    float c = cos(ph);
+    vec2 g = -0.16 * (p / r) * c;
+    return vec3(sin(ph), g.x, g.y);
+  }
+  // Height the wash reaches on the sand, in metres above sea level. The sea
+  // displaces its edge by exactly this, so foam on the sand lines up with foam
+  // on the water.
+  const float SHORE_RUN = 0.50;
+`;
+
+const LAND_PALETTE = /* glsl */`
+  const vec3 GRASS_LIT  = ${glslColor(0x7ba33f)};   // sunlit meadow
+  const vec3 GRASS_DEEP = ${glslColor(0x40702c)};   // shaded, thicker growth
+  const vec3 GRASS_DRY  = ${glslColor(0x9d8f4c)};   // burnt-off patches
+  const vec3 FERN       = ${glslColor(0x3a6b34)};   // damp green up the slopes
+  const vec3 ROCK_LIT   = ${glslColor(0x9b9285)};
+  const vec3 ROCK_DARK  = ${glslColor(0x5f5a52)};
+  const vec3 PEAK       = ${glslColor(0xb4ada0)};   // bare tops
+  const vec3 SAND_LIT   = ${glslColor(0xdbc999)};   // dry beach
+  const vec3 SAND_DARK  = ${glslColor(0xac9469)};
+  const vec3 SEABED     = ${glslColor(0x2d4a52)};   // the drop-off, well under
+  const vec3 FOAM       = ${glslColor(0xf2f8fa)};
+`;
+
+const SEA_PALETTE = /* glsl */`
+  const vec3 SEA_SHALLOW = ${glslColor(0x37b0ae)};  // over the sand
+  const vec3 SEA_DEEP    = ${glslColor(0x0c4a76)};
+  const vec3 SEA_FOAM    = ${glslColor(0xeff7fa)};
+`;
+
+// ---------------------------------------------------------------------------
+// Terrain — the mesh carries height and nothing else; every bit of colour is
+// mixed procedurally in the fragment shader from world position, height and
+// slope, so the detail holds up with your nose against it.
+// ---------------------------------------------------------------------------
+const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, TERRAIN_SEGS, TERRAIN_SEGS);
+terrainGeo.rotateX(-Math.PI / 2);            // bake it flat: object space is world space
 {
-  const RIM = 1.6;                                 // wall thickness — wide enough to walk
-  const RIM_Y = WATER.surfaceY + 0.4;              // ... and standing proud of the water
-
-  addBox(POOL_CX, RIM_Y / 2, WATER.minZ - RIM / 2, POOL_W + RIM * 2, RIM_Y, RIM, matPool);
-  addBox(POOL_CX, RIM_Y / 2, WATER.maxZ + RIM / 2, POOL_W + RIM * 2, RIM_Y, RIM, matPool);
-  addBox(WATER.minX - RIM / 2, RIM_Y / 2, POOL_CZ, RIM, RIM_Y, POOL_D, matPool);
-  addBox(WATER.maxX + RIM / 2, RIM_Y / 2, POOL_CZ, RIM, RIM_Y, POOL_D, matPool);
-  for (const z of [WATER.minZ - RIM / 2, WATER.maxZ + RIM / 2]) {   // teal edge caps
-    addBox(POOL_CX, RIM_Y + 0.04, z, POOL_W + RIM * 2, 0.08, RIM, matEdge, { phys: false });
-  }
-
-  addBox(POOL_CX, WATER.floorY + 0.06, POOL_CZ, POOL_W, 0.12, POOL_D, matTile);   // tiled bottom
-  // 28-degree approach from the spawn side, landing flush on the rim.
-  addRampZ(WATER.minZ - RIM - 6.4, 0, WATER.minZ - RIM, RIM_Y, POOL_CX, 5, matPool);
-  // Shallow step inside the near wall: waist-deep, so you can wade out and hop
-  // the 0.8 back onto the rim without needing to swim up over it.
-  addBox(POOL_CX, 1.3, WATER.minZ + 1.5, 12, 2.6, 3, matTile);
+  const p = terrainGeo.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setY(i, gridHeight(p.getX(i), p.getZ(i)));
+  p.needsUpdate = true;
+  terrainGeo.computeVertexNormals();
 }
 
-// The water itself: an unlit-by-physics volume plus a separately animated
-// surface. Both live directly in the scene rather than in `objects`, so the
-// third-person boom raycast does not pull the camera in when you swim.
+const terrainMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  roughness: 0.95,
+  metalness: 0.0,
+  envMapIntensity: 0.5,
+  // An open surface, so the usual backface shadow trick would drop the terrain
+  // out of the shadow map entirely — the faces the sun sees are the front ones.
+  shadowSide: THREE.FrontSide,
+});
+
+const terrain = new THREE.Mesh(terrainGeo, terrainMat);
+terrain.receiveShadow = true;
+terrain.castShadow = true;                   // hills shading their own far sides
+scene.add(terrain);
+
+// The collider, off the same samples. Cannon's Heightfield runs its grid over
+// local x/y with the heights along local z, so the body is laid flat the same
+// way the old ground plane was and anchored at the -x / +z corner.
+{
+  const hfBody = new CANNON.Body({ mass: 0, material: physWorld });
+  hfBody.addShape(new CANNON.Heightfield(HEIGHTS.map((c) => Array.from(c)), { elementSize: CELL }));
+  hfBody.position.set(-HALF, 0, HALF);
+  hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+  hfBody.updateAABB();
+  world.addBody(hfBody);
+}
+
+// Now that there is ground, put the spawn on it — body centre 1.2 up, so the
+// feet start a hand's width clear of the clearing and settle on the first step.
+SPAWN.set(0, terrainHeight(0, 0) + 1.2, 0);
+
+// A height field for the water to read. The sea shoals, breaks and foams
+// against the actual coastline rather than a circle, which needs the terrain
+// height at any point — so the same samples the mesh and the collider were
+// built from are packed into a texture the wave shader can look up.
+//
+// Only the band the water cares about is stored: LAND_LO..LAND_HI around sea
+// level, which puts a byte's worth of precision at under a tenth of a metre.
+// Outside the heightfield the clamped edge reads as deep water, which is what
+// is out there anyway.
+const LAND_LO = -12, LAND_HI = 12;
+const landMap = (() => {
+  const N = TERRAIN_SEGS + 1;
+  const data = new Uint8Array(N * N * 4);
+  for (let j = 0; j < N; j++) {                 // rows run +z .. -z, as v does
+    for (let i = 0; i < N; i++) {
+      const t = (HEIGHTS[i][j] - LAND_LO) / (LAND_HI - LAND_LO);
+      const e = Math.round(THREE.MathUtils.clamp(t, 0, 1) * 255);
+      const o = (j * N + i) * 4;
+      data[o] = data[o + 1] = data[o + 2] = e;
+      data[o + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, N, N);
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+})();
+// Texel centres, so the lookup lands on the sample rather than between two.
+const LAND_ORIGIN = HALF + CELL / 2;
+const LAND_SCALE  = 1 / (TERRAIN_SIZE + CELL);
+
+// Shared by the sea and the sand: world xz -> terrain height, in metres.
+const LAND_GLSL = /* glsl */`
+  uniform sampler2D uLandMap;
+  float landAt(vec2 p) {
+    vec2 uv = (vec2(p.x, -p.y) + ${LAND_ORIGIN.toFixed(3)}) * ${LAND_SCALE.toFixed(8)};
+    return texture2D(uLandMap, clamp(uv, 0.0, 1.0)).r
+      * ${(LAND_HI - LAND_LO).toFixed(1)} + ${LAND_LO.toFixed(1)};
+  }
+`;
+
+// ---------------------------------------------------------------------------
+// Ocean — an animated surface at sea level plus a flat deep bed under it, so
+// the water still has something below it out past the edge of the heightfield.
+// The pair rides with the camera on `ocean`, which is what makes the sea read
+// as endless: there is never an edge to reach, and the fog closes long before
+// the disc's rim. Both live directly in the scene rather than in `objects`, so
+// the third-person boom raycast does not pull the camera in when you swim.
+// ---------------------------------------------------------------------------
 const waterTime = { value: 0 };
+const ocean = new THREE.Group();
+scene.add(ocean);
 {
-  const bot = WATER.floorY + 0.16;                 // clear of the tiled bottom at 0.12
-  const top = WATER.surfaceY - 0.16;               // clears the trough of the waves
-
-  // Inset a hair on every side: sharing a plane with the walls and the tiled
-  // bottom is what makes the depth buffer stripe them.
-  const vol = new THREE.Mesh(
-    new THREE.BoxGeometry(POOL_W - 0.08, top - bot, POOL_D - 0.08),
-    new THREE.MeshPhysicalMaterial({
-      color: 0x1a6996,
-      transparent: true,
-      opacity: isTouchDevice ? 0.62 : 0.54,
-      roughness: 0.16,
-      metalness: 0.0,
-      // Transmission costs a full extra scene render, so phones get plain alpha.
-      transmission: isTouchDevice ? 0.0 : 0.72,
-      thickness: 2.6,
-      ior: 1.333,
-      attenuationColor: new THREE.Color(0x14618c),
-      attenuationDistance: 5.5,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      envMapIntensity: 1.0,
-    })
+  const deep = new THREE.Mesh(
+    new THREE.PlaneGeometry(DEEP_SIZE, DEEP_SIZE),
+    new THREE.MeshStandardMaterial({ color: 0x2b4550, roughness: 1.0, metalness: 0.0 })
   );
-  vol.position.set(POOL_CX, (bot + top) / 2, POOL_CZ);
-  vol.receiveShadow = true;
-  vol.castShadow = false;
-  scene.add(vol);
+  deep.rotation.x = -Math.PI / 2;
+  deep.position.y = -SEABED_DEPTH - 0.6;    // just under the terrain's own sea floor
+  ocean.add(deep);
 
-  // Pre-rotated so object-space Y is up: the wave shader can then displace
-  // `transformed.y` directly and read the swell phase off position.xz.
-  const surfGeo = new THREE.PlaneGeometry(POOL_W, POOL_D, 44, 38);
-  surfGeo.rotateX(-Math.PI / 2);
+  // A radial grid instead of a uniform one. Rings grow geometrically outwards,
+  // so the surface under the camera is tessellated finely enough to carry the
+  // surf while the horizon still costs almost nothing: at 200 units out the
+  // cells are ~10 units, at 1000 they are ~50, and the swells are long enough
+  // out there to survive it. Object-space Y is up, so the shader can displace
+  // `transformed.y` directly.
+  function buildOceanGeo() {
+    const growth = Math.pow(OCEAN_R / OCEAN_R0, 1 / OCEAN_RINGS);
+    const pos = [0, 0, 0];                  // the vertex directly under the camera
+    for (let i = 0, r = OCEAN_R0; i <= OCEAN_RINGS; i++, r *= growth) {
+      for (let s = 0; s < OCEAN_SPOKES; s++) {
+        const a = (s / OCEAN_SPOKES) * Math.PI * 2;
+        pos.push(Math.cos(a) * r, 0, Math.sin(a) * r);
+      }
+    }
+    const idx = [];
+    for (let s = 0; s < OCEAN_SPOKES; s++) {              // fan over the middle
+      idx.push(0, 1 + ((s + 1) % OCEAN_SPOKES), 1 + s);
+    }
+    for (let i = 0; i < OCEAN_RINGS; i++) {               // quads between rings
+      const a0 = 1 + i * OCEAN_SPOKES, b0 = a0 + OCEAN_SPOKES;
+      for (let s = 0; s < OCEAN_SPOKES; s++) {
+        const s1 = (s + 1) % OCEAN_SPOKES;
+        idx.push(a0 + s, b0 + s1, b0 + s);
+        idx.push(a0 + s, a0 + s1, b0 + s1);
+      }
+    }
+    const nrm = new Float32Array(pos.length);
+    for (let i = 1; i < nrm.length; i += 3) nrm[i] = 1;   // the shader replaces these
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    geo.setIndex(idx);
+    return geo;
+  }
 
   const surfMat = new THREE.MeshPhysicalMaterial({
-    color: 0x2e86b8,
+    color: 0xffffff,          // the shader paints it — colour and alpha both
     transparent: true,
-    opacity: isTouchDevice ? 0.82 : 0.7,
-    roughness: 0.07,
+    // No transmission out here: at this size it would cost a second full render
+    // of the scene every frame. Plain alpha over the sand reads the same anyway.
+    // Glossy but not a mirror: a perfect reflection of a smooth gradient sky is
+    // a smooth gradient, which is exactly what flat-looking water is.
+    roughness: 0.16,
     metalness: 0.0,
-    transmission: isTouchDevice ? 0.0 : 0.6,
-    thickness: 1.2,
-    ior: 1.333,
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.08,
+    clearcoat: 0.35,
+    clearcoatRoughness: 0.12,
     side: THREE.DoubleSide,
-    envMapIntensity: 1.4,
+    envMapIntensity: 1.6,
   });
-  // Three crossing swells, displaced in the vertex shader with an analytic
-  // normal so the highlights travel with the waves instead of staying flat.
+
+  // How the sea is built up, from the horizon in:
+  //
+  //   * four crossing swells, whose amplitude ramps from a hand's height near
+  //     the island to a metre of open-water swell offshore, which is why the
+  //     sea gets visibly heavier the further out you swim;
+  //   * shoaling, which pins all of that back to nothing as the bed rises, so a
+  //     two-metre swell cannot stand up in half a metre of water;
+  //   * the shore rollers, which survive right up to the sand and are what
+  //     actually breaks on the beach.
+  //
+  // Everything is evaluated in world space (via modelMatrix) so the waves stay
+  // put while the mesh slides along under the camera.
+  const WAVE_GLSL = /* glsl */`
+    // (height, dH/dx, dH/dz) of the sea surface, plus how big the local swell is
+    // and how far offshore we are — the fragment shader wants both for foam.
+    vec3 seaSurface(vec2 p, float t, float depth, out float ampOut, out float openOut) {
+      float open  = smoothstep(${ISLAND_R}.0, ${ISLAND_R + 380}.0, length(p));
+      float shoal = smoothstep(0.0, 6.5, depth);
+      float amp   = mix(0.13, 1.05, open) * shoal;
+
+      // The rings of the mesh get coarser the further they are from the camera,
+      // so the short waves have to bow out before there are too few vertices to
+      // carry them — otherwise they beat against the tessellation and the sea
+      // fills with a crawling diamond moire. Each octave fades at the range
+      // where its own wavelength runs out of samples.
+      float dc  = distance(p, cameraPosition.xz);
+      float lod1 = 1.0 - smoothstep(50.0, 165.0, dc);
+      float lod2 = 1.0 - smoothstep(20.0,  80.0, dc);
+
+      vec3 w = vec3(0.0);
+      w += waveOct(p, vec2( 0.0890,  0.0550), 1.00, 0.85, t);          // ~60u swell
+      w += waveOct(p, vec2(-0.0420,  0.0715), 0.72, 0.72, t);          // ~76u, crossing
+      w += waveOct(p, vec2( 0.2160, -0.1640), 0.34, 1.60, t) * lod1;   // ~23u chop
+      w += waveOct(p, vec2( 0.3900,  0.2600), 0.16, 2.30, t) * lod2;   // ~13u ripple
+      w *= amp;
+
+      // The surf. Full height at the waterline and gone by the time the bed
+      // drops past waist depth — the band where it lives is the breaker line.
+      float surfA = SHORE_RUN * (1.0 - smoothstep(2.5, 9.0, depth));
+      w += shoreRoller(p, t) * surfA;
+
+      // The octave amplitudes actually in play here, so that "how close is this
+      // pixel to the top of the local swing" means the same thing at every
+      // range — otherwise the whitecaps thin out wherever the chop has faded.
+      ampOut  = amp * (1.72 + 0.34 * lod1 + 0.16 * lod2) + surfA;
+      openOut = open;
+      return w;
+    }
+  `;
+
   surfMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterTime;
+    shader.uniforms.uLandMap = { value: landMap };
+
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */`
         #include <common>
         uniform float uTime;
-        // returns (height, dH/dx, dH/dz)
-        vec3 waterWave(vec2 p) {
-          float h = 0.0, gx = 0.0, gz = 0.0, ph, c;
-          vec2 k; float a;
-          k = vec2( 0.42,  0.26); a = 0.070; ph = dot(p, k) + uTime * 1.15;
-          h += a * sin(ph); c = a * cos(ph); gx += c * k.x; gz += c * k.y;
-          k = vec2(-0.31,  0.53); a = 0.048; ph = dot(p, k) + uTime * 1.55;
-          h += a * sin(ph); c = a * cos(ph); gx += c * k.x; gz += c * k.y;
-          k = vec2( 0.95, -0.72); a = 0.018; ph = dot(p, k) + uTime * 2.60;
-          h += a * sin(ph); c = a * cos(ph); gx += c * k.x; gz += c * k.y;
-          return vec3(h, gx, gz);
-        }
+        varying vec3 vWPos;
+        varying float vWaveH, vCover, vAmp, vOpen;
+        ${NOISE_GLSL}
+        ${LAND_GLSL}
+        ${WAVE_GLSL}
       `)
       .replace('#include <beginnormal_vertex>', /* glsl */`
         #include <beginnormal_vertex>
-        vec3 wave = waterWave(position.xz);
+        vec3 wpos = (modelMatrix * vec4(position, 1.0)).xyz;
+        // Signed, not clamped: on dry land this goes negative, and the fragment
+        // shader needs that to know where to stop drawing water.
+        float depth = ${WATER.surfaceY.toFixed(2)} - landAt(wpos.xz);
+        float amp, open;
+        vec3 wave = seaSurface(wpos.xz, uTime, max(depth, 0.0), amp, open);
         objectNormal = normalize(vec3(-wave.y, 1.0, -wave.z));
+        vWPos  = wpos + vec3(0.0, wave.x, 0.0);
+        vWaveH = wave.x;
+        vCover = depth + wave.x;         // metres of water over the bed, right now
+        vAmp   = max(amp, 0.001);
+        vOpen  = open;
       `)
       .replace('#include <begin_vertex>', /* glsl */`
         #include <begin_vertex>
         transformed.y += wave.x;
-      `);
-  };
-
-  const surf = new THREE.Mesh(surfGeo, surfMat);
-  surf.position.set(POOL_CX, WATER.surfaceY, POOL_CZ);
-  surf.receiveShadow = true;
-  surf.castShadow = false;
-  scene.add(surf);
-}
-
-// Caustics on every wetted surface — the tiled bottom, the step, and the inside
-// of the basin walls. Sunlight refracted through the swell focuses into a moving
-// net of bright filaments; the pattern is traced from the same three swells that
-// shape the surface, so what crawls over the stone lines up with the waves
-// overhead. Both materials are shared with dry geometry (the walls have outside
-// faces, the approach ramp is the same stone), so the effect is masked in world
-// space rather than per mesh: under the waterline and inside the footprint.
-//
-// Light leaves the surface along the refracted sun direction, not straight down.
-// Snell at the air/water boundary turns the sun's 44 degrees from vertical into
-// 31, which is 0.64 of the horizontal run per unit of depth.
-const CAUST_SLANT = new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y).multiplyScalar(0.64);
-
-function addPoolCaustics(material) {
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.uTime      = waterTime;
-    shader.uniforms.uWaterY    = { value: WATER.surfaceY };
-    shader.uniforms.uCaustCol  = { value: new THREE.Color(0xa8e4ff) };
-    shader.uniforms.uCaustSlant = { value: CAUST_SLANT };
-    shader.uniforms.uSunDir    = { value: SUN.clone() };
-    shader.uniforms.uPoolC     = { value: new THREE.Vector2(POOL_CX, POOL_CZ) };
-    // Half extents, opened a hair: the inner wall faces sit exactly on the bound.
-    shader.uniforms.uPoolH     = { value: new THREE.Vector2(POOL_W / 2 + 0.05, POOL_D / 2 + 0.05) };
-
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', /* glsl */`
-        #include <common>
-        varying vec3 vCaustPos;
-        varying vec3 vCaustNrm;
-      `)
-      .replace('#include <begin_vertex>', /* glsl */`
-        #include <begin_vertex>
-        vCaustPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-        vCaustNrm = normalize(mat3(modelMatrix) * objectNormal);
       `);
 
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', /* glsl */`
         #include <common>
         uniform float uTime;
-        uniform float uWaterY;
-        uniform vec3  uCaustCol;
-        uniform vec3  uSunDir;
-        uniform vec2  uCaustSlant;
-        uniform vec2  uPoolC;
-        uniform vec2  uPoolH;
-        varying vec3 vCaustPos;
-        varying vec3 vCaustNrm;
-        // Light piles up along the zero crossings of the crossing swells; raising
-        // the fold to a power is what turns those bands into thin filaments.
-        float caustNet(vec2 p, float t) {
-          float c = sin(dot(p, vec2( 0.42,  0.26) * 6.4) + t * 1.15)
-                  + sin(dot(p, vec2(-0.31,  0.53) * 7.7) - t * 1.55)
-                  + sin(dot(p, vec2( 0.95, -0.72) * 5.1) + t * 2.20);
-          return pow(max(0.0, 1.0 - abs(c) * 0.55), 8.0);
+        varying vec3 vWPos;
+        varying float vWaveH, vCover, vAmp, vOpen;
+        ${NOISE_GLSL}
+        ${SEA_PALETTE}
+      `)
+      .replace('#include <map_fragment>', /* glsl */`
+        #include <map_fragment>
+        float foam = 0.0;
+        {
+          vec2 q = vWPos.xz;
+
+          // --- foam where the wave meets the land ---
+          // vCover crosses zero exactly where the sand does, and it carries the
+          // wave displacement with it, so this edge runs up and down the beach
+          // with every roller. The band just inside it is the broken water.
+          float lace = fbmC(q * 0.85 + vec2(uTime * 0.5, uTime * 0.2));
+          float edge = 1.0 - smoothstep(0.0, 0.75, vCover);
+          float shoreFoam = edge * edge * smoothstep(0.15, 0.55, lace);
+          // The leading centimetres are solid white however the noise falls.
+          shoreFoam = max(shoreFoam, 1.0 - smoothstep(0.0, 0.18, vCover));
+
+          // --- the break ---
+          // In the surf zone the roller runs out of water under it, tips over
+          // and goes white along its leading face. Gating on depth is what makes
+          // that a line running parallel to the coast, and the line marches in
+          // with the wave because vWaveH does.
+          float zone = smoothstep(0.25, 0.9, vCover) * (1.0 - smoothstep(1.3, 3.2, vCover));
+          // Only the top of the swing: a wider gate than this stops being a
+          // breaker and becomes a bay full of milk.
+          float breaker = smoothstep(0.62, 0.97, vWaveH / vAmp) * zone
+                        * (0.45 + 0.55 * fbmC(q * 0.5 + vec2(uTime * 0.3, 0.0)));
+
+          // --- whitecaps on the open-water swell ---
+          // Only crests, only once the swell is big enough to break: near the
+          // island the water is glassy, offshore it is speckled white.
+          float crest = smoothstep(0.45, 0.88, vWaveH / vAmp);
+          float caps = crest * smoothstep(0.3, 0.85, vOpen)
+                     * smoothstep(0.30, 0.75, fbmC(q * 0.14 + vec2(0.0, uTime * 0.15)));
+
+          foam = clamp(max(max(shoreFoam, breaker), caps * 0.9), 0.0, 1.0);
+
+          float d = max(vCover, 0.0);
+          vec3 water = mix(SEA_SHALLOW, SEA_DEEP, smoothstep(0.3, 9.0, d));
+          diffuseColor.rgb = mix(water, SEA_FOAM, foam);
+
+          // Thin water lets the sand through and the very edge fades out
+          // completely, which is what keeps the wash from ending in a hard line.
+          diffuseColor.a = mix(mix(0.40, 0.93, smoothstep(0.25, 5.0, d)), 1.0, foam)
+                         * smoothstep(0.0, 0.30, vCover);
         }
       `)
-      // getShadowMask() lives in a chunk the lit materials do not pull in; adding
-      // it after the shadow varyings it reads keeps the caustics out of the band
-      // of shadow the rim walls lay across the floor.
-      .replace('#include <shadowmap_pars_fragment>', /* glsl */`
-        #include <shadowmap_pars_fragment>
-        #include <shadowmask_pars_fragment>
+      .replace('#include <roughnessmap_fragment>', /* glsl */`
+        #include <roughnessmap_fragment>
+        roughnessFactor = mix(roughnessFactor, 0.86, foam);   // foam is not a mirror
       `)
-      .replace('#include <emissivemap_fragment>', /* glsl */`
-        #include <emissivemap_fragment>
+      // Ripples finer than the mesh could ever carry, added straight to the
+      // shading normal. This is most of what the sea looks like up close: a
+      // gently sloped swell with a perfect mirror finish reads as a sheet of
+      // glass, and it is the small stuff that scatters the sun into glitter.
+      // Faded out with distance, where the ripples fall below a pixel and would
+      // only crawl.
+      .replace('#include <normal_fragment_begin>', /* glsl */`
+        #include <normal_fragment_begin>
         {
-          float below = uWaterY - vCaustPos.y;
-          // Walk back up the light path to the water plane: that is the patch of
-          // surface whose lensing lights this point. On the floor it only shifts
-          // the pattern, but it is what makes the net climb the walls instead of
-          // streaking straight down them.
-          vec2 q = vCaustPos.xz + uCaustSlant * below;
-          vec2 e = abs(vCaustPos.xz - uPoolC) - uPoolH;
-          float wet = step(0.0, below) * (1.0 - step(0.0, max(e.x, e.y)));
-          // Faces turned away from the sun catch none of it — which is exactly
-          // the two inner walls that lie in their own shadow.
-          float facing = clamp(dot(vCaustNrm, uSunDir), 0.0, 1.0) * 2.2;
-          // A hand's depth of water barely focuses; a couple of metres does.
-          float depth = clamp(below / 2.0, 0.0, 1.0);
-          // Strong enough to still read from above, through 3 m of tinted water.
-          float caust = caustNet(q, uTime) * 1.15
-                      + caustNet(q * 1.9 + vec2(7.3, 2.1), uTime * 1.35) * 0.65;
-          // Caustics are light landing on the surface, so what you see is what
-          // the surface reflects: without the albedo term the dark wall stone
-          // lights up harder than the pale tile it stands on.
-          totalEmissiveRadiance += uCaustCol * diffuseColor.rgb
-            * caust * wet * facing * (0.35 + 0.65 * depth) * getShadowMask();
+          // The finest octaves fade out first: they are the ones that turn into
+          // a crawling moire once a ripple no longer covers a pixel.
+          float d = length(vWPos - cameraPosition);
+          float closeness = 1.0 - smoothstep(25.0, 130.0, d);
+          float fineness  = 1.0 - smoothstep(10.0,  45.0, d);
+          if (closeness > 0.004) {
+            vec2 q = vWPos.xz;
+            // Amplitudes chosen for the slope they give (a * |k|), which is what
+            // the shading actually reads — roughly a tenth each.
+            vec3 r = waveOct(q, vec2( 0.62,  0.38), 0.150, 1.7, uTime)
+                   + waveOct(q, vec2(-0.47,  0.79), 0.110, 2.1, uTime)
+                   + waveOct(q, vec2( 1.35, -1.02), 0.045, 3.0, uTime) * fineness
+                   + waveOct(q, vec2(-2.60,  1.90), 0.016, 4.4, uTime) * fineness;
+            normal = normalize(normal + vec3(-r.y, 0.0, -r.z) * closeness * (1.0 - foam));
+          }
         }
       `);
   };
+
+  const surf = new THREE.Mesh(buildOceanGeo(), surfMat);
+  surf.position.y = WATER.surfaceY;
+  surf.receiveShadow = true;
+  surf.castShadow = false;
+  // The bounding sphere is centred on the camera and 1180 in radius, so it is
+  // never out of view — culling it would only cost a test.
+  surf.frustumCulled = false;
+  ocean.add(surf);
 }
-addPoolCaustics(matTile);
-addPoolCaustics(matPool);
+
+// The ground shader. Two jobs, and they share a hook because a material only
+// gets the one:
+//
+//   1. Colour. Nothing is painted per vertex any more — grass, rock and sand are
+//      mixed per pixel out of noise and picked between by height and slope, so
+//      the transitions wander instead of following the mesh, and the surface
+//      still has grain with your face in it.
+//   2. Caustics on everything the sea covers. Sunlight refracted through the
+//      swell focuses into a moving net of bright filaments, strongest in the
+//      shallows over the sand and gone by the time the shelf drops away. The
+//      material is shared by the dry land as well, so the effect is masked in
+//      world space — below the waterline, and only for the first few metres.
+//
+// Light leaves the surface along the refracted sun direction, not straight down.
+// Snell at the air/water boundary turns the sun's 44 degrees from vertical into
+// 31, which is 0.64 of the horizontal run per unit of depth.
+const CAUST_SLANT = new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y).multiplyScalar(0.64);
+
+terrainMat.onBeforeCompile = (shader) => {
+  shader.uniforms.uTime       = waterTime;
+  shader.uniforms.uWaterY     = { value: WATER.surfaceY };
+  shader.uniforms.uCaustCol   = { value: new THREE.Color(0xa8e4ff) };
+  shader.uniforms.uCaustSlant = { value: CAUST_SLANT };
+  shader.uniforms.uSunDir     = { value: SUN.clone() };
+
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', /* glsl */`
+      #include <common>
+      varying vec3 vWPos;
+      varying vec3 vWNrm;
+    `)
+    .replace('#include <begin_vertex>', /* glsl */`
+      #include <begin_vertex>
+      vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      vWNrm = normalize(mat3(modelMatrix) * objectNormal);
+    `);
+
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', /* glsl */`
+      #include <common>
+      uniform float uTime;
+      uniform float uWaterY;
+      uniform vec3  uCaustCol;
+      uniform vec3  uSunDir;
+      uniform vec2  uCaustSlant;
+      varying vec3 vWPos;
+      varying vec3 vWNrm;
+      ${NOISE_GLSL}
+      ${LAND_PALETTE}
+      // Light piles up along the zero crossings of the crossing swells; raising
+      // the fold to a power is what turns those bands into thin filaments.
+      float caustNet(vec2 p, float t) {
+        float c = sin(dot(p, vec2( 0.42,  0.26) * 1.9) + t * 1.15)
+                + sin(dot(p, vec2(-0.31,  0.53) * 2.3) - t * 1.55)
+                + sin(dot(p, vec2( 0.95, -0.72) * 1.5) + t * 2.20);
+        return pow(max(0.0, 1.0 - abs(c) * 0.55), 8.0);
+      }
+    `)
+    .replace('#include <map_fragment>', /* glsl */`
+      #include <map_fragment>
+      float wetness = 0.0;
+      {
+        vec3 wp = vWPos;
+        float h = wp.y;
+        float slope = 1.0 - clamp(vWNrm.y, 0.0, 1.0);     // 0 flat .. 1 vertical
+
+        // The finest octaves are only worth their cost within a few dozen metres
+        // — further out they are sub-pixel and would sparkle. This also keeps the
+        // per-pixel noise budget off the far hillsides, which cover most of the
+        // screen from a boat.
+        float fine = 1.0 - smoothstep(28.0, 95.0, length(wp - cameraPosition));
+
+        // Every height threshold below is tested against a wobbled height, so
+        // the bands between materials wander instead of ringing the island like
+        // contour lines.
+        float hb = h + (fbm(wp.xz * 0.035) - 0.47) * 5.5;
+
+        // ---- grass: patchy, drying out in places, greener as it climbs ----
+        // Two scales of patch: 60-unit meadows that read from offshore, and
+        // 18-unit clumps that read from standing height.
+        vec3 grass = mix(GRASS_DEEP, GRASS_LIT, fbmC(wp.xz * 0.017));
+        grass = mix(grass, GRASS_LIT * 1.12, fbmC(wp.xz * 0.055 + 5.0) * 0.55);
+        grass = mix(grass, GRASS_DRY, smoothstep(0.55, 0.95, fbmC(wp.xz * 0.031 + 31.0)) * 0.85);
+        grass = mix(grass, FERN, smoothstep(9.0, 26.0, hb) * 0.65);
+        grass *= 1.0 + (vnoise(wp.xz * 0.7) - 0.5) * 0.34 * fine;   // clumps
+        grass *= 1.0 + (vnoise(wp.xz * 5.5) - 0.5) * 0.22 * fine;   // blades
+
+        // ---- rock: mottled, with faint bedding running through it ----
+        float strata = 0.5 + 0.5 * sin(h * 1.7 + fbm(wp.xz * 0.09) * 6.0);
+        vec3 rock = mix(ROCK_DARK, ROCK_LIT, fbmC(wp.xz * 0.32 + h * 0.5) * 0.7 + strata * 0.3);
+        rock = mix(rock, PEAK, smoothstep(22.0, 33.0, hb) * 0.55);
+        rock *= 1.0 + (vnoise(wp.xz * 4.0) - 0.5) * 0.24 * fine;
+
+        // ---- sand: grain, wind ripples up the dry beach, wet below the wash ----
+        vec3 sand = mix(SAND_DARK, SAND_LIT, fbmC(wp.xz * 0.09));
+        float ripple = 0.5 + 0.5 * sin(dot(wp.xz, vec2(0.86, 0.51)) * 1.9 + fbm(wp.xz * 0.3) * 6.0);
+        sand = mix(sand, SAND_LIT * 1.08, ripple * 0.3 * fine);
+        sand *= 1.0 + (vnoise(wp.xz * 1.7) - 0.5) * 0.14;
+        sand *= 1.0 + (vnoise(wp.xz * 9.0) - 0.5) * 0.18 * fine;
+
+        // Where the sea is right now: the same roller the water surface is
+        // displaced by, so the dark line of wet sand tracks the actual wash.
+        float waterline = shoreRoller(wp.xz, uTime).x * SHORE_RUN;
+        wetness = 1.0 - smoothstep(waterline - 0.05, waterline + 0.85, h);
+        sand = mix(sand, sand * vec3(0.50, 0.52, 0.58), wetness);
+        sand = mix(sand, SEABED, smoothstep(1.0, 9.0, -h));   // into the drop-off
+
+        // ---- pick between them ----
+        float sandM = 1.0 - smoothstep(2.6, 5.2, hb);
+        // Too steep to hold soil is bare rock, at any height above the tideline.
+        float rockM = smoothstep(0.34, 0.62, slope) * smoothstep(0.0, 1.2, h);
+        vec3 col = mix(grass, sand, sandM);
+        col = mix(col, rock, max(rockM, smoothstep(27.0, 35.0, hb) * 0.8));
+
+        // ---- and the lace of foam the last wave left on the sand ----
+        // A band of fixed height would be a hairline on a cliff and a whole
+        // white sheet across a flat sand bar, so its thickness is tied to the
+        // gradient of the ground: what stays roughly constant is how many metres
+        // of beach it covers, not how many metres of height it spans.
+        float grad = sqrt(max(0.0, 1.0 - vWNrm.y * vWNrm.y)) / max(vWNrm.y, 0.05);
+        float bandH = clamp(0.05 + 1.2 * grad, 0.05, 0.45);
+        float band = 1.0 - smoothstep(0.0, bandH, abs(h - waterline - bandH * 0.2));
+        float lace = 0.35 + 0.65 * smoothstep(0.25, 0.7, fbmC(wp.xz * 1.1 + vec2(uTime * 0.4, 0.0)));
+        col = mix(col, FOAM, clamp(band * lace, 0.0, 0.92) * sandM);
+
+        diffuseColor.rgb *= col;
+      }
+    `)
+    .replace('#include <roughnessmap_fragment>', /* glsl */`
+      #include <roughnessmap_fragment>
+      roughnessFactor *= mix(1.0, 0.38, wetness);   // wet sand takes a sheen
+    `)
+    // getShadowMask() lives in a chunk the lit materials do not pull in; adding
+    // it after the shadow varyings it reads keeps the caustics out of the
+    // shadows the headlands lay across the shallows.
+    .replace('#include <shadowmap_pars_fragment>', /* glsl */`
+      #include <shadowmap_pars_fragment>
+      #include <shadowmask_pars_fragment>
+    `)
+    .replace('#include <emissivemap_fragment>', /* glsl */`
+      #include <emissivemap_fragment>
+      {
+        float below = uWaterY - vWPos.y;
+        // Walk back up the light path to the water plane: that is the patch of
+        // surface whose lensing lights this point. On the flats it only shifts
+        // the pattern, but it is what makes the net climb a slope instead of
+        // streaking straight down it.
+        vec2 q = vWPos.xz + uCaustSlant * below;
+        // Wet, and shallow enough for the surface to still focus anything.
+        float wet = step(0.0, below) * (1.0 - smoothstep(0.5, 9.0, below));
+        // Faces turned away from the sun catch none of it.
+        float facing = clamp(dot(vWNrm, uSunDir), 0.0, 1.0) * 2.2;
+        // A hand's depth of water barely focuses; a couple of metres does.
+        float depth = clamp(below / 2.0, 0.0, 1.0);
+        float caust = caustNet(q, uTime) * 1.15
+                    + caustNet(q * 1.9 + vec2(7.3, 2.1), uTime * 1.35) * 0.65;
+        // Caustics are light landing on the surface, so what you see is what
+        // the surface reflects: without the albedo term the dark rock lights
+        // up harder than the pale sand it stands in.
+        totalEmissiveRadiance += uCaustCol * diffuseColor.rgb
+          * caust * wet * facing * (0.35 + 0.65 * depth) * getShadowMask();
+      }
+    `);
+};
 
 // Submerging the camera swaps the sky and the distance fog for a dense blue one
 // (the sky dome is a custom shader and ignores scene.fog, so it is hidden and a
@@ -1238,7 +1520,7 @@ function updateWaterVisuals() {
   if (wet === underwater) return;
   underwater = wet;
   scene.fog.color.setHex(wet ? WATER_FOG : FOG_COLOR);
-  scene.fog.density = wet ? 0.11 : 0.0042;
+  scene.fog.density = wet ? 0.11 : FOG_DENSITY;
   scene.background = wet ? UNDER_BG : null;
   sky.visible = !wet;
   document.getElementById('underwater').classList.toggle('on', wet);
@@ -1798,9 +2080,19 @@ function updateCamera(dt) {
       boomRay.set(camTarget, camBack);
       boomRay.far = dist + 0.5;
       const hit = boomRay.intersectObjects(objects.children, false)[0];
-      if (hit) dist = Math.max(1.1, hit.distance - 0.35);   // pull in through walls
+      if (hit) dist = Math.max(1.1, hit.distance - 0.35);   // pull in through trunks
       desiredPos.copy(camTarget).addScaledVector(camBack, dist);
     }
+    // The boom ray only knows about the props. Terrain is a single 80k-triangle
+    // mesh and raycasting it every frame is not worth it when the heightmap can
+    // answer the same question directly: never let the boom leave the camera
+    // inside a hillside. (Top-down needs no such guard — it sits straight above
+    // the player, and a heightmap has nothing overhead.)
+    // 1.2 of clearance, not a hair: terrainHeight is the smooth surface, while
+    // the mesh is flat triangles across a 2-unit cell, and in a valley cell the
+    // triangle can sit up to ~0.7 above the curve it is chasing.
+    const floorY = terrainHeight(desiredPos.x, desiredPos.z) + 1.2;
+    if (desiredPos.y < floorY) desiredPos.y = floorY;
   }
   desiredQuat.setFromEuler(camEuler);
 
@@ -1981,14 +2273,6 @@ function updateFreeCam(dt) {
   }
 }
 
-// Sprint-corridor gate: kinematic, so it shoves the player rather than being
-// shoved. Cannon integrates kinematic bodies from velocity, so steer that.
-function updateGate() {
-  const open = (elapsed % GATE_CYCLE) < GATE_OPEN;
-  const target = open ? GATE_UP_Y : GATE_DOWN_Y;
-  gateBody.velocity.set(0, THREE.MathUtils.clamp((target - gateBody.position.y) * 8, -9, 9), 0);
-}
-
 function tick() {
   const dt = Math.min(clock.getDelta(), 0.1);
   elapsed += dt;
@@ -2001,7 +2285,6 @@ function tick() {
   } else {
     updatePlayer(dt);
   }
-  updateGate();
 
   // --- physics: fixed 60 Hz steps, sub-stepped to catch up with the frame ---
   world.step(PHYS_STEP, dt, 4);
@@ -2015,6 +2298,10 @@ function tick() {
   waterTime.value = elapsed;
   updateWaterVisuals();
   sky.position.copy(camera.position);
+  // Slide the sea under the camera. The waves themselves are a function of world
+  // position, so nothing moves with it — the tessellation just follows the eye,
+  // and the horizon is always another 1180 units away.
+  ocean.position.set(camera.position.x, 0, camera.position.z);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
 
   // --- HUD ---
@@ -2045,6 +2332,10 @@ function tick() {
 window.hermes = {
   THREE, CANNON, scene, camera, renderer, state, keys, world, playerBody,
   CAM, setCamMode, cycleCamera, toggleGameMode, respawn,
+  SEED, terrain, terrainHeight, slopeAt,
+  // The island is bare by design — these are how you put something on it from
+  // the console, collider included.
+  addBox, addSphere, mat, objects,
   // live read-outs of the controller internals (module-scoped `let`s)
   status: () => ({
     cam: CAM_NAMES[camMode],

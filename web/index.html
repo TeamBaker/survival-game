@@ -482,7 +482,7 @@
 <div id="cloud-ui" class="ui-el">
   <span class="title">Weather</span>
   <div class="wx-row"><span class="lbl"><b class="key">1</b> Spawn rate</span><button class="wx-btn" id="wx-rate">Medium</button></div>
-  <div class="wx-row"><span class="lbl"><b class="key">2</b> Drift speed</span><button class="wx-btn" id="wx-speed">Medium</button></div>
+  <div class="wx-row"><span class="lbl"><b class="key">2</b> Wind speed</span><button class="wx-btn" id="wx-speed">Medium</button></div>
   <div id="wx-foot"><span class="key"><b>4</b> spawn now &middot; <b>0</b> clear &mdash; </span>sky: <span id="wx-count">0</span><br><span id="wx-cloud-info">nearest: &mdash;</span></div>
 </div>
 
@@ -2328,7 +2328,8 @@ function spawnCloud(initial) {
   // Far out and in a random direction. A fresh cloud is 800-1500 away, which at
   // the medium drift speed is a couple of minutes of warning; the initial batch
   // is scattered across the whole range so the sky is never empty at load.
-  const bearing = Math.random() * Math.PI * 2;
+  const wind = liveWindDir();
+  const bearing = wind + Math.PI + (Math.random() - 0.5) * Math.PI * 0.6;
   const dist = initial ? 140 + Math.random() * 1360 : 800 + Math.random() * 700;
   const alt  = BAND_SPEC[band].base[0] + Math.random() * BAND_SPEC[band].base[1];
   const sc   = 0.65 + Math.random() * 0.9;
@@ -2351,7 +2352,7 @@ function spawnCloud(initial) {
     band,
     dirX: Math.cos(head),
     dirZ: Math.sin(head),
-    spdMul: 0.75 + Math.random() * 0.5,
+    spdMul: 1.0,
     radius: geo.userData.width * 0.5 * sc,
     baseY: alt,
     boltT: -1,

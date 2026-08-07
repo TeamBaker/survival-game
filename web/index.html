@@ -1426,7 +1426,7 @@ scene.add(ocean);
           diffuseColor.rgb = mix(water, SEA_FOAM, foam);
           // Cloud shadow. Water reads a squall harder than the land does — a
           // shaded patch of sea goes flat and slate-coloured.
-          diffuseColor.rgb *= mix(1.0, 0.46, cloudShade(vWPos.xz));
+          diffuseColor.rgb *= mix(1.0, 0.34, cloudShade(vWPos.xz));
 
           // Thin water lets the sand through and the very edge fades out
           // completely, which is what keeps the wash from ending in a hard line.
@@ -1604,7 +1604,7 @@ terrainMat.onBeforeCompile = (shader) => {
         col = mix(col, FOAM, clamp(band * lace, 0.0, 0.92) * sandM);
 
         // ---- and whatever is between this patch of ground and the sun ----
-        col *= mix(1.0, 0.44, cloudShade(wp.xz));
+        col *= mix(1.0, 0.32, cloudShade(wp.xz));
 
         diffuseColor.rgb *= col;
       }
@@ -2191,18 +2191,26 @@ const CLOUD_FRAG = /* glsl */`
     // base of the shell, scaled by the cell's own storminess (uThickness).
     float density = uThickness * (0.35 + 0.65 * (1.0 - vH));
     // Beer-Lambert extinction: how much direct light survives that mass.
-    float transmit = exp(-density * 1.8);
+    // A steeper falloff than a flatter mass would use — it's what makes the
+    // difference between "thin here, thick there" actually read as depth.
+    float transmit = exp(-density * 2.3);
 
-    float lit = clamp(0.16 + 0.46 * up + 0.34 * pow(sun, 1.4) + 0.36 * vH, 0.0, 1.0);
+    // Punchier spread between the two terms that drive the top/bottom
+    // gradient (facing + height) is what reads as real depth rather than a
+    // flat wash — a cloud lit only by a soft blend looks like a painted
+    // sphere, not a mass with a lit crown and a heavy, shadowed belly.
+    float lit = clamp(0.06 + 0.56 * up + 0.30 * pow(sun, 1.4) + 0.42 * vH, 0.0, 1.0);
     vec3 col = mix(uBot, uTop, lit) * mix(0.7, 1.0, transmit);
 
     // Extra luminosity on the crown: strongly upward-facing, thin (well-lit)
     // patches push past the flat top colour into a proper glow, which is what
     // gives fluffy tops their sunlit puffiness instead of a flat matte white.
-    col += uTop * pow(max(up, 0.0), 5.0) * 0.30 * mix(0.5, 1.0, transmit);
+    col += uTop * pow(max(up, 0.0), 5.0) * 0.36 * mix(0.5, 1.0, transmit);
     // Undersides read as darker, heavier mass by contrast — cheap but the
     // single biggest lever for the "fluffy top, moody bottom" silhouette.
-    col *= mix(0.55, 1.05, up);
+    // Widened from the original spread so the gradient carries real
+    // top-to-bottom contrast instead of a gentle fade.
+    col *= mix(0.38, 1.18, up);
 
     // Forward scatter through the cloud body, brightest looking through thin,
     // backlit mass toward the sun.
@@ -2226,7 +2234,7 @@ const CLOUD_FRAG = /* glsl */`
     // sunlight, so lit edges skew warm rather than the same cool white as the
     // rest of the mass.
     vec3 warm = vec3(1.0, 0.66, 0.32);
-    col += warm * fresnel * pow(max(sun, 0.0), 1.6) * 0.4;
+    col += warm * fresnel * pow(max(sun, 0.0), 1.6) * 0.56;
 
     // Severe cells go sickly green-yellow underneath. It is a cast over the
     // charcoal, not a coat of paint — enough to read as "that one is dangerous"
@@ -2453,19 +2461,23 @@ function strike(c, dist) {
 }
 
 // ----- rain -----
-// Streaks in a column that rides with the camera. Which cloud is overhead only
-// decides how hard it is falling, so a storm cell arriving reads as the rain
-// building rather than as a wall of water switching on.
+// Drops fill a column that rides with the camera in world space: their fall
+// (straight down, in world Y, wrapped modulo RAIN_H as they pass the player)
+// never depends on which way the camera is looking, so a drop is exactly as
+// present when you look straight down as when you look at the horizon.
 //
-// Each drop is a camera-facing quad rather than a GL line: line thickness is
-// ignored by almost every desktop GPU driver, so a real streak needs two
-// triangles billboarded off the camera's own right vector to read as more
-// than a hairline.
+// Each drop is a screen-aligned quad — stretched along the camera's own up
+// vector rather than a fixed world-space "streak" direction — so it is never
+// foreshortened away. A quad built from a fixed world-space length axis goes
+// edge-on and all but disappears the moment the view direction lines up with
+// that axis, which is exactly what happened looking straight down at rain
+// falling straight down. Billboarding fully off the camera (right *and* up)
+// keeps the streak's full width and length on screen from every angle.
 const RAIN_N     = isTouchDevice ? 3000 : 7000;
-const RAIN_R     = 44;
-const RAIN_H     = 42;
+const RAIN_R     = 50;
+const RAIN_H     = 50;
 const RAIN_LEN   = 4.2;
-const RAIN_WIDTH = 0.075;
+const RAIN_WIDTH = 0.09;
 
 const rainMat = new THREE.ShaderMaterial({
   transparent: true,
@@ -2474,6 +2486,7 @@ const rainMat = new THREE.ShaderMaterial({
     uTime:      { value: 0 },
     uCam:       { value: new THREE.Vector3() },
     uCamRight:  { value: new THREE.Vector3(1, 0, 0) },
+    uCamUp:     { value: new THREE.Vector3(0, 1, 0) },
     uIntensity: { value: 0 },
     uCol:       { value: new THREE.Color(0xf0f6fb) },
   },
@@ -2482,14 +2495,17 @@ const rainMat = new THREE.ShaderMaterial({
     uniform float uTime;
     uniform vec3 uCam;
     uniform vec3 uCamRight;
+    uniform vec3 uCamUp;
     varying float vA;
     void main() {
       vec3 p = position;
       // Per-drop fall speed, hashed off its own position so it stays put.
       float j = fract(sin(p.x * 12.9898 + p.z * 78.233) * 43758.5453);
+      // Straight-down fall in world space, entirely independent of the camera.
       float y = mod(p.y - uTime * 26.0 * (0.8 + 0.5 * j), ${RAIN_H.toFixed(1)});
       vec3 w = uCam + vec3(p.x, y - ${(RAIN_H * 0.55).toFixed(2)}, p.z);
-      w += aCorner.y * vec3(1.6, -${RAIN_LEN.toFixed(2)}, 0.9);   // the streak, wind-slanted
+      w += aCorner.y * vec3(1.6, 0.0, 0.9) * 0.5;                 // gentle wind slant on the tail
+      w += uCamUp * -aCorner.y * ${RAIN_LEN.toFixed(2)};          // billboarded length: never edge-on
       w += uCamRight * aCorner.x * ${RAIN_WIDTH.toFixed(3)};      // billboarded width
       vA = 1.0 - aCorner.y * 0.5;
       gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
@@ -2622,7 +2638,11 @@ function updateWeather(dt) {
     cloudShadowArr[o]     = c.shX;
     cloudShadowArr[o + 1] = c.shZ;
     cloudShadowArr[o + 2] = c.radius * 1.05;
-    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.20 + 0.075 * c.scale, 0, 0.95);
+    // Quadratic in scale rather than linear: a wisp at scale 1 should barely
+    // dim the ground, but a scale-10 storm cell should read as near-dusk
+    // underneath it, so the top of the range needs to pull away from the
+    // bottom much faster than a straight line does.
+    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.14 + 0.05 * c.scale + 0.008 * c.scale * c.scale, 0, 0.97);
   }
 
   // --- the sky reacting to what is in it ---
@@ -2644,9 +2664,11 @@ function updateWeather(dt) {
   if (rainObj.visible) {
     rainMat.uniforms.uTime.value = wxTime;
     rainMat.uniforms.uCam.value.copy(camera.position);
-    // Column 0 of the camera's world matrix is its right vector — billboarding
-    // the streak quads off it is what gives the lines real screen-space width.
+    // Columns 0 and 1 of the camera's world matrix are its right and up
+    // vectors — billboarding the streak quads off both keeps them fully
+    // screen-facing (and therefore visible) from any camera angle.
     rainMat.uniforms.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
+    rainMat.uniforms.uCamUp.value.setFromMatrixColumn(camera.matrixWorld, 1);
     // A gentle floor keeps even a light drizzle legible instead of fading to a
     // near-invisible haze, while heavier cells still read as visibly heavier.
     rainMat.uniforms.uIntensity.value = 0.35 + 0.65 * rainAmt;

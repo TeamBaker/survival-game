@@ -1204,16 +1204,21 @@ const CLOUD_SHADOW_SLANT = new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y);
 
 const CLOUD_SHADOW_GLSL = /* glsl */`
   uniform float uCloudShadows[${MAX_CLOUD_SHADOWS * 4}];
-  // 0 in full sun .. 1 under the thickest part of a storm cell. Discs are soft
-  // from 35% of their radius out, which is about how sharp a cloud edge reads
-  // from under it.
+  // 0 in full sun .. 1 under the thickest part of a storm cell. The disc holds
+  // full strength out to 55% of its radius before it starts to fall away: a
+  // shadow with a wide solid core and a soft rim is what actually reads as a
+  // cloud passing overhead, where one that fades from the centre outward just
+  // reads as a smudge.
   float cloudShade(vec2 p) {
     float s = 0.0;
     for (int i = 0; i < ${MAX_CLOUD_SHADOWS}; i++) {
       float r = uCloudShadows[i * 4 + 2];
       if (r <= 0.0) continue;
       float d = distance(p, vec2(uCloudShadows[i * 4], uCloudShadows[i * 4 + 1]));
-      s = max(s, uCloudShadows[i * 4 + 3] * (1.0 - smoothstep(r * 0.35, r, d)));
+      float v = uCloudShadows[i * 4 + 3] * (1.0 - smoothstep(r * 0.55, r, d));
+      // Stacked rather than max()'d: two cells drifting across each other put
+      // more mass between the ground and the sun than either does alone.
+      s = s + v - s * v;
     }
     return clamp(s, 0.0, 1.0);
   }
@@ -1426,7 +1431,7 @@ scene.add(ocean);
           diffuseColor.rgb = mix(water, SEA_FOAM, foam);
           // Cloud shadow. Water reads a squall harder than the land does — a
           // shaded patch of sea goes flat and slate-coloured.
-          diffuseColor.rgb *= mix(1.0, 0.34, cloudShade(vWPos.xz));
+          diffuseColor.rgb *= mix(1.0, 0.03, cloudShade(vWPos.xz));
 
           // Thin water lets the sand through and the very edge fades out
           // completely, which is what keeps the wash from ending in a hard line.
@@ -1604,7 +1609,7 @@ terrainMat.onBeforeCompile = (shader) => {
         col = mix(col, FOAM, clamp(band * lace, 0.0, 0.92) * sandM);
 
         // ---- and whatever is between this patch of ground and the sun ----
-        col *= mix(1.0, 0.32, cloudShade(wp.xz));
+        col *= mix(1.0, 0.02, cloudShade(wp.xz));
 
         diffuseColor.rgb *= col;
       }
@@ -2027,15 +2032,18 @@ function buildCloudGeo(band, rnd) {
     // into the middle of it. The spread is deliberately tighter than the blob
     // radius: neighbours have to interpenetrate by a good margin or the cluster
     // reads as a bag of balls rather than as one mass.
-    const rad = R * prof * Math.sqrt(rnd()) * 0.80;
-    const pr  = R * (0.20 + 0.26 * rnd()) * Math.max(0.55, prof);
+    const rad = R * prof * Math.sqrt(rnd()) * 0.72;
+    const pr  = R * (0.24 + 0.28 * rnd()) * Math.max(0.55, prof);
     puffs.push({
       x: Math.cos(a) * rad,
-      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.25,
+      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.22,
       z: Math.sin(a) * rad,
-      rx: pr * (0.75 + rnd() * 0.60),
+      // A narrower spread on the axis jitter than before: one blob at half the
+      // radius of its neighbour pokes out of the mass as a recognisable ball
+      // however well the seam around it is handled.
+      rx: pr * (0.80 + rnd() * 0.50),
       ry: pr * (anvil ? 0.40 : band === 0 ? 0.55 : 0.80) * (0.90 + rnd() * 0.25),
-      rz: pr * (0.75 + rnd() * 0.60),
+      rz: pr * (0.80 + rnd() * 0.50),
       seed: rnd() * 40,
     });
   }
@@ -2045,63 +2053,118 @@ function buildCloudGeo(band, rnd) {
   const vc = CLOUD_PUFF.count;
   const total = vc * puffs.length;
 
+  // Lumps baked into the surface — a perfectly round ball never reads as cloud
+  // however it is shaded. This displaces the surface by up to a third of the
+  // radius either way, so it is not a detail anything downstream can ignore:
+  // both the seam fillet and the buried-face cull have to ask this where a puff
+  // actually ends rather than assume its ellipsoid.
+  const LUMP = 0.20;
+  const lumpAt = (pf, dx, dy, dz) =>
+    1 + LUMP * (Math.sin(dx * 3.1 + pf.seed) * Math.sin(dy * 2.7 + pf.seed * 1.9)
+        + 0.55 * Math.sin(dz * 5.3 + pf.seed * 2.7) * Math.sin(dx * 4.3 - pf.seed));
+
+  // Where a point sits relative to a puff's lumpy surface: below 1 is inside it,
+  // 1 is on it, above 1 is clear of it.
+  const surfDepth = (px, py, pz, pf) => {
+    const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
+    const q = Math.hypot(ex, ey, ez);
+    if (q < 1e-6) return 0;
+    return q / lumpAt(pf, ex / q, ey / q, ez / q);
+  };
+
   // --- vertices ---
+  // Built and kept in raw space: the flat base is a non-uniform squash, and
+  // every field query below — normals, fillet, cull — compares points against
+  // plain ellipsoids, so it has to happen before that squash distorts them.
+  // Testing squashed points against unsquashed puffs is what put the worst of
+  // the seam junk down in the skirt, which is exactly where a cumulus is most
+  // obviously a heap of balls.
   const pos = new Float32Array(total * 3);
   for (let k = 0; k < puffs.length; k++) {
     const pf = puffs[k];
     for (let v = 0; v < vc; v++) {
       const dx = sp[v * 3], dy = sp[v * 3 + 1], dz = sp[v * 3 + 2];
-      // Lumps baked into the surface — a perfectly round ball never reads as
-      // cloud however it is shaded.
-      const l = 1 + 0.24 * (Math.sin(dx * 3.1 + pf.seed) * Math.sin(dy * 2.7 + pf.seed * 1.9)
-                    + 0.55 * Math.sin(dz * 5.3 + pf.seed * 2.7) * Math.sin(dx * 4.3 - pf.seed));
+      const l = lumpAt(pf, dx, dy, dz);
       const o = (k * vc + v) * 3;
-      pos[o] = pf.x + dx * pf.rx * l;
-      // Everything below the cluster datum is squashed into a shallow skirt,
-      // which is what gives cumulus their flat, level bases.
-      const py = pf.y + dy * pf.ry * l;
-      pos[o + 1] = py < 0 ? py * 0.22 : py;
+      pos[o]     = pf.x + dx * pf.rx * l;
+      pos[o + 1] = pf.y + dy * pf.ry * l;
       pos[o + 2] = pf.z + dz * pf.rz * l;
     }
   }
 
   // --- normals from the metaball field, so the blobs shade as one mass ---
   const nrm = new Float32Array(total * 3);
-  for (let i = 0; i < total; i++) {
-    const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
-    let gx = 0, gy = 0, gz = 0;
-    for (let k = 0; k < puffs.length; k++) {
-      const pf = puffs[k];
-      const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
-      const q2 = ex * ex + ey * ey + ez * ez + 1e-4;
-      const w = 1 / (q2 * q2);            // d/dp of the 1/q^2 falloff, outward
-      gx += w * ex / pf.rx;
-      gy += w * ey / pf.ry;
-      gz += w * ez / pf.rz;
+  const fieldNormals = () => {
+    for (let i = 0; i < total; i++) {
+      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
+      let gx = 0, gy = 0, gz = 0;
+      for (let k = 0; k < puffs.length; k++) {
+        const pf = puffs[k];
+        const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
+        const q2 = ex * ex + ey * ey + ez * ez + 1e-4;
+        const w = 1 / (q2 * q2);            // d/dp of the 1/q^2 falloff, outward
+        gx += w * ex / pf.rx;
+        gy += w * ey / pf.ry;
+        gz += w * ez / pf.rz;
+      }
+      const len = Math.hypot(gx, gy, gz) || 1;
+      nrm[i * 3] = gx / len; nrm[i * 3 + 1] = gy / len; nrm[i * 3 + 2] = gz / len;
     }
-    const len = Math.hypot(gx, gy, gz) || 1;
-    nrm[i * 3] = gx / len; nrm[i * 3 + 1] = gy / len; nrm[i * 3 + 2] = gz / len;
+  };
+  fieldNormals();
+
+  // --- fillet the seams ---
+  // Two spheres pushed into each other cross in a hard V, and no amount of
+  // smoothed normals hides a crease that sharp: it catches the light as a line
+  // and the eye reads the two balls straight off it. Nudging the vertices that
+  // sit near a neighbour's surface outward along the field gradient fills that V
+  // in with a fillet, so the pair meets at a waist the way real cloud does.
+  // Vertices already well inside a neighbour are culled below and do not matter.
+  for (let k = 0; k < puffs.length; k++) {
+    const A = puffs[k];
+    const reach = (A.rx + A.ry + A.rz) / 3;
+    for (let v = 0; v < vc; v++) {
+      const i = k * vc + v;
+      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
+      let near = 0;
+      for (let m = 0; m < puffs.length; m++) {
+        if (m === k) continue;
+        // 1 on the neighbour's surface, tapering to 0 half a radius clear of it.
+        const f = 1.5 - surfDepth(px, py, pz, puffs[m]);
+        if (f > near) near = f;
+      }
+      if (near <= 0) continue;
+      const t2 = Math.min(1, near / 0.5);
+      const push = reach * 0.22 * t2 * t2 * (3 - 2 * t2);
+      pos[i * 3]     = px + nrm[i * 3] * push;
+      pos[i * 3 + 1] = py + nrm[i * 3 + 1] * push;
+      pos[i * 3 + 2] = pz + nrm[i * 3 + 2] * push;
+    }
   }
+  fieldNormals();   // the surface moved, so the gradient has to be read again
 
   // --- faces, minus the ones sealed inside a neighbouring blob ---
-  const buriedIn = (i, pf) => {
-    const ex = (pos[i * 3] - pf.x) / pf.rx;
-    const ey = (pos[i * 3 + 1] - pf.y) / pf.ry;
-    const ez = (pos[i * 3 + 2] - pf.z) / pf.rz;
-    return ex * ex + ey * ey + ez * ez < 0.94;
-  };
+  // The material is alpha-blended with no depth write, so a face left inside a
+  // neighbour is not hidden by it — it blends on top, and every one of those
+  // stacked interior shells darkens the overlap into a visible ball-shaped
+  // outline. Culling against the true lumpy surface lets the threshold sit right
+  // at it: anything below 1 is genuinely inside and has to go. The old 0.94
+  // against a plain ellipsoid both kept a shell of interior faces around every
+  // intersection and cut holes wherever a lump dented the surface inward.
+  const buriedIn = (i, pf) => surfDepth(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], pf) < 1.0;
   const idx = [];
   for (let k = 0; k < puffs.length; k++) {
     const base = k * vc;
     const A = puffs[k];
     // Only the blobs that actually reach this one can swallow any of its faces —
     // testing the rest of the cluster per triangle is most of the build cost.
+    // The 1.35 is the widest the lumps plus the fillet push a surface out.
     const near = [];
-    const rA = Math.max(A.rx, A.ry, A.rz) * 1.2;   // 1.2 covers the surface lumps
+    const rA = Math.max(A.rx, A.ry, A.rz) * 1.35;
     for (let m = 0; m < puffs.length; m++) {
       if (m === k) continue;
       const B = puffs[m];
-      if (Math.hypot(A.x - B.x, A.y - B.y, A.z - B.z) < rA + Math.max(B.rx, B.ry, B.rz)) near.push(B);
+      if (Math.hypot(A.x - B.x, A.y - B.y, A.z - B.z) < rA + Math.max(B.rx, B.ry, B.rz) * 1.35) near.push(B);
     }
     for (let f = 0; f < si.length; f += 3) {
       const a = base + si[f], b = base + si[f + 1], c = base + si[f + 2];
@@ -2112,6 +2175,20 @@ function buildCloudGeo(band, rnd) {
       }
       if (!buried) idx.push(a, b, c);
     }
+  }
+
+  // --- flatten the base ---
+  // Everything below the cluster datum is squashed into a shallow skirt, which
+  // is what gives cumulus their flat, level bases. Normals take the inverse of
+  // that scale, so faces that were pointing gently downward end up pointing
+  // straight down — a flat base that shades like one.
+  const BASE_SQUASH = 0.22;
+  for (let i = 0; i < total; i++) {
+    if (pos[i * 3 + 1] >= 0) continue;
+    pos[i * 3 + 1] *= BASE_SQUASH;
+    const nx = nrm[i * 3], ny = nrm[i * 3 + 1] / BASE_SQUASH, nz = nrm[i * 3 + 2];
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nrm[i * 3] = nx / len; nrm[i * 3 + 1] = ny / len; nrm[i * 3 + 2] = nz / len;
   }
 
   // --- normalise the vertical: local y = 0 is the cloud base, aH is 0..1 ---
@@ -2330,6 +2407,11 @@ const CLOUD_DESPAWN = 2100;      // they are gone once they are this far behind 
 const clouds = [];
 const cloudGroup = new THREE.Group();
 scene.add(cloudGroup);
+// Depth prepass: render clouds with a depth-only material first so interior
+// faces are hidden by the depth buffer when the volumetric pass runs.
+const depthMat = new THREE.MeshBasicMaterial({ colorWrite: false });
+const cloudDepthGroup = new THREE.Group();
+scene.add(cloudDepthGroup);
 
 const wxFocus = new THREE.Vector3();
 let spawnTimer = 0;
@@ -2366,6 +2448,12 @@ function spawnCloud(initial) {
   mesh.rotation.y = Math.random() * Math.PI * 2;
   mesh.scale.setScalar(sc);
   cloudGroup.add(mesh);
+  // Matching depth-only mesh for the prepass.
+  const depthMesh = new THREE.Mesh(geo, depthMat);
+  depthMesh.position.copy(mesh.position);
+  depthMesh.rotation.copy(mesh.rotation);
+  depthMesh.scale.copy(mesh.scale);
+  cloudDepthGroup.add(depthMesh);
 
   // Heading: the shared wind direction, with a little per-cloud scatter for
   // gusting, so the whole sky drifts together instead of converging on the
@@ -2373,6 +2461,7 @@ function spawnCloud(initial) {
   const head = liveWindDir() + (Math.random() - 0.5) * 0.3;
   const c = {
     mesh,
+    depthMesh,
     mat: material,
     scale,
     band,
@@ -2389,7 +2478,10 @@ function spawnCloud(initial) {
 }
 
 function clearClouds() {
-  for (const c of clouds) { cloudGroup.remove(c.mesh); c.mat.dispose(); }
+  for (const c of clouds) {
+    cloudGroup.remove(c.mesh); c.mat.dispose();
+    cloudDepthGroup.remove(c.depthMesh);
+  }
   clouds.length = 0;
   refreshWxUI();
 }
@@ -2589,6 +2681,7 @@ function updateWeather(dt) {
     const dist = Math.hypot(dx, dz);
     if (dist > CLOUD_DESPAWN) {
       cloudGroup.remove(c.mesh);
+      cloudDepthGroup.remove(c.depthMesh);
       c.mat.dispose();
       clouds.splice(i, 1);
       continue;
@@ -2637,12 +2730,13 @@ function updateWeather(dt) {
     const o = i * 4;
     cloudShadowArr[o]     = c.shX;
     cloudShadowArr[o + 1] = c.shZ;
-    cloudShadowArr[o + 2] = c.radius * 1.05;
-    // Quadratic in scale rather than linear: a wisp at scale 1 should barely
-    // dim the ground, but a scale-10 storm cell should read as near-dusk
-    // underneath it, so the top of the range needs to pull away from the
-    // bottom much faster than a straight line does.
-    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.14 + 0.05 * c.scale + 0.008 * c.scale * c.scale, 0, 0.97);
+    cloudShadowArr[o + 2] = c.radius * 1.10;
+    // Quadratic in scale rather than linear: a wisp at scale 1 still lays down
+    // a shadow you can watch cross the sand, but a scale-10 storm cell has to
+    // black the ground out under it, so the top of the range needs to pull away
+    // from the bottom much faster than a straight line does. Saturates around
+    // scale 8 — past that the cell is simply opaque.
+    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.35 + 0.10 * c.scale + 0.025 * c.scale * c.scale, 0, 1);
   }
 
   // --- the sky reacting to what is in it ---
@@ -3289,7 +3383,15 @@ function tick() {
     }
   }
 
+  // Depth prepass: render cloud silhouettes into the depth buffer first,
+  // then the full scene with volumetric shading reads that depth to cull
+  // interior faces that would otherwise bleed through.
+  cloudGroup.visible = false;
   renderer.render(scene, camera);
+  cloudGroup.visible = true;
+  cloudDepthGroup.visible = false;
+  renderer.render(scene, camera);
+  cloudDepthGroup.visible = true;
 }
 
 // Debug handle — handy from the console / remote inspector on a phone.

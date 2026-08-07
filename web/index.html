@@ -1968,10 +1968,10 @@ const isSprinting = () =>
 // The four bands the 1-10 scale falls into: fair, building, storm, severe.
 const CLOUD_BAND = (s) => (s <= 3 ? 0 : s <= 5 ? 1 : s <= 7 ? 2 : 3);
 const BAND_SPEC = [
-  { width: [50,  80],  height: [12,  24],  puffs: [ 9, 14], base: [ 88, 46] },
-  { width: [80,  120], height: [40,  60],  puffs: [12, 17], base: [110, 52] },
-  { width: [120, 160], height: [80,  108], puffs: [14, 19], base: [126, 58] },
-  { width: [140, 180], height: [98,  126], puffs: [16, 20], base: [138, 62] },
+  { width: [200, 320], height: [ 48,  96], puffs: [ 5,  9], base: [110, 60] },
+  { width: [320, 480], height: [160, 240], puffs: [ 7, 11], base: [140, 70] },
+  { width: [480, 640], height: [320, 432], puffs: [ 9, 13], base: [160, 80] },
+  { width: [560, 720], height: [392, 504], puffs: [11, 15], base: [175, 90] },
 ];
 
 // How wide the cluster is at height fraction t: a flat sheet, a heap, a tower
@@ -2027,15 +2027,15 @@ function buildCloudGeo(band, rnd) {
     // into the middle of it. The spread is deliberately tighter than the blob
     // radius: neighbours have to interpenetrate by a good margin or the cluster
     // reads as a bag of balls rather than as one mass.
-    const rad = R * prof * Math.sqrt(rnd()) * 0.66;
-    const pr  = R * (0.24 + 0.15 * rnd()) * Math.max(0.55, prof);
+    const rad = R * prof * Math.sqrt(rnd()) * 0.80;
+    const pr  = R * (0.20 + 0.26 * rnd()) * Math.max(0.55, prof);
     puffs.push({
       x: Math.cos(a) * rad,
-      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.10,
+      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.25,
       z: Math.sin(a) * rad,
-      rx: pr * (0.90 + rnd() * 0.30),
+      rx: pr * (0.75 + rnd() * 0.60),
       ry: pr * (anvil ? 0.40 : band === 0 ? 0.55 : 0.80) * (0.90 + rnd() * 0.25),
-      rz: pr * (0.90 + rnd() * 0.30),
+      rz: pr * (0.75 + rnd() * 0.60),
       seed: rnd() * 40,
     });
   }
@@ -2311,6 +2311,13 @@ let gloom = 0;                   // 0 clear sky .. 1 overcast right overhead
 let rainAmt = 0;
 let wxTime = 0;
 
+// A single slowly-drifting wind direction shared by the whole sky, so every
+// cloud heads the same way instead of converging on the player from all sides.
+const WIND_BASE_DIR = Math.random() * Math.PI * 2;
+function liveWindDir() {
+  return WIND_BASE_DIR + Math.sin(wxTime * 0.015) * 0.4;
+}
+
 function spawnCloud(initial) {
   if (clouds.length >= MAX_CLOUDS) return null;
   const scale = rollStorminess(1, 10);
@@ -2333,10 +2340,10 @@ function spawnCloud(initial) {
   mesh.scale.setScalar(sc);
   cloudGroup.add(mesh);
 
-  // Heading: back down the bearing it was placed on, so it drifts in over the
-  // player and passes overhead, with a few degrees of scatter so a whole sky of
-  // them does not converge on one point.
-  const head = bearing + Math.PI + (Math.random() - 0.5) * 0.5;
+  // Heading: the shared wind direction, with a little per-cloud scatter for
+  // gusting, so the whole sky drifts together instead of converging on the
+  // player from every side.
+  const head = liveWindDir() + (Math.random() - 0.5) * 0.3;
   const c = {
     mesh,
     mat: material,

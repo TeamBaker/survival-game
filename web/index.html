@@ -252,7 +252,7 @@
 
   #cam-mode {
     position: fixed;
-    top: calc(62px + env(safe-area-inset-top));
+    top: calc(82px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     padding: 5px 10px;
     font-size: 11px;
@@ -301,7 +301,7 @@
 
   @media (max-width: 620px) {
     #mode-btn { font-size: 11px; padding: 9px 14px; }
-    #cam-mode { top: calc(52px + env(safe-area-inset-top)); font-size: 10px; }
+    #cam-mode { top: calc(72px + env(safe-area-inset-top)); font-size: 10px; }
     #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
   }
 
@@ -328,7 +328,7 @@
      wherever the thumb lands — so a panel down there eats input. Move it up under
      the camera-mode chip, well clear of where a thumb naturally rests. */
   body.touch #cloud-ui {
-    top: calc(80px + env(safe-area-inset-top));
+    top: calc(104px + env(safe-area-inset-top));
     bottom: auto;
   }
 
@@ -349,6 +349,7 @@
   }
   .wx-row .lbl { color: #7fa8d8; white-space: nowrap; }
   .wx-row .lbl b { color: #eaf2ff; font-weight: 700; }
+  .wx-val { color: #eaf2ff; font-weight: 700; font-size: 11px; }
   .wx-btn {
     flex: 0 0 auto;
     min-width: 82px;
@@ -473,7 +474,8 @@
 <canvas id="view"></canvas>
 
 <div id="hud"><span class="k">FPS</span> <span class="v" id="fps">--</span>
-<span class="k">POS</span> <span class="v" id="pos">--</span></div>
+<span class="k">POS</span> <span class="v" id="pos">--</span>
+<span class="k">WX</span> <span class="v" id="climate-temp">--</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
@@ -481,9 +483,13 @@
 
 <div id="cloud-ui" class="ui-el">
   <span class="title">Weather</span>
+  <div class="wx-row"><span class="lbl"><b class="key">7</b> Climate</span><button class="wx-btn" id="wx-climate">Tropical</button></div>
+  <div class="wx-row"><span class="lbl">Temp</span><span class="wx-val" id="wx-temp">--</span></div>
+  <div class="wx-row"><span class="lbl"><b class="key">2</b> Wind dir</span><button class="wx-btn" id="wx-winddir">Auto</button></div>
+  <div class="wx-row"><span class="lbl"><b class="key">3</b> Wind speed</span><button class="wx-btn" id="wx-windspeed">Auto</button></div>
+  <div class="wx-row"><span class="lbl"><b class="key">5</b> Cloud size</span><button class="wx-btn" id="wx-size">Auto</button></div>
+  <div class="wx-row"><span class="lbl"><b class="key">6</b> Storminess</span><button class="wx-btn" id="wx-storm">Auto</button></div>
   <div class="wx-row"><span class="lbl"><b class="key">1</b> Spawn rate</span><button class="wx-btn" id="wx-rate">Medium</button></div>
-  <div class="wx-row"><span class="lbl"><b class="key">2</b> Drift speed</span><button class="wx-btn" id="wx-speed">Medium</button></div>
-  <div class="wx-row"><span class="lbl"><b class="key">3</b> Scale range</span><button class="wx-btn" id="wx-range">1 &ndash; 10</button></div>
   <div id="wx-foot"><span class="key"><b>4</b> spawn now &middot; <b>0</b> clear &mdash; </span>sky: <span id="wx-count">0</span></div>
 </div>
 
@@ -1702,9 +1708,12 @@ window.addEventListener('keydown', (e) => {
   // is on screen.
   else if (camMode === CAM.FREE) {
     if (e.code === 'Digit1' || e.code === 'Numpad1') cycleRate();
-    else if (e.code === 'Digit2' || e.code === 'Numpad2') cycleSpeed();
-    else if (e.code === 'Digit3' || e.code === 'Numpad3') cycleRange();
+    else if (e.code === 'Digit2' || e.code === 'Numpad2') cycleWindDir();
+    else if (e.code === 'Digit3' || e.code === 'Numpad3') cycleWindSpeed();
     else if (e.code === 'Digit4' || e.code === 'Numpad4') { spawnCloud(true); refreshWxUI(); }
+    else if (e.code === 'Digit5' || e.code === 'Numpad5') cycleSize();
+    else if (e.code === 'Digit6' || e.code === 'Numpad6') cycleStorm();
+    else if (e.code === 'Digit7' || e.code === 'Numpad7') cycleClimate();
     else if (e.code === 'Digit0' || e.code === 'Numpad0') clearClouds();
   }
 }, { passive: false });
@@ -1949,6 +1958,77 @@ const isSprinting = () =>
   state.sprint || state.sprintBtn || keys.has('ShiftLeft') || keys.has('ShiftRight');
 
 // ---------------------------------------------------------------------------
+// Climate — the model everything else in the weather system reads from.
+//
+// Location is fixed once per world (there is only one island, so it is drawn
+// from the seed rather than from where the player stands) and sets the base
+// climate. Temperature is that baseline shaped by the time of day and a slow
+// wobble; wind has its own random starting heading that is pulled toward a
+// prevailing east-to-west flow, plus a random base speed. None of it is
+// rerolled per frame — that would make the sky flicker — it is all smooth
+// functions of a clock and a handful of seeded constants.
+// ---------------------------------------------------------------------------
+const CLIMATES = [
+  { name: 'Tropical',    temp: 28, swing: 4  },
+  { name: 'Temperate',   temp: 17, swing: 8  },
+  { name: 'Arid',        temp: 25, swing: 13 },
+  { name: 'Continental', temp: 11, swing: 10 },
+  { name: 'Subarctic',   temp: 1,  swing: 7  },
+];
+const climateRand = mulberry32((SEED ^ 0x5bd1e995) >>> 0);
+let climateIdx = (climateRand() * CLIMATES.length) | 0;
+
+const DAY_LENGTH = 600;                      // seconds for a full day/night cycle
+let dayTime = climateRand() * DAY_LENGTH;    // start at a random point in the day
+
+// A handful of sine waves at slow, incommensurate frequencies so the sum drifts
+// smoothly and never repeats on a timescale anyone would notice. Phases come off
+// the seed, so every load wanders differently.
+function makeDrift(rnd, amp) {
+  const terms = [0, 1, 2].map(() => ({
+    f: 0.0018 + rnd() * 0.012,
+    p: rnd() * Math.PI * 2,
+    a: 1,
+  }));
+  const norm = amp / terms.reduce((s, w) => s + w.a, 0);
+  return (t) => terms.reduce((s, w) => s + w.a * norm * Math.sin(t * w.f * Math.PI * 2 + w.p), 0);
+}
+
+const tempDrift = makeDrift(climateRand, 2.4);      // small daily fluctuations, +/- a couple degrees
+
+// Temperature: climate baseline, warped by how far into the day it is (coolest
+// a couple hours before dawn, warmest mid-afternoon), plus the random wobble.
+function currentTemperature() {
+  const dayFrac = ((dayTime % DAY_LENGTH) + DAY_LENGTH) % DAY_LENGTH / DAY_LENGTH;
+  const diurnal = Math.cos((dayFrac - 0.58) * Math.PI * 2);
+  const c = CLIMATES[climateIdx];
+  return c.temp + c.swing * 0.5 * diurnal + tempDrift(dayTime);
+}
+
+const WIND_PREVAILING = Math.PI;             // angle 0 = +x/east, so PI blows toward the west
+let windDirSeed = climateRand() * Math.PI * 2;   // the "randomness (initial direction)" input
+const windDirDrift = makeDrift(climateRand, 1.1);
+// Mostly the prevailing westerly, bent by the roll of the dice at world start,
+// plus a slow wander so it is never perfectly steady.
+function currentWindDir() {
+  const vx = Math.cos(WIND_PREVAILING) * 0.7 + Math.cos(windDirSeed) * 0.3;
+  const vz = Math.sin(WIND_PREVAILING) * 0.7 + Math.sin(windDirSeed) * 0.3;
+  return Math.atan2(vz, vx) + windDirDrift(dayTime);
+}
+
+const windSpeedBase = 5 + climateRand() * 11;     // random base speed, units/second
+const windSpeedDrift = makeDrift(climateRand, 4);
+function currentWindSpeed() {
+  return Math.max(1.5, windSpeedBase + windSpeedDrift(dayTime));
+}
+
+const COMPASS = ['E', 'ENE', 'NE', 'NNE', 'N', 'NNW', 'NW', 'WNW', 'W', 'WSW', 'SW', 'SSW', 'S', 'SSE', 'SE', 'ESE'];
+function compassOf(angle) {
+  const a = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+  return COMPASS[Math.round(a / (Math.PI * 2) * COMPASS.length) % COMPASS.length];
+}
+
+// ---------------------------------------------------------------------------
 // Weather — clouds, rain, lightning
 //
 // Each cloud is a solid cluster of 8-20 overlapping lumpy ellipsoids baked into
@@ -1969,11 +2049,12 @@ const isSprinting = () =>
 
 // The four bands the 1-10 scale falls into: fair, building, storm, severe.
 const CLOUD_BAND = (s) => (s <= 3 ? 0 : s <= 5 ? 1 : s <= 7 ? 2 : 3);
+// Sizes run 3-5x the original cloud scale — these are meant to loom.
 const BAND_SPEC = [
-  { width: [50,  80],  height: [12,  24],  puffs: [ 9, 14], base: [ 88, 46] },
-  { width: [80,  120], height: [40,  60],  puffs: [12, 17], base: [110, 52] },
-  { width: [120, 160], height: [80,  108], puffs: [14, 19], base: [126, 58] },
-  { width: [140, 180], height: [98,  126], puffs: [16, 20], base: [138, 62] },
+  { width: [200, 320], height: [48,  96],  puffs: [ 5,  9], base: [110, 60] },
+  { width: [320, 480], height: [160, 240], puffs: [ 7, 11], base: [140, 70] },
+  { width: [480, 640], height: [320, 432], puffs: [ 9, 13], base: [160, 80] },
+  { width: [560, 720], height: [392, 504], puffs: [11, 15], base: [175, 90] },
 ];
 
 // How wide the cluster is at height fraction t: a flat sheet, a heap, a tower
@@ -2026,18 +2107,20 @@ function buildCloudGeo(band, rnd) {
     const anvil = band >= 2 && t > 0.72;      // the flat spreading cap up top
     const a = rnd() * Math.PI * 2;
     // sqrt() keeps the blobs spread evenly over the disc instead of crowding
-    // into the middle of it. The spread is deliberately tighter than the blob
-    // radius: neighbours have to interpenetrate by a good margin or the cluster
-    // reads as a bag of balls rather than as one mass.
-    const rad = R * prof * Math.sqrt(rnd()) * 0.66;
-    const pr  = R * (0.24 + 0.15 * rnd()) * Math.max(0.55, prof);
+    // into the middle of it. The spread and per-blob sizing are both pushed
+    // well past the old range so a fifteen-puff cluster reads as lopsided and
+    // organic rather than as a tidy ring of balls.
+    const rad = R * prof * Math.sqrt(rnd()) * 0.80;
+    const pr  = R * (0.20 + 0.26 * rnd()) * Math.max(0.55, prof);
     puffs.push({
       x: Math.cos(a) * rad,
-      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.10,
+      // Extra vertical jitter on top of the profile curve, so puffs at the same
+      // t don't line up into visible rings.
+      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.24,
       z: Math.sin(a) * rad,
-      rx: pr * (0.90 + rnd() * 0.30),
-      ry: pr * (anvil ? 0.40 : band === 0 ? 0.55 : 0.80) * (0.90 + rnd() * 0.25),
-      rz: pr * (0.90 + rnd() * 0.30),
+      rx: pr * (0.75 + rnd() * 0.60),
+      ry: pr * (anvil ? 0.40 : band === 0 ? 0.55 : 0.80) * (0.75 + rnd() * 0.55),
+      rz: pr * (0.75 + rnd() * 0.60),
       seed: rnd() * 40,
     });
   }
@@ -2241,18 +2324,44 @@ function cloudMaterial(scale) {
 }
 
 // ----- the controls the free camera exposes -----
+// Everything defaults to 'Auto', i.e. driven by the climate model above —
+// the overrides exist so free camera can be used to go pick a fight with a
+// specific kind of sky instead of waiting for the simulation to roll one.
 const WX = {
   rateIdx: 2,
-  speedIdx: 1,
-  rangeIdx: 4,
+  sizeIdx: 3,
+  stormIdx: 4,
+  windDirIdx: 0,
+  windSpeedIdx: 0,
   // label, seconds between spawns (0 = off)
-  RATES:  [['Off', 0], ['Slow', 16], ['Medium', 7.5], ['Fast', 3]],
-  // label, drift speed in units / second
-  SPEEDS: [['Slow', 5], ['Medium', 13], ['Fast', 27]],
-  // label, min scale, max scale
-  RANGES: [['1 – 3', 1, 3], ['1 – 5', 1, 5], ['4 – 7', 4, 7],
-           ['6 – 10', 6, 10], ['1 – 10', 1, 10]],
+  RATES: [['Off', 0], ['Slow', 16], ['Medium', 7.5], ['Fast', 3]],
+  // label, mesh-scale multiplier (-1 = randomised each spawn)
+  SIZES: [['Small', 0.6], ['Medium', 1], ['Large', 1.6], ['Auto', -1]],
+  // label, min storminess, max storminess — the roll inside the band still
+  // favours the low end via the power curve in rollStorminess().
+  STORMS: [['Calm', 1, 3], ['Mixed', 1, 6], ['Stormy', 4, 10], ['Severe', 7, 10], ['Auto', 1, 10]],
+  // label, heading override in radians (null = simulated)
+  WIND_DIRS: [['Auto', null], ['E', 0], ['NE', Math.PI / 4], ['N', Math.PI / 2],
+              ['NW', 3 * Math.PI / 4], ['W', Math.PI], ['SW', 5 * Math.PI / 4],
+              ['S', 3 * Math.PI / 2], ['SE', 7 * Math.PI / 4]],
+  // label, units/second override (null = simulated)
+  WIND_SPEEDS: [['Auto', null], ['Calm', 4], ['Breezy', 11], ['Windy', 20], ['Gale', 32]],
 };
+function liveWindDir() {
+  const ov = WX.WIND_DIRS[WX.windDirIdx][1];
+  return ov === null ? currentWindDir() : ov;
+}
+function liveWindSpeed() {
+  const ov = WX.WIND_SPEEDS[WX.windSpeedIdx][1];
+  return ov === null ? currentWindSpeed() : ov;
+}
+// Weighted hard toward the low end: cube a uniform 0..1 roll before spreading
+// it across the band, so most clouds land calm/fair and 8-10 stays rare even
+// when the band itself allows it.
+function rollStorminess(lo, hi) {
+  const r = Math.pow(Math.random(), 3);
+  return lo + r * (hi - lo);
+}
 
 const MAX_CLOUDS    = isTouchDevice ? 14 : 24;
 const CLOUD_DESPAWN = 2100;      // they are gone once they are this far behind you
@@ -2269,19 +2378,26 @@ let wxTime = 0;
 
 function spawnCloud(initial) {
   if (clouds.length >= MAX_CLOUDS) return null;
-  const [, lo, hi] = WX.RANGES[WX.rangeIdx];
-  const scale = lo + Math.floor(Math.random() * (hi - lo + 1));
+  const [, lo, hi] = WX.STORMS[WX.stormIdx];
+  const scale = rollStorminess(lo, hi);
   const band  = CLOUD_BAND(scale);
   const pool  = CLOUD_GEOS[band];
   const geo   = pool[(Math.random() * pool.length) | 0];
 
-  // Far out and in a random direction. A fresh cloud is 800-1500 away, which at
-  // the medium drift speed is a couple of minutes of warning; the initial batch
-  // is scattered across the whole range so the sky is never empty at load.
-  const bearing = Math.random() * Math.PI * 2;
+  // Clouds move with the wind, so they are seeded upwind of the player with a
+  // wide scatter — a whole sky drifting in from exactly one point would look
+  // scripted — and drift down-wind from there. A fresh cloud is 800-1500 away,
+  // which at a typical wind speed is a couple of minutes of warning; the
+  // initial batch is scattered across the whole range so the sky is never
+  // empty at load.
+  const wind = liveWindDir();
+  const upwind = wind + Math.PI;
+  const bearing = upwind + (Math.random() - 0.5) * Math.PI * 1.15;
   const dist = initial ? 140 + Math.random() * 1360 : 800 + Math.random() * 700;
   const alt  = BAND_SPEC[band].base[0] + Math.random() * BAND_SPEC[band].base[1];
-  const sc   = 0.85 + Math.random() * 0.4;
+  const sizeSel = WX.SIZES[WX.sizeIdx];
+  const sizeMul = sizeSel[1] < 0 ? 1 : sizeSel[1];
+  const sc = (0.85 + Math.random() * 0.4) * sizeMul;
 
   const material = cloudMaterial(scale);
   const mesh = new THREE.Mesh(geo, material);
@@ -2290,10 +2406,9 @@ function spawnCloud(initial) {
   mesh.scale.setScalar(sc);
   cloudGroup.add(mesh);
 
-  // Heading: back down the bearing it was placed on, so it drifts in over the
-  // player and passes overhead, with a few degrees of scatter so a whole sky of
-  // them does not converge on one point.
-  const head = bearing + Math.PI + (Math.random() - 0.5) * 0.5;
+  // Heading follows the wind, with a few degrees of per-cloud scatter (gusting)
+  // so a whole sky of them does not move in perfect lockstep.
+  const head = wind + (Math.random() - 0.5) * 0.35;
   const c = {
     mesh,
     mat: material,
@@ -2301,7 +2416,7 @@ function spawnCloud(initial) {
     band,
     dirX: Math.cos(head),
     dirZ: Math.sin(head),
-    spdMul: 0.75 + Math.random() * 0.5,
+    spdMul: 0.85 + Math.random() * 0.3,
     radius: geo.userData.width * 0.5 * sc,
     baseY: alt,
     boltT: -1,
@@ -2458,6 +2573,7 @@ const shadowList = [];      // scratch, refilled every frame
 
 function updateWeather(dt) {
   wxTime += dt;
+  dayTime += dt;
   wxFocus.copy(camera.position);
 
   // --- spawn ---
@@ -2474,7 +2590,7 @@ function updateWeather(dt) {
   }
 
   // --- drift, cull, and collect what the rest of the scene needs to know ---
-  const speed = WX.SPEEDS[WX.speedIdx][1];
+  const speed = liveWindSpeed();
   let cover = 0, rainWant = 0, flashGlobal = 0;
   shadowList.length = 0;
 
@@ -2564,25 +2680,43 @@ function updateWeather(dt) {
 }
 
 // ----- weather HUD -----
-const wxRateBtn  = document.getElementById('wx-rate');
-const wxSpeedBtn = document.getElementById('wx-speed');
-const wxRangeBtn = document.getElementById('wx-range');
-const wxCountEl  = document.getElementById('wx-count');
+const wxRateBtn      = document.getElementById('wx-rate');
+const wxClimateBtn   = document.getElementById('wx-climate');
+const wxTempEl       = document.getElementById('wx-temp');
+const wxWindDirBtn   = document.getElementById('wx-winddir');
+const wxWindSpeedBtn = document.getElementById('wx-windspeed');
+const wxSizeBtn      = document.getElementById('wx-size');
+const wxStormBtn     = document.getElementById('wx-storm');
+const wxCountEl      = document.getElementById('wx-count');
 
 function refreshWxUI() {
   wxRateBtn.textContent  = WX.RATES[WX.rateIdx][0];
   wxRateBtn.classList.toggle('off', WX.rateIdx === 0);
-  wxSpeedBtn.textContent = WX.SPEEDS[WX.speedIdx][0];
-  wxRangeBtn.innerHTML   = WX.RANGES[WX.rangeIdx][0];
+  wxClimateBtn.textContent = CLIMATES[climateIdx].name;
+  wxTempEl.textContent = currentTemperature().toFixed(0) + '°C';
+  wxWindDirBtn.textContent = WX.WIND_DIRS[WX.windDirIdx][0] === 'Auto'
+    ? 'Auto (' + compassOf(currentWindDir()) + ')'
+    : WX.WIND_DIRS[WX.windDirIdx][0];
+  wxWindSpeedBtn.textContent = WX.WIND_SPEEDS[WX.windSpeedIdx][0] === 'Auto'
+    ? 'Auto (' + currentWindSpeed().toFixed(0) + ')'
+    : WX.WIND_SPEEDS[WX.windSpeedIdx][0];
+  wxSizeBtn.textContent  = WX.SIZES[WX.sizeIdx][0];
+  wxStormBtn.textContent = WX.STORMS[WX.stormIdx][0];
   wxCountEl.textContent  = String(clouds.length);
 }
-const cycleRate  = () => { WX.rateIdx  = (WX.rateIdx  + 1) % WX.RATES.length;  refreshWxUI(); };
-const cycleSpeed = () => { WX.speedIdx = (WX.speedIdx + 1) % WX.SPEEDS.length; refreshWxUI(); };
-const cycleRange = () => { WX.rangeIdx = (WX.rangeIdx + 1) % WX.RANGES.length; refreshWxUI(); };
+const cycleRate      = () => { WX.rateIdx      = (WX.rateIdx      + 1) % WX.RATES.length;       refreshWxUI(); };
+const cycleClimate   = () => { climateIdx      = (climateIdx      + 1) % CLIMATES.length;        refreshWxUI(); };
+const cycleWindDir   = () => { WX.windDirIdx   = (WX.windDirIdx   + 1) % WX.WIND_DIRS.length;    refreshWxUI(); };
+const cycleWindSpeed = () => { WX.windSpeedIdx = (WX.windSpeedIdx + 1) % WX.WIND_SPEEDS.length;  refreshWxUI(); };
+const cycleSize      = () => { WX.sizeIdx      = (WX.sizeIdx      + 1) % WX.SIZES.length;        refreshWxUI(); };
+const cycleStorm     = () => { WX.stormIdx     = (WX.stormIdx     + 1) % WX.STORMS.length;       refreshWxUI(); };
 
-bindTap(wxRateBtn,  cycleRate);
-bindTap(wxSpeedBtn, cycleSpeed);
-bindTap(wxRangeBtn, cycleRange);
+bindTap(wxRateBtn,      cycleRate);
+bindTap(wxClimateBtn,   cycleClimate);
+bindTap(wxWindDirBtn,   cycleWindDir);
+bindTap(wxWindSpeedBtn, cycleWindSpeed);
+bindTap(wxSizeBtn,      cycleSize);
+bindTap(wxStormBtn,     cycleStorm);
 refreshWxUI();
 
 // Seed the sky before the first frame so there is weather to look at on arrival.
@@ -2968,7 +3102,7 @@ const HELP_DESKTOP = {
                 ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['V', 'Next camera'],
                 ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['1 2 3', 'Weather'], ['4 / 0', 'Add / clear cloud'],
+                ['Mouse', 'Look'], ['1 2 3 5 6 7', 'Weather'], ['4 / 0', 'Add / clear cloud'],
                 ['V', 'Next camera'], ['G', 'Enter game'], ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
@@ -3079,6 +3213,7 @@ resize();
 // ---------------------------------------------------------------------------
 const fpsEl = document.getElementById('fps');
 const posEl = document.getElementById('pos');
+const climateTempEl = document.getElementById('climate-temp');
 const clock = new THREE.Clock();
 let frames = 0, fpsAccum = 0, fps = 0, hudAccum = 0;
 
@@ -3167,7 +3302,8 @@ function tick() {
       p.x.toFixed(1).padStart(6, ' ') + ',' +
       p.y.toFixed(1).padStart(6, ' ') + ',' +
       p.z.toFixed(1).padStart(6, ' ');
-    if (camMode === CAM.FREE) wxCountEl.textContent = String(clouds.length);
+    climateTempEl.textContent = CLIMATES[climateIdx].name + '  ' + currentTemperature().toFixed(0) + '°C';
+    if (camMode === CAM.FREE) refreshWxUI();
   }
 
   renderer.render(scene, camera);
@@ -3185,11 +3321,15 @@ window.hermes = {
   WX, clouds, spawnCloud, clearClouds, refreshWxUI,
   weather: () => ({
     count: clouds.length,
+    climate: CLIMATES[climateIdx].name,
+    tempC: currentTemperature(),
+    windDir: compassOf(liveWindDir()),
+    windSpeed: liveWindSpeed(),
     rate: WX.RATES[WX.rateIdx][0],
-    speed: WX.SPEEDS[WX.speedIdx][0],
-    range: WX.RANGES[WX.rangeIdx].slice(1),
+    size: WX.SIZES[WX.sizeIdx][0],
+    storm: WX.STORMS[WX.stormIdx].slice(1),
     gloom, rain: rainAmt,
-    scales: clouds.map((c) => c.scale).sort((a, b) => a - b),
+    scales: clouds.map((c) => c.scale.toFixed(1)).sort((a, b) => a - b),
   }),
   // live read-outs of the controller internals (module-scoped `let`s)
   status: () => ({

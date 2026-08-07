@@ -1,7 +1,10 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
+  <meta charset="utf-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -1431,7 +1434,7 @@ scene.add(ocean);
           diffuseColor.rgb = mix(water, SEA_FOAM, foam);
           // Cloud shadow. Water reads a squall harder than the land does — a
           // shaded patch of sea goes flat and slate-coloured.
-          diffuseColor.rgb *= mix(1.0, 0.03, cloudShade(vWPos.xz));
+          diffuseColor.rgb *= mix(1.0, 0.01, cloudShade(vWPos.xz));
 
           // Thin water lets the sand through and the very edge fades out
           // completely, which is what keeps the wash from ending in a hard line.
@@ -1609,7 +1612,7 @@ terrainMat.onBeforeCompile = (shader) => {
         col = mix(col, FOAM, clamp(band * lace, 0.0, 0.92) * sandM);
 
         // ---- and whatever is between this patch of ground and the sun ----
-        col *= mix(1.0, 0.02, cloudShade(wp.xz));
+        col *= mix(1.0, 0.005, cloudShade(wp.xz));
 
         diffuseColor.rgb *= col;
       }
@@ -2736,7 +2739,7 @@ function updateWeather(dt) {
     // black the ground out under it, so the top of the range needs to pull away
     // from the bottom much faster than a straight line does. Saturates around
     // scale 8 — past that the cell is simply opaque.
-    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.35 + 0.10 * c.scale + 0.025 * c.scale * c.scale, 0, 1);
+    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.45 + 0.12 * c.scale + 0.04 * c.scale * c.scale, 0, 1);
   }
 
   // --- the sky reacting to what is in it ---

@@ -487,10 +487,8 @@
   <div class="wx-row"><span class="lbl">Temp</span><span class="wx-val" id="wx-temp">--</span></div>
   <div class="wx-row"><span class="lbl"><b class="key">2</b> Wind dir</span><button class="wx-btn" id="wx-winddir">Auto</button></div>
   <div class="wx-row"><span class="lbl"><b class="key">3</b> Wind speed</span><button class="wx-btn" id="wx-windspeed">Auto</button></div>
-  <div class="wx-row"><span class="lbl"><b class="key">5</b> Cloud size</span><button class="wx-btn" id="wx-size">Auto</button></div>
-  <div class="wx-row"><span class="lbl"><b class="key">6</b> Storminess</span><button class="wx-btn" id="wx-storm">Auto</button></div>
   <div class="wx-row"><span class="lbl"><b class="key">1</b> Spawn rate</span><button class="wx-btn" id="wx-rate">Medium</button></div>
-  <div id="wx-foot"><span class="key"><b>4</b> spawn now &middot; <b>0</b> clear &mdash; </span>sky: <span id="wx-count">0</span></div>
+  <div id="wx-foot"><span class="key"><b>4</b> spawn now &middot; <b>0</b> clear &mdash; </span>sky: <span id="wx-count">0</span> &middot; <span id="wx-cloud-info">--</span></div>
 </div>
 
 <div id="underwater"></div>
@@ -1711,8 +1709,6 @@ window.addEventListener('keydown', (e) => {
     else if (e.code === 'Digit2' || e.code === 'Numpad2') cycleWindDir();
     else if (e.code === 'Digit3' || e.code === 'Numpad3') cycleWindSpeed();
     else if (e.code === 'Digit4' || e.code === 'Numpad4') { spawnCloud(true); refreshWxUI(); }
-    else if (e.code === 'Digit5' || e.code === 'Numpad5') cycleSize();
-    else if (e.code === 'Digit6' || e.code === 'Numpad6') cycleStorm();
     else if (e.code === 'Digit7' || e.code === 'Numpad7') cycleClimate();
     else if (e.code === 'Digit0' || e.code === 'Numpad0') clearClouds();
   }
@@ -2247,35 +2243,57 @@ const CLOUD_VERT = /* glsl */`
   }
 `;
 
-const CLOUD_FRAG = /* glsl */`
+const CLOUD_FRAG = /* glsl */ `
   varying float vH;
   varying vec3 vN;
   varying vec3 vW;
-  uniform vec3  uTop, uBot, uTint, uSunDir, uHaze;
-  uniform float uTintAmt, uFlash, uHazeMax;
+  uniform vec3  uTop, uBot, uTint, uSunDir, uHaze, uSunCol;
+  uniform float uTintAmt, uFlash, uHazeMax, uThickness;
   void main() {
     vec3 n = normalize(vN);
-    // Two things decide how much light reaches a patch of cloud: how far up the
-    // mass it is (light comes down through the whole depth of it) and which way
-    // it faces. Downward faces are what the rain falls out of, and they are the
-    // darkest part of any cloud that is worth looking at.
+    vec3 viewDir = normalize(cameraPosition - vW);
+    // --- Volumetric scattering model ---
+    // Beer-Lambert: light decays exponentially through the cloud mass.
+    // Thickness varies from thin edges (low uThickness) to dense core.
+    float density = uThickness * (0.4 + 0.6 * vH);
+    float beer = exp(-density * 1.8);
+    // Henyey-Greenstein phase function: gives the cloud its characteristic
+    // bright crown when lit from above and dark underside.
+    float cosTheta = dot(viewDir, uSunDir);
+    float g = 0.45;
+    float phase = (1.0 - g * g) / (4.0 * 3.14159 * pow(1.0 + g * g - 2.0 * g * cosTheta, 1.5));
+    phase = clamp(phase, 0.0, 2.5);
+    // How much light this patch receives: height + facing the sun.
     float up  = n.y * 0.5 + 0.5;
     float sun = dot(n, uSunDir) * 0.5 + 0.5;
-    float lit = clamp(0.16 + 0.46 * up + 0.34 * pow(sun, 1.4) + 0.36 * vH, 0.0, 1.0);
-    vec3 col = mix(uBot, uTop, lit);
-    // Silver lining: the rim that faces the sun blows out.
-    col += vec3(0.20, 0.19, 0.16) * pow(max(sun, 0.0), 9.0);
-    // Severe cells go sickly green-yellow underneath. It is a cast over the
-    // charcoal, not a coat of paint — enough to read as "that one is dangerous"
-    // from across the water and no more, and only across the lowest fifth.
-    col = mix(col, uTint, uTintAmt * (1.0 - smoothstep(0.0, 0.22, vH)));
-    // Lightning lights the cell from the inside, brightest low down.
-    col += vec3(0.80, 0.84, 1.0) * uFlash * (1.15 - vH * 0.55);
-    // The scene's own fog would swallow these at a third of the range they are
-    // meant to be legible from, so they carry their own much thinner haze.
+    float light = clamp(0.12 + 0.38 * up + 0.50 * pow(sun, 1.2) + 0.30 * vH, 0.0, 1.0);
+    // Combine: base colour lit by scattered light, with Beer extinction.
+    vec3 baseCol = mix(uBot, uTop, light);
+    vec3 lit = baseCol * (0.6 + 0.5 * phase) * (beer * 0.7 + 0.3);
+    // --- Silver lining / rim scatter ---
+    // Fresnel-like edge brightening: thin edges scatter more light toward
+    // the viewer, especially when backlit. This is the volumetric "silver
+    // lining" — not a highlight on a surface but light finding a path
+    // through the thinner fringe of the cloud.
+    float fresnel = 1.0 - max(dot(n, viewDir), 0.0);
+    float rim = pow(fresnel, 2.2) * (0.35 + 0.65 * pow(max(sun, 0.0), 2.0));
+    vec3 rimCol = uSunCol * rim * (1.4 - vH * 0.5);
+    lit += rimCol;
+    // --- Subsurface scattering approximation ---
+    // Light wrapping around the cloud edge from behind — the warm glow
+    // you see when a cloud is between you and the sun.
+    float wrap = pow(max(cosTheta, 0.0), 3.0) * fresnel * 0.3;
+    lit += uSunCol * wrap * (1.0 - vH * 0.4);
+    // --- Severe cell tint ---
+    lit = mix(lit, uTint, uTintAmt * (1.0 - smoothstep(0.0, 0.22, vH)));
+    // --- Lightning ---
+    lit += vec3(0.80, 0.84, 1.0) * uFlash * (1.15 - vH * 0.55);
+    // --- Atmospheric haze ---
     float haze = uHazeMax * smoothstep(500.0, 2700.0, distance(vW, cameraPosition));
-    col = mix(col, uHaze, haze);
-    gl_FragColor = vec4(col, 1.0);
+    lit = mix(lit, uHaze, haze);
+    // --- Soft alpha: thin edges are semi-transparent for realism ---
+    float alpha = clamp(0.55 + 0.45 * (1.0 - pow(fresnel, 3.0)) * beer, 0.3, 1.0);
+    gl_FragColor = vec4(lit, alpha);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }
@@ -2310,6 +2328,8 @@ function cloudMaterial(scale) {
   return new THREE.ShaderMaterial({
     vertexShader: CLOUD_VERT,
     fragmentShader: CLOUD_FRAG,
+    transparent: true,
+    depthWrite: false,
     uniforms: {
       uTop:     { value: top },
       uBot:     { value: bot },
@@ -2319,6 +2339,8 @@ function cloudMaterial(scale) {
       uHaze:    { value: CLOUD_HAZE.clone() },
       uHazeMax: { value: 0.58 },
       uFlash:   { value: 0 },
+      uSunCol:  { value: new THREE.Color(1.0, 0.95, 0.85) },
+      uThickness: { value: 0.8 + scale * 0.12 },
     },
   });
 }
@@ -2329,17 +2351,10 @@ function cloudMaterial(scale) {
 // specific kind of sky instead of waiting for the simulation to roll one.
 const WX = {
   rateIdx: 2,
-  sizeIdx: 3,
-  stormIdx: 4,
   windDirIdx: 0,
   windSpeedIdx: 0,
   // label, seconds between spawns (0 = off)
   RATES: [['Off', 0], ['Slow', 16], ['Medium', 7.5], ['Fast', 3]],
-  // label, mesh-scale multiplier (-1 = randomised each spawn)
-  SIZES: [['Small', 0.6], ['Medium', 1], ['Large', 1.6], ['Auto', -1]],
-  // label, min storminess, max storminess — the roll inside the band still
-  // favours the low end via the power curve in rollStorminess().
-  STORMS: [['Calm', 1, 3], ['Mixed', 1, 6], ['Stormy', 4, 10], ['Severe', 7, 10], ['Auto', 1, 10]],
   // label, heading override in radians (null = simulated)
   WIND_DIRS: [['Auto', null], ['E', 0], ['NE', Math.PI / 4], ['N', Math.PI / 2],
               ['NW', 3 * Math.PI / 4], ['W', Math.PI], ['SW', 5 * Math.PI / 4],
@@ -2362,6 +2377,10 @@ function rollStorminess(lo, hi) {
   const r = Math.pow(Math.random(), 3);
   return lo + r * (hi - lo);
 }
+// Per-cloud storminess: always 1-10 range, heavily weighted low.
+function rollCloudStorminess() {
+  return rollStorminess(1, 10);
+}
 
 const MAX_CLOUDS    = isTouchDevice ? 14 : 24;
 const CLOUD_DESPAWN = 2100;      // they are gone once they are this far behind you
@@ -2378,8 +2397,7 @@ let wxTime = 0;
 
 function spawnCloud(initial) {
   if (clouds.length >= MAX_CLOUDS) return null;
-  const [, lo, hi] = WX.STORMS[WX.stormIdx];
-  const scale = rollStorminess(lo, hi);
+  const scale = rollCloudStorminess();
   const band  = CLOUD_BAND(scale);
   const pool  = CLOUD_GEOS[band];
   const geo   = pool[(Math.random() * pool.length) | 0];
@@ -2395,9 +2413,7 @@ function spawnCloud(initial) {
   const bearing = upwind + (Math.random() - 0.5) * Math.PI * 1.15;
   const dist = initial ? 140 + Math.random() * 1360 : 800 + Math.random() * 700;
   const alt  = BAND_SPEC[band].base[0] + Math.random() * BAND_SPEC[band].base[1];
-  const sizeSel = WX.SIZES[WX.sizeIdx];
-  const sizeMul = sizeSel[1] < 0 ? 1 : sizeSel[1];
-  const sc = (0.85 + Math.random() * 0.4) * sizeMul;
+  const sc = 0.65 + Math.random() * 0.9;
 
   const material = cloudMaterial(scale);
   const mesh = new THREE.Mesh(geo, material);
@@ -2685,9 +2701,8 @@ const wxClimateBtn   = document.getElementById('wx-climate');
 const wxTempEl       = document.getElementById('wx-temp');
 const wxWindDirBtn   = document.getElementById('wx-winddir');
 const wxWindSpeedBtn = document.getElementById('wx-windspeed');
-const wxSizeBtn      = document.getElementById('wx-size');
-const wxStormBtn     = document.getElementById('wx-storm');
 const wxCountEl      = document.getElementById('wx-count');
+const wxCloudInfoEl  = document.getElementById('wx-cloud-info');
 
 function refreshWxUI() {
   wxRateBtn.textContent  = WX.RATES[WX.rateIdx][0];
@@ -2700,23 +2715,26 @@ function refreshWxUI() {
   wxWindSpeedBtn.textContent = WX.WIND_SPEEDS[WX.windSpeedIdx][0] === 'Auto'
     ? 'Auto (' + currentWindSpeed().toFixed(0) + ')'
     : WX.WIND_SPEEDS[WX.windSpeedIdx][0];
-  wxSizeBtn.textContent  = WX.SIZES[WX.sizeIdx][0];
-  wxStormBtn.textContent = WX.STORMS[WX.stormIdx][0];
   wxCountEl.textContent  = String(clouds.length);
+  if (clouds.length > 0) {
+    let nearest = clouds[0], nearDist = Infinity;
+    for (const c of clouds) {
+      const d = c.mesh.position.distanceTo(camera.position);
+      if (d < nearDist) { nearDist = d; nearest = c; }
+    }
+    wxCloudInfoEl.textContent = nearest.scale.toFixed(1) + ' · ' + nearDist.toFixed(0) + 'm';
+  } else {
+    wxCloudInfoEl.textContent = 'no clouds';
+  }
 }
 const cycleRate      = () => { WX.rateIdx      = (WX.rateIdx      + 1) % WX.RATES.length;       refreshWxUI(); };
 const cycleClimate   = () => { climateIdx      = (climateIdx      + 1) % CLIMATES.length;        refreshWxUI(); };
 const cycleWindDir   = () => { WX.windDirIdx   = (WX.windDirIdx   + 1) % WX.WIND_DIRS.length;    refreshWxUI(); };
 const cycleWindSpeed = () => { WX.windSpeedIdx = (WX.windSpeedIdx + 1) % WX.WIND_SPEEDS.length;  refreshWxUI(); };
-const cycleSize      = () => { WX.sizeIdx      = (WX.sizeIdx      + 1) % WX.SIZES.length;        refreshWxUI(); };
-const cycleStorm     = () => { WX.stormIdx     = (WX.stormIdx     + 1) % WX.STORMS.length;       refreshWxUI(); };
-
 bindTap(wxRateBtn,      cycleRate);
 bindTap(wxClimateBtn,   cycleClimate);
 bindTap(wxWindDirBtn,   cycleWindDir);
 bindTap(wxWindSpeedBtn, cycleWindSpeed);
-bindTap(wxSizeBtn,      cycleSize);
-bindTap(wxStormBtn,     cycleStorm);
 refreshWxUI();
 
 // Seed the sky before the first frame so there is weather to look at on arrival.
@@ -3102,7 +3120,7 @@ const HELP_DESKTOP = {
                 ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['V', 'Next camera'],
                 ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['1 2 3 5 6 7', 'Weather'], ['4 / 0', 'Add / clear cloud'],
+                ['Mouse', 'Look'], ['1 2 3 7', 'Weather'], ['4 / 0', 'Add / clear cloud'],\
                 ['V', 'Next camera'], ['G', 'Enter game'], ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
@@ -3326,8 +3344,6 @@ window.hermes = {
     windDir: compassOf(liveWindDir()),
     windSpeed: liveWindSpeed(),
     rate: WX.RATES[WX.rateIdx][0],
-    size: WX.SIZES[WX.sizeIdx][0],
-    storm: WX.STORMS[WX.stormIdx].slice(1),
     gloom, rain: rainAmt,
     scales: clouds.map((c) => c.scale.toFixed(1)).sort((a, b) => a - b),
   }),

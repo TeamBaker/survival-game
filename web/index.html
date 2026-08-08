@@ -1222,18 +1222,18 @@ const CLOUD_SHADOW_SLANT = new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y);
 
 const CLOUD_SHADOW_GLSL = /* glsl */`
   uniform float uCloudShadows[${MAX_CLOUD_SHADOWS * 4}];
-  // 0 in full sun .. 1 under the thickest part of a storm cell. The disc holds
-  // full strength out to 55% of its radius before it starts to fall away: a
-  // shadow with a wide solid core and a soft rim is what actually reads as a
-  // cloud passing overhead, where one that fades from the centre outward just
-  // reads as a smudge.
+  // 0 in full sun .. 1 under the thickest part of a storm cell. The falloff
+  // starts at a fifth of the radius rather than at 55% of it, because the cells
+  // casting these are now a kilometre or more across: a solid core that wide
+  // covers the whole island at a single flat value, and a shadow you cannot see
+  // an edge of is not a shadow, it is just the lights going out.
   float cloudShade(vec2 p) {
     float s = 0.0;
     for (int i = 0; i < ${MAX_CLOUD_SHADOWS}; i++) {
       float r = uCloudShadows[i * 4 + 2];
       if (r <= 0.0) continue;
       float d = distance(p, vec2(uCloudShadows[i * 4], uCloudShadows[i * 4 + 1]));
-      float v = uCloudShadows[i * 4 + 3] * (1.0 - smoothstep(r * 0.55, r, d));
+      float v = uCloudShadows[i * 4 + 3] * (1.0 - smoothstep(r * 0.20, r, d));
       // Stacked rather than max()'d: two cells drifting across each other put
       // more mass between the ground and the sun than either does alone.
       s = s + v - s * v;
@@ -1973,29 +1973,36 @@ const isSprinting = () =>
 // ---------------------------------------------------------------------------
 // Weather — clouds, rain, lightning
 //
-// Each cloud is a solid cluster of 8-20 overlapping lumpy ellipsoids baked into
-// one indexed geometry, so a whole cell is a single draw call. Their surfaces
-// come out merged rather than beaded because the normals are taken from the
-// gradient of a metaball field over *all* the blobs in the cluster, not from the
-// sphere each vertex happens to belong to — neighbouring blobs therefore shade
-// continuously across the seam where they intersect. Triangles buried inside
-// another blob are dropped at build time.
+// A cloud is a cluster of 8-24 overlapping *billboard quads* — puffs — merged
+// into one geometry, so a whole cell is still a single draw call. Each quad
+// carries its centre in `position` and is expanded to a square in *view* space
+// by the vertex shader, which means a puff can never go edge-on: from any angle
+// it presents the same disc. That is the whole reason for the change from
+// meshes. A polygonal shell has a silhouette, and a silhouette is what makes a
+// cloud read as an object; a stack of screen-aligned puffs has none, so what you
+// see is the accumulated density instead of a surface.
 //
-// Shading is baked, not lit: a directional light cannot give a cloud its
-// characteristic bright top and shadowed underside, because that gradient comes
-// from light scattering *through* the mass, which a surface material knows
-// nothing about. So the material is unlit and mixes a top and a base colour by
-// height-within-the-cloud plus normal, and the pair of colours is what encodes
-// the storm scale.
+// The shape of an individual puff is not in the geometry at all — the quad is a
+// bare square and the fragment shader carves the round, eroded outline out of it
+// with fbm noise, then lights it off a fake spherical normal perturbed by the
+// screen-space gradient of that same noise. Density (not a mesh) drives both the
+// alpha and the Beer-Lambert extinction, so thin edges are genuinely thin and
+// the deep middle of a storm cell is genuinely opaque.
 // ---------------------------------------------------------------------------
 
 // The four bands the 1-10 scale falls into: fair, building, storm, severe.
-const CLOUD_BAND = (s) => (s <= 3 ? 0 : s <= 5 ? 1 : s <= 7 ? 2 : 3);
+const CLOUD_BAND = (s) => (s < 3 ? 0 : s < 5 ? 1 : s < 7 ? 2 : 3);
+// Widths are ~4x what the old mesh clouds used and the deck sits ~4x higher:
+// billboard puffs only pay off at a size where you are looking *into* a mass
+// rather than at a lump on the horizon. `height` is the cluster's vertical
+// extent, `base` is [min, range] for the altitude of the cloud base — the tops
+// are kept under ~2100 so the tallest cell at the far edge of the spawn ring
+// still fits inside the 3200 far plane.
 const BAND_SPEC = [
-  { width: [200, 320], height: [ 48,  96], puffs: [ 5,  9], base: [110, 60] },
-  { width: [320, 480], height: [160, 240], puffs: [ 7, 11], base: [140, 70] },
-  { width: [480, 640], height: [320, 432], puffs: [ 9, 13], base: [160, 80] },
-  { width: [560, 720], height: [392, 504], puffs: [11, 15], base: [175, 90] },
+  { width: [ 800, 1280], height: [180,  340], puffs: [ 8, 12], base: [450, 200] },
+  { width: [1280, 1920], height: [520,  760], puffs: [12, 16], base: [500, 250] },
+  { width: [1920, 2560], height: [820, 1080], puffs: [16, 20], base: [560, 300] },
+  { width: [2240, 2880], height: [980, 1200], puffs: [20, 24], base: [600, 300] },
 ];
 
 // How wide the cluster is at height fraction t: a flat sheet, a heap, a tower
@@ -2007,361 +2014,373 @@ function cloudProfile(band, t) {
   return 1.00 - 0.60 * Math.pow(t, 0.80) + 0.78 * smooth((t - 0.58) / 0.42);
 }
 
-// PolyhedronGeometry hands back a non-indexed soup — every face carries its own
-// three vertices. Welding it first means a blob costs 162 vertices rather than
-// 960, and it is the welded form the merge below assumes.
-function indexedUnitSphere(detail) {
-  const src = new THREE.IcosahedronGeometry(1, detail);
-  const sp = src.attributes.position.array;
-  const seen = new Map();
-  const pos = [], idx = [];
-  for (let i = 0; i < sp.length; i += 3) {
-    const key = sp[i].toFixed(4) + ',' + sp[i + 1].toFixed(4) + ',' + sp[i + 2].toFixed(4);
-    let v = seen.get(key);
-    if (v === undefined) {
-      v = pos.length / 3;
-      seen.set(key, v);
-      pos.push(sp[i], sp[i + 1], sp[i + 2]);
-    }
-    idx.push(v);
-  }
-  src.dispose();
-  return { pos: new Float32Array(pos), idx: new Uint16Array(idx), count: pos.length / 3 };
-}
-// three's `detail` counts subdivision cuts, not recursions: 2 gives 180 faces per
-// blob and 3 gives 320. Three is smooth enough that the lumps read as lumps
-// rather than as facets, and a whole cloud still lands around 5k triangles.
-const CLOUD_PUFF = indexedUnitSphere(isTouchDevice ? 2 : 3);
 const lerpRange = (r, t) => r[0] + (r[1] - r[0]) * t;
+
+// ----- one cloud's cluster of puffs, merged into a single quad soup -----
+// Built in world units around a local origin at the centre of the cloud base:
+// local y = 0 is the base, and every puff also carries its own 0..1 height
+// fraction so the shader can run the top-to-bottom gradient without needing the
+// cluster's extent as a uniform.
+//
+// The cluster is laid out in normalised space — centres inside a disc of radius
+// 0.55, radii 0.34-0.70 — and then scaled up. Those two numbers are what decide
+// whether the result reads as one mass: the spread has to stay *smaller* than
+// the radii, or the puffs stop overlapping and the cloud falls apart into a
+// handful of separate discs.
+const PUFF_SPREAD = 0.55;
+// Furthest a puff can reach from the cluster axis in normalised units — what the
+// half-width has to be divided by to get the world scale factor.
+const PUFF_REACH = PUFF_SPREAD + 0.70;
+// How much wider than its puff each quad is built. Headroom for the fragment
+// shader to push the eroded outline outward without running into the edge of
+// the quad and clipping it flat.
+const PUFF_QUAD = 1.40;
 
 function buildCloudGeo(band, rnd) {
   const spec   = BAND_SPEC[band];
   const width  = lerpRange(spec.width, rnd());
   const height = lerpRange(spec.height, rnd());
   const count  = Math.round(lerpRange(spec.puffs, rnd()));
-  const R = width * 0.5;
+  const U      = width * 0.5 / PUFF_REACH;   // normalised cluster unit -> world
 
   const puffs = [];
   for (let k = 0; k < count; k++) {
-    const t = count > 1 ? Math.min(1, (k + rnd() * 0.8) / count) : 0;
-    const prof  = Math.max(0.18, cloudProfile(band, t));
-    const anvil = band >= 2 && t > 0.72;      // the flat spreading cap up top
-    const a = rnd() * Math.PI * 2;
-    // sqrt() keeps the blobs spread evenly over the disc instead of crowding
-    // into the middle of it. The spread is deliberately tighter than the blob
-    // radius: neighbours have to interpenetrate by a good margin or the cluster
-    // reads as a bag of balls rather than as one mass.
-    const rad = R * prof * Math.sqrt(rnd()) * 0.72;
-    const pr  = R * (0.24 + 0.28 * rnd()) * Math.max(0.55, prof);
+    // Walk up the cluster rather than scattering at random: the profile decides
+    // how wide the cloud is at each height, and that is the whole difference
+    // between a flat fair-weather sheet and a tower under an anvil.
+    const t    = count > 1 ? Math.min(1, (k + rnd() * 0.8) / count) : 0;
+    const prof = Math.max(0.18, cloudProfile(band, t));
+    const a    = rnd() * Math.PI * 2;
+    // sqrt() spreads the puffs evenly over the disc instead of crowding them
+    // into the middle of it.
+    const nr = PUFF_SPREAD * prof * Math.sqrt(rnd());
+    const pr = (0.34 + 0.36 * rnd()) * Math.max(0.55, prof);
     puffs.push({
-      x: Math.cos(a) * rad,
-      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.22,
-      z: Math.sin(a) * rad,
-      // A narrower spread on the axis jitter than before: one blob at half the
-      // radius of its neighbour pokes out of the mass as a recognisable ball
-      // however well the seam around it is handled.
-      rx: pr * (0.80 + rnd() * 0.50),
-      ry: pr * (anvil ? 0.40 : band === 0 ? 0.55 : 0.80) * (0.90 + rnd() * 0.25),
-      rz: pr * (0.80 + rnd() * 0.50),
-      seed: rnd() * 40,
+      x: Math.cos(a) * nr * U,
+      z: Math.sin(a) * nr * U,
+      y: t * height * (band === 0 ? 0.60 : 0.90) + (rnd() - 0.5) * height * 0.18,
+      r: pr * U,
+      seed: rnd() * 64,
+      lit: 1,
     });
   }
 
-  const sp = CLOUD_PUFF.pos;
-  const si = CLOUD_PUFF.idx;
-  const vc = CLOUD_PUFF.count;
-  const total = vc * puffs.length;
-
-  // Lumps baked into the surface — a perfectly round ball never reads as cloud
-  // however it is shaded. This displaces the surface by up to a third of the
-  // radius either way, so it is not a detail anything downstream can ignore:
-  // both the seam fillet and the buried-face cull have to ask this where a puff
-  // actually ends rather than assume its ellipsoid.
-  const LUMP = 0.20;
-  const lumpAt = (pf, dx, dy, dz) =>
-    1 + LUMP * (Math.sin(dx * 3.1 + pf.seed) * Math.sin(dy * 2.7 + pf.seed * 1.9)
-        + 0.55 * Math.sin(dz * 5.3 + pf.seed * 2.7) * Math.sin(dx * 4.3 - pf.seed));
-
-  // Where a point sits relative to a puff's lumpy surface: below 1 is inside it,
-  // 1 is on it, above 1 is clear of it.
-  const surfDepth = (px, py, pz, pf) => {
-    const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
-    const q = Math.hypot(ex, ey, ez);
-    if (q < 1e-6) return 0;
-    return q / lumpAt(pf, ex / q, ey / q, ez / q);
-  };
-
-  // --- vertices ---
-  // Built and kept in raw space: the flat base is a non-uniform squash, and
-  // every field query below — normals, fillet, cull — compares points against
-  // plain ellipsoids, so it has to happen before that squash distorts them.
-  // Testing squashed points against unsquashed puffs is what put the worst of
-  // the seam junk down in the skirt, which is exactly where a cumulus is most
-  // obviously a heap of balls.
-  const pos = new Float32Array(total * 3);
-  for (let k = 0; k < puffs.length; k++) {
-    const pf = puffs[k];
-    for (let v = 0; v < vc; v++) {
-      const dx = sp[v * 3], dy = sp[v * 3 + 1], dz = sp[v * 3 + 2];
-      const l = lumpAt(pf, dx, dy, dz);
-      const o = (k * vc + v) * 3;
-      pos[o]     = pf.x + dx * pf.rx * l;
-      pos[o + 1] = pf.y + dy * pf.ry * l;
-      pos[o + 2] = pf.z + dz * pf.rz * l;
+  // --- how much cloud each puff sits behind, looking toward the sun ---
+  // Baked once here rather than guessed at in the shader. A puff buried in the
+  // middle of the cluster has the whole mass between it and the light, and that
+  // one fact is most of what gives a cumulus its bright crown and its dim,
+  // heavy core — a billboard has no geometry to work it out from at runtime.
+  for (const p of puffs) {
+    let occ = 0;
+    for (const o of puffs) {
+      if (o === p) continue;
+      const dx = o.x - p.x, dy = o.y - p.y, dz = o.z - p.z;
+      const t = dx * SUN.x + dy * SUN.y + dz * SUN.z;
+      if (t <= 0) continue;                      // behind us: not in the way
+      // Perpendicular distance from o's centre to the ray toward the sun.
+      const ox = dx - SUN.x * t, oy = dy - SUN.y * t, oz = dz - SUN.z * t;
+      const d = Math.hypot(ox, oy, oz);
+      if (d < o.r) occ += (1 - d / o.r) * 0.75;
     }
+    p.lit = Math.exp(-occ);
   }
 
-  // --- normals from the metaball field, so the blobs shade as one mass ---
-  const nrm = new Float32Array(total * 3);
-  const fieldNormals = () => {
-    for (let i = 0; i < total; i++) {
-      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
-      let gx = 0, gy = 0, gz = 0;
-      for (let k = 0; k < puffs.length; k++) {
-        const pf = puffs[k];
-        const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
-        const q2 = ex * ex + ey * ey + ez * ez + 1e-4;
-        const w = 1 / (q2 * q2);            // d/dp of the 1/q^2 falloff, outward
-        gx += w * ex / pf.rx;
-        gy += w * ey / pf.ry;
-        gz += w * ez / pf.rz;
-      }
-      const len = Math.hypot(gx, gy, gz) || 1;
-      nrm[i * 3] = gx / len; nrm[i * 3 + 1] = gy / len; nrm[i * 3 + 2] = gz / len;
-    }
-  };
-  fieldNormals();
-
-  // --- fillet the seams ---
-  // Two spheres pushed into each other cross in a hard V, and no amount of
-  // smoothed normals hides a crease that sharp: it catches the light as a line
-  // and the eye reads the two balls straight off it. Nudging the vertices that
-  // sit near a neighbour's surface outward along the field gradient fills that V
-  // in with a fillet, so the pair meets at a waist the way real cloud does.
-  // Vertices already well inside a neighbour are culled below and do not matter.
-  for (let k = 0; k < puffs.length; k++) {
-    const A = puffs[k];
-    const reach = (A.rx + A.ry + A.rz) / 3;
-    for (let v = 0; v < vc; v++) {
-      const i = k * vc + v;
-      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
-      let near = 0;
-      for (let m = 0; m < puffs.length; m++) {
-        if (m === k) continue;
-        // 1 on the neighbour's surface, tapering to 0 half a radius clear of it.
-        const f = 1.5 - surfDepth(px, py, pz, puffs[m]);
-        if (f > near) near = f;
-      }
-      if (near <= 0) continue;
-      const t2 = Math.min(1, near / 0.5);
-      const push = reach * 0.22 * t2 * t2 * (3 - 2 * t2);
-      pos[i * 3]     = px + nrm[i * 3] * push;
-      pos[i * 3 + 1] = py + nrm[i * 3 + 1] * push;
-      pos[i * 3 + 2] = pz + nrm[i * 3 + 2] * push;
-    }
-  }
-  fieldNormals();   // the surface moved, so the gradient has to be read again
-
-  // --- faces, minus the ones sealed inside a neighbouring blob ---
-  // The material is alpha-blended with no depth write, so a face left inside a
-  // neighbour is not hidden by it — it blends on top, and every one of those
-  // stacked interior shells darkens the overlap into a visible ball-shaped
-  // outline. Culling against the true lumpy surface lets the threshold sit right
-  // at it: anything below 1 is genuinely inside and has to go. The old 0.94
-  // against a plain ellipsoid both kept a shell of interior faces around every
-  // intersection and cut holes wherever a lump dented the surface inward.
-  const buriedIn = (i, pf) => surfDepth(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], pf) < 1.0;
-  const idx = [];
-  for (let k = 0; k < puffs.length; k++) {
-    const base = k * vc;
-    const A = puffs[k];
-    // Only the blobs that actually reach this one can swallow any of its faces —
-    // testing the rest of the cluster per triangle is most of the build cost.
-    // The 1.35 is the widest the lumps plus the fillet push a surface out.
-    const near = [];
-    const rA = Math.max(A.rx, A.ry, A.rz) * 1.35;
-    for (let m = 0; m < puffs.length; m++) {
-      if (m === k) continue;
-      const B = puffs[m];
-      if (Math.hypot(A.x - B.x, A.y - B.y, A.z - B.z) < rA + Math.max(B.rx, B.ry, B.rz) * 1.35) near.push(B);
-    }
-    for (let f = 0; f < si.length; f += 3) {
-      const a = base + si[f], b = base + si[f + 1], c = base + si[f + 2];
-      let buried = false;
-      for (let m = 0; m < near.length && !buried; m++) {
-        const pf = near[m];
-        buried = buriedIn(a, pf) && buriedIn(b, pf) && buriedIn(c, pf);
-      }
-      if (!buried) idx.push(a, b, c);
-    }
-  }
-
-  // --- flatten the base ---
-  // Everything below the cluster datum is squashed into a shallow skirt, which
-  // is what gives cumulus their flat, level bases. Normals take the inverse of
-  // that scale, so faces that were pointing gently downward end up pointing
-  // straight down — a flat base that shades like one.
-  const BASE_SQUASH = 0.22;
-  for (let i = 0; i < total; i++) {
-    if (pos[i * 3 + 1] >= 0) continue;
-    pos[i * 3 + 1] *= BASE_SQUASH;
-    const nx = nrm[i * 3], ny = nrm[i * 3 + 1] / BASE_SQUASH, nz = nrm[i * 3 + 2];
-    const len = Math.hypot(nx, ny, nz) || 1;
-    nrm[i * 3] = nx / len; nrm[i * 3 + 1] = ny / len; nrm[i * 3 + 2] = nz / len;
-  }
-
-  // --- normalise the vertical: local y = 0 is the cloud base, aH is 0..1 ---
+  // --- vertical extent, so height fractions run 0 at the base to 1 at the top ---
   let minY = Infinity, maxY = -Infinity;
-  for (let i = 1; i < pos.length; i += 3) {
-    if (pos[i] < minY) minY = pos[i];
-    if (pos[i] > maxY) maxY = pos[i];
+  for (const p of puffs) {
+    if (p.y - p.r * 0.55 < minY) minY = p.y - p.r * 0.55;
+    if (p.y + p.r * 0.55 > maxY) maxY = p.y + p.r * 0.55;
   }
   const span = Math.max(1e-3, maxY - minY);
-  const aH = new Float32Array(total);
-  for (let i = 0; i < total; i++) {
-    pos[i * 3 + 1] -= minY;
-    aH[i] = pos[i * 3 + 1] / span;
+
+  // --- four corners per puff ---
+  // `position` is the puff centre, repeated four times: the quad is expanded in
+  // view space by the vertex shader, so the geometry itself has no width at all.
+  // aCorner spans the square from (-1,-1) to (+1,+1) and everything round about
+  // a puff gets carved out of that square in the fragment shader.
+  const n   = puffs.length;
+  const pos = new Float32Array(n * 4 * 3);
+  const cor = new Float32Array(n * 4 * 2);
+  const pfa = new Float32Array(n * 4 * 4);
+  const idx = new Uint16Array(n * 6);
+  const CX = [-1, 1, -1, 1], CY = [-1, -1, 1, 1];
+  let far = 0;
+  for (let k = 0; k < n; k++) {
+    const p  = puffs[k];
+    const py = p.y - minY;
+    const hf = py / span;
+    for (let v = 0; v < 4; v++) {
+      const i = k * 4 + v;
+      pos[i * 3]     = p.x;
+      pos[i * 3 + 1] = py;
+      pos[i * 3 + 2] = p.z;
+      cor[i * 2]     = CX[v];
+      cor[i * 2 + 1] = CY[v];
+      pfa[i * 4]     = p.r;      // half-width of the quad, in local units
+      pfa[i * 4 + 1] = hf;       // 0 at the cloud base, 1 at the top
+      pfa[i * 4 + 2] = p.seed;   // decorrelates the noise between neighbours
+      pfa[i * 4 + 3] = p.lit;    // baked sun exposure
+    }
+    const b = k * 4;
+    idx.set([b, b + 1, b + 2, b + 2, b + 1, b + 3], k * 6);
+    // PUFF_QUAD oversize, then the corner of that square: 1.4 * sqrt(2).
+    far = Math.max(far, Math.hypot(p.x, py - span * 0.5, p.z) + p.r * 2.0);
   }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
-  geo.setAttribute('aH', new THREE.BufferAttribute(aH, 1));
-  geo.setIndex(idx);
-  geo.computeBoundingSphere();
-  geo.userData.width = width;
+  geo.setAttribute('aCorner',  new THREE.BufferAttribute(cor, 2));
+  geo.setAttribute('aPuff',    new THREE.BufferAttribute(pfa, 4));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  // Worked out by hand: every vertex sits at a puff centre, so the automatic
+  // bounding sphere would be a fraction of what the expanded quads actually
+  // cover and the frustum cull would blink whole clouds out at the screen edge.
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, span * 0.5, 0), far);
+  geo.userData.width  = width;
   geo.userData.height = span;
   return geo;
 }
 
-// A pool built once at load and shared: a cloud picks a shell, spins it and
+// A pool built once at load and shared: a cloud picks a cluster, spins it and
 // scales it a little, and gets its own colours from its own weather scale.
 const cloudRand = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
-const CLOUD_GEOS = BAND_SPEC.map((_, band) => {
+const CLOUD_GEOS = [[], [], [], []];
+for (let band = 0; band < BAND_SPEC.length; band++) {
   const n = isTouchDevice ? 2 : 3;
-  const out = [];
-  for (let i = 0; i < n; i++) out.push(buildCloudGeo(band, cloudRand));
-  return out;
-});
+  for (let i = 0; i < n; i++) CLOUD_GEOS[band].push(buildCloudGeo(band, cloudRand));
+}
 
+// Screen-aligned in view space, which is the entire point: the quad is built out
+// of the puff centre along the view basis, so a puff presents the same disc from
+// every angle and can never go edge-on the way a mesh face does.
 const CLOUD_VERT = /* glsl */`
-  attribute float aH;
+  attribute vec4 aPuff;    // x: radius, y: height fraction, z: seed, w: baked sun exposure
+  attribute vec2 aCorner;  // the unit square, (-1,-1) to (+1,+1)
+  varying vec2  vC;
+  varying vec3  vW;
   varying float vH;
-  varying vec3 vN;
-  varying vec3 vW;
+  varying float vSeed;
+  varying float vLit;
+  uniform float uTime;
   void main() {
-    vH = aH;
-    vN = normalize(mat3(modelMatrix) * normal);
+    vC    = aCorner;
+    vH    = aPuff.y;
+    vSeed = aPuff.z;
+    vLit  = aPuff.w;
     vec4 wp = modelMatrix * vec4(position, 1.0);
-    vW = wp.xyz;
-    gl_Position = projectionMatrix * viewMatrix * wp;
+    vW = wp.xyz;                                   // the puff centre, not the corner
+    float r = aPuff.x * length(modelMatrix[0].xyz);
+    vec4 mv = viewMatrix * wp;
+    // The quad is deliberately wider than the puff it carries. The fragment
+    // shader erodes the outline outward as well as inward, and a rim that lands
+    // past the edge of its own quad gets clipped by it — which shows up as a
+    // dead straight horizontal or vertical line across the cloud, the one
+    // artifact that gives a billboard away instantly.
+    mv.xy += aCorner * r * ${PUFF_QUAD.toFixed(2)};
+    gl_Position = projectionMatrix * mv;
   }
 `;
 
 const CLOUD_FRAG = /* glsl */`
+  varying vec2  vC;
+  varying vec3  vW;
   varying float vH;
-  varying vec3 vN;
-  varying vec3 vW;
+  varying float vSeed;
+  varying float vLit;
   uniform vec3  uTop, uBot, uTint, uSunDir, uHaze, uSunCol;
-  uniform float uTintAmt, uFlash, uHazeMax, uThickness;
+  uniform float uTintAmt, uFlash, uHazeMax, uThickness, uTime;
+
+  // Cheap value-noise hash. Two rounds of fract-mangling is all it is worth at
+  // this fill rate — the fbm stacked on top hides the regularity.
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+
+  float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  }
+
+  // Normalised to 0..1 whatever the octave count, so the erosion below moves the
+  // rim by the same amount on the three-octave phone build as on the four.
+  float fbm(vec2 p) {
+    float v = 0.0, a = 0.5, norm = 0.0;
+    for (int i = 0; i < ${isTouchDevice ? 3 : 4}; i++) {
+      v += a * vnoise(p);
+      norm += a;
+      p = p * 2.03 + 17.0;
+      a *= 0.5;
+    }
+    return v / norm;
+  }
 
   // Henyey-Greenstein: fraction of light scattered toward the eye for a given
-  // sun/view angle. g > 0 throws most of it forward, through the mass, which
-  // is what makes a cloud glow when the sun sits behind it.
+  // sun/view angle. g > 0 throws most of it forward, through the mass, which is
+  // what makes a cloud glow when the sun sits behind it.
   float henyeyGreenstein(float cosTheta, float g) {
     float g2 = g * g;
     return (1.0 - g2) / (12.566371 * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5));
   }
 
   void main() {
-    vec3 n = normalize(vN);
+    // Trim the corners of the quad first: nothing round ever reaches them, and
+    // this is the cheapest quarter of the fill there is to throw away.
+    float q = dot(vC, vC);
+    if (q > 1.8) discard;
+    float d = sqrt(q);
+
+    // The puff's own noise field, anchored to the quad rather than to the screen
+    // so the detail sticks to the cloud as it drifts, and crawling very slowly
+    // so a cell visibly churns instead of sitting frozen. The frequency is the
+    // one number that decides whether a puff reads as cauliflower or as a
+    // beach ball — under about three cycles across the quad the fbm is too
+    // smooth to break the circle up and every puff stays a visible disc.
+    vec2 np = vC * 3.4 + vec2(vSeed, vSeed * 1.7) + uTime * 0.010;
+    float n = fbm(np);
+
+    // Erode the outline: the noise moves the rim in and out by about a third of
+    // the radius. Because the noise is sampled per pixel, that boundary is ragged
+    // all the way round rather than a circle of a wobbling radius.
+    // Nominal radius sits at 1/PUFF_QUAD of the quad, so even the widest lump of
+    // the erosion stays inside it. The swing is still a third of the radius.
+    float rim = ${(1 / PUFF_QUAD).toFixed(3)} * (1.0 + 0.33 * (n * 2.0 - 1.0));
+    // A tight core with a short falloff, not a wide gradient: a puff has to have
+    // an opaque middle for the stack of them to build into a mass, and the soft
+    // part has to be narrow enough that the noise still shows in it.
+    float density = 1.0 - smoothstep(rim * 0.55, rim, d);
+    density *= mix(0.48, 1.0, n);          // the inside is not uniform either
+    if (density < 0.004) discard;
+
+    // --- normal ---
+    // The quad is screen-aligned, so quad space *is* view space: vC.x and vC.y
+    // are right and up, and the z that completes them is the front of a sphere
+    // sitting inside the quad. That fake sphere is what gives a puff its round
+    // shading. The screen-space gradient of the noise then dents it, so the
+    // cauliflower lumps catch light individually instead of the whole disc
+    // reading as one smooth ball.
+    vec3 vn = vec3(vC * 0.9, sqrt(max(1.0 - min(q, 1.0) * 0.81, 0.05)));
+    float bump = n * density;
+    vec2 g = vec2(dFdx(bump), dFdy(bump)) / max(fwidth(d), 1e-4);
+    vn = normalize(vn - vec3(g * 0.30, 0.0));
+    // View space back to world: the view rotation is orthonormal, so its inverse
+    // is its transpose, which is exactly what right-multiplying by it does.
+    vec3 nrm = normalize(vn * mat3(viewMatrix));
+
     vec3 v = normalize(cameraPosition - vW);
-    // Two things decide how much light reaches a patch of cloud: how far up the
-    // mass it is (light comes down through the whole depth of it) and which way
-    // it faces. Downward faces are what the rain falls out of, and they are the
-    // darkest part of any cloud that is worth looking at.
-    float up  = n.y * 0.5 + 0.5;
-    float sun = dot(n, uSunDir) * 0.5 + 0.5;
+    float up  = nrm.y * 0.5 + 0.5;
+    float sun = dot(nrm, uSunDir) * 0.5 + 0.5;
 
-    // Stand-in for the mass of cloud behind this point: thicker toward the
-    // base of the shell, scaled by the cell's own storminess (uThickness).
-    float density = uThickness * (0.35 + 0.65 * (1.0 - vH));
+    // Mass between here and the light: thicker low in the cloud, thicker toward
+    // the middle of a puff, scaled by the cell's own storminess.
+    float thick = uThickness * (0.35 + 0.65 * (1.0 - vH)) * mix(0.45, 1.0, density);
     // Beer-Lambert extinction: how much direct light survives that mass.
-    // A steeper falloff than a flatter mass would use — it's what makes the
-    // difference between "thin here, thick there" actually read as depth.
-    float transmit = exp(-density * 2.3);
+    float transmit = exp(-thick * 2.3);
 
-    // Punchier spread between the two terms that drive the top/bottom
-    // gradient (facing + height) is what reads as real depth rather than a
-    // flat wash — a cloud lit only by a soft blend looks like a painted
-    // sphere, not a mass with a lit crown and a heavy, shadowed belly.
-    float lit = clamp(0.06 + 0.56 * up + 0.30 * pow(sun, 1.4) + 0.42 * vH, 0.0, 1.0);
-    vec3 col = mix(uBot, uTop, lit) * mix(0.7, 1.0, transmit);
+    // The top-to-bottom gradient. vLit is the baked answer to "is the rest of the
+    // cloud in the way of the sun", and it is what stops the far side of a
+    // cluster lighting up as brightly as the crown does.
+    float lit = clamp(0.05 + 0.46 * up + 0.28 * pow(sun, 1.4) + 0.30 * vH
+                      + 0.34 * (vLit - 0.55), 0.0, 1.0);
+    vec3 col = mix(uBot, uTop, lit) * mix(0.72, 1.0, transmit);
 
-    // Extra luminosity on the crown: strongly upward-facing, thin (well-lit)
-    // patches push past the flat top colour into a proper glow, which is what
-    // gives fluffy tops their sunlit puffiness instead of a flat matte white.
-    col += uTop * pow(max(up, 0.0), 5.0) * 0.36 * mix(0.5, 1.0, transmit);
-    // Undersides read as darker, heavier mass by contrast — cheap but the
-    // single biggest lever for the "fluffy top, moody bottom" silhouette.
-    // Widened from the original spread so the gradient carries real
-    // top-to-bottom contrast instead of a gentle fade.
-    col *= mix(0.38, 1.18, up);
+    // Extra luminosity on the crown: strongly upward-facing, thin, unshadowed
+    // patches push past the flat top colour into a proper glow.
+    col += uTop * pow(max(up, 0.0), 5.0) * 0.34 * mix(0.5, 1.0, transmit) * vLit;
+    // Undersides read as heavier mass by contrast — cheap, and the single
+    // biggest lever on the "fluffy top, moody bottom" silhouette.
+    col *= mix(0.40, 1.16, up);
 
-    // Forward scatter through the cloud body, brightest looking through thin,
-    // backlit mass toward the sun.
+    // Forward scatter through the body, brightest looking through thin, backlit
+    // mass toward the sun.
+    // Scaled by transmit, not by what got scattered out of the beam: this is
+    // light that made it *through* to the eye, so it lights thin edges and
+    // leaves a thick core dark. The other way round — which is what a
+    // surface-shaded cloud has to do, having no thickness to work with — makes
+    // the densest cell in the sky the brightest thing in it.
     float cosTheta = dot(v, -uSunDir);
-    float phase = henyeyGreenstein(cosTheta, 0.45);
-    col += uSunCol * phase * (1.0 - transmit) * 1.4;
+    col += uSunCol * henyeyGreenstein(cosTheta, 0.45) * transmit * 1.7;
+    float backlit = pow(clamp(dot(-v, uSunDir), 0.0, 1.0), 2.0) * transmit;
+    col += uSunCol * backlit * 0.60;
 
-    // Subsurface scattering approximation: thin, sunlit-from-behind patches
-    // glow with transmitted light rather than reading as flat silhouette.
-    float backlit = pow(clamp(dot(-v, uSunDir), 0.0, 1.0), 2.0) * (1.0 - transmit);
-    col += uSunCol * backlit * 0.55;
+    // Silver lining. On a billboard the rim is wherever the eroded outline ended
+    // up, not where the geometry stops, so it follows every lump of the noise.
+    // Kept to the outermost sliver: at d/rim > 0.55 it is most of the *area* of
+    // a disc, and a "lining" that wide just washes the whole puff out.
+    float edge = smoothstep(0.86, 1.0, d / rim);
+    col += uSunCol * edge * pow(max(sun, 0.0), 1.7) * 0.90;
+    // Golden-hour warmth on that same rim, so lit edges skew warm rather than
+    // the same cool white as the rest of the mass.
+    col += vec3(1.0, 0.66, 0.32) * edge * pow(max(sun, 0.0), 2.2) * 0.35;
+    col += vec3(0.34, 0.30, 0.22) * pow(max(sun, 0.0), 7.0) * transmit;
 
-    // Fresnel silver lining: grazing, sun-facing rims catch the most light.
-    // Wider and hotter than a physically-tight rim so it reads clearly at a
-    // distance rather than as a single blown-out pixel.
-    float fresnel = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
-    col += uSunCol * fresnel * pow(max(sun, 0.0), 1.7) * 1.15;
-    // Tight hot rim, kept for the sharp highlight right at the sun.
-    col += vec3(0.34, 0.30, 0.22) * pow(max(sun, 0.0), 7.0);
-    // Golden-hour warmth: a soft amber cast where that rim catches raking
-    // sunlight, so lit edges skew warm rather than the same cool white as the
-    // rest of the mass.
-    vec3 warm = vec3(1.0, 0.66, 0.32);
-    col += warm * fresnel * pow(max(sun, 0.0), 1.6) * 0.56;
-
-    // Severe cells go sickly green-yellow underneath. It is a cast over the
-    // charcoal, not a coat of paint — enough to read as "that one is dangerous"
-    // from across the water and no more, and only across the lowest fifth.
-    col = mix(col, uTint, uTintAmt * (1.0 - smoothstep(0.0, 0.22, vH)));
+    // The storminess cast, over the lowest quarter of the cell only.
+    col = mix(col, uTint, uTintAmt * (1.0 - smoothstep(0.0, 0.25, vH)));
     // Lightning lights the cell from the inside, brightest low down.
     col += vec3(0.80, 0.84, 1.0) * uFlash * (1.15 - vH * 0.55);
-    // The scene's own fog would swallow these at a third of the range they are
-    // meant to be legible from, so they carry their own much thinner haze.
-    float haze = uHazeMax * smoothstep(420.0, 2500.0, distance(vW, cameraPosition));
+    // The scene's own fog would swallow these at a fraction of the range they
+    // are meant to be legible from, so they carry their own much thinner haze.
+    float haze = uHazeMax * smoothstep(600.0, 3000.0, distance(vW, cameraPosition));
     col = mix(col, uHaze, haze);
 
-    // Soft alpha: thin, grazing edges fade toward transparent instead of
-    // hard-clipping at the mesh boundary.
-    float alpha = clamp((1.0 - transmit) * mix(1.0, 0.35, fresnel) + 0.25, 0.0, 1.0);
-
+    // Thin edges are genuinely thin: alpha is the density, not a mesh outline.
+    // Kept under 1 per puff on purpose — a dense core is opaque because four or
+    // five puffs stack there, not because any one of them is.
+    float alpha = clamp(density * 0.92, 0.0, 1.0);
     gl_FragColor = vec4(col, alpha);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }
 `;
 
+// Depth prepass. The puff *cores* write depth only, and the depth they write is
+// pushed a whole cloud-radius further from the eye than the puff itself.
+//
+// That push is not a tweak, it is the whole design. A billboard cluster has no
+// interior faces to hide — every puff is a screen-facing disc — so any depth
+// written at a puff's own distance cuts the puffs behind it out of the blend and
+// the cloud comes apart into hard-edged circles with the sky showing through
+// them. Pushed back past the far side of the cluster, the same depth rejects
+// nothing inside the cloud and still throws away the fill for whatever is
+// wholly behind it, which is where the overdraw on a crowded sky actually goes.
+//
+// PUFF_REACH / mean radius puts a cluster at roughly five puff radii across, and
+// aPuff.x is the only size the shader has, so that is what the push is scaled by.
+const CLOUD_DEPTH_VERT = /* glsl */`
+  attribute vec4 aPuff;
+  attribute vec2 aCorner;
+  varying vec2 vC;
+  void main() {
+    vC = aCorner;
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    float r = aPuff.x * length(modelMatrix[0].xyz);
+    vec4 mv = viewMatrix * wp;
+    mv.xy += aCorner * r * ${PUFF_QUAD.toFixed(2)};
+    mv.z -= r * 5.0;           // -z is forward in view space, so this is *away*
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const CLOUD_DEPTH_FRAG = /* glsl */`
+  varying vec2 vC;
+  void main() {
+    if (dot(vC, vC) > 0.16) discard;   // only the dense middle occludes anything
+    gl_FragColor = vec4(0.0);
+  }
+`;
+
 // Colour by weather scale: white and bright at 1, charcoal with almost no light
 // left in the base by 10.
 const CLOUD_KEYS = [
-  { s: 1,  top: 0xffffff, bot: 0xd2e0f0 },
-  { s: 3,  top: 0xfefeff, bot: 0xb3c2d4 },
-  { s: 5,  top: 0xf4f7fb, bot: 0x7c8998 },
-  { s: 7,  top: 0xd2d7de, bot: 0x3c434f },
-  { s: 9,  top: 0xacb2bc, bot: 0x21252c },
-  { s: 10, top: 0x969ba6, bot: 0x14171c },
+  { s: 1,  top: 0xffffff, bot: 0xc8d8e8, tint: 0xffffff },
+  { s: 4,  top: 0xe8edf2, bot: 0x8899aa, tint: 0xd0d8e0 },
+  { s: 7,  top: 0xaabbcc, bot: 0x445566, tint: 0x8899aa },
+  { s: 10, top: 0x667788, bot: 0x223344, tint: 0x556677 },
 ];
 function cloudColors(s) {
   let i = 0;
@@ -2369,37 +2388,45 @@ function cloudColors(s) {
   const a = CLOUD_KEYS[i], b = CLOUD_KEYS[i + 1];
   const t = THREE.MathUtils.clamp((s - a.s) / (b.s - a.s), 0, 1);
   return {
-    top: new THREE.Color(a.top).lerp(new THREE.Color(b.top), t),
-    bot: new THREE.Color(a.bot).lerp(new THREE.Color(b.bot), t),
+    top:  new THREE.Color(a.top).lerp(new THREE.Color(b.top), t),
+    bot:  new THREE.Color(a.bot).lerp(new THREE.Color(b.bot), t),
+    tint: new THREE.Color(a.tint).lerp(new THREE.Color(b.tint), t),
   };
 }
 
-const CLOUD_HAZE = new THREE.Color(0xc4d8ea);
-const SEVERE_TINT = new THREE.Color(0x7d7f4e);
-
+const CLOUD_HAZE      = new THREE.Color(0xc4d8ea);
 const CLOUD_SUN_COLOR = new THREE.Color(0xfff0cf);
 
 function cloudMaterial(scale) {
-  const { top, bot } = cloudColors(scale);
+  const { top, bot, tint } = cloudColors(scale);
   return new THREE.ShaderMaterial({
     vertexShader: CLOUD_VERT,
     fragmentShader: CLOUD_FRAG,
     transparent: true,
     depthWrite: false,
+    // Billboards have no back: the quad faces the eye by construction, but the
+    // winding flips depending on which side of the cloud's own rotation it lands
+    // on, so culling either face would drop puffs at random.
+    side: THREE.DoubleSide,
+    // The bump lighting reads screen-space derivatives. WebGL2 has them as
+    // baseline; a WebGL1 fallback context needs the extension asked for by name
+    // or the shader fails to compile and the whole sky goes missing.
+    extensions: { derivatives: true },
     uniforms: {
+      uTime:      { value: 0 },
       uTop:       { value: top },
       uBot:       { value: bot },
-      uTint:      { value: SEVERE_TINT.clone() },
-      uTintAmt:   { value: smooth((scale - 7.4) / 2.2) * 0.22 },
+      uTint:      { value: tint },
+      uTintAmt:   { value: smooth((scale - 4) / 5) * 0.45 },
       uSunDir:    { value: SUN.clone() },
       uSunCol:    { value: CLOUD_SUN_COLOR.clone() },
       uHaze:      { value: CLOUD_HAZE.clone() },
-      uHazeMax:   { value: 0.66 },
+      uHazeMax:   { value: 0.3 },
       uFlash:     { value: 0 },
-      // Storm cells thicken faster than fair-weather puffs, which is what
-      // makes the high end of the scale read as distinctly darker and more
-      // ominous rather than just a tinted version of a bright cloud.
-      uThickness: { value: 0.75 + scale * 0.16 },
+      // Storm cells thicken faster than fair-weather puffs, which is what makes
+      // the high end of the scale read as distinctly darker and more ominous
+      // rather than as a tinted version of a bright cloud.
+      uThickness: { value: 0.5 + scale * 0.14 },
     },
   });
 }
@@ -2431,19 +2458,33 @@ const WX = {
 function rollStorminess() {
   const s = WX.STORMS[WX.stormIdx];
   const min = s[1], max = s[2], bias = s[3];
-  const t = Math.pow(Math.random(), 1 + (0.5 - bias) * 4);
+  // Floored, because the exponent goes *negative* past bias 0.75 — Severe sits
+  // at 0.9 — and pow(r, -0.6) is unbounded above 1 as r approaches 0. That put
+  // cells well past the top of their own range: "storm 11.9" on a 1-10 scale.
+  const t = Math.pow(Math.random(), Math.max(0.15, 1 + (0.5 - bias) * 4));
   return min + t * (max - min);
 }
 
-const MAX_CLOUDS    = isTouchDevice ? 14 : 24;
+// Far fewer cells than the old mesh clouds needed. A single cell is now a
+// kilometre or more across, so a dozen of them inside the despawn ring is
+// already most of a sky — the old two dozen would have been permanent overcast
+// with `gloom` pinned at 1 and the ground black under it.
+const MAX_CLOUDS    = isTouchDevice ? 7 : 12;
 const CLOUD_DESPAWN = 2100;      // they are gone once they are this far behind you
 
 const clouds = [];
 const cloudGroup = new THREE.Group();
 scene.add(cloudGroup);
-// Depth prepass: render clouds with a depth-only material first so interior
-// faces are hidden by the depth buffer when the volumetric pass runs.
-const depthMat = new THREE.MeshBasicMaterial({ colorWrite: false });
+// The prepass material is opaque, so three renders it in the opaque queue —
+// before any of the transparent cloud quads — and the whole prepass therefore
+// costs one extra pass over the puffs inside the normal frame rather than a
+// second render of the entire scene.
+const depthMat = new THREE.ShaderMaterial({
+  vertexShader: CLOUD_DEPTH_VERT,
+  fragmentShader: CLOUD_DEPTH_FRAG,
+  colorWrite: false,
+  side: THREE.DoubleSide,
+});
 const cloudDepthGroup = new THREE.Group();
 scene.add(cloudDepthGroup);
 
@@ -2467,22 +2508,24 @@ function spawnCloud(initial) {
   const pool  = CLOUD_GEOS[band];
   const geo   = pool[(Math.random() * pool.length) | 0];
 
-  // Far out and in a random direction. A fresh cloud is 800-1500 away, which at
-  // the medium drift speed is a couple of minutes of warning; the initial batch
+  // Upwind and far out: a fresh cell comes in at the edge of the ring, which at
+  // the medium drift speed is a couple of minutes of warning. The initial batch
   // is scattered across the whole range so the sky is never empty at load.
   const wind = liveWindDir();
   const bearing = wind + Math.PI + (Math.random() - 0.5) * Math.PI * 0.6;
-  const dist = initial ? 140 + Math.random() * 1360 : 800 + Math.random() * 700;
+  const dist = initial ? 400 + Math.random() * 2000 : 1700 + Math.random() * 700;
   const alt  = BAND_SPEC[band].base[0] + Math.random() * BAND_SPEC[band].base[1];
-  const sc   = 0.65 + Math.random() * 0.9;
+  const sc   = 0.75 + Math.random() * 0.55;
 
   const material = cloudMaterial(scale);
   const mesh = new THREE.Mesh(geo, material);
   mesh.position.set(wxFocus.x + Math.cos(bearing) * dist, alt, wxFocus.z + Math.sin(bearing) * dist);
+  // Spinning the cluster only moves the puff *centres* — the quads stay facing
+  // the eye — so the same handful of pooled geometries never repeat visibly.
   mesh.rotation.y = Math.random() * Math.PI * 2;
   mesh.scale.setScalar(sc);
   cloudGroup.add(mesh);
-  // Matching depth-only mesh for the prepass.
+  // Matching depth-only mesh for the prepass, sharing the same geometry.
   const depthMesh = new THREE.Mesh(geo, depthMat);
   depthMesh.position.copy(mesh.position);
   depthMesh.rotation.copy(mesh.rotation);
@@ -2744,6 +2787,9 @@ function updateWeather(dt) {
     const p = c.mesh.position;
     p.x += c.dirX * speed * c.spdMul * dt;
     p.z += c.dirZ * speed * c.spdMul * dt;
+    // The prepass mesh has to ride along, or it writes depth for where the cloud
+    // used to be and starts punching holes in the sky behind it.
+    c.depthMesh.position.copy(p);
 
     const dx = p.x - wxFocus.x, dz = p.z - wxFocus.z;
     const dist = Math.hypot(dx, dz);
@@ -2777,7 +2823,11 @@ function updateWeather(dt) {
       }
     }
     const flash = c.boltT >= 0 ? boltEnv(c.boltT) : 0;
-    c.mat.uniforms.uFlash.value = flash;
+    const u = c.mat.uniforms;
+    u.uFlash.value = flash;
+    // The noise field crawls off uTime, so every cell needs it every frame.
+    u.uTime.value = wxTime;
+    u.uSunDir.value.copy(SUN);
     flashGlobal = Math.max(flashGlobal, flash * (1 - clamp01((dist - 250) / 1300)));
 
     shadowList.push(c);
@@ -2801,11 +2851,15 @@ function updateWeather(dt) {
     cloudShadowArr[o + 1] = c.shZ;
     cloudShadowArr[o + 2] = c.radius * 1.10;
     // Quadratic in scale rather than linear: a wisp at scale 1 still lays down
-    // a shadow you can watch cross the sand, but a scale-10 storm cell has to
-    // black the ground out under it, so the top of the range needs to pull away
-    // from the bottom much faster than a straight line does. Saturates around
-    // scale 8 — past that the cell is simply opaque.
-    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.45 + 0.12 * c.scale + 0.04 * c.scale * c.scale, 0, 1);
+    // a shadow you can watch cross the sand, but a storm cell has to put real
+    // weight on the ground under it, so the top of the range needs to pull away
+    // from the bottom much faster than a straight line does.
+    //
+    // Capped short of 1 now that a single cell's footprint is wider than the
+    // island. The ground shaders take full shade down to half a percent of the
+    // light — fine when a shadow was a patch crossing the sand, but with the
+    // whole island inside one footprint it turned the place into a silhouette.
+    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.30 + 0.10 * c.scale + 0.03 * c.scale * c.scale, 0, 0.82);
   }
 
   // --- the sky reacting to what is in it ---
@@ -2829,8 +2883,15 @@ function updateWeather(dt) {
   if (rainCloud) {
     const cp = rainCloud.mesh.position;
     const ground = terrainHeight(camera.position.x, camera.position.z);
-    rainMat.uniforms.uCloudPos.value.set(cp.x, rainCloud.baseY, cp.z);
-    rainMat.uniforms.uCloudH.value = Math.max(20, rainCloud.baseY - ground);
+    // Capped, and this is not cosmetic: the drop budget is fixed, so spreading
+    // it over the full 450-900 units the deck now sits at would thin the rain
+    // out by a factor of four into a barely-visible drizzle. The column instead
+    // fills the bottom of that gap — the part you can actually see — and the
+    // streaks still lean toward the cell overhead, which is what sells where
+    // they came from.
+    const span = Math.min(380, Math.max(20, rainCloud.baseY - ground));
+    rainMat.uniforms.uCloudPos.value.set(cp.x, ground + span, cp.z);
+    rainMat.uniforms.uCloudH.value = span;
   }
   rainObj.visible = rainAmt > 0.02 && !underwater;
   if (rainObj.visible) {
@@ -2872,7 +2933,7 @@ refreshWxUI();
 
 // Seed the sky before the first frame so there is weather to look at on arrival.
 wxFocus.copy(camera.position);
-for (let i = 0; i < (isTouchDevice ? 7 : 11); i++) spawnCloud(true);
+for (let i = 0; i < (isTouchDevice ? 4 : 7); i++) spawnCloud(true);
 refreshWxUI();
 
 // ---------------------------------------------------------------------------
@@ -3465,15 +3526,11 @@ function tick() {
     }
   }
 
-  // Depth prepass: render cloud silhouettes into the depth buffer first,
-  // then the full scene with volumetric shading reads that depth to cull
-  // interior faces that would otherwise bleed through.
-  cloudGroup.visible = false;
+  // One pass. The cloud depth prepass is opaque, so it is already sorted ahead
+  // of the transparent puff quads inside this render — the previous two-render
+  // arrangement could never have worked anyway, because `autoClear` wipes the
+  // depth buffer at the top of the second render and takes the prepass with it.
   renderer.render(scene, camera);
-  cloudGroup.visible = true;
-  cloudDepthGroup.visible = false;
-  renderer.render(scene, camera);
-  cloudDepthGroup.visible = true;
 }
 
 // Debug handle — handy from the console / remote inspector on a phone.

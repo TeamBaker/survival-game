@@ -1973,7 +1973,7 @@ const isSprinting = () =>
 // ---------------------------------------------------------------------------
 // Weather — clouds, rain, lightning
 //
-// A cloud is a cluster of 15-40 overlapping *billboard quads* — puffs — merged
+// A cloud is a cluster of 40-110 overlapping *billboard quads* — puffs — merged
 // into one geometry, so a whole cell is still a single draw call. Each quad
 // carries its centre in `position` and is expanded to a square in *view* space
 // by the vertex shader, which means a puff can never go edge-on: from any angle
@@ -2005,11 +2005,19 @@ const CLOUD_BAND = (s) => (s < 3 ? 0 : s < 5 ? 1 : s < 7 ? 2 : 3);
 // the wrong one when it is a shape you read by its outline — at that size there
 // are only ever two or three of them in the sky and none of them has an outline
 // you can see all of.
+//
+// The counts are roughly triple what a cluster of this width needs to be solid,
+// because solidity is not what they buy. A puff is one bump on the outline, so
+// the count *is* the resolution of the silhouette: at twenty-odd of them a cell
+// has five or six lumps around its edge and reads as a few big balls stuck
+// together, and only somewhere past sixty do the lumps get small enough and
+// numerous enough to read as cauliflower. See PUFF_SPREAD for the other half of
+// that — the count only helps if the puffs shrink to match it.
 const BAND_SPEC = [
-  { width: [ 560,  900], height: [170,  300], puffs: [14, 20], base: [450, 200] },
-  { width: [ 900, 1340], height: [420,  620], puffs: [18, 26], base: [500, 250] },
-  { width: [1340, 1790], height: [640,  860], puffs: [24, 32], base: [560, 300] },
-  { width: [1570, 2020], height: [780, 1000], puffs: [28, 38], base: [600, 300] },
+  { width: [ 560,  900], height: [170,  300], puffs: [42, 58], base: [450, 200] },
+  { width: [ 900, 1340], height: [420,  620], puffs: [52, 70], base: [500, 250] },
+  { width: [1340, 1790], height: [640,  860], puffs: [64, 82], base: [560, 300] },
+  { width: [1570, 2020], height: [780, 1000], puffs: [74, 94], base: [600, 300] },
 ];
 
 // The three archetypes a cloud can be built as. A cartoony sky reads as a set of
@@ -2047,14 +2055,28 @@ const lerpRange = (r, t) => r[0] + (r[1] - r[0]) * t;
 // cluster's extent as a uniform.
 //
 // The cluster is laid out in normalised space — centres inside a disc of radius
-// 0.55, puff radii around 0.3-0.6 — and then scaled up. Those two numbers are
-// what decide whether the result reads as one mass: the spread has to stay
-// *smaller* than the radii, or the puffs stop overlapping and the cloud falls
-// apart into a handful of separate discs.
-const PUFF_SPREAD = 0.55;
+// PUFF_SPREAD, puff radii around 0.15-0.32 — and then scaled up so that the
+// furthest a puff can reach, PUFF_REACH, lands on the band's half-width.
+//
+// Only the *ratio* of those two numbers means anything, and it is the ratio that
+// decides how big a bump on the outline is: a puff ends up at (radius / reach)
+// of the cloud's half-width whatever absolute values are written here. At 0.55
+// spread against ~0.45 mean radius the cloud was three puffs across and every
+// lump was a beach ball. Widening the spread to 0.92 against ~0.23 mean radius
+// makes it eleven puffs across — each piece is a bit over half the size it was,
+// which is the whole point, and the counts in BAND_SPEC went up threefold to
+// keep the mass solid at that size.
+//
+// The one thing this cannot be allowed to do is outrun the count. Spread and
+// radius trade off against each other exactly: pieces half the size need four
+// times as many to cover the same silhouette, so pushing this number further
+// without pushing BAND_SPEC further is what would break the cloud into a scatter
+// of separate discs.
+const PUFF_SPREAD = 0.92;
 // Furthest a puff can reach from the cluster axis in normalised units — what the
-// half-width has to be divided by to get the world scale factor.
-const PUFF_REACH = PUFF_SPREAD + 0.70;
+// half-width has to be divided by to get the world scale factor. The constant is
+// the largest radius any shape hands out — a cumulus base-row puff at 0.38.
+const PUFF_REACH = PUFF_SPREAD + 0.38;
 // How much wider than its puff each quad is built. Headroom for the fragment
 // shader to push the eroded outline outward without running into the edge of
 // the quad and clipping it flat.
@@ -2074,7 +2096,7 @@ function buildCloudGeo(band, shape, rnd) {
   // it. Distributing the whole count by one biased walk instead leaves only two
   // or three puffs down at the base — nowhere near enough to span the width, so
   // the flat bottom never appears as a line, just as a couple of clipped lumps.
-  const baseN = shape === 'cumulus' ? Math.max(3, Math.round(count * 0.28)) : 0;
+  const baseN = shape === 'cumulus' ? Math.max(3, Math.round(count * 0.32)) : 0;
 
   const puffs = [];
   for (let k = 0; k < count; k++) {
@@ -2085,9 +2107,14 @@ function buildCloudGeo(band, shape, rnd) {
     let t, prof, pr, flat = 0;
     if (shape === 'cumulus' && k < baseN) {
       // The base row: full width, all at the same height, all sliced flat.
+      // Deliberately the coarsest puffs in the cloud. Everywhere else smaller is
+      // better, but the base row is the one part read as a *surface* — from
+      // underneath it is a disc, not an outline — and a disc has to be covered,
+      // not just outlined. At crown size the same count of them leaves gaps you
+      // can see sky through when you fly under the cell.
       t    = 0.02 + 0.05 * rnd();
       prof = 1.0;
-      pr   = 0.30 + 0.22 * rnd();
+      pr   = 0.24 + 0.14 * rnd();
       flat = 1.0;
     } else if (shape === 'cumulus') {
       // The dome on top: pinching to a crown, with the walk bent upward so the
@@ -2096,11 +2123,11 @@ function buildCloudGeo(band, shape, rnd) {
       const v = (k - baseN + rnd() * 0.8) / Math.max(1, count - baseN);
       t    = 0.08 + 0.92 * Math.pow(Math.min(1, v), 0.72);
       prof = Math.sqrt(Math.max(0.10, 1.0 - t * t * 0.94));
-      pr   = (0.28 + 0.24 * rnd()) * (1.0 - 0.28 * t);
+      pr   = (0.155 + 0.13 * rnd()) * (1.0 - 0.28 * t);
     } else if (shape === 'tower') {
       t    = u;
       prof = 0.62 + 0.30 * Math.sin(t * Math.PI);   // slight bulge at mid-height
-      pr   = 0.34 + 0.24 * rnd();
+      pr   = 0.19 + 0.13 * rnd();
     } else {
       // Sheet: no walk at all, just a wide scatter kept inside the bottom half
       // of an already-shallow box. The whole raft is sliced, not just its lowest
@@ -2109,7 +2136,7 @@ function buildCloudGeo(band, shape, rnd) {
       // Partial, though: a sheet's underside is a soft ceiling, not an edge.
       t    = rnd() * 0.55;
       prof = 1.0;
-      pr   = 0.32 + 0.28 * rnd();
+      pr   = 0.17 + 0.15 * rnd();
       flat = 0.6;
     }
     const a = rnd() * Math.PI * 2;
@@ -2163,7 +2190,13 @@ function buildCloudGeo(band, shape, rnd) {
       // Perpendicular distance from o's centre to the ray toward the sun.
       const ox = dx - SUN.x * t, oy = dy - SUN.y * t, oz = dz - SUN.z * t;
       const d = Math.hypot(ox, oy, oz);
-      if (d < o.r) occ += (1 - d / o.r) * 0.75;
+      // The constant is per *hit*, so it has to track the puff size: how many
+      // puffs a sun ray crosses on its way through the cluster scales with the
+      // count times the radius squared, and halving the pieces while tripling
+      // the count cut that by about 40%. Left at the old 0.75 the whole effect
+      // washes out — mean exposure came out at 0.63 against the 0.40 it used to
+      // be, which is a cloud with no dim core at all, just a uniform bright one.
+      if (d < o.r) occ += (1 - d / o.r) * 1.80;
     }
     p.lit = Math.exp(-occ);
   }
@@ -2189,10 +2222,23 @@ function buildCloudGeo(band, shape, rnd) {
   const pos = new Float32Array(n * 4 * 3);
   const cor = new Float32Array(n * 4 * 2);
   const pfa = new Float32Array(n * 4 * 4);
-  const flt = new Float32Array(n * 4 * 2);
+  const flt = new Float32Array(n * 4 * 3);
   const idx = new Uint16Array(n * 6);
   const CX = [-1, 1, -1, 1], CY = [-1, -1, 1, 1];
+
+  // How far the cluster extends, worked out before the buffers are filled
+  // because the depth prepass needs it per vertex.
   let far = 0, reach = 0;
+  for (const p of puffs) {
+    // PUFF_QUAD oversize, then the corner of that square: 1.4 * sqrt(2).
+    far   = Math.max(far, Math.hypot(p.x, p.y - minY - span * 0.5, p.z) + p.r * 2.0);
+    reach = Math.max(reach, Math.hypot(p.x, p.z) + p.r);
+  }
+  // How far back the depth prepass shoves this cloud's depth — see
+  // CLOUD_DEPTH_VERT. Two bounding radii clears the far side of the cluster from
+  // any puff in it, whichever way the cloud is facing.
+  const push = far * 2.0;
+
   for (let k = 0; k < n; k++) {
     const p  = puffs[k];
     const py = p.y - minY;
@@ -2208,21 +2254,19 @@ function buildCloudGeo(band, shape, rnd) {
       pfa[i * 4 + 1] = hf;       // 0 at the cloud base, 1 at the top
       pfa[i * 4 + 2] = p.seed;   // decorrelates the noise between neighbours
       pfa[i * 4 + 3] = p.lit;    // baked sun exposure
-      flt[i * 2]     = p.cut;    // where the flat bottom crosses this quad
-      flt[i * 2 + 1] = p.flat;   // how hard the underside is sliced there
+      flt[i * 3]     = p.cut;    // where the flat bottom crosses this quad
+      flt[i * 3 + 1] = p.flat;   // how hard the underside is sliced there
+      flt[i * 3 + 2] = push;     // depth prepass push, local units
     }
     const b = k * 4;
     idx.set([b, b + 1, b + 2, b + 2, b + 1, b + 3], k * 6);
-    // PUFF_QUAD oversize, then the corner of that square: 1.4 * sqrt(2).
-    far   = Math.max(far, Math.hypot(p.x, py - span * 0.5, p.z) + p.r * 2.0);
-    reach = Math.max(reach, Math.hypot(p.x, p.z) + p.r);
   }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('aCorner',  new THREE.BufferAttribute(cor, 2));
   geo.setAttribute('aPuff',    new THREE.BufferAttribute(pfa, 4));
-  geo.setAttribute('aFlat',    new THREE.BufferAttribute(flt, 2));
+  geo.setAttribute('aFlat',    new THREE.BufferAttribute(flt, 3));
   geo.setIndex(new THREE.BufferAttribute(idx, 1));
   // Worked out by hand: every vertex sits at a puff centre, so the automatic
   // bounding sphere would be a fraction of what the expanded quads actually
@@ -2263,7 +2307,8 @@ for (let band = 0; band < BAND_SPEC.length; band++) {
 // or down, where that direction collapses to nothing and there is no underside
 // on screen to slice anyway.
 const CLOUD_FLAT_DECL = /* glsl */`
-  attribute vec2 aFlat;   // x: cut height in quad units, y: how hard to cut
+  // x: cut height in quad units, y: how hard to cut, z: depth prepass push
+  attribute vec3 aFlat;
   varying vec2 vUp;
   varying vec2 vFlat;
 `;
@@ -2369,7 +2414,12 @@ const CLOUD_FRAG = /* glsl */`
     // one number that decides whether a puff reads as cauliflower or as a
     // beach ball — under about three cycles across the quad the fbm is too
     // smooth to break the circle up and every puff stays a visible disc.
-    vec2 np = vC * 2.6 + vec2(vSeed, vSeed * 1.7) + uTime * 0.008;
+    // That frequency is in *quad* space, so it scales with the puff: halving the
+    // pieces already doubled how fine the erosion is in world terms, and 2.2 is
+    // giving some of that back. Left at the old 2.6 a cell fizzes — sixty puffs
+    // each carrying five cycles of noise is static, not cauliflower, and the
+    // lumps that read as lumps now are the puffs themselves.
+    vec2 np = vC * 2.2 + vec2(vSeed, vSeed * 1.7) + uTime * 0.008;
     float n = fbm(np);
 
     // Erode the outline: the noise moves the rim in and out, so the boundary is
@@ -2383,8 +2433,12 @@ const CLOUD_FRAG = /* glsl */`
     // A hard core and a short falloff: the narrower this band, the more the puff
     // reads as a drawn shape with an outline instead of a smear of mist. It
     // cannot go to nothing, though — a step edge on a screen-facing disc aliases
-    // into a crawling jagged circle the moment the cloud drifts.
-    float density = 1.0 - smoothstep(rim * 0.80, rim, d);
+    // into a crawling jagged circle the moment the cloud drifts, and the band is
+    // a fraction of the radius, so halving the puffs halved how many pixels wide
+    // it is. Widened from 0.80 to cover that: an interior puff's edge is now a
+    // seam between two overlapping pieces rather than part of the cloud's own
+    // outline, and it wants to disappear into its neighbour, not be legible.
+    float density = 1.0 - smoothstep(rim * 0.72, rim, d);
     density *= mix(0.80, 1.0, n);          // the inside is nearly uniform
     ${CLOUD_FLAT_APPLY}
     if (density < 0.004) discard;
@@ -2467,8 +2521,13 @@ const CLOUD_FRAG = /* glsl */`
 // nothing inside the cloud and still throws away the fill for whatever is
 // wholly behind it, which is where the overdraw on a crowded sky actually goes.
 //
-// PUFF_REACH / mean radius puts a cluster at roughly five puff radii across, and
-// aPuff.x is the only size the shader has, so that is what the push is scaled by.
+// The push is a *cluster* distance, baked per cloud into aFlat.z, not a multiple
+// of the puff's own radius. It used to be the latter, and that only held while
+// every puff in a cell was roughly the same size as every other: once the crown
+// is made of pieces a third the size of the base row, scaling by aPuff.x pushes
+// the small ones nowhere near far enough, and each of them punches a little
+// depth-rejected hole in whatever is behind it — the cauliflower crown speckles
+// with sky. One distance for the whole cluster cannot do that.
 const CLOUD_DEPTH_VERT = /* glsl */`
   attribute vec4 aPuff;
   attribute vec2 aCorner;
@@ -2478,10 +2537,10 @@ const CLOUD_DEPTH_VERT = /* glsl */`
     vC = aCorner;
     ${CLOUD_FLAT_CALC}
     vec4 wp = modelMatrix * vec4(position, 1.0);
-    float r = aPuff.x * length(modelMatrix[0].xyz);
+    float s = length(modelMatrix[0].xyz);
     vec4 mv = viewMatrix * wp;
-    mv.xy += aCorner * r * ${PUFF_QUAD.toFixed(2)};
-    mv.z -= r * 5.0;           // -z is forward in view space, so this is *away*
+    mv.xy += aCorner * aPuff.x * s * ${PUFF_QUAD.toFixed(2)};
+    mv.z -= aFlat.z * s;       // -z is forward in view space, so this is *away*
     gl_Position = projectionMatrix * mv;
   }
 `;

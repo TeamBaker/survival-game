@@ -1,7 +1,26 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
+  <meta charset="utf-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+<script>
+// Cache-bust: if Safari serves a stale HTML, this forces a hard reload
+(function(){
+  var v = 3;
+  var key = '__sv_game_v';
+  try {
+    var prev = parseInt(localStorage.getItem(key));
+    if (prev && prev < v) {
+      localStorage.setItem(key, v);
+      location.replace(location.href.split('?')[0] + '?_=' + Date.now());
+      return;
+    }
+    localStorage.setItem(key, v);
+  } catch(e) {}
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -242,7 +261,10 @@
     box-shadow: 0 4px 18px rgba(90, 150, 220, 0.35);
     cursor: pointer;
     touch-action: manipulation;
-    z-index: 14;
+    /* Above the pause overlay (50): releasing the mouse pops that overlay up, and
+       a mode button you cannot reach while paused is a mode button that "does not
+       always work". */
+    z-index: 60;
   }
   #mode-btn.game { background: linear-gradient(180deg, #ffd9a8, #f0a054); }
   #mode-btn:active { transform: translateY(1px); }
@@ -300,6 +322,78 @@
     #mode-btn { font-size: 11px; padding: 9px 14px; }
     #cam-mode { top: calc(52px + env(safe-area-inset-top)); font-size: 10px; }
     #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
+  }
+
+  /* ---------- Weather controls (free camera only) ---------- */
+  #cloud-ui {
+    position: fixed;
+    left: calc(10px + env(safe-area-inset-left));
+    bottom: calc(22px + env(safe-area-inset-bottom));
+    width: 236px;
+    max-width: 62vw;
+    padding: 9px 11px 10px;
+    font-size: 11px;
+    line-height: 1.4;
+    background: rgba(8, 14, 24, 0.58);
+    border: 1px solid rgba(160, 200, 255, 0.16);
+    border-radius: 8px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: none;
+    z-index: 60;
+  }
+  body.free-cam #cloud-ui { display: block; }
+  /* On touch the whole left half of the screen is the fly joystick — it is placed
+     wherever the thumb lands — so a panel down there eats input. Move it up under
+     the camera-mode chip, well clear of where a thumb naturally rests. */
+  body.touch #cloud-ui {
+    top: calc(80px + env(safe-area-inset-top));
+    bottom: auto;
+  }
+
+  #cloud-ui .title {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+  .wx-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 5px;
+  }
+  .wx-row .lbl { color: #7fa8d8; white-space: nowrap; }
+  .wx-row .lbl b { color: #eaf2ff; font-weight: 700; }
+  .wx-btn {
+    flex: 0 0 auto;
+    min-width: 82px;
+    padding: 5px 10px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #eaf2ff;
+    background: rgba(70, 120, 190, 0.34);
+    border: 1px solid rgba(150, 195, 245, 0.42);
+    border-radius: 6px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .wx-btn:active { background: rgba(110, 170, 240, 0.6); }
+  .wx-btn.off { color: #93a4b8; background: rgba(60, 72, 90, 0.32); }
+  #wx-foot { margin-top: 7px; color: #62819f; font-size: 10px; }
+  #wx-foot b { color: #9ecbff; }
+  /* A phone has no number row — on touch the buttons are the whole interface. */
+  body.touch #cloud-ui .key { display: none; }
+
+  @media (max-width: 620px) {
+    /* Narrow enough to sit beside #instructions on a 390-wide phone. */
+    #cloud-ui { width: 190px; font-size: 10px; padding: 7px 9px 8px; }
+    .wx-btn { min-width: 66px; font-size: 10px; padding: 5px 7px; }
   }
 
   /* ---------- Start / pause overlay ---------- */
@@ -398,11 +492,19 @@
 <canvas id="view"></canvas>
 
 <div id="hud"><span class="k">FPS</span> <span class="v" id="fps">--</span>
-<span class="k">POS</span> <span class="v" id="pos">--</span></div>
+<span class="k">POS</span> <span class="v" id="pos">--</span>
+<span class="k" style="color:#ff0">v7-shadows</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
-<button id="mode-btn">Game Mode</button>
+<button id="mode-btn" class="ui-el">Game Mode</button>
+
+<div id="cloud-ui" class="ui-el">
+  <span class="title">Weather</span>
+  <div class="wx-row"><span class="lbl"><b class="key">1</b> Spawn rate</span><button class="wx-btn" id="wx-rate">Medium</button></div>
+  <div class="wx-row"><span class="lbl"><b class="key">2</b> Wind speed</span><button class="wx-btn" id="wx-speed">Medium</button></div>
+  <div id="wx-foot"><span class="key"><b>4</b> spawn now &middot; <b>0</b> clear &mdash; </span>sky: <span id="wx-count">0</span><br><span id="wx-cloud-info">nearest: &mdash;</span></div>
+</div>
 
 <div id="underwater"></div>
 <div id="crosshair"></div>
@@ -428,13 +530,10 @@
 
 <div id="loading">Loading&hellip;</div>
 
+<script src="lib/three.js?v=2"></script>
+<script src="lib/cannon-global.js?v=2"></script>
 <script type="module">
-import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-// dist/cannon-es.js is a pure ES module (named exports, no UMD wrapper), so a
-// plain <script src> tag would define no global. Import it here and publish the
-// namespace on window so it is reachable from the console like THREE is.
-import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js';
-window.CANNON = CANNON;
+// THREE and CANNON are loaded as globals from the script tags above.
 
 // ---------------------------------------------------------------------------
 // Constants — mirrored from engine.py
@@ -543,7 +642,12 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
 
-const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+// The far plane has to swallow the weather: clouds spawn up to 1500 units out and
+// are meant to be readable from there, so 1000 would have clipped them away before
+// they ever appeared. Pushing near out to 0.25 at the same time leaves the depth
+// range *better* conditioned than the old 0.1/1000 pair, and nothing in the scene
+// ever gets within a quarter unit of the eye.
+const camera = new THREE.PerspectiveCamera(75, 1, 0.25, 3200);
 camera.rotation.order = 'YXZ';
 camera.position.copy(START_POS);
 
@@ -554,9 +658,11 @@ const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
   uniforms: {
-    uZenith:  { value: SKY_ZENITH },
-    uHorizon: { value: SKY_HORIZON },
-    uGround:  { value: SKY_GROUND },
+    // Cloned: the weather lerps these towards an overcast palette every frame,
+    // and the constants have to survive as the fair-weather end of that mix.
+    uZenith:  { value: SKY_ZENITH.clone() },
+    uHorizon: { value: SKY_HORIZON.clone() },
+    uGround:  { value: SKY_GROUND.clone() },
     uSunDir:  { value: SUN.clone() },
     uSunCol:  { value: new THREE.Color(0xfff0cf) },
   },
@@ -669,8 +775,13 @@ sun.target.position.copy(SHADOW_CENTER);
 scene.add(sun);
 scene.add(sun.target);
 
-scene.add(new THREE.HemisphereLight(0xbcd8f5, 0x4a5a3c, 0.55));
-scene.add(new THREE.AmbientLight(0xffffff, 0.18));
+// Named, because the weather drives them: heavy cloud overhead pulls the sun and
+// the sky fill down, and a lightning strike briefly slams the ambient up.
+const SUN_BASE = 2.9, HEMI_BASE = 0.55, AMB_BASE = 0.18;
+const hemiLight = new THREE.HemisphereLight(0xbcd8f5, 0x4a5a3c, HEMI_BASE);
+const ambLight  = new THREE.AmbientLight(0xffffff, AMB_BASE);
+scene.add(hemiLight);
+scene.add(ambLight);
 
 // ---------------------------------------------------------------------------
 // Physics world (cannon-es)
@@ -1093,6 +1204,44 @@ const LAND_GLSL = /* glsl */`
 `;
 
 // ---------------------------------------------------------------------------
+// Cloud shadows — the ground half of the weather system.
+//
+// Shadow-mapping the clouds is not an option: they sit 150-250 units up, which is
+// *above* the directional light's own position, so they fall outside its frustum
+// entirely. Instead the biggest clouds near the camera hand their footprint to
+// the ground shaders as a short list of discs, already projected down the sun
+// direction onto sea level, and the terrain and the sea both darken inside them.
+// Four floats each: centre x, centre z, radius, strength.
+// ---------------------------------------------------------------------------
+const MAX_CLOUD_SHADOWS = 8;
+const cloudShadowArr = new Float32Array(MAX_CLOUD_SHADOWS * 4);
+const uCloudShadows = { value: cloudShadowArr };
+// How far the shadow slides from the cloud that casts it, per unit of altitude.
+const CLOUD_SHADOW_SLANT = new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y);
+
+const CLOUD_SHADOW_GLSL = /* glsl */`
+  uniform float uCloudShadows[${MAX_CLOUD_SHADOWS * 4}];
+  // 0 in full sun .. 1 under the thickest part of a storm cell. The disc holds
+  // full strength out to 55% of its radius before it starts to fall away: a
+  // shadow with a wide solid core and a soft rim is what actually reads as a
+  // cloud passing overhead, where one that fades from the centre outward just
+  // reads as a smudge.
+  float cloudShade(vec2 p) {
+    float s = 0.0;
+    for (int i = 0; i < ${MAX_CLOUD_SHADOWS}; i++) {
+      float r = uCloudShadows[i * 4 + 2];
+      if (r <= 0.0) continue;
+      float d = distance(p, vec2(uCloudShadows[i * 4], uCloudShadows[i * 4 + 1]));
+      float v = uCloudShadows[i * 4 + 3] * (1.0 - smoothstep(r * 0.55, r, d));
+      // Stacked rather than max()'d: two cells drifting across each other put
+      // more mass between the ground and the sun than either does alone.
+      s = s + v - s * v;
+    }
+    return clamp(s, 0.0, 1.0);
+  }
+`;
+
+// ---------------------------------------------------------------------------
 // Ocean — an animated surface at sea level plus a flat deep bed under it, so
 // the water still has something below it out past the edge of the heightfield.
 // The pair rides with the camera on `ocean`, which is what makes the sea read
@@ -1216,6 +1365,7 @@ scene.add(ocean);
   surfMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterTime;
     shader.uniforms.uLandMap = { value: landMap };
+    shader.uniforms.uCloudShadows = uCloudShadows;
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */`
@@ -1255,6 +1405,7 @@ scene.add(ocean);
         varying float vWaveH, vCover, vAmp, vOpen;
         ${NOISE_GLSL}
         ${SEA_PALETTE}
+        ${CLOUD_SHADOW_GLSL}
       `)
       .replace('#include <map_fragment>', /* glsl */`
         #include <map_fragment>
@@ -1295,6 +1446,9 @@ scene.add(ocean);
           float d = max(vCover, 0.0);
           vec3 water = mix(SEA_SHALLOW, SEA_DEEP, smoothstep(0.3, 9.0, d));
           diffuseColor.rgb = mix(water, SEA_FOAM, foam);
+          // Cloud shadow. Water reads a squall harder than the land does — a
+          // shaded patch of sea goes flat and slate-coloured.
+          diffuseColor.rgb *= mix(1.0, 0.01, cloudShade(vWPos.xz));
 
           // Thin water lets the sand through and the very edge fades out
           // completely, which is what keeps the wash from ending in a hard line.
@@ -1368,6 +1522,7 @@ terrainMat.onBeforeCompile = (shader) => {
   shader.uniforms.uCaustCol   = { value: new THREE.Color(0xa8e4ff) };
   shader.uniforms.uCaustSlant = { value: CAUST_SLANT };
   shader.uniforms.uSunDir     = { value: SUN.clone() };
+  shader.uniforms.uCloudShadows = uCloudShadows;
 
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', /* glsl */`
@@ -1393,6 +1548,7 @@ terrainMat.onBeforeCompile = (shader) => {
       varying vec3 vWNrm;
       ${NOISE_GLSL}
       ${LAND_PALETTE}
+      ${CLOUD_SHADOW_GLSL}
       // Light piles up along the zero crossings of the crossing swells; raising
       // the fold to a power is what turns those bands into thin filaments.
       float caustNet(vec2 p, float t) {
@@ -1468,6 +1624,9 @@ terrainMat.onBeforeCompile = (shader) => {
         float band = 1.0 - smoothstep(0.0, bandH, abs(h - waterline - bandH * 0.2));
         float lace = 0.35 + 0.65 * smoothstep(0.25, 0.7, fbmC(wp.xz * 1.1 + vec2(uTime * 0.4, 0.0)));
         col = mix(col, FOAM, clamp(band * lace, 0.0, 0.92) * sandM);
+
+        // ---- and whatever is between this patch of ground and the sun ----
+        col *= mix(1.0, 0.005, cloudShade(wp.xz));
 
         diffuseColor.rgb *= col;
       }
@@ -1560,6 +1719,14 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyG') toggleGameMode();
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
+  // Weather controls — free camera only, where the panel showing what they do
+  // is on screen.
+  else if (camMode === CAM.FREE) {
+    if (e.code === 'Digit1' || e.code === 'Numpad1') cycleRate();
+    else if (e.code === 'Digit2' || e.code === 'Numpad2') cycleSpeed();
+    else if (e.code === 'Digit4' || e.code === 'Numpad4') { spawnCloud(true); refreshWxUI(); }
+    else if (e.code === 'Digit0' || e.code === 'Numpad0') clearClouds();
+  }
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (TRACKED.has(e.code)) { keys.delete(e.code); e.preventDefault(); }
@@ -1656,7 +1823,18 @@ function onTouchStart(e) {
   updateSprint();
 }
 
+// These two are bound on `window`, so every touch in the document passes through
+// them — including the ones that landed on a HUD button. Calling preventDefault()
+// on those was suppressing the click the browser would otherwise synthesise, and
+// that is what made the mode button unreliable on touch. Only speak for the
+// touches we actually took ownership of in onTouchStart.
+function ownsAny(e) {
+  for (const t of e.changedTouches) if (touches.has(t.identifier)) return true;
+  return false;
+}
+
 function onTouchMove(e) {
+  if (!ownsAny(e)) return;
   e.preventDefault();
   for (const t of e.changedTouches) {
     const rec = touches.get(t.identifier);
@@ -1683,6 +1861,7 @@ function onTouchMove(e) {
 }
 
 function onTouchEnd(e) {
+  if (!ownsAny(e)) return;
   e.preventDefault();
   for (const t of e.changedTouches) {
     const rec = touches.get(t.identifier);
@@ -1712,6 +1891,10 @@ function onTouchEnd(e) {
   updateSprint();
 }
 
+// The touch UI should come up on the first touch anywhere, not only on the first
+// touch that happens to land on the canvas — starting the session by tapping the
+// mode button used to leave the joystick and pads hidden.
+window.addEventListener('touchstart', enableTouchUI, { passive: true, capture: true });
 canvas.addEventListener('touchstart', onTouchStart, { passive: false });
 window.addEventListener('touchmove', onTouchMove, { passive: false });
 window.addEventListener('touchend', onTouchEnd, { passive: false });
@@ -1737,6 +1920,30 @@ function bindHold(el, on, off) {
 bindHold(document.getElementById('btn-up'),   () => state.flyUp = true,   () => state.flyUp = false);
 bindHold(document.getElementById('btn-down'), () => state.flyDown = true, () => state.flyDown = false);
 
+// A one-shot tap, for the HUD buttons that toggle something rather than being
+// held. `click` alone is not enough: a touch that ends anywhere near a window
+// listener calling preventDefault() never produces one, which is why the mode
+// button used to work on some taps and not others. Take pointerdown when the
+// browser has it and fall back to click when it does not, and never act on both
+// — once a pointerdown has been seen, the compatibility click is dead to us.
+function bindTap(el, fn) {
+  let sawPointer = false;
+  const fire = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (el.blur) el.blur();     // otherwise Space would re-press the focused button
+    fn(e);
+  };
+  el.addEventListener('pointerdown', (e) => { sawPointer = true; fire(e); });
+  el.addEventListener('click', (e) => {
+    if (sawPointer) { e.preventDefault(); e.stopPropagation(); return; }
+    fire(e);
+  });
+  // Keep the canvas / overlay handlers out of it entirely.
+  el.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+  el.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
+}
+
 // ----- on-screen action buttons (first / third person) -----
 const btnJump   = document.getElementById('btn-jump');
 const btnCrouch = document.getElementById('btn-crouch');
@@ -1760,6 +1967,848 @@ bindToggle(btnSprint, () => state.sprintBtn, (v) => state.sprintBtn = v);
 
 const isSprinting = () =>
   state.sprint || state.sprintBtn || keys.has('ShiftLeft') || keys.has('ShiftRight');
+
+// ---------------------------------------------------------------------------
+// Weather — clouds, rain, lightning
+//
+// Each cloud is a solid cluster of 8-20 overlapping lumpy ellipsoids baked into
+// one indexed geometry, so a whole cell is a single draw call. Their surfaces
+// come out merged rather than beaded because the normals are taken from the
+// gradient of a metaball field over *all* the blobs in the cluster, not from the
+// sphere each vertex happens to belong to — neighbouring blobs therefore shade
+// continuously across the seam where they intersect. Triangles buried inside
+// another blob are dropped at build time.
+//
+// Shading is baked, not lit: a directional light cannot give a cloud its
+// characteristic bright top and shadowed underside, because that gradient comes
+// from light scattering *through* the mass, which a surface material knows
+// nothing about. So the material is unlit and mixes a top and a base colour by
+// height-within-the-cloud plus normal, and the pair of colours is what encodes
+// the storm scale.
+// ---------------------------------------------------------------------------
+
+// The four bands the 1-10 scale falls into: fair, building, storm, severe.
+const CLOUD_BAND = (s) => (s <= 3 ? 0 : s <= 5 ? 1 : s <= 7 ? 2 : 3);
+const BAND_SPEC = [
+  { width: [200, 320], height: [ 48,  96], puffs: [ 5,  9], base: [110, 60] },
+  { width: [320, 480], height: [160, 240], puffs: [ 7, 11], base: [140, 70] },
+  { width: [480, 640], height: [320, 432], puffs: [ 9, 13], base: [160, 80] },
+  { width: [560, 720], height: [392, 504], puffs: [11, 15], base: [175, 90] },
+];
+
+// How wide the cluster is at height fraction t: a flat sheet, a heap, a tower
+// that flares at the top, and a tower with a pinched waist under a full anvil.
+function cloudProfile(band, t) {
+  if (band === 0) return 1.00 - 0.30 * t * t;
+  if (band === 1) return 1.00 - 0.44 * Math.pow(t, 1.35);
+  if (band === 2) return 1.00 - 0.46 * Math.pow(t, 0.85) + 0.34 * smooth((t - 0.70) / 0.30);
+  return 1.00 - 0.60 * Math.pow(t, 0.80) + 0.78 * smooth((t - 0.58) / 0.42);
+}
+
+// PolyhedronGeometry hands back a non-indexed soup — every face carries its own
+// three vertices. Welding it first means a blob costs 162 vertices rather than
+// 960, and it is the welded form the merge below assumes.
+function indexedUnitSphere(detail) {
+  const src = new THREE.IcosahedronGeometry(1, detail);
+  const sp = src.attributes.position.array;
+  const seen = new Map();
+  const pos = [], idx = [];
+  for (let i = 0; i < sp.length; i += 3) {
+    const key = sp[i].toFixed(4) + ',' + sp[i + 1].toFixed(4) + ',' + sp[i + 2].toFixed(4);
+    let v = seen.get(key);
+    if (v === undefined) {
+      v = pos.length / 3;
+      seen.set(key, v);
+      pos.push(sp[i], sp[i + 1], sp[i + 2]);
+    }
+    idx.push(v);
+  }
+  src.dispose();
+  return { pos: new Float32Array(pos), idx: new Uint16Array(idx), count: pos.length / 3 };
+}
+// three's `detail` counts subdivision cuts, not recursions: 2 gives 180 faces per
+// blob and 3 gives 320. Three is smooth enough that the lumps read as lumps
+// rather than as facets, and a whole cloud still lands around 5k triangles.
+const CLOUD_PUFF = indexedUnitSphere(isTouchDevice ? 2 : 3);
+const lerpRange = (r, t) => r[0] + (r[1] - r[0]) * t;
+
+function buildCloudGeo(band, rnd) {
+  const spec   = BAND_SPEC[band];
+  const width  = lerpRange(spec.width, rnd());
+  const height = lerpRange(spec.height, rnd());
+  const count  = Math.round(lerpRange(spec.puffs, rnd()));
+  const R = width * 0.5;
+
+  const puffs = [];
+  for (let k = 0; k < count; k++) {
+    const t = count > 1 ? Math.min(1, (k + rnd() * 0.8) / count) : 0;
+    const prof  = Math.max(0.18, cloudProfile(band, t));
+    const anvil = band >= 2 && t > 0.72;      // the flat spreading cap up top
+    const a = rnd() * Math.PI * 2;
+    // sqrt() keeps the blobs spread evenly over the disc instead of crowding
+    // into the middle of it. The spread is deliberately tighter than the blob
+    // radius: neighbours have to interpenetrate by a good margin or the cluster
+    // reads as a bag of balls rather than as one mass.
+    const rad = R * prof * Math.sqrt(rnd()) * 0.72;
+    const pr  = R * (0.24 + 0.28 * rnd()) * Math.max(0.55, prof);
+    puffs.push({
+      x: Math.cos(a) * rad,
+      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.22,
+      z: Math.sin(a) * rad,
+      // A narrower spread on the axis jitter than before: one blob at half the
+      // radius of its neighbour pokes out of the mass as a recognisable ball
+      // however well the seam around it is handled.
+      rx: pr * (0.80 + rnd() * 0.50),
+      ry: pr * (anvil ? 0.40 : band === 0 ? 0.55 : 0.80) * (0.90 + rnd() * 0.25),
+      rz: pr * (0.80 + rnd() * 0.50),
+      seed: rnd() * 40,
+    });
+  }
+
+  const sp = CLOUD_PUFF.pos;
+  const si = CLOUD_PUFF.idx;
+  const vc = CLOUD_PUFF.count;
+  const total = vc * puffs.length;
+
+  // Lumps baked into the surface — a perfectly round ball never reads as cloud
+  // however it is shaded. This displaces the surface by up to a third of the
+  // radius either way, so it is not a detail anything downstream can ignore:
+  // both the seam fillet and the buried-face cull have to ask this where a puff
+  // actually ends rather than assume its ellipsoid.
+  const LUMP = 0.20;
+  const lumpAt = (pf, dx, dy, dz) =>
+    1 + LUMP * (Math.sin(dx * 3.1 + pf.seed) * Math.sin(dy * 2.7 + pf.seed * 1.9)
+        + 0.55 * Math.sin(dz * 5.3 + pf.seed * 2.7) * Math.sin(dx * 4.3 - pf.seed));
+
+  // Where a point sits relative to a puff's lumpy surface: below 1 is inside it,
+  // 1 is on it, above 1 is clear of it.
+  const surfDepth = (px, py, pz, pf) => {
+    const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
+    const q = Math.hypot(ex, ey, ez);
+    if (q < 1e-6) return 0;
+    return q / lumpAt(pf, ex / q, ey / q, ez / q);
+  };
+
+  // --- vertices ---
+  // Built and kept in raw space: the flat base is a non-uniform squash, and
+  // every field query below — normals, fillet, cull — compares points against
+  // plain ellipsoids, so it has to happen before that squash distorts them.
+  // Testing squashed points against unsquashed puffs is what put the worst of
+  // the seam junk down in the skirt, which is exactly where a cumulus is most
+  // obviously a heap of balls.
+  const pos = new Float32Array(total * 3);
+  for (let k = 0; k < puffs.length; k++) {
+    const pf = puffs[k];
+    for (let v = 0; v < vc; v++) {
+      const dx = sp[v * 3], dy = sp[v * 3 + 1], dz = sp[v * 3 + 2];
+      const l = lumpAt(pf, dx, dy, dz);
+      const o = (k * vc + v) * 3;
+      pos[o]     = pf.x + dx * pf.rx * l;
+      pos[o + 1] = pf.y + dy * pf.ry * l;
+      pos[o + 2] = pf.z + dz * pf.rz * l;
+    }
+  }
+
+  // --- normals from the metaball field, so the blobs shade as one mass ---
+  const nrm = new Float32Array(total * 3);
+  const fieldNormals = () => {
+    for (let i = 0; i < total; i++) {
+      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
+      let gx = 0, gy = 0, gz = 0;
+      for (let k = 0; k < puffs.length; k++) {
+        const pf = puffs[k];
+        const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
+        const q2 = ex * ex + ey * ey + ez * ez + 1e-4;
+        const w = 1 / (q2 * q2);            // d/dp of the 1/q^2 falloff, outward
+        gx += w * ex / pf.rx;
+        gy += w * ey / pf.ry;
+        gz += w * ez / pf.rz;
+      }
+      const len = Math.hypot(gx, gy, gz) || 1;
+      nrm[i * 3] = gx / len; nrm[i * 3 + 1] = gy / len; nrm[i * 3 + 2] = gz / len;
+    }
+  };
+  fieldNormals();
+
+  // --- fillet the seams ---
+  // Two spheres pushed into each other cross in a hard V, and no amount of
+  // smoothed normals hides a crease that sharp: it catches the light as a line
+  // and the eye reads the two balls straight off it. Nudging the vertices that
+  // sit near a neighbour's surface outward along the field gradient fills that V
+  // in with a fillet, so the pair meets at a waist the way real cloud does.
+  // Vertices already well inside a neighbour are culled below and do not matter.
+  for (let k = 0; k < puffs.length; k++) {
+    const A = puffs[k];
+    const reach = (A.rx + A.ry + A.rz) / 3;
+    for (let v = 0; v < vc; v++) {
+      const i = k * vc + v;
+      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
+      let near = 0;
+      for (let m = 0; m < puffs.length; m++) {
+        if (m === k) continue;
+        // 1 on the neighbour's surface, tapering to 0 half a radius clear of it.
+        const f = 1.5 - surfDepth(px, py, pz, puffs[m]);
+        if (f > near) near = f;
+      }
+      if (near <= 0) continue;
+      const t2 = Math.min(1, near / 0.5);
+      const push = reach * 0.22 * t2 * t2 * (3 - 2 * t2);
+      pos[i * 3]     = px + nrm[i * 3] * push;
+      pos[i * 3 + 1] = py + nrm[i * 3 + 1] * push;
+      pos[i * 3 + 2] = pz + nrm[i * 3 + 2] * push;
+    }
+  }
+  fieldNormals();   // the surface moved, so the gradient has to be read again
+
+  // --- faces, minus the ones sealed inside a neighbouring blob ---
+  // The material is alpha-blended with no depth write, so a face left inside a
+  // neighbour is not hidden by it — it blends on top, and every one of those
+  // stacked interior shells darkens the overlap into a visible ball-shaped
+  // outline. Culling against the true lumpy surface lets the threshold sit right
+  // at it: anything below 1 is genuinely inside and has to go. The old 0.94
+  // against a plain ellipsoid both kept a shell of interior faces around every
+  // intersection and cut holes wherever a lump dented the surface inward.
+  const buriedIn = (i, pf) => surfDepth(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], pf) < 1.0;
+  const idx = [];
+  for (let k = 0; k < puffs.length; k++) {
+    const base = k * vc;
+    const A = puffs[k];
+    // Only the blobs that actually reach this one can swallow any of its faces —
+    // testing the rest of the cluster per triangle is most of the build cost.
+    // The 1.35 is the widest the lumps plus the fillet push a surface out.
+    const near = [];
+    const rA = Math.max(A.rx, A.ry, A.rz) * 1.35;
+    for (let m = 0; m < puffs.length; m++) {
+      if (m === k) continue;
+      const B = puffs[m];
+      if (Math.hypot(A.x - B.x, A.y - B.y, A.z - B.z) < rA + Math.max(B.rx, B.ry, B.rz) * 1.35) near.push(B);
+    }
+    for (let f = 0; f < si.length; f += 3) {
+      const a = base + si[f], b = base + si[f + 1], c = base + si[f + 2];
+      let buried = false;
+      for (let m = 0; m < near.length && !buried; m++) {
+        const pf = near[m];
+        buried = buriedIn(a, pf) && buriedIn(b, pf) && buriedIn(c, pf);
+      }
+      if (!buried) idx.push(a, b, c);
+    }
+  }
+
+  // --- flatten the base ---
+  // Everything below the cluster datum is squashed into a shallow skirt, which
+  // is what gives cumulus their flat, level bases. Normals take the inverse of
+  // that scale, so faces that were pointing gently downward end up pointing
+  // straight down — a flat base that shades like one.
+  const BASE_SQUASH = 0.22;
+  for (let i = 0; i < total; i++) {
+    if (pos[i * 3 + 1] >= 0) continue;
+    pos[i * 3 + 1] *= BASE_SQUASH;
+    const nx = nrm[i * 3], ny = nrm[i * 3 + 1] / BASE_SQUASH, nz = nrm[i * 3 + 2];
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nrm[i * 3] = nx / len; nrm[i * 3 + 1] = ny / len; nrm[i * 3 + 2] = nz / len;
+  }
+
+  // --- normalise the vertical: local y = 0 is the cloud base, aH is 0..1 ---
+  let minY = Infinity, maxY = -Infinity;
+  for (let i = 1; i < pos.length; i += 3) {
+    if (pos[i] < minY) minY = pos[i];
+    if (pos[i] > maxY) maxY = pos[i];
+  }
+  const span = Math.max(1e-3, maxY - minY);
+  const aH = new Float32Array(total);
+  for (let i = 0; i < total; i++) {
+    pos[i * 3 + 1] -= minY;
+    aH[i] = pos[i * 3 + 1] / span;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  geo.setAttribute('aH', new THREE.BufferAttribute(aH, 1));
+  geo.setIndex(idx);
+  geo.computeBoundingSphere();
+  geo.userData.width = width;
+  geo.userData.height = span;
+  return geo;
+}
+
+// A pool built once at load and shared: a cloud picks a shell, spins it and
+// scales it a little, and gets its own colours from its own weather scale.
+const cloudRand = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
+const CLOUD_GEOS = BAND_SPEC.map((_, band) => {
+  const n = isTouchDevice ? 2 : 3;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(buildCloudGeo(band, cloudRand));
+  return out;
+});
+
+const CLOUD_VERT = /* glsl */`
+  attribute float aH;
+  varying float vH;
+  varying vec3 vN;
+  varying vec3 vW;
+  void main() {
+    vH = aH;
+    vN = normalize(mat3(modelMatrix) * normal);
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vW = wp.xyz;
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }
+`;
+
+const CLOUD_FRAG = /* glsl */`
+  varying float vH;
+  varying vec3 vN;
+  varying vec3 vW;
+  uniform vec3  uTop, uBot, uTint, uSunDir, uHaze, uSunCol;
+  uniform float uTintAmt, uFlash, uHazeMax, uThickness;
+
+  // Henyey-Greenstein: fraction of light scattered toward the eye for a given
+  // sun/view angle. g > 0 throws most of it forward, through the mass, which
+  // is what makes a cloud glow when the sun sits behind it.
+  float henyeyGreenstein(float cosTheta, float g) {
+    float g2 = g * g;
+    return (1.0 - g2) / (12.566371 * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5));
+  }
+
+  void main() {
+    vec3 n = normalize(vN);
+    vec3 v = normalize(cameraPosition - vW);
+    // Two things decide how much light reaches a patch of cloud: how far up the
+    // mass it is (light comes down through the whole depth of it) and which way
+    // it faces. Downward faces are what the rain falls out of, and they are the
+    // darkest part of any cloud that is worth looking at.
+    float up  = n.y * 0.5 + 0.5;
+    float sun = dot(n, uSunDir) * 0.5 + 0.5;
+
+    // Stand-in for the mass of cloud behind this point: thicker toward the
+    // base of the shell, scaled by the cell's own storminess (uThickness).
+    float density = uThickness * (0.35 + 0.65 * (1.0 - vH));
+    // Beer-Lambert extinction: how much direct light survives that mass.
+    // A steeper falloff than a flatter mass would use — it's what makes the
+    // difference between "thin here, thick there" actually read as depth.
+    float transmit = exp(-density * 2.3);
+
+    // Punchier spread between the two terms that drive the top/bottom
+    // gradient (facing + height) is what reads as real depth rather than a
+    // flat wash — a cloud lit only by a soft blend looks like a painted
+    // sphere, not a mass with a lit crown and a heavy, shadowed belly.
+    float lit = clamp(0.06 + 0.56 * up + 0.30 * pow(sun, 1.4) + 0.42 * vH, 0.0, 1.0);
+    vec3 col = mix(uBot, uTop, lit) * mix(0.7, 1.0, transmit);
+
+    // Extra luminosity on the crown: strongly upward-facing, thin (well-lit)
+    // patches push past the flat top colour into a proper glow, which is what
+    // gives fluffy tops their sunlit puffiness instead of a flat matte white.
+    col += uTop * pow(max(up, 0.0), 5.0) * 0.36 * mix(0.5, 1.0, transmit);
+    // Undersides read as darker, heavier mass by contrast — cheap but the
+    // single biggest lever for the "fluffy top, moody bottom" silhouette.
+    // Widened from the original spread so the gradient carries real
+    // top-to-bottom contrast instead of a gentle fade.
+    col *= mix(0.38, 1.18, up);
+
+    // Forward scatter through the cloud body, brightest looking through thin,
+    // backlit mass toward the sun.
+    float cosTheta = dot(v, -uSunDir);
+    float phase = henyeyGreenstein(cosTheta, 0.45);
+    col += uSunCol * phase * (1.0 - transmit) * 1.4;
+
+    // Subsurface scattering approximation: thin, sunlit-from-behind patches
+    // glow with transmitted light rather than reading as flat silhouette.
+    float backlit = pow(clamp(dot(-v, uSunDir), 0.0, 1.0), 2.0) * (1.0 - transmit);
+    col += uSunCol * backlit * 0.55;
+
+    // Fresnel silver lining: grazing, sun-facing rims catch the most light.
+    // Wider and hotter than a physically-tight rim so it reads clearly at a
+    // distance rather than as a single blown-out pixel.
+    float fresnel = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
+    col += uSunCol * fresnel * pow(max(sun, 0.0), 1.7) * 1.15;
+    // Tight hot rim, kept for the sharp highlight right at the sun.
+    col += vec3(0.34, 0.30, 0.22) * pow(max(sun, 0.0), 7.0);
+    // Golden-hour warmth: a soft amber cast where that rim catches raking
+    // sunlight, so lit edges skew warm rather than the same cool white as the
+    // rest of the mass.
+    vec3 warm = vec3(1.0, 0.66, 0.32);
+    col += warm * fresnel * pow(max(sun, 0.0), 1.6) * 0.56;
+
+    // Severe cells go sickly green-yellow underneath. It is a cast over the
+    // charcoal, not a coat of paint — enough to read as "that one is dangerous"
+    // from across the water and no more, and only across the lowest fifth.
+    col = mix(col, uTint, uTintAmt * (1.0 - smoothstep(0.0, 0.22, vH)));
+    // Lightning lights the cell from the inside, brightest low down.
+    col += vec3(0.80, 0.84, 1.0) * uFlash * (1.15 - vH * 0.55);
+    // The scene's own fog would swallow these at a third of the range they are
+    // meant to be legible from, so they carry their own much thinner haze.
+    float haze = uHazeMax * smoothstep(420.0, 2500.0, distance(vW, cameraPosition));
+    col = mix(col, uHaze, haze);
+
+    // Soft alpha: thin, grazing edges fade toward transparent instead of
+    // hard-clipping at the mesh boundary.
+    float alpha = clamp((1.0 - transmit) * mix(1.0, 0.35, fresnel) + 0.25, 0.0, 1.0);
+
+    gl_FragColor = vec4(col, alpha);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }
+`;
+
+// Colour by weather scale: white and bright at 1, charcoal with almost no light
+// left in the base by 10.
+const CLOUD_KEYS = [
+  { s: 1,  top: 0xffffff, bot: 0xd2e0f0 },
+  { s: 3,  top: 0xfefeff, bot: 0xb3c2d4 },
+  { s: 5,  top: 0xf4f7fb, bot: 0x7c8998 },
+  { s: 7,  top: 0xd2d7de, bot: 0x3c434f },
+  { s: 9,  top: 0xacb2bc, bot: 0x21252c },
+  { s: 10, top: 0x969ba6, bot: 0x14171c },
+];
+function cloudColors(s) {
+  let i = 0;
+  while (i < CLOUD_KEYS.length - 2 && s > CLOUD_KEYS[i + 1].s) i++;
+  const a = CLOUD_KEYS[i], b = CLOUD_KEYS[i + 1];
+  const t = THREE.MathUtils.clamp((s - a.s) / (b.s - a.s), 0, 1);
+  return {
+    top: new THREE.Color(a.top).lerp(new THREE.Color(b.top), t),
+    bot: new THREE.Color(a.bot).lerp(new THREE.Color(b.bot), t),
+  };
+}
+
+const CLOUD_HAZE = new THREE.Color(0xc4d8ea);
+const SEVERE_TINT = new THREE.Color(0x7d7f4e);
+
+const CLOUD_SUN_COLOR = new THREE.Color(0xfff0cf);
+
+function cloudMaterial(scale) {
+  const { top, bot } = cloudColors(scale);
+  return new THREE.ShaderMaterial({
+    vertexShader: CLOUD_VERT,
+    fragmentShader: CLOUD_FRAG,
+    transparent: true,
+    depthWrite: false,
+    uniforms: {
+      uTop:       { value: top },
+      uBot:       { value: bot },
+      uTint:      { value: SEVERE_TINT.clone() },
+      uTintAmt:   { value: smooth((scale - 7.4) / 2.2) * 0.22 },
+      uSunDir:    { value: SUN.clone() },
+      uSunCol:    { value: CLOUD_SUN_COLOR.clone() },
+      uHaze:      { value: CLOUD_HAZE.clone() },
+      uHazeMax:   { value: 0.66 },
+      uFlash:     { value: 0 },
+      // Storm cells thicken faster than fair-weather puffs, which is what
+      // makes the high end of the scale read as distinctly darker and more
+      // ominous rather than just a tinted version of a bright cloud.
+      uThickness: { value: 0.75 + scale * 0.16 },
+    },
+  });
+}
+
+// ----- the controls the free camera exposes -----
+const WX = {
+  rateIdx: 2,
+  speedIdx: 1,
+  // label, seconds between spawns (0 = off)
+  RATES:  [['Off', 0], ['Slow', 16], ['Medium', 7.5], ['Fast', 3]],
+  // label, drift speed in units / second
+  SPEEDS: [['Slow', 5], ['Medium', 13], ['Fast', 27]],
+};
+
+// Storminess is rolled per cloud rather than picked from a shared range: most
+// cells land mild, with severe ones getting rarer the higher the scale climbs.
+function rollStorminess(min, max) {
+  return min + Math.pow(Math.random(), 2.2) * (max - min);
+}
+
+const MAX_CLOUDS    = isTouchDevice ? 14 : 24;
+const CLOUD_DESPAWN = 2100;      // they are gone once they are this far behind you
+
+const clouds = [];
+const cloudGroup = new THREE.Group();
+scene.add(cloudGroup);
+// Depth prepass: render clouds with a depth-only material first so interior
+// faces are hidden by the depth buffer when the volumetric pass runs.
+const depthMat = new THREE.MeshBasicMaterial({ colorWrite: false });
+const cloudDepthGroup = new THREE.Group();
+scene.add(cloudDepthGroup);
+
+const wxFocus = new THREE.Vector3();
+let spawnTimer = 0;
+let gloom = 0;                   // 0 clear sky .. 1 overcast right overhead
+let rainAmt = 0;
+let wxTime = 0;
+
+// A single slowly-drifting wind direction shared by the whole sky, so every
+// cloud heads the same way instead of converging on the player from all sides.
+const WIND_BASE_DIR = Math.random() * Math.PI * 2;
+function liveWindDir() {
+  return WIND_BASE_DIR + Math.sin(wxTime * 0.015) * 0.4;
+}
+
+function spawnCloud(initial) {
+  if (clouds.length >= MAX_CLOUDS) return null;
+  const scale = rollStorminess(1, 10);
+  const band  = CLOUD_BAND(scale);
+  const pool  = CLOUD_GEOS[band];
+  const geo   = pool[(Math.random() * pool.length) | 0];
+
+  // Far out and in a random direction. A fresh cloud is 800-1500 away, which at
+  // the medium drift speed is a couple of minutes of warning; the initial batch
+  // is scattered across the whole range so the sky is never empty at load.
+  const wind = liveWindDir();
+  const bearing = wind + Math.PI + (Math.random() - 0.5) * Math.PI * 0.6;
+  const dist = initial ? 140 + Math.random() * 1360 : 800 + Math.random() * 700;
+  const alt  = BAND_SPEC[band].base[0] + Math.random() * BAND_SPEC[band].base[1];
+  const sc   = 0.65 + Math.random() * 0.9;
+
+  const material = cloudMaterial(scale);
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.position.set(wxFocus.x + Math.cos(bearing) * dist, alt, wxFocus.z + Math.sin(bearing) * dist);
+  mesh.rotation.y = Math.random() * Math.PI * 2;
+  mesh.scale.setScalar(sc);
+  cloudGroup.add(mesh);
+  // Matching depth-only mesh for the prepass.
+  const depthMesh = new THREE.Mesh(geo, depthMat);
+  depthMesh.position.copy(mesh.position);
+  depthMesh.rotation.copy(mesh.rotation);
+  depthMesh.scale.copy(mesh.scale);
+  cloudDepthGroup.add(depthMesh);
+
+  // Heading: the shared wind direction, with a little per-cloud scatter for
+  // gusting, so the whole sky drifts together instead of converging on the
+  // player from every side.
+  const head = liveWindDir() + (Math.random() - 0.5) * 0.3;
+  const c = {
+    mesh,
+    depthMesh,
+    mat: material,
+    scale,
+    band,
+    dirX: Math.cos(head),
+    dirZ: Math.sin(head),
+    spdMul: 1.0,
+    radius: geo.userData.width * 0.5 * sc,
+    baseY: alt,
+    boltT: -1,
+    boltIn: boltInterval(scale) * Math.random(),
+  };
+  clouds.push(c);
+  return c;
+}
+
+function clearClouds() {
+  for (const c of clouds) {
+    cloudGroup.remove(c.mesh); c.mat.dispose();
+    cloudDepthGroup.remove(c.depthMesh);
+  }
+  clouds.length = 0;
+  refreshWxUI();
+}
+
+// ----- lightning -----
+const boltInterval = (scale) => (scale >= 8 ? 2.5 + Math.random() * 6 : 7 + Math.random() * 15);
+
+// The strike envelope: a fast leader, a dip, a brighter return stroke, then the
+// glow rolling away. Real lightning is never a single clean flash.
+function boltEnv(t) {
+  if (t < 0.06) return t / 0.06;
+  if (t < 0.14) return 1.0 - (t - 0.06) / 0.08 * 0.85;
+  if (t < 0.20) return 0.15 + (t - 0.14) / 0.06 * 0.75;
+  if (t < 0.50) return 0.90 * (1 - (t - 0.20) / 0.30);
+  return 0;
+}
+
+let audioCtx = null;
+function initAudio() {
+  if (audioCtx) return audioCtx;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  try { audioCtx = new AC(); } catch (e) { audioCtx = null; }
+  return audioCtx;
+}
+
+// Thunder, synthesised: brown noise (a random walk, which is what gives it the
+// low rumble) shaped by an envelope and rolled off harder the further away the
+// strike was. Close strikes get a crack on the front; distant ones are all roll.
+function playThunder(vol, dist) {
+  const ctx = audioCtx;
+  if (!ctx || vol <= 0.02) return;
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  try {
+    const near = 1 - Math.min(1, dist / 1800);
+    const sr = ctx.sampleRate;
+    const n = Math.floor(sr * (1.5 + (1 - near) * 2.6));
+    const buf = ctx.createBuffer(1, n, sr);
+    const d = buf.getChannelData(0);
+    let b = 0;
+    for (let i = 0; i < n; i++) {
+      b = b * 0.965 + (Math.random() * 2 - 1) * 0.035;
+      const t = i / sr;
+      const crack = near * Math.exp(-t * 26) * (Math.random() * 2 - 1) * 0.5;
+      const roll  = Math.exp(-t * (1.0 + (1 - near) * 0.7)) * (0.6 + 0.4 * Math.sin(t * 3.1));
+      d[i] = THREE.MathUtils.clamp(b * 7.5 * roll + crack, -1, 1);
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 180 + near * 900;
+    const g = ctx.createGain();
+    g.gain.value = vol * 0.5;
+    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
+    src.start();
+  } catch (e) { /* audio is a nicety; never let it take the frame down */ }
+}
+
+function strike(c, dist) {
+  c.boltT = 0;
+  c.boltIn = boltInterval(c.scale);
+  const vol = THREE.MathUtils.clamp(1 - dist / 2000, 0, 1) * (0.35 + 0.065 * c.scale);
+  if (audioCtx && vol > 0.02) {
+    // Sound lags the flash by the distance over the speed of sound — the reason
+    // you count the seconds between them.
+    setTimeout(() => playThunder(vol, dist), Math.min(dist, 2400) / 340 * 1000);
+  }
+}
+
+// ----- rain -----
+// Drops fill a column that rides with the camera in world space: their fall
+// (straight down, in world Y, wrapped modulo RAIN_H as they pass the player)
+// never depends on which way the camera is looking, so a drop is exactly as
+// present when you look straight down as when you look at the horizon.
+//
+// Each drop is a screen-aligned quad — stretched along the camera's own up
+// vector rather than a fixed world-space "streak" direction — so it is never
+// foreshortened away. A quad built from a fixed world-space length axis goes
+// edge-on and all but disappears the moment the view direction lines up with
+// that axis, which is exactly what happened looking straight down at rain
+// falling straight down. Billboarding fully off the camera (right *and* up)
+// keeps the streak's full width and length on screen from every angle.
+const RAIN_N     = isTouchDevice ? 3000 : 7000;
+const RAIN_R     = 50;
+const RAIN_H     = 50;
+const RAIN_LEN   = 4.2;
+const RAIN_WIDTH = 0.09;
+
+const rainMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  uniforms: {
+    uTime:      { value: 0 },
+    uCam:       { value: new THREE.Vector3() },
+    uCamRight:  { value: new THREE.Vector3(1, 0, 0) },
+    uCamUp:     { value: new THREE.Vector3(0, 1, 0) },
+    uIntensity: { value: 0 },
+    uCol:       { value: new THREE.Color(0xf0f6fb) },
+  },
+  vertexShader: /* glsl */`
+    attribute vec2 aCorner;   // x: -1/+1 across the streak's width, y: 0 at the head, 1 at the wind-drawn tail
+    uniform float uTime;
+    uniform vec3 uCam;
+    uniform vec3 uCamRight;
+    uniform vec3 uCamUp;
+    varying float vA;
+    void main() {
+      vec3 p = position;
+      // Per-drop fall speed, hashed off its own position so it stays put.
+      float j = fract(sin(p.x * 12.9898 + p.z * 78.233) * 43758.5453);
+      // Straight-down fall in world space, entirely independent of the camera.
+      float y = mod(p.y - uTime * 26.0 * (0.8 + 0.5 * j), ${RAIN_H.toFixed(1)});
+      vec3 w = uCam + vec3(p.x, y - ${(RAIN_H * 0.55).toFixed(2)}, p.z);
+      w += aCorner.y * vec3(1.6, 0.0, 0.9) * 0.5;                 // gentle wind slant on the tail
+      w += uCamUp * -aCorner.y * ${RAIN_LEN.toFixed(2)};          // billboarded length: never edge-on
+      w += uCamRight * aCorner.x * ${RAIN_WIDTH.toFixed(3)};      // billboarded width
+      vA = 1.0 - aCorner.y * 0.5;
+      gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform float uIntensity;
+    uniform vec3 uCol;
+    varying float vA;
+    void main() { gl_FragColor = vec4(uCol, vA * 0.72 * uIntensity); }
+  `,
+});
+
+const rainObj = (() => {
+  const pos = new Float32Array(RAIN_N * 4 * 3);
+  const corner = new Float32Array(RAIN_N * 4 * 2);
+  const idx = new Uint32Array(RAIN_N * 6);
+  for (let i = 0; i < RAIN_N; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * RAIN_R;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r, y = Math.random() * RAIN_H;
+    const corners = [[-1, 0], [1, 0], [-1, 1], [1, 1]];
+    for (let v = 0; v < 4; v++) {
+      const o = (i * 4 + v) * 3;
+      pos[o] = x; pos[o + 1] = y; pos[o + 2] = z;
+      corner[(i * 4 + v) * 2] = corners[v][0];
+      corner[(i * 4 + v) * 2 + 1] = corners[v][1];
+    }
+    const base = i * 4, o6 = i * 6;
+    idx[o6] = base; idx[o6 + 1] = base + 1; idx[o6 + 2] = base + 2;
+    idx[o6 + 3] = base + 2; idx[o6 + 4] = base + 1; idx[o6 + 5] = base + 3;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aCorner', new THREE.BufferAttribute(corner, 2));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  const o = new THREE.Mesh(geo, rainMat);
+  o.frustumCulled = false;      // it is always around the camera by construction
+  o.visible = false;
+  scene.add(o);
+  return o;
+})();
+
+// ----- overcast palettes -----
+const FOG_BASE  = new THREE.Color(FOG_COLOR);
+const GLOOM_FOG = new THREE.Color(0x8a97a6);
+const GLOOM_Z   = new THREE.Color(0x2c3a4c);
+const GLOOM_H   = new THREE.Color(0x8b98a6);
+const clamp01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
+const shadowList = [];      // scratch, refilled every frame
+
+function updateWeather(dt) {
+  wxTime += dt;
+  wxFocus.copy(camera.position);
+
+  // --- spawn ---
+  const interval = WX.RATES[WX.rateIdx][1];
+  if (interval > 0) {
+    spawnTimer += dt;
+    while (spawnTimer >= interval && clouds.length < MAX_CLOUDS) {
+      spawnTimer -= interval;
+      spawnCloud(false);
+    }
+    if (clouds.length >= MAX_CLOUDS) spawnTimer = Math.min(spawnTimer, interval);
+  } else {
+    spawnTimer = 0;
+  }
+
+  // --- drift, cull, and collect what the rest of the scene needs to know ---
+  const speed = WX.SPEEDS[WX.speedIdx][1];
+  let cover = 0, rainWant = 0, flashGlobal = 0;
+  shadowList.length = 0;
+
+  for (let i = clouds.length - 1; i >= 0; i--) {
+    const c = clouds[i];
+    const p = c.mesh.position;
+    p.x += c.dirX * speed * c.spdMul * dt;
+    p.z += c.dirZ * speed * c.spdMul * dt;
+
+    const dx = p.x - wxFocus.x, dz = p.z - wxFocus.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > CLOUD_DESPAWN) {
+      cloudGroup.remove(c.mesh);
+      cloudDepthGroup.remove(c.depthMesh);
+      c.mat.dispose();
+      clouds.splice(i, 1);
+      continue;
+    }
+
+    // How much of this cloud is directly over the camera: 1 well inside it,
+    // tapering to 0 a little past its edge.
+    const over = 1 - clamp01((dist - c.radius * 0.35) / (c.radius * 0.8));
+    cover = Math.max(cover, over * clamp01(0.30 + 0.075 * c.scale));
+    // Scale 4-5 spits, 6-7 is heavy, 8-10 is a downpour. Only if we are actually
+    // underneath it rather than flying above the cloud deck.
+    if (c.scale >= 4 && wxFocus.y < c.baseY - 6) {
+      rainWant = Math.max(rainWant, over * Math.min(1, (c.scale - 3) / 5));
+    }
+
+    // --- lightning ---
+    if (c.scale >= 6) {
+      if (c.boltT >= 0) {
+        c.boltT += dt;
+        if (c.boltT > 0.5) c.boltT = -1;
+      } else {
+        c.boltIn -= dt;
+        if (c.boltIn <= 0) strike(c, dist);
+      }
+    }
+    const flash = c.boltT >= 0 ? boltEnv(c.boltT) : 0;
+    c.mat.uniforms.uFlash.value = flash;
+    flashGlobal = Math.max(flashGlobal, flash * (1 - clamp01((dist - 250) / 1300)));
+
+    shadowList.push(c);
+  }
+
+  // --- hand the ground shaders the biggest, nearest footprints ---
+  // The shadow lands well downwind of the cloud that casts it: two hundred
+  // metres of altitude times the tangent of the sun's angle from vertical.
+  for (const c of shadowList) {
+    c.shX = c.mesh.position.x - CLOUD_SHADOW_SLANT.x * c.baseY;
+    c.shZ = c.mesh.position.z - CLOUD_SHADOW_SLANT.y * c.baseY;
+    c.shKey = Math.hypot(c.shX - wxFocus.x, c.shZ - wxFocus.z) - c.radius;
+  }
+  shadowList.sort((a, b) => a.shKey - b.shKey);
+  cloudShadowArr.fill(0);
+  const nSh = Math.min(MAX_CLOUD_SHADOWS, shadowList.length);
+  for (let i = 0; i < nSh; i++) {
+    const c = shadowList[i];
+    const o = i * 4;
+    cloudShadowArr[o]     = c.shX;
+    cloudShadowArr[o + 1] = c.shZ;
+    cloudShadowArr[o + 2] = c.radius * 1.10;
+    // Quadratic in scale rather than linear: a wisp at scale 1 still lays down
+    // a shadow you can watch cross the sand, but a scale-10 storm cell has to
+    // black the ground out under it, so the top of the range needs to pull away
+    // from the bottom much faster than a straight line does. Saturates around
+    // scale 8 — past that the cell is simply opaque.
+    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.45 + 0.12 * c.scale + 0.04 * c.scale * c.scale, 0, 1);
+  }
+
+  // --- the sky reacting to what is in it ---
+  gloom += (cover - gloom) * (1 - Math.exp(-1.2 * dt));
+  sun.intensity        = SUN_BASE  * (1 - 0.60 * gloom);
+  hemiLight.intensity  = HEMI_BASE * (1 - 0.30 * gloom) + 0.55 * flashGlobal;
+  ambLight.intensity   = AMB_BASE  * (1 - 0.25 * gloom) + 1.9 * flashGlobal;
+
+  const g = gloom * 0.8;
+  skyMat.uniforms.uZenith.value.copy(SKY_ZENITH).lerp(GLOOM_Z, g);
+  skyMat.uniforms.uHorizon.value.copy(SKY_HORIZON).lerp(GLOOM_H, g);
+  if (!underwater) {
+    scene.fog.color.copy(FOG_BASE).lerp(GLOOM_FOG, gloom * 0.75);
+  }
+
+  // --- rain ---
+  rainAmt += (rainWant - rainAmt) * (1 - Math.exp(-0.9 * dt));
+  rainObj.visible = rainAmt > 0.02 && !underwater;
+  if (rainObj.visible) {
+    rainMat.uniforms.uTime.value = wxTime;
+    rainMat.uniforms.uCam.value.copy(camera.position);
+    // Columns 0 and 1 of the camera's world matrix are its right and up
+    // vectors — billboarding the streak quads off both keeps them fully
+    // screen-facing (and therefore visible) from any camera angle.
+    rainMat.uniforms.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
+    rainMat.uniforms.uCamUp.value.setFromMatrixColumn(camera.matrixWorld, 1);
+    // A gentle floor keeps even a light drizzle legible instead of fading to a
+    // near-invisible haze, while heavier cells still read as visibly heavier.
+    rainMat.uniforms.uIntensity.value = 0.35 + 0.65 * rainAmt;
+  }
+}
+
+// ----- weather HUD -----
+const wxRateBtn      = document.getElementById('wx-rate');
+const wxSpeedBtn     = document.getElementById('wx-speed');
+const wxCountEl      = document.getElementById('wx-count');
+const wxCloudInfoEl  = document.getElementById('wx-cloud-info');
+
+function refreshWxUI() {
+  wxRateBtn.textContent  = WX.RATES[WX.rateIdx][0];
+  wxRateBtn.classList.toggle('off', WX.rateIdx === 0);
+  wxSpeedBtn.textContent = WX.SPEEDS[WX.speedIdx][0];
+  wxCountEl.textContent  = String(clouds.length);
+}
+const cycleRate  = () => { WX.rateIdx  = (WX.rateIdx  + 1) % WX.RATES.length;  refreshWxUI(); };
+const cycleSpeed = () => { WX.speedIdx = (WX.speedIdx + 1) % WX.SPEEDS.length; refreshWxUI(); };
+
+bindTap(wxRateBtn,  cycleRate);
+bindTap(wxSpeedBtn, cycleSpeed);
+refreshWxUI();
+
+// Seed the sky before the first frame so there is weather to look at on arrival.
+wxFocus.copy(camera.position);
+for (let i = 0; i < (isTouchDevice ? 7 : 11); i++) spawnCloud(true);
+refreshWxUI();
 
 // ---------------------------------------------------------------------------
 // Character controller — a cannon-es body whose velocity is driven by input
@@ -2129,15 +3178,18 @@ const modeBtn   = document.getElementById('mode-btn');
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['Space / C', 'Swim up / down'],
-                ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn']],
+                ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['Space / C', 'Swim up / down'],
-                ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn']],
+                ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['V', 'Next camera'],
-                ['G', 'Free camera']],
+                ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['V', 'Next camera'], ['G', 'Enter game'], ['Esc', 'Release mouse']],
+                ['Mouse', 'Look'], ['1 2', 'Weather'], ['4 / 0', 'Add / clear cloud'],
+                ['V', 'Next camera'], ['G', 'Enter game'], ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump / swim up'],
@@ -2146,7 +3198,8 @@ const HELP_TOUCH = {
                 ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint']],
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
-                ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)']],
+                ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
+                ['Weather', 'Panel, top left']],
 };
 
 function refreshModeUI() {
@@ -2159,19 +3212,26 @@ function refreshModeUI() {
   instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
 
+  // The weather controls only make sense while you are flying around watching
+  // the sky, so they ride with the free camera.
+  document.body.classList.toggle('free-cam', camMode === CAM.FREE);
+
   // Fly pad doubles as the top-down zoom pad; action pad is for on-foot modes.
   document.body.classList.toggle('pad-fly', camMode === CAM.FREE || camMode === CAM.TOP);
   document.body.classList.toggle('pad-act', camMode === CAM.FIRST || camMode === CAM.THIRD);
   document.getElementById('crosshair').style.display = (camMode === CAM.THIRD || camMode === CAM.TOP) ? 'none' : '';
 }
 
-modeBtn.addEventListener('click', (e) => {
-  e.preventDefault();
+// Deliberately does NOT grab the pointer on the way into game mode. While the
+// pointer is locked the browser routes every mouse event to the locked element,
+// so nothing at all reaches a DOM button — a mode button that locks the pointer
+// makes itself unclickable the moment it succeeds, which is exactly why this one
+// "didn't always work". Esc frees the cursor (and pops the overlay, which this
+// button now sits above); a click in the world captures it again.
+bindTap(modeBtn, () => {
+  initAudio();                          // first gesture — unlock thunder
   toggleGameMode();
-  modeBtn.blur();                       // otherwise Space would re-press the button
-  if (!isTouchDevice && camMode !== CAM.FREE) requestLock();
 });
-modeBtn.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
 refreshModeUI();
 
 // ---------------------------------------------------------------------------
@@ -2203,6 +3263,7 @@ document.getElementById('start-btn').textContent = isTouchDevice ? 'Tap to fly' 
 
 function hideOverlay() {
   overlay.classList.add('hidden');
+  initAudio();                  // the gesture the browser wants before any sound
   if (!isTouchDevice) requestLock();
 }
 function showOverlay() { overlay.classList.remove('hidden'); }
@@ -2297,6 +3358,9 @@ function tick() {
   updateCamera(dt);
   waterTime.value = elapsed;
   updateWaterVisuals();
+  // After the water swap, which owns the fog when the camera is submerged — the
+  // weather only repaints it while we are above the surface.
+  updateWeather(dt);
   sky.position.copy(camera.position);
   // Slide the sea under the camera. The waves themselves are a function of world
   // position, so nothing moves with it — the tessellation just follows the eye,
@@ -2323,9 +3387,28 @@ function tick() {
       p.x.toFixed(1).padStart(6, ' ') + ',' +
       p.y.toFixed(1).padStart(6, ' ') + ',' +
       p.z.toFixed(1).padStart(6, ' ');
+    if (camMode === CAM.FREE) {
+      wxCountEl.textContent = String(clouds.length);
+      let nearest = null, nearestDist = Infinity;
+      for (const c of clouds) {
+        const d = c.mesh.position.distanceTo(p);
+        if (d < nearestDist) { nearestDist = d; nearest = c; }
+      }
+      wxCloudInfoEl.textContent = nearest
+        ? `nearest: storm ${nearest.scale.toFixed(1)} @ ${nearestDist.toFixed(0)}m`
+        : 'nearest: —';
+    }
   }
 
+  // Depth prepass: render cloud silhouettes into the depth buffer first,
+  // then the full scene with volumetric shading reads that depth to cull
+  // interior faces that would otherwise bleed through.
+  cloudGroup.visible = false;
   renderer.render(scene, camera);
+  cloudGroup.visible = true;
+  cloudDepthGroup.visible = false;
+  renderer.render(scene, camera);
+  cloudDepthGroup.visible = true;
 }
 
 // Debug handle — handy from the console / remote inspector on a phone.
@@ -2336,6 +3419,15 @@ window.hermes = {
   // The island is bare by design — these are how you put something on it from
   // the console, collider included.
   addBox, addSphere, mat, objects,
+  // Weather: WX holds the live settings, spawnCloud(true) drops one in near you.
+  WX, clouds, spawnCloud, clearClouds, refreshWxUI,
+  weather: () => ({
+    count: clouds.length,
+    rate: WX.RATES[WX.rateIdx][0],
+    speed: WX.SPEEDS[WX.speedIdx][0],
+    gloom, rain: rainAmt,
+    scales: clouds.map((c) => c.scale).sort((a, b) => a - b),
+  }),
   // live read-outs of the controller internals (module-scoped `let`s)
   status: () => ({
     cam: CAM_NAMES[camMode],

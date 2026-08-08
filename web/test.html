@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Game Diagnostic</title>
+<style>
+body { background: #111; color: #0f0; font-family: monospace; font-size: 16px; padding: 20px; }
+.ok { color: #0f0; }
+.fail { color: #f00; }
+.warn { color: #ff0; }
+h2 { color: #fff; }
+</style>
+</head>
+<body>
+<h2>Game Diagnostic</h2>
+<div id="log"></div>
+<script>
+const log = document.getElementById('log');
+function addResult(label, ok, detail) {
+  const div = document.createElement('div');
+  div.innerHTML = (ok ? '✅' : '❌') + ' <b>' + label + '</b>: ' + (detail || (ok ? 'OK' : 'FAIL'));
+  log.appendChild(div);
+}
+function addInfo(label, detail) {
+  const div = document.createElement('div');
+  div.innerHTML = 'ℹ️ <b>' + label + '</b>: ' + detail;
+  log.appendChild(div);
+}
+
+addInfo('User Agent', navigator.userAgent);
+addInfo('Screen', screen.width + 'x' + screen.height);
+addInfo('Pixel Ratio', window.devicePixelRatio);
+
+// Test 1: WebGL
+try {
+  const c = document.createElement('canvas');
+  const gl = c.getContext('webgl2') || c.getContext('webgl');
+  if (gl) {
+    addResult('WebGL', true, (c.getContext('webgl2') ? 'WebGL2' : 'WebGL1') + 
+      ' — ' + gl.getParameter(gl.RENDERER));
+    // Test OES_standard_derivatives
+    const ext = gl.getExtension('OES_standard_derivatives');
+    addResult('OES_standard_derivatives', !!ext, ext ? 'Available' : 'Not available (needed for clouds)');
+  } else {
+    addResult('WebGL', false, 'WebGL not supported!');
+  }
+} catch(e) {
+  addResult('WebGL', false, e.message);
+}
+
+// Test 2: Fetch local Three.js
+fetch('./lib/three.module.js', {cache: 'no-store'})
+  .then(r => { addResult('Fetch Three.js', r.ok, r.status + ' — ' + r.headers.get('content-length') + ' bytes'); return r.text(); })
+  .then(t => addInfo('Three.js size', (t.length / 1024).toFixed(0) + ' KB'))
+  .catch(e => addResult('Fetch Three.js', false, e.message));
+
+// Test 3: Fetch local Cannon.js
+fetch('./lib/cannon-es.js', {cache: 'no-store'})
+  .then(r => addResult('Fetch Cannon.js', r.ok, r.status + ' — ' + r.headers.get('content-length') + ' bytes'))
+  .catch(e => addResult('Fetch Cannon.js', false, e.message));
+
+// Test 4: ES Module import
+import('./lib/three.module.js').then(m => {
+  addResult('ES Module Import', true, 'Three.js r' + m.REVISION + ' loaded');
+}).catch(e => addResult('ES Module Import', false, e.message));
+
+// Test 5: Check page load timing
+addInfo('Page loaded at', new Date().toLocaleTimeString());
+</script>
+</body>
+</html>

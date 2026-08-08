@@ -5,6 +5,22 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
+<script>
+// Cache-bust: if Safari serves a stale HTML, this forces a hard reload
+(function(){
+  var v = 3;
+  var key = '__sv_game_v';
+  try {
+    var prev = parseInt(localStorage.getItem(key));
+    if (prev && prev < v) {
+      localStorage.setItem(key, v);
+      location.replace(location.href.split('?')[0] + '?_=' + Date.now());
+      return;
+    }
+    localStorage.setItem(key, v);
+  } catch(e) {}
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -514,13 +530,10 @@
 
 <div id="loading">Loading&hellip;</div>
 
+<script src="lib/three.js?v=2"></script>
+<script src="lib/cannon-global.js?v=2"></script>
 <script type="module">
-import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-// dist/cannon-es.js is a pure ES module (named exports, no UMD wrapper), so a
-// plain <script src> tag would define no global. Import it here and publish the
-// namespace on window so it is reachable from the console like THREE is.
-import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js';
-window.CANNON = CANNON;
+// THREE and CANNON are loaded as globals from the script tags above.
 
 // ---------------------------------------------------------------------------
 // Constants — mirrored from engine.py

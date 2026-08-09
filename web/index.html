@@ -2354,6 +2354,15 @@ const CLOUD_MARCH_FRAG = /* glsl */`
     return smoothstep(0.0, botEdge, h) * (1.0 - smoothstep(topEdge, 1.0, h));
   }
 
+  // The same profile, but driven by one cluster's own storminess instead of the
+  // slider's, so a fair cell keeps its tall rounded crown while a stormy one
+  // beside it flattens into an anvil that fills most of the slab.
+  float heightGradPerCluster(float h, float stormN) {
+    float botEdge = mix(0.01, 0.03, stormN);
+    float topEdge = mix(0.50, 0.85, stormN);
+    return smoothstep(0.0, botEdge, h) * (1.0 - smoothstep(topEdge, 1.0, h));
+  }
+
   // The density model. Detail is switched off for the light march, where the
   // fine erosion costs two more noise octaves and changes the shadow by nothing
   // you could see.
@@ -2367,7 +2376,16 @@ const CLOUD_MARCH_FRAG = /* glsl */`
     float cov = cloudCoverage(p.xz);
     if (cov <= 0.02) return 0.0;
 
-    float shape = fbm3(wp * 0.0011) * heightGrad(h);
+    // Which cluster this is. The shape itself depends on it now, so it has to be
+    // read before the billows rather than at the bottom — the coverage early-out
+    // above still keeps it off the samples that are nowhere near a cloud.
+    float stormN = clusterStormN(p.xz);
+    // Fair weather is tight, tall, puffy billows; a storm stretches them wide
+    // and squashes them vertically, which is what reads as an anvil.
+    float billowScale = mix(0.0016, 0.0007, stormN);
+    float billowStretch = mix(1.0, 0.4, stormN);
+    vec3 billowP = vec3(wp.x * billowScale, wp.y * billowScale * billowStretch, wp.z * billowScale);
+    float shape = fbm3(billowP) * heightGradPerCluster(h, stormN);
     // Remap against coverage: cloud only exists where the billows clear the
     // threshold the weather field sets, and the leftover is stretched back over
     // 0..1 so a thinly-covered patch still reaches full density in its middle.
@@ -2383,11 +2401,7 @@ const CLOUD_MARCH_FRAG = /* glsl */`
       // eating the core at the same rate just makes the whole thing thinner.
       d -= (1.0 - det) * 0.38 * (1.0 - smoothstep(0.35, 0.9, d));
     }
-    // Which cluster this is. Sampled here, at the bottom, rather than up beside
-    // the coverage read: every early-out above has already fired by this point,
-    // so the extra fbm is only ever paid for on a sample that is actually inside
-    // a cloud, which is a small minority of the samples along a ray.
-    float stormDensity = mix(1.0, 1.8, clusterStormN(p.xz));
+    float stormDensity = mix(1.0, 1.8, stormN);
     return clamp(d, 0.0, 1.0) * uThick * stormDensity;
   }
 
@@ -2964,15 +2978,21 @@ function updateWeather(dt) {
   const cover = clamp01((covHere - 0.32) / 0.45) * (0.35 + 0.065 * localStorm);
 
   // --- lightning ---
-  const canStrike = localStorm >= 6 && covHere > 0.40;
+  // A probability, not a threshold: there is no storminess at which lightning
+  // switches on. A quiet cell almost never fires and a black one fires often,
+  // and everything between is the same curve. The countdown stays, only to keep
+  // the rolls spaced out — otherwise a stormhead would strobe.
   if (boltT >= 0) {
     boltT += dt;
     if (boltT > 0.5) boltT = -1;
-  } else if (canStrike) {
-    boltIn -= dt;
-    if (boltIn <= 0) strike(localStorm, 150 + Math.random() * 1700);
   } else {
-    boltIn = boltInterval(localStorm);
+    const lightningProb = Math.pow(clamp01((localStorm - 1) / 9), 3.0) * clamp01((covHere - 0.20) / 0.50);
+    boltIn -= dt;
+    if (boltIn <= 0) {
+      if (Math.random() < lightningProb) strike(localStorm, 150 + Math.random() * 1700);
+      // Missed the roll: try again sooner the stormier it is overhead.
+      else boltIn = 0.5 + Math.random() * (3.0 - lightningProb * 2.5);
+    }
   }
   const flash = boltT >= 0 ? boltEnv(boltT) : 0;
   const flashGlobal = flash * (1 - clamp01((boltDist - 250) / 1300));
@@ -2998,7 +3018,10 @@ function updateWeather(dt) {
   // --- rain ---
   // The slider is a floor, not an override: it can make it rain out of a clear
   // sky, and a storm overhead still rains harder than the slider asks for.
-  const natural = clamp01((covHere - 0.45) / 0.35) * clamp01((localStorm - 3) / 5);
+  // Continuous in storminess as well: a power curve off 1, so a mild cell spits
+  // a little rather than nothing at all and there is no step to walk across.
+  const rainCurve = Math.pow(clamp01((localStorm - 1) / 9), 2.5);
+  const natural = clamp01((covHere - 0.45) / 0.35) * rainCurve;
   let rainWant = Math.max(natural, WEATHER.rain / 10);
   // Only if we are actually underneath the deck rather than flying above it.
   if (camera.position.y > CLOUD_BOT - 6) rainWant = 0;

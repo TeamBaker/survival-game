@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 6;
+  var v = 7;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1352,8 +1352,8 @@ const LAND_GLSL = /* glsl */`
 // actually see: it is not an approximation of the cloud, it is the cloud's own
 // noise read at ground level.
 // ---------------------------------------------------------------------------
-const CLOUD_BOT   = 1500;                              // layer floor, metres
-const CLOUD_TOP   = 2500;                              // layer ceiling
+const CLOUD_BOT   = 300;                               // layer floor, metres
+const CLOUD_TOP   = 1000;                              // layer ceiling
 const CLOUD_THICK = CLOUD_TOP - CLOUD_BOT;
 const CLOUD_MID   = (CLOUD_BOT + CLOUD_TOP) * 0.5;
 // One lattice cell of the coverage noise per ~3.6 km. Coarse enough that a
@@ -2308,8 +2308,8 @@ const CLOUD_MARCH_FRAG = /* glsl */`
   // rounded crown; a storm deck starts hard at the base and fills nearly all of
   // it, which is what makes the underside of one go flat and black.
   float heightGrad(float h) {
-    float botEdge = mix(0.03, 0.16, uType);
-    float topEdge = mix(0.55, 0.28, uType);
+    float botEdge = mix(0.01, 0.06, uType);
+    float topEdge = mix(0.92, 0.65, uType);
     return smoothstep(0.0, botEdge, h) * (1.0 - smoothstep(topEdge, 1.0, h));
   }
 
@@ -2548,7 +2548,7 @@ const cloudMarchMat = new THREE.ShaderMaterial({
     uCamFwd:     { value: new THREE.Vector3(0, 0, -1) },
     uHalfExtent: { value: new THREE.Vector2(1, 1) },
     uTime:       { value: 0 },
-    uThick:      { value: 1.0 },
+    uThick:      { value: 1.4 },
     uExt:        { value: 0.012 },
     uAlbedo:     { value: 0.9 },
     uType:       { value: 0.6 },

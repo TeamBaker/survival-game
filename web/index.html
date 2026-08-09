@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 5;
+  var v = 6;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -247,7 +247,9 @@
   #mode-btn {
     position: fixed;
     top: calc(10px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
+    /* The weather hamburger owns the corner itself: 44px of button plus the 10px
+       it is inset by, plus a gap. */
+    right: calc(62px + env(safe-area-inset-right));
     padding: 11px 18px;
     font-family: inherit;
     font-size: 13px;
@@ -324,86 +326,179 @@
     #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
   }
 
-  /* ---------- Weather controls (always on screen) ---------- */
-  /* Top right, stacked under the help card. The card's height changes with the
-     camera mode, so the `top` here is only a fallback — refreshModeUI() measures
-     the card and writes the real offset. Anchoring to the right also keeps the
-     panel off the left half of a touch screen, which is the fly joystick and is
-     placed wherever the thumb lands. */
-  #cloud-ui {
+  /* ---------- Weather menu: hamburger + slide-out panel ---------- */
+  /* The whole weather interface is one thumb-sized target in the corner and a
+     drawer of sliders behind it. This replaced a row of cycling buttons bound to
+     the number keys, which a phone does not have. */
+  #wx-toggle {
     position: fixed;
-    top: calc(300px + env(safe-area-inset-top));
+    top: calc(10px + env(safe-area-inset-top));
     right: calc(10px + env(safe-area-inset-right));
-    width: 236px;
-    max-width: 62vw;
-    padding: 9px 11px 10px;
-    font-size: 11px;
-    line-height: 1.4;
-    background: rgba(8, 14, 24, 0.58);
-    border: 1px solid rgba(160, 200, 255, 0.16);
-    border-radius: 8px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    /* Visible in every camera mode — the keys drive the weather everywhere now. */
-    display: block;
-    opacity: 1;
-    transition: opacity 0.15s ease;
-    z-index: 60;
-  }
-  /* Faded back while you are playing, where it is a readout you glance at rather
-     than a panel you are working in. Written as the dim state being the specific
-     one, not the bright state, so the default a fresh reader sees on #cloud-ui is
-     the panel as it normally looks. Hover and touch bring it fully up, so the
-     buttons are never dimmed while you are actually using them. */
-  body:not(.free-cam) #cloud-ui { opacity: 0.5; }
-  body:not(.free-cam) #cloud-ui:hover,
-  body:not(.free-cam) #cloud-ui:focus-within,
-  body:not(.free-cam) #cloud-ui:active { opacity: 1; }
-
-  #cloud-ui .title {
-    display: block;
-    margin-bottom: 6px;
-    font-size: 10px;
-    letter-spacing: 0.16em;
-    color: #6f92bd;
-    text-transform: uppercase;
-  }
-  .wx-row {
+    width: 44px;
+    height: 44px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-top: 5px;
-  }
-  .wx-row .lbl { color: #7fa8d8; white-space: nowrap; }
-  .wx-row .lbl b { color: #eaf2ff; font-weight: 700; }
-  .wx-btn {
-    flex: 0 0 auto;
-    min-width: 82px;
-    padding: 5px 10px;
+    justify-content: center;
     font-family: inherit;
+    font-size: 20px;
+    line-height: 1;
+    color: #cfe4ff;
+    background: rgba(8, 14, 24, 0.62);
+    border: 1px solid rgba(160, 200, 255, 0.28);
+    border-radius: 10px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    /* Above the pause overlay (50) and the drawer's own scrim, so it is always
+       the thing you can reach — including while paused. */
+    z-index: 82;
+  }
+  #wx-toggle:active,
+  body.wx-open #wx-toggle {
+    color: #06101f;
+    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
+    border-color: rgba(230, 242, 255, 0.7);
+  }
+
+  /* Catches the tap-outside that closes the drawer, and dims the world behind
+     it so the sliders read against a bright sky. */
+  #wx-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 78;
+    background: rgba(4, 8, 16, 0.45);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s;
+  }
+  body.wx-open #wx-scrim { opacity: 1; visibility: visible; }
+
+  #wx-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 316px;
+    max-width: 86vw;
+    /* The top padding clears the toggle button, which floats *over* the drawer
+       in the same corner — it becomes the close button once the drawer is open,
+       so it has to stay reachable, and nothing may sit under it. */
+    padding: calc(64px + env(safe-area-inset-top)) 18px calc(18px + env(safe-area-inset-bottom));
+    padding-right: calc(18px + env(safe-area-inset-right));
+    overflow-y: auto;
+    /* The drawer is the one place in the app a finger is allowed to scroll. */
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+    background: rgba(8, 14, 24, 0.92);
+    border-left: 1px solid rgba(160, 200, 255, 0.18);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
+    transform: translateX(100%);
+    transition: transform 0.22s cubic-bezier(0.3, 0.8, 0.4, 1);
+    z-index: 80;
+  }
+  body.wx-open #wx-panel { transform: translateX(0); }
+
+  #wx-panel .title {
+    display: block;
+    margin: 0 0 14px;
     font-size: 11px;
+    letter-spacing: 0.18em;
+    color: #7fa8d8;
+    text-transform: uppercase;
+  }
+
+  .wx-row { margin-bottom: 16px; }
+  .wx-row .lbl {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: #b9c9dc;
+  }
+  .wx-row .val {
+    font-size: 12px;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    color: #9ecbff;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Big tracks and big thumbs: this is grabbed with a thumb on a phone, not a
+     mouse pointer. The 40px height is the touch target — the visible track is
+     the ::track pseudo inside it. */
+  .wx-row input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    display: block;
+    width: 100%;
+    height: 40px;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    cursor: pointer;
+    touch-action: none;
+  }
+  .wx-row input[type="range"]::-webkit-slider-runnable-track {
+    height: 10px;
+    border-radius: 999px;
+    background: rgba(70, 110, 170, 0.35);
+    border: 1px solid rgba(150, 195, 245, 0.28);
+  }
+  .wx-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 28px;
+    height: 28px;
+    margin-top: -10px;             /* centres a 28px thumb on a 10px track */
+    border-radius: 50%;
+    background: radial-gradient(circle at 38% 32%, #f2f8ff, #7db4ee);
+    border: 1.5px solid rgba(235, 245, 255, 0.85);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  }
+  .wx-row input[type="range"]::-moz-range-track {
+    height: 10px;
+    border-radius: 999px;
+    background: rgba(70, 110, 170, 0.35);
+    border: 1px solid rgba(150, 195, 245, 0.28);
+  }
+  .wx-row input[type="range"]::-moz-range-thumb {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 38% 32%, #f2f8ff, #7db4ee);
+    border: 1.5px solid rgba(235, 245, 255, 0.85);
+  }
+
+  .wx-btn {
+    width: 100%;
+    padding: 11px 12px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
     color: #eaf2ff;
     background: rgba(70, 120, 190, 0.34);
     border: 1px solid rgba(150, 195, 245, 0.42);
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
     touch-action: manipulation;
   }
   .wx-btn:active { background: rgba(110, 170, 240, 0.6); }
-  .wx-btn.off { color: #93a4b8; background: rgba(60, 72, 90, 0.32); }
-  #wx-foot { margin-top: 7px; color: #62819f; font-size: 10px; }
-  #wx-foot b { color: #9ecbff; }
-  /* A phone has no number row — on touch the buttons are the whole interface. */
-  body.touch #cloud-ui .key { display: none; }
 
-  @media (max-width: 620px) {
-    /* Matched to #instructions, which it now sits directly underneath. */
-    #cloud-ui { width: 190px; font-size: 10px; padding: 7px 9px 8px; }
-    .wx-btn { min-width: 66px; font-size: 10px; padding: 5px 7px; }
+  #wx-foot {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(160, 200, 255, 0.14);
+    color: #62819f;
+    font-size: 11px;
+    line-height: 1.6;
   }
+  #wx-foot b { color: #9ecbff; font-weight: 600; }
 
   /* ---------- Start / pause overlay ---------- */
   #overlay {
@@ -502,19 +597,46 @@
 
 <div id="hud"><span class="k">FPS</span> <span class="v" id="fps">--</span>
 <span class="k">POS</span> <span class="v" id="pos">--</span>
-<span class="k" style="color:#ff0">v21-rain</span></div>
+<span class="k" style="color:#ff0">v22-volumetric</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
 <button id="mode-btn" class="ui-el">Game Mode</button>
 
-<div id="cloud-ui" class="ui-el">
+<button id="wx-toggle" class="ui-el" aria-label="Weather controls">&#9776;</button>
+<div id="wx-scrim"></div>
+
+<aside id="wx-panel" class="ui-el">
   <span class="title">Weather</span>
-  <div class="wx-row"><span class="lbl"><b class="key">1</b> Spawn rate</span><button class="wx-btn" id="wx-rate">Medium</button></div>
-  <div class="wx-row"><span class="lbl"><b class="key">2</b> Wind speed</span><button class="wx-btn" id="wx-speed">Medium</button></div>
-  <div class="wx-row"><span class="lbl"><b class="key">3</b> Storminess</span><button class="wx-btn" id="wx-storm">Mixed</button></div>
-  <div id="wx-foot"><span class="key"><b>3</b> storm mix &middot; <b>4</b> spawn now &middot; <b>0</b> clear &mdash; </span>sky: <span id="wx-count">0</span><br><span id="wx-cloud-info">nearest: &mdash;</span></div>
-</div>
+
+  <div class="wx-row">
+    <label class="lbl" for="wx-density">Cloud density<span class="val" id="wx-density-v">1.00</span></label>
+    <input type="range" id="wx-density" min="0" max="2" step="0.05" value="1">
+  </div>
+  <div class="wx-row">
+    <label class="lbl" for="wx-speed">Cloud speed<span class="val" id="wx-speed-v">1.0</span></label>
+    <input type="range" id="wx-speed" min="0" max="5" step="0.1" value="1">
+  </div>
+  <div class="wx-row">
+    <label class="lbl" for="wx-wind">Wind direction<span class="val" id="wx-wind-v">0&deg;</span></label>
+    <input type="range" id="wx-wind" min="0" max="360" step="1" value="0">
+  </div>
+  <div class="wx-row">
+    <label class="lbl" for="wx-storm">Storminess<span class="val" id="wx-storm-v">5.0</span></label>
+    <input type="range" id="wx-storm" min="0" max="10" step="0.1" value="5">
+  </div>
+  <div class="wx-row">
+    <label class="lbl" for="wx-rain">Rain intensity<span class="val" id="wx-rain-v">0.0</span></label>
+    <input type="range" id="wx-rain" min="0" max="10" step="0.1" value="0">
+  </div>
+
+  <button class="wx-btn" id="wx-reset">Reset</button>
+
+  <div id="wx-foot">
+    cover <b id="wx-cover">0%</b> &middot; gloom <b id="wx-gloom">0%</b> &middot; rain <b id="wx-rainpc">0%</b><br>
+    <span id="wx-note">volumetric layer 1500&ndash;2500 m</span>
+  </div>
+</aside>
 
 <div id="underwater"></div>
 <div id="crosshair"></div>
@@ -1214,40 +1336,63 @@ const LAND_GLSL = /* glsl */`
 `;
 
 // ---------------------------------------------------------------------------
-// Cloud shadows — the ground half of the weather system.
+// The cloud layer, and the shadow it throws on the ground.
 //
-// Shadow-mapping the clouds is not an option: they sit 150-250 units up, which is
-// *above* the directional light's own position, so they fall outside its frustum
-// entirely. Instead the biggest clouds near the camera hand their footprint to
-// the ground shaders as a short list of discs, already projected down the sun
-// direction onto sea level, and the terrain and the sea both darken inside them.
-// Four floats each: centre x, centre z, radius, strength.
+// The clouds themselves are raymarched in a full-screen pass much further down
+// this file, but three things about them have to be settled *here*, because the
+// terrain and the sea are built before the weather is and both need to darken
+// under a cloud: where the layer sits, what its coverage field looks like, and
+// which way the sun slides the shadow.
+//
+// Shadow-mapping the clouds is not an option — they sit two kilometres up, well
+// above the directional light's own position, so they fall outside its frustum
+// entirely. What the ground gets instead is the *same coverage field* the
+// raymarcher carves the volume out of, evaluated in 2D at the point the sun
+// projects down to. That is what keeps a shadow underneath a cloud you can
+// actually see: it is not an approximation of the cloud, it is the cloud's own
+// noise read at ground level.
 // ---------------------------------------------------------------------------
-const MAX_CLOUD_SHADOWS = 8;
-const cloudShadowArr = new Float32Array(MAX_CLOUD_SHADOWS * 4);
-const uCloudShadows = { value: cloudShadowArr };
-// How far the shadow slides from the cloud that casts it, per unit of altitude.
-const CLOUD_SHADOW_SLANT = new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y);
+const CLOUD_BOT   = 1500;                              // layer floor, metres
+const CLOUD_TOP   = 2500;                              // layer ceiling
+const CLOUD_THICK = CLOUD_TOP - CLOUD_BOT;
+const CLOUD_MID   = (CLOUD_BOT + CLOUD_TOP) * 0.5;
+// One lattice cell of the coverage noise per ~3.6 km. Coarse enough that a
+// weather system is a system rather than a puff, fine enough that there are
+// several of them in the sky at once with clear air between them.
+const WX_COV_FREQ = 0.00028;
+
+// Shared with the raymarcher: the weather section writes these every frame and
+// both the ground shaders and the cloud shader read them, so the field can never
+// drift apart between the two.
+const uWxWind  = { value: new THREE.Vector2() };   // world offset the field has drifted by
+const uWxCov   = { value: 1.0 };                   // coverage multiplier (density slider + storminess)
+const uWxShade = { value: 0.0 };                   // how dark the ground goes under full cover
+// How far the shadow slides from the cloud that casts it: the sun's horizontal
+// run per unit of altitude, times the middle of the layer.
+const uWxSlant = { value: new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y).multiplyScalar(CLOUD_MID) };
+
+// Needs `fbmC` from NOISE_GLSL, which every shader that pulls this in already
+// includes above it.
+const CLOUD_COVERAGE_GLSL = /* glsl */`
+  uniform vec2 uWxWind;
+  uniform float uWxCov;
+  // 0 clear .. 1 solid overcast, at a world-space xz.
+  float cloudCoverage(vec2 p) {
+    return clamp(fbmC((p + uWxWind) * ${WX_COV_FREQ}) * uWxCov, 0.0, 1.0);
+  }
+`;
 
 const CLOUD_SHADOW_GLSL = /* glsl */`
-  uniform float uCloudShadows[${MAX_CLOUD_SHADOWS * 4}];
-  // 0 in full sun .. 1 under the thickest part of a storm cell. The falloff
-  // starts at a fifth of the radius rather than at 55% of it, because the cells
-  // casting these are now a kilometre or more across: a solid core that wide
-  // covers the whole island at a single flat value, and a shadow you cannot see
-  // an edge of is not a shadow, it is just the lights going out.
+  ${CLOUD_COVERAGE_GLSL}
+  uniform float uWxShade;
+  uniform vec2 uWxSlant;
+  // 0 in full sun .. 1 under the thickest part of the deck. The smoothstep is
+  // deliberately narrower than the coverage range it reads: the raymarcher only
+  // grows cloud where coverage clears its own threshold, so shading the whole
+  // range would put a shadow under clear sky.
   float cloudShade(vec2 p) {
-    float s = 0.0;
-    for (int i = 0; i < ${MAX_CLOUD_SHADOWS}; i++) {
-      float r = uCloudShadows[i * 4 + 2];
-      if (r <= 0.0) continue;
-      float d = distance(p, vec2(uCloudShadows[i * 4], uCloudShadows[i * 4 + 1]));
-      float v = uCloudShadows[i * 4 + 3] * (1.0 - smoothstep(r * 0.20, r, d));
-      // Stacked rather than max()'d: two cells drifting across each other put
-      // more mass between the ground and the sun than either does alone.
-      s = s + v - s * v;
-    }
-    return clamp(s, 0.0, 1.0);
+    float cov = cloudCoverage(p + uWxSlant);
+    return clamp(smoothstep(0.40, 0.90, cov) * uWxShade, 0.0, 1.0);
   }
 `;
 
@@ -1375,7 +1520,10 @@ scene.add(ocean);
   surfMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterTime;
     shader.uniforms.uLandMap = { value: landMap };
-    shader.uniforms.uCloudShadows = uCloudShadows;
+    shader.uniforms.uWxWind  = uWxWind;
+    shader.uniforms.uWxCov   = uWxCov;
+    shader.uniforms.uWxShade = uWxShade;
+    shader.uniforms.uWxSlant = uWxSlant;
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */`
@@ -1532,7 +1680,10 @@ terrainMat.onBeforeCompile = (shader) => {
   shader.uniforms.uCaustCol   = { value: new THREE.Color(0xa8e4ff) };
   shader.uniforms.uCaustSlant = { value: CAUST_SLANT };
   shader.uniforms.uSunDir     = { value: SUN.clone() };
-  shader.uniforms.uCloudShadows = uCloudShadows;
+  shader.uniforms.uWxWind     = uWxWind;
+  shader.uniforms.uWxCov      = uWxCov;
+  shader.uniforms.uWxShade    = uWxShade;
+  shader.uniforms.uWxSlant    = uWxSlant;
 
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', /* glsl */`
@@ -1729,14 +1880,10 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyG') toggleGameMode();
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
-  // Weather controls. Live in every camera mode, not just the free one: the
-  // panel showing what they do is on screen everywhere now, and the digit row is
-  // not bound to anything else in game mode.
-  else if (e.code === 'Digit1' || e.code === 'Numpad1') cycleRate();
-  else if (e.code === 'Digit2' || e.code === 'Numpad2') cycleSpeed();
-  else if (e.code === 'Digit3' || e.code === 'Numpad3') cycleStorm();
-  else if (e.code === 'Digit4' || e.code === 'Numpad4') { spawnCloud(true); refreshWxUI(); }
-  else if (e.code === 'Digit0' || e.code === 'Numpad0') clearClouds();
+  // The weather used to hang off the number row. It is all sliders in the
+  // hamburger drawer now — a phone has no number row, and that is the device
+  // this gets tested on.
+  else if (e.code === 'KeyM') toggleWxPanel();
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (TRACKED.has(e.code)) { keys.delete(e.code); e.preventDefault(); }
@@ -1979,896 +2126,524 @@ const isSprinting = () =>
   state.sprint || state.sprintBtn || keys.has('ShiftLeft') || keys.has('ShiftRight');
 
 // ---------------------------------------------------------------------------
-// Weather — clouds, rain, lightning
+// Weather — a raymarched cloud layer, rain, and lightning
 //
-// A cloud is a cluster of 40-110 overlapping *billboard quads* — puffs — merged
-// into one geometry, so a whole cell is still a single draw call. Each quad
-// carries its centre in `position` and is expanded to a square in *view* space
-// by the vertex shader, which means a puff can never go edge-on: from any angle
-// it presents the same disc.
+// There is no cloud *object* anywhere in the scene. The whole sky is one
+// full-screen pass that marches a ray per pixel through a slab of procedural
+// noise between CLOUD_BOT and CLOUD_TOP, in the Horizon Zero Dawn shape: a
+// low-frequency coverage field decides where cloud is allowed to exist at all, a
+// mid-frequency 3D field gives it billows, a height gradient flattens its base
+// and rounds its top, and a high-frequency field eats the edges. Density becomes
+// light through Beer-Lambert extinction along the view ray plus a short march
+// back toward the sun for self-shadowing, with a dual-lobe Henyey-Greenstein
+// phase and three multiple-scattering octaves so the shadowed side stays lit and
+// the sunward edge silvers.
 //
-// The shape of an individual puff is not in the geometry at all — the quad is a
-// bare square and the fragment shader carves the round, eroded outline out of it
-// with fbm noise, then lights it off a fake spherical normal perturbed by the
-// screen-space gradient of that same noise.
+// The pass renders into a half-resolution float target and is composited into
+// the main frame as a screen quad sitting at the far plane, which is what makes
+// it affordable on a phone: the marching cost scales with that target, while the
+// composite runs at full resolution and depth-tests against the scene, so an
+// island in front of a cloud still occludes it exactly.
 //
-// The look these are aiming at is a *drawn* cloud, not a photographed one, and
-// almost every decision below follows from that. Clusters are laid out as one of
-// three named shapes so a cloud has a silhouette you could describe; the base of
-// a cumulus is sliced off along a real plane; the shading is a three-step toon
-// ramp between a white top and a blue-grey underside with a lit rim, in place of
-// the extinction and phase-function scattering a physical model would use; and
-// nothing on a cloud fades into the distance haze.
+// The coverage field is *shared* with the ground — see CLOUD_COVERAGE_GLSL up in
+// the cloud-shadow section — so a shadow crossing the sand always has a cloud
+// over it, and gloom, rain and lightning are all driven by reading that same
+// field on the CPU under the camera.
 // ---------------------------------------------------------------------------
 
-// The four bands the 1-10 scale falls into: fair, building, storm, severe.
-const CLOUD_BAND = (s) => (s < 3 ? 0 : s < 5 ? 1 : s < 7 ? 2 : 3);
-// `height` is the cluster's vertical extent, `base` is [min, range] for the
-// altitude of the cloud base — the tops are kept under ~2500 so the tallest cell
-// at the far edge of the spawn ring still fits inside the 3200 far plane.
-//
-// The widths are about a third off what the volumetric version used, and the
-// puff counts are up to match. The two go together: a cell wide enough to fly
-// *into* is the right call when the cloud is a mass you read by its density, and
-// the wrong one when it is a shape you read by its outline — at that size there
-// are only ever two or three of them in the sky and none of them has an outline
-// you can see all of.
-//
-// The counts are roughly triple what a cluster of this width needs to be solid,
-// because solidity is not what they buy. A puff is one bump on the outline, so
-// the count *is* the resolution of the silhouette: at twenty-odd of them a cell
-// has five or six lumps around its edge and reads as a few big balls stuck
-// together, and only somewhere past sixty do the lumps get small enough and
-// numerous enough to read as cauliflower. See PUFF_SPREAD for the other half of
-// that — the count only helps if the puffs shrink to match it.
-const BAND_SPEC = [
-  { width: [ 560,  900], height: [170,  300], puffs: [42, 58], base: [450, 200] },
-  { width: [ 900, 1340], height: [420,  620], puffs: [52, 70], base: [500, 250] },
-  { width: [1340, 1790], height: [640,  860], puffs: [64, 82], base: [560, 300] },
-  { width: [1570, 2020], height: [780, 1000], puffs: [74, 94], base: [600, 300] },
-];
-
-// The three archetypes a cloud can be built as. A cartoony sky reads as a set of
-// distinct objects you could point at and name, and the silhouette is what does
-// that — so the shape is picked per cloud and the puffs are laid out to serve it
-// rather than scattered into one generic lump.
-//   cumulus: flat bottom, dome of puffs, crowded lumpy crown  (the common one)
-//   tower:   narrow vertical stack with a bulge at mid-height
-//   sheet:   wide flat raft, barely any vertical extent
-const CLOUD_SHAPES = ['cumulus', 'tower', 'sheet'];
-// Per shape: how the band's nominal width and height are stretched, and how many
-// extra puffs the layout needs to stay dense at that aspect ratio.
-// A tower is not stretched as far as it looks like it should be: the span a
-// cluster ends up with runs well past `height`, the per-cloud scale multiplies it
-// again, and a band-3 cell already sits 900 up — three multipliers deep, an
-// honest anvil puts its own top through the 3200 far plane and gets sliced flat.
-const SHAPE_MUL = {
-  cumulus: { w: 1.00, h: 1.00, n: 1.00 },
-  tower:   { w: 0.55, h: 1.15, n: 1.00 },
-  sheet:   { w: 1.25, h: 0.34, n: 1.20 },
+// The live controls, driven by the sliders in the hamburger drawer. Everything
+// below reads these; nothing else writes them.
+const WEATHER = {
+  density: 1.0,      // 0 .. 2   coverage multiplier, 1 is a normal partly-cloudy day
+  speed: 1.0,        // 0 .. 5   how fast the deck drifts
+  windDir: 0,        // 0 .. 360 degrees, 0 = heading +X
+  storminess: 5.0,   // 0 .. 10  thin and white .. deep, dark and electric
+  rain: 0.0,         // 0 .. 10  a floor under whatever the sky would rain anyway
 };
+const WEATHER_DEFAULTS = Object.assign({}, WEATHER);
 
-// Pick a shape for one cloud. Cumulus dominates on purpose: it is the shape
-// everyone draws when they draw a cloud, and the other two are the variation.
-function rollCloudShape() {
-  return Math.random() < 0.6 ? 'cumulus' : Math.random() < 0.5 ? 'tower' : 'sheet';
+// Metres per second of drift at speed 1. Fast enough that the sky visibly moves
+// while you stand still, slow enough that a cell takes a couple of minutes to
+// cross overhead.
+const WIND_UNIT = 26;
+
+const clamp01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
+
+// ----- the coverage field, on the CPU -----
+// A line-for-line twin of hash21/vnoise/fbm/fbmC out of NOISE_GLSL. gloom, the
+// rain trigger and the lightning all need to know how much cloud is over the
+// camera, and reading that back off the GPU every frame is not something you do
+// at 60 Hz. Float64 here against float32 there makes the two disagree in the
+// last few digits; the answer is a smooth aggregate, so it never shows.
+const fract1 = (x) => x - Math.floor(x);
+function wxHash21(x, y) {
+  x = fract1(x * 127.31);
+  y = fract1(y * 311.7);
+  const d = x * (x + 34.23) + y * (y + 34.23);
+  return fract1((x + d) * (y + d));
+}
+function wxVnoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = wxHash21(ix, iy);
+  const b = wxHash21(ix + 1, iy);
+  const c = wxHash21(ix, iy + 1);
+  const d = wxHash21(ix + 1, iy + 1);
+  const lo = a + (b - a) * ux;
+  const hi = c + (d - c) * ux;
+  return lo + (hi - lo) * uy;
+}
+function wxFbm(x, y) {
+  let s = 0, a = 0.5;
+  for (let i = 0; i < 4; i++) {
+    s += a * wxVnoise(x, y);
+    x = x * 2.07 + 13.1;
+    y = y * 2.07 + 13.1;
+    a *= 0.5;
+  }
+  return s;
+}
+// How much cloud is overhead at a world xz, 0 clear .. 1 solid.
+function coverageAt(x, z) {
+  const qx = (x + uWxWind.value.x) * WX_COV_FREQ;
+  const qz = (z + uWxWind.value.y) * WX_COV_FREQ;
+  return clamp01(clamp01((wxFbm(qx, qz) - 0.47) * 2.7 + 0.5) * uWxCov.value);
 }
 
-const lerpRange = (r, t) => r[0] + (r[1] - r[0]) * t;
+// ----- the march -----
+// Mobile gets fewer, longer steps and a shorter light march. The scattering
+// integral below is the closed form over each step rather than a point sample,
+// so a long step degrades into a slightly soft cloud instead of into banding,
+// which is what makes a step count this low survivable.
+const CLOUD_STEPS  = isTouchDevice ? 24 : 48;
+const CLOUD_LSTEPS = isTouchDevice ? 5 : 7;
+// Past this the layer is edge-on and would read as a hard wall of cloud sitting
+// on the horizon, so it is faded into the sky's own horizon colour instead. At
+// 26 km against a 1500 m floor the cut sits about 3 degrees up.
+const CLOUD_MAXD   = 26000;
+// ...but no single ray ever integrates more than this much of it. A ray that
+// enters the slab near-horizontally — or one cast from a camera flying *inside*
+// the layer — has tens of kilometres of volume in front of it, and spreading a
+// fixed step budget over that puts the steps a third of a kilometre apart, which
+// is coarser than the billows themselves and turns the per-pixel start dither
+// into visible grain. Capping the span keeps the step length bounded no matter
+// where the camera is, and the density is tapered out over the last of it so the
+// cap is a haze rather than an edge.
+const CLOUD_SPAN   = 9000;
 
-// ----- one cloud's cluster of puffs, merged into a single quad soup -----
-// Built in world units around a local origin at the centre of the cloud base:
-// local y = 0 is the base, and every puff also carries its own 0..1 height
-// fraction so the shader can run the top-to-bottom gradient without needing the
-// cluster's extent as a uniform.
-//
-// The cluster is laid out in normalised space — centres inside a disc of radius
-// PUFF_SPREAD, puff radii around 0.15-0.32 — and then scaled up so that the
-// furthest a puff can reach, PUFF_REACH, lands on the band's half-width.
-//
-// Only the *ratio* of those two numbers means anything, and it is the ratio that
-// decides how big a bump on the outline is: a puff ends up at (radius / reach)
-// of the cloud's half-width whatever absolute values are written here. At 0.55
-// spread against ~0.45 mean radius the cloud was three puffs across and every
-// lump was a beach ball. Widening the spread to 0.92 against ~0.23 mean radius
-// makes it eleven puffs across — each piece is a bit over half the size it was,
-// which is the whole point, and the counts in BAND_SPEC went up threefold to
-// keep the mass solid at that size.
-//
-// The one thing this cannot be allowed to do is outrun the count. Spread and
-// radius trade off against each other exactly: pieces half the size need four
-// times as many to cover the same silhouette, so pushing this number further
-// without pushing BAND_SPEC further is what would break the cloud into a scatter
-// of separate discs.
-//
-// Pulled back from 0.92 and paired with a ~6% bump to every radius below, which
-// moves the ratio the other way for the first time: pieces slightly larger,
-// sitting slightly closer together. Both changes are small and both push the
-// same way, because the failure this is correcting is a mild one — at 0.92 the
-// cluster read as a scatter of discs with visible sky between them rather than
-// as one mass with a lumpy edge. The silhouette does not change size for it: the
-// world scale is derived from PUFF_REACH, which absorbs both.
-const PUFF_SPREAD = 0.88;
-// Furthest a puff can reach from the cluster axis in normalised units — what the
-// half-width has to be divided by to get the world scale factor. The constant is
-// the largest radius any shape hands out — a cumulus base-row puff at 0.40.
-const PUFF_REACH = PUFF_SPREAD + 0.40;
-// How much wider than its puff each quad is built. Headroom for the fragment
-// shader to push the eroded outline outward without running into the edge of
-// the quad and clipping it flat.
-const PUFF_QUAD = 1.40;
+const CLOUD_MARCH_FRAG = /* glsl */`
+  varying vec3 vRay;
 
-function buildCloudGeo(band, shape, rnd) {
-  const spec   = BAND_SPEC[band];
-  const mul    = SHAPE_MUL[shape];
-  const width  = lerpRange(spec.width, rnd()) * mul.w;
-  const height = lerpRange(spec.height, rnd()) * mul.h;
-  const count  = Math.max(6, Math.round(
-    lerpRange(spec.puffs, rnd()) * mul.n * (isTouchDevice ? 0.7 : 1)));
-  const U      = width * 0.5 / PUFF_REACH;   // normalised cluster unit -> world
-
-  // A cumulus is built in two parts, and this is the split between them: the
-  // base row that gets its underside sliced flat, and the dome piled on top of
-  // it. Distributing the whole count by one biased walk instead leaves only two
-  // or three puffs down at the base — nowhere near enough to span the width, so
-  // the flat bottom never appears as a line, just as a couple of clipped lumps.
-  const baseN = shape === 'cumulus' ? Math.max(3, Math.round(count * 0.32)) : 0;
-
-  const puffs = [];
-  for (let k = 0; k < count; k++) {
-    // Walk up the cluster rather than scattering at random: where a puff sits in
-    // that walk is what the shape gets to decide, and that walk is the whole
-    // difference between a heap, a column and a raft.
-    const u = count > 1 ? Math.min(1, (k + rnd() * 0.8) / count) : 0;
-    let t, prof, pr, flat = 0;
-    if (shape === 'cumulus' && k < baseN) {
-      // The base row: full width, all at the same height, all sliced flat.
-      // Deliberately the coarsest puffs in the cloud. Everywhere else smaller is
-      // better, but the base row is the one part read as a *surface* — from
-      // underneath it is a disc, not an outline — and a disc has to be covered,
-      // not just outlined. At crown size the same count of them leaves gaps you
-      // can see sky through when you fly under the cell.
-      t    = 0.02 + 0.05 * rnd();
-      prof = 1.0;
-      pr   = 0.255 + 0.145 * rnd();
-      flat = 1.0;
-    } else if (shape === 'cumulus') {
-      // The dome on top: pinching to a crown, with the walk bent upward so the
-      // puffs crowd toward the top, which is where the cauliflower lumps have to
-      // be for the thing to read as puffy rather than as a mound.
-      const v = (k - baseN + rnd() * 0.8) / Math.max(1, count - baseN);
-      t    = 0.08 + 0.92 * Math.pow(Math.min(1, v), 0.72);
-      prof = Math.sqrt(Math.max(0.10, 1.0 - t * t * 0.94));
-      pr   = (0.166 + 0.138 * rnd()) * (1.0 - 0.28 * t);
-    } else if (shape === 'tower') {
-      t    = u;
-      prof = 0.62 + 0.30 * Math.sin(t * Math.PI);   // slight bulge at mid-height
-      pr   = 0.20 + 0.14 * rnd();
-    } else {
-      // Sheet: no walk at all, just a wide scatter kept inside the bottom half
-      // of an already-shallow box. The whole raft is sliced, not just its lowest
-      // puffs — a flat-bottomed layer with a few lumps hanging through it is the
-      // one way this shape stops looking like a deliberate flat-bottomed layer.
-      // Partial, though: a sheet's underside is a soft ceiling, not an edge.
-      t    = rnd() * 0.55;
-      prof = 1.0;
-      pr   = 0.18 + 0.16 * rnd();
-      flat = 0.6;
-    }
-    const a = rnd() * Math.PI * 2;
-    // sqrt() spreads the puffs evenly over the disc instead of crowding them
-    // into the middle of it.
-    const nr = PUFF_SPREAD * prof * Math.sqrt(rnd());
-    puffs.push({
-      x: Math.cos(a) * nr * U,
-      z: Math.sin(a) * nr * U,
-      // Vertical jitter tapers to nothing at the base of a cumulus: a flat
-      // bottom made of puffs at slightly different heights is not flat.
-      y: t * height + (rnd() - 0.5) * height * 0.10 * (shape === 'cumulus' ? t : 1.0),
-      r: pr * U,
-      seed: rnd() * 64,
-      lit: 1,
-      flat,
-      cut: -1.0,
-    });
-  }
-
-  // --- where the flat bottom actually is ---
-  // One plane through the whole cluster, not a fixed fraction of each puff's own
-  // radius: puffs in the base row are all different sizes, and a cut measured in
-  // radii lands at a different height on each of them, so the "flat" bottom comes
-  // out as a row of steps. Solved once here in local units and handed to the
-  // shader as a per-puff quad-space offset.
-  const cutters = puffs.filter((p) => p.flat > 0);
-  if (cutters.length) {
-    let sy = 0, sr = 0;
-    for (const p of cutters) { sy += p.y; sr += p.r; }
-    const planeY = sy / cutters.length - 0.42 * (sr / cutters.length);
-    for (const p of cutters) {
-      // Quad space runs -1..1 over PUFF_QUAD radii, so that is the divisor. The
-      // clamp keeps a small puff sitting below the plane from being erased whole.
-      p.cut = Math.max(-1.0, Math.min(0.45, (planeY - p.y) / (p.r * PUFF_QUAD)));
-    }
-  }
-
-  // --- how much cloud each puff sits behind, looking toward the sun ---
-  // Baked once here rather than guessed at in the shader. A puff buried in the
-  // middle of the cluster has the whole mass between it and the light, and that
-  // one fact is most of what gives a cumulus its bright crown and its dim,
-  // heavy core — a billboard has no geometry to work it out from at runtime.
-  for (const p of puffs) {
-    let occ = 0;
-    for (const o of puffs) {
-      if (o === p) continue;
-      const dx = o.x - p.x, dy = o.y - p.y, dz = o.z - p.z;
-      const t = dx * SUN.x + dy * SUN.y + dz * SUN.z;
-      if (t <= 0) continue;                      // behind us: not in the way
-      // Perpendicular distance from o's centre to the ray toward the sun.
-      const ox = dx - SUN.x * t, oy = dy - SUN.y * t, oz = dz - SUN.z * t;
-      const d = Math.hypot(ox, oy, oz);
-      // The constant is per *hit*, so it has to track the puff size: how many
-      // puffs a sun ray crosses on its way through the cluster scales with the
-      // count times the radius squared, and halving the pieces while tripling
-      // the count cut that by about 40%. Left at the old 0.75 the whole effect
-      // washes out — mean exposure came out at 0.63 against the 0.40 it used to
-      // be, which is a cloud with no dim core at all, just a uniform bright one.
-      // Eased back from 1.80 to hold that mean where it is now that the puffs
-      // are wider and packed tighter: both changes put more cloud on every sun
-      // ray, and left uncorrected the cores go black instead of dim. Solved for
-      // rather than guessed — 1.40 reproduces the old per-shape mean exposure to
-      // within a percent, so the denser cluster is a change to the silhouette
-      // only and the shading it carries is the shading that was already tuned.
-      if (d < o.r) occ += (1 - d / o.r) * 1.40;
-    }
-    p.lit = Math.exp(-occ);
-  }
-
-  // --- vertical extent, so height fractions run 0 at the base to 1 at the top ---
-  // A sliced puff stops at its cut, not at the bottom of the disc it was carved
-  // from, so the gradient starts exactly at the flat base rather than somewhere
-  // underneath it in empty air.
-  let minY = Infinity, maxY = -Infinity;
-  for (const p of puffs) {
-    const low = p.flat > 0 ? p.y + p.cut * p.r * PUFF_QUAD : p.y - p.r * 0.55;
-    if (low < minY) minY = low;
-    if (p.y + p.r * 0.55 > maxY) maxY = p.y + p.r * 0.55;
-  }
-  const span = Math.max(1e-3, maxY - minY);
-
-  // --- four corners per puff ---
-  // `position` is the puff centre, repeated four times: the quad is expanded in
-  // view space by the vertex shader, so the geometry itself has no width at all.
-  // aCorner spans the square from (-1,-1) to (+1,+1) and everything round about
-  // a puff gets carved out of that square in the fragment shader.
-  const n   = puffs.length;
-  const pos = new Float32Array(n * 4 * 3);
-  const cor = new Float32Array(n * 4 * 2);
-  const pfa = new Float32Array(n * 4 * 4);
-  const flt = new Float32Array(n * 4 * 3);
-  const idx = new Uint16Array(n * 6);
-  const CX = [-1, 1, -1, 1], CY = [-1, -1, 1, 1];
-
-  // How far the cluster extends, worked out before the buffers are filled
-  // because the depth prepass needs it per vertex.
-  let far = 0, reach = 0;
-  for (const p of puffs) {
-    // PUFF_QUAD oversize, then the corner of that square: 1.4 * sqrt(2).
-    far   = Math.max(far, Math.hypot(p.x, p.y - minY - span * 0.5, p.z) + p.r * 2.0);
-    reach = Math.max(reach, Math.hypot(p.x, p.z) + p.r);
-  }
-  // How far back the depth prepass shoves this cloud's depth — see
-  // CLOUD_DEPTH_VERT. Two bounding radii clears the far side of the cluster from
-  // any puff in it, whichever way the cloud is facing.
-  const push = far * 2.0;
-
-  for (let k = 0; k < n; k++) {
-    const p  = puffs[k];
-    const py = p.y - minY;
-    const hf = py / span;
-    for (let v = 0; v < 4; v++) {
-      const i = k * 4 + v;
-      pos[i * 3]     = p.x;
-      pos[i * 3 + 1] = py;
-      pos[i * 3 + 2] = p.z;
-      cor[i * 2]     = CX[v];
-      cor[i * 2 + 1] = CY[v];
-      pfa[i * 4]     = p.r;      // half-width of the quad, in local units
-      pfa[i * 4 + 1] = hf;       // 0 at the cloud base, 1 at the top
-      pfa[i * 4 + 2] = p.seed;   // decorrelates the noise between neighbours
-      pfa[i * 4 + 3] = p.lit;    // baked sun exposure
-      flt[i * 3]     = p.cut;    // where the flat bottom crosses this quad
-      flt[i * 3 + 1] = p.flat;   // how hard the underside is sliced there
-      flt[i * 3 + 2] = push;     // depth prepass push, local units
-    }
-    const b = k * 4;
-    idx.set([b, b + 1, b + 2, b + 2, b + 1, b + 3], k * 6);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('aCorner',  new THREE.BufferAttribute(cor, 2));
-  geo.setAttribute('aPuff',    new THREE.BufferAttribute(pfa, 4));
-  geo.setAttribute('aFlat',    new THREE.BufferAttribute(flt, 3));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1));
-  // Worked out by hand: every vertex sits at a puff centre, so the automatic
-  // bounding sphere would be a fraction of what the expanded quads actually
-  // cover and the frustum cull would blink whole clouds out at the screen edge.
-  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, span * 0.5, 0), far);
-  // Measured, not nominal: each shape uses a different fraction of the spread it
-  // is allotted, and this number is what the rain and the ground shadow are
-  // sized from, so it has to be the width the puffs actually cover.
-  geo.userData.width  = reach * 2;
-  geo.userData.height = span;
-  return geo;
-}
-
-// A pool built once at load and shared: a cloud picks a cluster of the shape it
-// rolled, spins it and scales it a little, and gets its own colours from its own
-// weather scale.
-const cloudRand = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
-const CLOUD_GEOS = [];
-for (let band = 0; band < BAND_SPEC.length; band++) {
-  const byShape = {};
-  const n = isTouchDevice ? 2 : 3;
-  for (const shape of CLOUD_SHAPES) {
-    byShape[shape] = [];
-    for (let i = 0; i < n; i++) byShape[shape].push(buildCloudGeo(band, shape, cloudRand));
-  }
-  CLOUD_GEOS.push(byShape);
-}
-
-// The flat bottom, shared by the colour pass and the depth prepass so both agree
-// on where the cloud actually ends.
-//
-// A billboard has no orientation of its own, so "down" has to be imported: world
-// up, taken into view space, projected onto the screen, is the direction inside
-// the quad that points at the top of the puff. Everything below a cut along that
-// direction is thrown away, which is what turns the bottom ring of a cumulus
-// from a row of bulges into one straight edge — the single most recognisable
-// thing about a drawn cloud. The cut fades out as the camera looks straight up
-// or down, where that direction collapses to nothing and there is no underside
-// on screen to slice anyway.
-const CLOUD_FLAT_DECL = /* glsl */`
-  // x: cut height in quad units, y: how hard to cut, z: depth prepass push
-  attribute vec3 aFlat;
-  varying vec2 vUp;
-  varying vec2 vFlat;
-`;
-const CLOUD_FLAT_CALC = /* glsl */`
-  vec3 upV = (viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz;
-  float upLen = length(upV.xy);
-  vUp   = upLen > 1e-4 ? upV.xy / upLen : vec2(0.0, 1.0);
-  vFlat = vec2(aFlat.x, aFlat.y * smoothstep(0.12, 0.40, upLen));
-`;
-// Applied to `density`; needs `vC` and a float called `density` in scope.
-const CLOUD_FLAT_APPLY = /* glsl */`
-  density *= 1.0 - vFlat.y * (1.0 - smoothstep(vFlat.x, vFlat.x + 0.10, dot(vC, vUp)));
-`;
-
-// Screen-aligned in view space, which is the entire point: the quad is built out
-// of the puff centre along the view basis, so a puff presents the same disc from
-// every angle and can never go edge-on the way a mesh face does.
-const CLOUD_VERT = /* glsl */`
-  attribute vec4 aPuff;    // x: radius, y: height fraction, z: seed, w: baked sun exposure
-  attribute vec2 aCorner;  // the unit square, (-1,-1) to (+1,+1)
-  ${CLOUD_FLAT_DECL}
-  varying vec2  vC;
-  varying float vH;
-  varying float vSeed;
-  varying float vLit;
+  uniform vec3 uCamPos;
   uniform float uTime;
-  void main() {
-    vC    = aCorner;
-    vH    = aPuff.y;
-    vSeed = aPuff.z;
-    vLit  = aPuff.w;
-    ${CLOUD_FLAT_CALC}
-    vec4 wp = modelMatrix * vec4(position, 1.0);
-    float r = aPuff.x * length(modelMatrix[0].xyz);
-    vec4 mv = viewMatrix * wp;
-    // The quad is deliberately wider than the puff it carries. The fragment
-    // shader erodes the outline outward as well as inward, and a rim that lands
-    // past the edge of its own quad gets clipped by it — which shows up as a
-    // dead straight horizontal or vertical line across the cloud, the one
-    // artifact that gives a billboard away instantly.
-    mv.xy += aCorner * r * ${PUFF_QUAD.toFixed(2)};
-    gl_Position = projectionMatrix * mv;
+  uniform float uThick;      // density multiplier — how solid the deck is
+  uniform float uExt;        // extinction per unit density per metre
+  uniform float uAlbedo;     // scattering albedo: lower reads as a darker cloud
+  uniform float uType;       // 0 flat storm deck .. 1 puffy fair-weather cumulus
+  uniform vec3 uSunDir;
+  uniform vec3 uSunCol;
+  uniform vec3 uSkyCol;      // ambient arriving from above
+  uniform vec3 uGndCol;      // ambient bouncing up from the sea
+  uniform vec3 uHazeCol;
+  uniform float uFlash;      // lightning, lighting the volume from inside
+  uniform float uGain;       // <1 only when the target is 8-bit and needs headroom
+
+  ${NOISE_GLSL}
+  ${CLOUD_COVERAGE_GLSL}
+
+  const float CB    = ${CLOUD_BOT.toFixed(1)};
+  const float CT    = ${CLOUD_TOP.toFixed(1)};
+  const float CTHK  = ${CLOUD_THICK.toFixed(1)};
+  const float MAXD  = ${CLOUD_MAXD.toFixed(1)};
+  const float SPAN  = ${CLOUD_SPAN.toFixed(1)};
+
+  // ----- 3D value noise -----
+  // Procedural rather than a texture lookup: a 3D texture is a chunk of memory
+  // and a chunk of bandwidth this does not have to spend on a phone, and the
+  // eight taps below are pure ALU that the GPU is already good at.
+  float hash31(vec3 p) {
+    p = fract(p * vec3(127.31, 311.7, 74.71));
+    p += dot(p, p.yzx + 34.23);
+    return fract((p.x + p.y) * p.z);
   }
-`;
-
-// Deliberately not a volumetric model. The puffs are shaded the way a cloud gets
-// drawn rather than the way one works: a white top, a blue-grey underside, a
-// couple of hard steps between them and a lit rim. Beer-Lambert extinction and
-// phase-function scattering both went the same way — physically they are what
-// gives a real cloud its soft, hazy, low-contrast body, which is exactly the
-// look being traded away here for flat readable shapes.
-const CLOUD_FRAG = /* glsl */`
-  varying vec2  vC;
-  varying float vH;
-  varying float vSeed;
-  varying float vLit;
-  varying vec2  vUp;
-  varying vec2  vFlat;
-  uniform vec3  uTop, uBot, uTint, uSunDir, uSunCol, uSkyCol;
-  uniform float uTintAmt, uFlash, uTime;
-
-  // Cheap value-noise hash. Two rounds of fract-mangling is all it is worth at
-  // this fill rate — the fbm stacked on top hides the regularity.
-  float hash21(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
+  float vnoise3(vec3 p) {
+    vec3 i = floor(p), f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    float a = hash31(i + vec3(0.0, 0.0, 0.0));
+    float b = hash31(i + vec3(1.0, 0.0, 0.0));
+    float c = hash31(i + vec3(0.0, 1.0, 0.0));
+    float d = hash31(i + vec3(1.0, 1.0, 0.0));
+    float e = hash31(i + vec3(0.0, 0.0, 1.0));
+    float g = hash31(i + vec3(1.0, 0.0, 1.0));
+    float h = hash31(i + vec3(0.0, 1.0, 1.0));
+    float k = hash31(i + vec3(1.0, 1.0, 1.0));
+    return mix(mix(mix(a, b, u.x), mix(c, d, u.x), u.y),
+               mix(mix(e, g, u.x), mix(h, k, u.x), u.y), u.z);
   }
-
-  // Two independent values per cell, for the cellular layer's feature points.
-  vec2 hash22(vec2 p) {
-    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
-    q += dot(q, q.yzx + 33.33);
-    return fract((q.xx + q.yz) * q.zy);
-  }
-
-  float vnoise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float a = hash21(i);
-    float b = hash21(i + vec2(1.0, 0.0));
-    float c = hash21(i + vec2(0.0, 1.0));
-    float d = hash21(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-  }
-
-  // Normalised to 0..1 whatever the octave count, so the erosion below moves the
-  // rim by the same amount on the phone build as on the desktop one.
-  //
-  // An octave shorter on both than it used to be, because the cellular layer
-  // below now supplies the fine detail this was carrying alone. The split is the
-  // point, not just the budget: fbm is good at the broad drift of a cloud's mass
-  // and bad at bumps — stacked octaves of value noise average toward a smooth
-  // field, which is exactly why one layer of it left every puff looking like a
-  // sanded pebble.
-  float fbm(vec2 p) {
-    float v = 0.0, a = 0.5, norm = 0.0;
-    for (int i = 0; i < ${isTouchDevice ? 2 : 3}; i++) {
-      v += a * vnoise(p);
-      norm += a;
-      p = p * 2.03 + 17.0;
+  // Three octaves for the billows. Normalised so it actually reaches 0 and 1 —
+  // the coverage threshold below subtracts against it, and an fbm huddled around
+  // its own mean would put every cloud edge in the same place.
+  float fbm3(vec3 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 3; i++) {
+      s += a * vnoise3(p);
+      p = p * 2.11 + 17.3;
       a *= 0.5;
     }
-    return v / norm;
+    return s * ${(1 / 0.875).toFixed(6)};
+  }
+  // Two octaves of fine detail, only ever asked for where there is already cloud.
+  float fbmDetail(vec3 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 2; i++) {
+      s += a * vnoise3(p);
+      p = p * 2.37 + 5.7;
+      a *= 0.5;
+    }
+    return s * ${(1 / 0.75).toFixed(6)};
   }
 
-  // Cellular (Worley) F1 — the cauliflower layer. Distance to the nearest of one
-  // jittered feature point per cell, which is a field of round blobs meeting at
-  // creases: the exact shape a cumulus is made of, and the one thing no amount of
-  // value noise will produce. Inverted at the call site so the blobs are the
-  // *high* values and the creases the low ones.
-  //
-  // Squared distances inside the loop, one sqrt at the end. Nine cells is the
-  // full 3x3 neighbourhood, which is what makes this correct rather than nearly
-  // correct — a truncated search leaves visible seams along the cell grid, and a
-  // regular grid is the single most obvious artifact a cloud can have.
-  float worley(vec2 p) {
-    vec2 ip = floor(p), fp = fract(p);
-    float m = 8.0;
-    for (int y = -1; y <= 1; y++) {
-      for (int x = -1; x <= 1; x++) {
-        vec2 g = vec2(float(x), float(y));
-        vec2 o = g + hash22(ip + g) - fp;
-        m = min(m, dot(o, o));
+  // Where in the slab cloud is allowed to be. A cumulus sits low with a soft
+  // rounded crown; a storm deck starts hard at the base and fills nearly all of
+  // it, which is what makes the underside of one go flat and black.
+  float heightGrad(float h) {
+    float botEdge = mix(0.03, 0.16, uType);
+    float topEdge = mix(0.55, 0.28, uType);
+    return smoothstep(0.0, botEdge, h) * (1.0 - smoothstep(topEdge, 1.0, h));
+  }
+
+  // The density model. Detail is switched off for the light march, where the
+  // fine erosion costs two more noise octaves and changes the shadow by nothing
+  // you could see.
+  float cloudDensity(vec3 p, float detail) {
+    float h = (p.y - CB) / CTHK;
+    if (h < 0.0 || h > 1.0) return 0.0;
+    // The wind is applied to the sample point, not to any geometry: the whole
+    // field slides through world space and the clouds go with it.
+    vec3 wp = vec3(p.x + uWxWind.x, p.y, p.z + uWxWind.y);
+
+    float cov = cloudCoverage(p.xz);
+    if (cov <= 0.02) return 0.0;
+
+    float shape = fbm3(wp * 0.0011) * heightGrad(h);
+    // Remap against coverage: cloud only exists where the billows clear the
+    // threshold the weather field sets, and the leftover is stretched back over
+    // 0..1 so a thinly-covered patch still reaches full density in its middle.
+    float d = shape - (1.0 - cov);
+    if (d <= 0.0) return 0.0;
+    d /= max(cov, 0.05);
+
+    if (detail > 0.5) {
+      // Drifts slowly on its own axis as well as with the wind, so a cloud
+      // standing still overhead still boils rather than freezing into a decal.
+      float det = fbmDetail(wp * 0.0062 + vec3(0.0, uTime * 0.02, 0.0));
+      // Weighted to the edges: the wisps come off the outside of a cloud, and
+      // eating the core at the same rate just makes the whole thing thinner.
+      d -= (1.0 - det) * 0.38 * (1.0 - smoothstep(0.35, 0.9, d));
+    }
+    return clamp(d, 0.0, 1.0) * uThick;
+  }
+
+  // Optical depth between a sample and the sun. The steps grow as they go so a
+  // handful of them still reach the far side of a kilometre-thick deck — the
+  // near ones are where the contrast is anyway.
+  float lightMarch(vec3 p) {
+    float tau = 0.0;
+    float s = 45.0;
+    vec3 lp = p;
+    for (int i = 0; i < ${CLOUD_LSTEPS}; i++) {
+      lp += uSunDir * s;
+      tau += cloudDensity(lp, 0.0) * s;
+      s *= 1.7;
+    }
+    return tau;
+  }
+
+  // Henyey-Greenstein, normalised so isotropic is 1.0 rather than 1/4pi, which
+  // keeps the radiance scale below in ordinary units.
+  float hgPhase(float c, float g) {
+    float g2 = g * g;
+    float d = max(1.0 + g2 - 2.0 * g * c, 1e-4);
+    return (1.0 - g2) / (d * sqrt(d));
+  }
+  // Two lobes: a strong forward one for the silver edge you get looking toward
+  // the sun, and a weak backward one so the anti-sun side is not dead flat.
+  float phaseAt(float c, float k) {
+    return mix(hgPhase(c, 0.55 * k), hgPhase(c, -0.30 * k), 0.28);
+  }
+
+  void main() {
+    if (uWxCov < 0.02) { gl_FragColor = vec4(0.0); return; }
+
+    vec3 rd = normalize(vRay);
+    vec3 ro = uCamPos;
+
+    // --- intersect the slab ---
+    float t0, t1;
+    if (abs(rd.y) < 1e-4) {
+      if (ro.y < CB || ro.y > CT) { gl_FragColor = vec4(0.0); return; }
+      t0 = 0.0;
+      t1 = MAXD;
+    } else {
+      float ta = (CB - ro.y) / rd.y;
+      float tb = (CT - ro.y) / rd.y;
+      t0 = min(ta, tb);
+      t1 = max(ta, tb);
+      t0 = max(t0, 0.0);
+      if (t1 <= 0.0) { gl_FragColor = vec4(0.0); return; }
+      t1 = min(t1, MAXD);
+    }
+    if (t0 >= t1) { gl_FragColor = vec4(0.0); return; }
+
+    // Per-pixel start offset. Without it the step lattice is the same for every
+    // ray and shows up as concentric shells through the cloud; with it the error
+    // is per-pixel noise that the upsample out of the reduced-resolution target
+    // smooths straight out. Fixed to the pixel rather than animated, so it never
+    // crawls.
+    //
+    // Interleaved gradient noise rather than the hash21 above, and the reason is
+    // precision: hash21 multiplies its input by 127.31, and a pixel coordinate
+    // four digits long lands where a 32-bit float has less resolution than the
+    // fract() needs — the dither collapses onto a handful of values and comes
+    // back as banding. This stays inside the range floats are exact in.
+    float dither = fract(52.9829189 *
+                         fract(0.06711056 * gl_FragCoord.x + 0.00583715 * gl_FragCoord.y));
+
+    float span = min(t1 - t0, SPAN);
+    float stepLen = span / ${CLOUD_STEPS}.0;
+    float tEnd = t0 + span;
+    float t = t0 + stepLen * dither;
+
+    float cosA = dot(rd, uSunDir);
+    // The phase only depends on the view and sun directions, so all three
+    // scattering octaves are worth exactly one evaluation per pixel.
+    float ph0 = phaseAt(cosA, 1.0);
+    float ph1 = phaseAt(cosA, 0.55);
+    float ph2 = phaseAt(cosA, 0.30);
+
+    vec3 scattered = vec3(0.0);
+    float T = 1.0;
+
+    for (int i = 0; i < ${CLOUD_STEPS}; i++) {
+      if (T < 0.02 || t > tEnd) break;
+      vec3 p = ro + rd * t;
+      // Tapered out over the back of the span. Only ever bites when the span hit
+      // the cap — a ray looking up crosses the slab in a couple of kilometres
+      // and never reaches the falling edge.
+      float d = cloudDensity(p, 1.0) * (1.0 - smoothstep(SPAN * 0.55, SPAN, t - t0));
+
+      if (d > 0.002) {
+        float h = clamp((p.y - CB) / CTHK, 0.0, 1.0);
+        float tau = lightMarch(p);
+
+        // Multiple scattering, the cheap way: three Beer terms with the
+        // extinction and the phase anisotropy both falling off octave by octave.
+        // Single scattering alone puts a cloud's interior at black; this is what
+        // gives it the bright, low-contrast body a real one has.
+        float sunE = exp(-tau * uExt) * ph0
+                   + 0.45 * exp(-tau * uExt * 0.35) * ph1
+                   + 0.20 * exp(-tau * uExt * 0.12) * ph2;
+        // Powder: thin cloud in front of dense cloud darkens rather than
+        // brightening, which is what carves the creases between billows.
+        float powder = 1.0 - exp(-d * 6.0);
+        vec3 sunS = uSunCol * sunE * mix(0.35, 1.0, powder);
+        vec3 ambS = mix(uGndCol, uSkyCol, h);
+
+        float sigmaE = d * uExt;
+        float sigmaS = sigmaE * uAlbedo;
+        vec3 S = (sunS + ambS + vec3(uFlash)) * sigmaS;
+        float tr = exp(-sigmaE * stepLen);
+        // Energy-conserving integration of the in-scattering over the whole
+        // step instead of a point sample at one end of it. This is the reason
+        // 24 steps hold up: the answer is exact for a constant-density step, so
+        // a long step loses detail rather than gaining a band.
+        scattered += T * (S - S * tr) / max(sigmaE, 1e-5);
+        T *= tr;
+        t += stepLen;
+      } else {
+        // Nothing here — take a longer stride. Empty sky is most of the volume
+        // and it is not worth a full-rate sample.
+        t += stepLen * 1.6;
       }
     }
-    return sqrt(m);
-  }
 
-  void main() {
-    // Trim the corners of the quad first: nothing round ever reaches them, and
-    // this is the cheapest quarter of the fill there is to throw away.
-    float q = dot(vC, vC);
-    if (q > 1.8) discard;
-    float d = sqrt(q);
+    float alpha = clamp(1.0 - T, 0.0, 1.0);
+    if (alpha < 0.002) { gl_FragColor = vec4(0.0); return; }
 
-    // The puff's own noise field, anchored to the quad rather than to the screen
-    // so the detail sticks to the cloud as it drifts, and crawling very slowly
-    // so a cell visibly churns instead of sitting frozen. The frequency is the
-    // one number that decides whether a puff reads as cauliflower or as a
-    // beach ball — under about three cycles across the quad the fbm is too
-    // smooth to break the circle up and every puff stays a visible disc.
-    // That frequency is in *quad* space, so it scales with the puff: halving the
-    // pieces already doubled how fine the erosion is in world terms, and 2.2 is
-    // giving some of that back. Left at the old 2.6 a cell fizzes — sixty puffs
-    // each carrying five cycles of noise is static, not cauliflower, and the
-    // lumps that read as lumps now are the puffs themselves.
-    vec2 np = vC * 2.2 + vec2(vSeed, vSeed * 1.7) + uTime * 0.008;
-    float base = fbm(np);
-    // The cellular layer runs a little finer than the fbm and on its own offset,
-    // so the blobs sit across the fbm's drift instead of on top of its lumps.
-    float cell = 1.0 - worley(np * 1.75 + 11.3);
-    // Weighted so the mean lands near 0.5 and the swing still covers 0..1: the
-    // erosion below reads n as a signed offset about a half, and a field that
-    // sits high grows every puff instead of roughening it. The cellular layer
-    // carries the larger share — it is the one doing the work.
-    float n = clamp(base * 0.55 + cell * 0.60 - 0.10, 0.0, 1.0);
+    // Fade the far end of the layer into the sky rather than letting it end.
+    float far = smoothstep(MAXD * 0.5, MAXD, t0);
+    alpha *= 1.0 - far;
 
-    // Erode the outline: the noise moves the rim in and out, so the boundary is
-    // ragged all the way round rather than a circle of a wobbling radius. The
-    // swing is deliberately smaller than a realistic cloud wants — a drawn cloud
-    // is made of recognisable arcs, and eroding a fifth of the radius keeps the
-    // lump organic while leaving the arc still readable as one.
-    //
-    // How much of that swing a fragment gets now depends on how far out it sits.
-    // A uniform amplitude has to be a compromise between two opposite jobs: big
-    // enough to make the silhouette wispy, small enough to leave the body solid.
-    // Ramping it — near nothing in the core, full swing at the rim — stops it
-    // being a compromise at all. The core stays a dense mass, and the outer
-    // millimetre frays into the sky the way the edge of a real cloud does.
-    float edgeAmt = smoothstep(0.25, 0.95, d);
-    // Nominal radius sits at 1/PUFF_QUAD of the quad; the widest lump the ramp
-    // can produce is 1.34x that, which still lands inside the quad's own edge.
-    float rim = ${(1 / PUFF_QUAD).toFixed(3)} * (1.0 + (0.08 + 0.26 * edgeAmt) * (n * 2.0 - 1.0));
-    // A hard core and a short falloff: the narrower this band, the more the puff
-    // reads as a drawn shape with an outline instead of a smear of mist. It
-    // cannot go to nothing, though — a step edge on a screen-facing disc aliases
-    // into a crawling jagged circle the moment the cloud drifts, and the band is
-    // a fraction of the radius, so halving the puffs halved how many pixels wide
-    // it is. An interior puff's edge is a seam between two overlapping pieces
-    // rather than part of the cloud's own outline, and it wants to disappear into
-    // its neighbour, not be legible.
-    float density = 1.0 - smoothstep(rim * 0.70, rim, d);
-    // The inside is near enough uniform. Tightened from 0.80: the noise has a
-    // job at the rim and no job in the middle, and a body that varies 20% in
-    // opacity is a body you can see the sky through in patches.
-    density *= mix(0.88, 1.0, n);
-    ${CLOUD_FLAT_APPLY}
-    if (density < 0.004) discard;
+    vec3 col = scattered / max(alpha, 1e-4);
+    col = mix(col, uHazeCol, far * 0.7);
 
-    // --- normal ---
-    // The quad is screen-aligned, so quad space *is* view space: vC.x and vC.y
-    // are right and up, and the z that completes them is the front of a sphere
-    // sitting inside the quad. That fake sphere is what gives a puff its round
-    // shading. The screen-space gradient of the noise then dents it — lightly,
-    // because a heavily dented normal is what turns flat toon bands back into
-    // the mottled, busy surface this shader is trying not to have.
-    vec3 vn = vec3(vC * 0.9, sqrt(max(1.0 - min(q, 1.0) * 0.81, 0.05)));
-    float bump = n * density;
-    vec2 g = vec2(dFdx(bump), dFdy(bump)) / max(fwidth(d), 1e-4);
-    vn = normalize(vn - vec3(g * 0.12, 0.0));
-    // View space back to world: the view rotation is orthonormal, so its inverse
-    // is its transpose, which is exactly what right-multiplying by it does.
-    vec3 nrm = normalize(vn * mat3(viewMatrix));
-
-    float up  = nrm.y * 0.5 + 0.5;
-    float sun = dot(nrm, uSunDir) * 0.5 + 0.5;
-
-    // One number for how lit a fragment is: which way it faces, how high up the
-    // cloud it sits, and whether the rest of the cloud is between it and the sun
-    // (vLit, baked per puff when the cluster was built).
-    //
-    // The per-fragment normal is deliberately *not* the dominant term. Each puff
-    // carries a fake sphere, so leaning on "up" alone gives every one of them the
-    // full light-to-dark sweep and the cloud reads as a heap of billiard balls.
-    // The cluster-wide terms outweigh it, which keeps one gradient running up the
-    // whole cloud while each lobe still shades enough to be its own lobe.
-    float lit = clamp(0.32 * up + 0.24 * sun + 0.30 * vH + 0.30 * (vLit - 0.5)
-                      + 0.08, 0.0, 1.0);
-
-    // The toon ramp. Three flat tones with narrow blends between them, not a
-    // gradient: the steps are what make the cloud look drawn, and a cloud is the
-    // easiest possible subject for them because its own form is so simple that
-    // banding reads as deliberate shading rather than as a rendering fault. The
-    // blends stay ~0.08 wide so the boundaries do not crawl when the sun moves.
-    float tone = smoothstep(0.34, 0.42, lit) * 0.45
-               + smoothstep(0.56, 0.64, lit) * 0.55;
-    vec3 col = mix(uBot, uTop, tone);
-
-    // Sky bounce. The shadowed side of a cloud is not lit by nothing — it is lit
-    // by the blue hemisphere under and around it, and that second light source is
-    // most of what stops an underside reading as a flat grey cutout. Applied
-    // where the toon ramp has run out of contrast to give: facing down, and in
-    // the darkest band.
-    //
-    // Modulated by uBot, not added flat on top of it, because bounce light is
-    // light the cloud *reflects* — and because these colours are linear, an
-    // absolute term that reads as a gentle lift on a white cumulus is several
-    // times the whole value of a storm cell's underside and turns it powder blue.
-    // Through the albedo it is the same proportional shift on both.
-    col += uBot * uSkyCol * (1.0 - up) * (1.0 - tone) * 0.45;
-
-    // Warm the sunward face. Sunlight is not white, and the small amount of that
-    // warmth surviving onto the lit side is the other half of the same trick:
-    // once one side is cool and the other is warm, the cloud has a direction to
-    // it that no amount of white-to-grey ever produces. The specular and the rim
-    // below both land inside this band and add their own brightness back, so the
-    // slight dimming that comes with tinting toward the sun's colour never shows.
-    col = mix(col, col * uSunCol, smoothstep(0.35, 0.85, sun) * 0.50);
-
-    // Warm/cool drift across the surface, keyed to the same noise field the
-    // shape is eroded from, so the tint sits on the lumps instead of floating
-    // over them: golden where a bump catches the light, blue-grey down in the
-    // creases between them. Deliberately a few percent, not a stylised recolour
-    // — enough to break the uniform white, not enough to read as a separate
-    // effect laid on top of the toon ramp.
-    col *= mix(vec3(0.958, 0.984, 1.058), vec3(1.048, 1.014, 0.952),
-               clamp(n * 0.55 + tone * 0.65 - 0.10, 0.0, 1.0));
-
-    // The specular "shine": a small hot patch facing square into the sun, the
-    // one place allowed to go brighter than the top colour.
-    col += uSunCol * smoothstep(0.84, 0.95, sun) * 0.26;
-
-    // Rim light. On a billboard the rim is wherever the eroded outline ended up,
-    // not where the geometry stops, so it follows every lump of the noise and
-    // gives the cloud a lit contour instead of a fading edge.
-    float edge = smoothstep(0.80, 1.0, d / rim);
-    col += uSunCol * edge * pow(max(sun, 0.0), 1.5) * 0.55;
-
-    // The storminess cast, over the lowest third of the cell.
-    col = mix(col, uTint, uTintAmt * (1.0 - smoothstep(0.0, 0.32, vH)));
-    // Lightning lights the cell from the inside, brightest low down.
-    col += vec3(0.80, 0.84, 1.0) * uFlash * (1.15 - vH * 0.55);
-    // No distance haze at all. These are meant to stay bright, saturated and
-    // legible right out to the despawn ring — a cartoon sky does not wash its
-    // clouds out toward the horizon, and the scene's own FogExp2 never touched
-    // them either, since a ShaderMaterial gets no fog chunks unless asked.
-
-    // Fully opaque per puff: the whole point of the tighter falloff above is a
-    // defined edge, and an edge you can see through is not one. The eroded rim
-    // already carries density to zero on its own, so nothing here needs a global
-    // discount to stay soft — that 0.98 only ever thinned the solid middle.
-    float alpha = clamp(density, 0.0, 1.0);
-    gl_FragColor = vec4(col, alpha);
-    #include <tonemapping_fragment>
-    #include <colorspace_fragment>
+    // Straight linear radiance and coverage, un-tonemapped. The accumulator
+    // above is transmittance-weighted — premultiplied, in other words — and the
+    // divide on the line before undoes that, so what lands in the target is an
+    // ordinary colour and an ordinary alpha for the composite to blend. The
+    // tonemapping and the sRGB encode happen there, once, on the way to screen.
+    gl_FragColor = vec4(col * uGain, alpha);
   }
 `;
 
-// Depth prepass. The puff *cores* write depth only, and the depth they write is
-// pushed a whole cloud-radius further from the eye than the puff itself.
-//
-// That push is not a tweak, it is the whole design. A billboard cluster has no
-// interior faces to hide — every puff is a screen-facing disc — so any depth
-// written at a puff's own distance cuts the puffs behind it out of the blend and
-// the cloud comes apart into hard-edged circles with the sky showing through
-// them. Pushed back past the far side of the cluster, the same depth rejects
-// nothing inside the cloud and still throws away the fill for whatever is
-// wholly behind it, which is where the overdraw on a crowded sky actually goes.
-//
-// The push is a *cluster* distance, baked per cloud into aFlat.z, not a multiple
-// of the puff's own radius. It used to be the latter, and that only held while
-// every puff in a cell was roughly the same size as every other: once the crown
-// is made of pieces a third the size of the base row, scaling by aPuff.x pushes
-// the small ones nowhere near far enough, and each of them punches a little
-// depth-rejected hole in whatever is behind it — the cauliflower crown speckles
-// with sky. One distance for the whole cluster cannot do that.
-const CLOUD_DEPTH_VERT = /* glsl */`
-  attribute vec4 aPuff;
-  attribute vec2 aCorner;
-  ${CLOUD_FLAT_DECL}
-  varying vec2 vC;
+const CLOUD_QUAD_VERT = /* glsl */`
+  varying vec3 vRay;
+  uniform vec3 uCamRight, uCamUp, uCamFwd;
+  uniform vec2 uHalfExtent;   // tan(fovY/2) scaled for x and y
   void main() {
-    vC = aCorner;
-    ${CLOUD_FLAT_CALC}
-    vec4 wp = modelMatrix * vec4(position, 1.0);
-    float s = length(modelMatrix[0].xyz);
-    vec4 mv = viewMatrix * wp;
-    mv.xy += aCorner * aPuff.x * s * ${PUFF_QUAD.toFixed(2)};
-    mv.z -= aFlat.z * s;       // -z is forward in view space, so this is *away*
-    gl_Position = projectionMatrix * mv;
+    // The quad spans -1..1, so its own vertices are the NDC corners and the ray
+    // through each is the camera basis weighted by them. Cheaper and shorter
+    // than shipping an inverse view-projection down.
+    vRay = uCamFwd
+         + uCamRight * (position.x * uHalfExtent.x)
+         + uCamUp    * (position.y * uHalfExtent.y);
+    gl_Position = vec4(position.xy, 0.0, 1.0);
   }
 `;
-const CLOUD_DEPTH_FRAG = /* glsl */`
-  varying vec2 vC;
-  varying vec2 vUp;
-  varying vec2 vFlat;
-  void main() {
-    if (dot(vC, vC) > 0.16) discard;   // only the dense middle occludes anything
-    // The sliced-off underside is sky, so it must not occlude either.
-    float density = 1.0;
-    ${CLOUD_FLAT_APPLY}
-    if (density < 0.5) discard;
-    gl_FragColor = vec4(0.0);
-  }
-`;
-
-// Colour by weather scale: bright white at 1, dark storm slate by 10. Saturated
-// and light on purpose — the muted, desaturated greys a photograph of a cloud
-// actually contains are the first thing that stops one reading as a cartoon.
-const CLOUD_KEYS = [
-  { s: 1,  top: 0xffffff, bot: 0xdde8f0, tint: 0xffffff },  // bright white
-  { s: 4,  top: 0xf0f4f8, bot: 0xa8b8c8, tint: 0xe8edf2 },  // light grey
-  { s: 7,  top: 0xc0c8d0, bot: 0x607080, tint: 0xb0b8c0 },  // medium grey
-  { s: 10, top: 0x8090a0, bot: 0x304050, tint: 0x708090 },  // dark storm
-];
-function cloudColors(s) {
-  let i = 0;
-  while (i < CLOUD_KEYS.length - 2 && s > CLOUD_KEYS[i + 1].s) i++;
-  const a = CLOUD_KEYS[i], b = CLOUD_KEYS[i + 1];
-  const t = THREE.MathUtils.clamp((s - a.s) / (b.s - a.s), 0, 1);
-  return {
-    top:  new THREE.Color(a.top).lerp(new THREE.Color(b.top), t),
-    bot:  new THREE.Color(a.bot).lerp(new THREE.Color(b.bot), t),
-    tint: new THREE.Color(a.tint).lerp(new THREE.Color(b.tint), t),
-  };
-}
 
 const CLOUD_SUN_COLOR = new THREE.Color(0xfff0cf);
-// The light the shadowed side actually gets: sky and ground bounce, which is
-// blue and comes from below. Picked cool and slightly desaturated — a saturated
-// blue underside stops reading as shadow and starts reading as a different
-// object.
-const CLOUD_SKY_COLOR = new THREE.Color(0x7ea6d8);
+// The ambient a cloud sits in: sky from above, sea and land bounce from below.
+// Both collapse toward slate as the sky turns over, which is most of what makes
+// a storm cell read as a storm cell.
+const CLOUD_SKY_FAIR  = new THREE.Color(0x9fc4ea);
+const CLOUD_SKY_STORM = new THREE.Color(0x44515f);
+const CLOUD_GND_FAIR  = new THREE.Color(0x8399a8);
+const CLOUD_GND_STORM = new THREE.Color(0x2a343f);
 
-function cloudMaterial(scale) {
-  const { top, bot, tint } = cloudColors(scale);
-  return new THREE.ShaderMaterial({
-    vertexShader: CLOUD_VERT,
-    fragmentShader: CLOUD_FRAG,
-    transparent: true,
-    depthWrite: false,
-    // Billboards have no back: the quad faces the eye by construction, but the
-    // winding flips depending on which side of the cloud's own rotation it lands
-    // on, so culling either face would drop puffs at random.
-    side: THREE.DoubleSide,
-    // The bump lighting reads screen-space derivatives. WebGL2 has them as
-    // baseline; a WebGL1 fallback context needs the extension asked for by name
-    // or the shader fails to compile and the whole sky goes missing.
-    extensions: { derivatives: true },
-    uniforms: {
-      uTime:      { value: 0 },
-      uTop:       { value: top },
-      uBot:       { value: bot },
-      uTint:      { value: tint },
-      uTintAmt:   { value: smooth((scale - 4) / 5) * 0.45 },
-      uSunDir:    { value: SUN.clone() },
-      uSunCol:    { value: CLOUD_SUN_COLOR.clone() },
-      uSkyCol:    { value: CLOUD_SKY_COLOR.clone() },
-      uFlash:     { value: 0 },
-    },
-  });
-}
+// ----- the half-res target the march writes into -----
+// Half resolution is the single biggest reason this runs on a phone: the march
+// is by far the most expensive thing in the frame and this quarters it, while
+// the composite still runs per screen pixel so the edge against the terrain
+// stays sharp.
+const CLOUD_RES = isTouchDevice ? 0.5 : 0.75;
+// Float if we can render to it, so sunlit cloud tops can go above 1.0 before
+// the tonemapper sees them. If we cannot, the march scales itself down into the
+// 0..1 an 8-bit target has and the composite scales it back up.
+const CLOUD_FLOAT = renderer.extensions.has('EXT_color_buffer_float') ||
+                    renderer.extensions.has('EXT_color_buffer_half_float');
+const CLOUD_GAIN  = CLOUD_FLOAT ? 1.0 : 0.25;
 
-// ----- the controls the free camera exposes -----
-const WX = {
-  rateIdx: 2,
-  speedIdx: 1,
-  stormIdx: 2,
-  // label, seconds between spawns (0 = off)
-  RATES:  [['Off', 0], ['Slow', 16], ['Medium', 7.5], ['Fast', 3]],
-  // label, drift speed in units / second
-  SPEEDS: [['Slow', 5], ['Medium', 13], ['Fast', 27]],
-  // label, min storminess, max storminess, bias
-  // bias: 0-1, low pulls the roll toward min, high pulls it toward max
-  STORMS: [
-    ['Calm',   1,  3, 0.1],
-    ['Mild',   1,  5, 0.3],
-    ['Mixed',  1, 10, 0.5],
-    ['Stormy', 4, 10, 0.7],
-    ['Severe', 6, 10, 0.9],
-  ],
-};
-
-// Storminess is rolled per cloud rather than picked from a shared range, so a
-// single setting gives a whole sky of varied cells instead of a uniform one.
-// The exponent bends the uniform roll: bias 0.5 leaves it flat, below that most
-// cells land mild, above it most land severe.
-function rollStorminess() {
-  const s = WX.STORMS[WX.stormIdx];
-  const min = s[1], max = s[2], bias = s[3];
-  // Floored, because the exponent goes *negative* past bias 0.75 — Severe sits
-  // at 0.9 — and pow(r, -0.6) is unbounded above 1 as r approaches 0. That put
-  // cells well past the top of their own range: "storm 11.9" on a 1-10 scale.
-  const t = Math.pow(Math.random(), Math.max(0.15, 1 + (0.5 - bias) * 4));
-  return min + t * (max - min);
-}
-
-// More cells than the huge volumetric ones needed, because each is now about a
-// third narrower: the sky should read as a scattering of individual clouds you
-// could count and point at, not as two or three weather systems filling it. The
-// ceiling still matters — every cell adds to `gloom`, and enough of them
-// overhead pins it at 1 and puts the ground in permanent shadow.
-const MAX_CLOUDS    = isTouchDevice ? 10 : 16;
-const CLOUD_DESPAWN = 2100;      // they are gone once they are this far behind you
-
-const clouds = [];
-const cloudGroup = new THREE.Group();
-// Deliberately left at the default render order. Nothing hazes a cloud any more
-// — the scene's FogExp2 never reached them (a ShaderMaterial gets no fog chunks
-// unless it asks) and the shader's own distance haze is gone — so forcing them
-// to the back of the transparent queue would buy nothing, and it would cost:
-// a Group's renderOrder becomes the *primary* sort key for everything under it,
-// which would put the clouds after the rain instead of back-to-front with it,
-// and a cell overhead would then paint over the streaks falling out of it.
-scene.add(cloudGroup);
-// The prepass material is opaque, so three renders it in the opaque queue —
-// before any of the transparent cloud quads — and the whole prepass therefore
-// costs one extra pass over the puffs inside the normal frame rather than a
-// second render of the entire scene.
-const depthMat = new THREE.ShaderMaterial({
-  vertexShader: CLOUD_DEPTH_VERT,
-  fragmentShader: CLOUD_DEPTH_FRAG,
-  colorWrite: false,
-  side: THREE.DoubleSide,
+const cloudRT = new THREE.WebGLRenderTarget(2, 2, {
+  type: CLOUD_FLOAT ? THREE.HalfFloatType : THREE.UnsignedByteType,
+  depthBuffer: false,
+  stencilBuffer: false,
+  minFilter: THREE.LinearFilter,
+  magFilter: THREE.LinearFilter,
+  wrapS: THREE.ClampToEdgeWrapping,
+  wrapT: THREE.ClampToEdgeWrapping,
 });
-const cloudDepthGroup = new THREE.Group();
-scene.add(cloudDepthGroup);
 
-const wxFocus = new THREE.Vector3();
-let spawnTimer = 0;
+const cloudMarchMat = new THREE.ShaderMaterial({
+  vertexShader: CLOUD_QUAD_VERT,
+  fragmentShader: CLOUD_MARCH_FRAG,
+  depthTest: false,
+  depthWrite: false,
+  // The march writes the target outright rather than blending into it.
+  transparent: false,
+  uniforms: {
+    uCamPos:     { value: new THREE.Vector3() },
+    uCamRight:   { value: new THREE.Vector3(1, 0, 0) },
+    uCamUp:      { value: new THREE.Vector3(0, 1, 0) },
+    uCamFwd:     { value: new THREE.Vector3(0, 0, -1) },
+    uHalfExtent: { value: new THREE.Vector2(1, 1) },
+    uTime:       { value: 0 },
+    uThick:      { value: 1.0 },
+    uExt:        { value: 0.012 },
+    uAlbedo:     { value: 0.9 },
+    uType:       { value: 0.6 },
+    uSunDir:     { value: SUN.clone() },
+    uSunCol:     { value: CLOUD_SUN_COLOR.clone() },
+    uSkyCol:     { value: CLOUD_SKY_FAIR.clone() },
+    uGndCol:     { value: CLOUD_GND_FAIR.clone() },
+    uHazeCol:    { value: SKY_HORIZON.clone() },
+    uFlash:      { value: 0 },
+    uGain:       { value: CLOUD_GAIN },
+    // Shared with the terrain and the sea, so the shadow can never drift out of
+    // step with the cloud casting it.
+    uWxWind:     uWxWind,
+    uWxCov:      uWxCov,
+  },
+});
+
+const cloudScene = new THREE.Scene();
+const cloudCam   = new THREE.Camera();     // the quad ignores it; three needs one
+const cloudQuad  = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), cloudMarchMat);
+cloudQuad.frustumCulled = false;
+cloudScene.add(cloudQuad);
+
+// ----- and the screen quad that composites it back -----
+// Parked at the far plane so the depth test does the occlusion for free: sky is
+// still at the cleared depth of 1.0 and passes, anything the scene drew in front
+// is nearer and rejects. Ordered to the front of the transparent queue so the
+// rain, which is drawn later, falls *through* the cloud behind it.
+const cloudCompMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  depthTest: true,
+  uniforms: {
+    uTex:  { value: cloudRT.texture },
+    uGain: { value: 1.0 / CLOUD_GAIN },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = vec4(position.xy, 1.0, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec2 vUv;
+    uniform sampler2D uTex;
+    uniform float uGain;
+    void main() {
+      vec4 c = texture2D(uTex, vUv);
+      float a = clamp(c.a, 0.0, 1.0);
+      if (a < 0.002) discard;
+      gl_FragColor = vec4(c.rgb * uGain / max(a, 1e-4), a);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }
+  `,
+});
+const cloudComposite = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), cloudCompMat);
+cloudComposite.frustumCulled = false;
+cloudComposite.renderOrder = -900;
+scene.add(cloudComposite);
+
+function sizeCloudRT() {
+  const pr = renderer.getPixelRatio();
+  const w = Math.max(2, Math.round(window.innerWidth * pr * CLOUD_RES));
+  const h = Math.max(2, Math.round(window.innerHeight * pr * CLOUD_RES));
+  cloudRT.setSize(w, h);
+}
+sizeCloudRT();
+
+const _wxClear = new THREE.Color();
+// Called from tick() just before the scene render, so the texture the composite
+// samples is this frame's.
+function renderCloudLayer() {
+  if (!cloudComposite.visible) return;
+  const prevAlpha = renderer.getClearAlpha();
+  renderer.getClearColor(_wxClear);
+  renderer.setClearColor(0x000000, 0);
+  renderer.setRenderTarget(cloudRT);
+  renderer.render(cloudScene, cloudCam);
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(_wxClear, prevAlpha);
+}
+
+let wxTime = 0;
 let gloom = 0;                   // 0 clear sky .. 1 overcast right overhead
 let rainAmt = 0;
-let wxTime = 0;
-
-// A single slowly-drifting wind direction shared by the whole sky, so every
-// cloud heads the same way instead of converging on the player from all sides.
-const WIND_BASE_DIR = Math.random() * Math.PI * 2;
-function liveWindDir() {
-  return WIND_BASE_DIR + Math.sin(wxTime * 0.015) * 0.4;
-}
-
-function spawnCloud(initial) {
-  if (clouds.length >= MAX_CLOUDS) return null;
-  const scale = rollStorminess();
-  const band  = CLOUD_BAND(scale);
-  const shape = rollCloudShape();
-  const pool  = CLOUD_GEOS[band][shape];
-  const geo   = pool[(Math.random() * pool.length) | 0];
-
-  // Upwind and far out: a fresh cell comes in at the edge of the ring, which at
-  // the medium drift speed is a couple of minutes of warning. The initial batch
-  // is scattered across the whole range so the sky is never empty at load.
-  const wind = liveWindDir();
-  const bearing = wind + Math.PI + (Math.random() - 0.5) * Math.PI * 0.6;
-  const dist = initial ? 400 + Math.random() * 2000 : 1700 + Math.random() * 700;
-  const alt  = BAND_SPEC[band].base[0] + Math.random() * BAND_SPEC[band].base[1];
-  const sc   = 0.75 + Math.random() * 0.55;
-
-  const material = cloudMaterial(scale);
-  const mesh = new THREE.Mesh(geo, material);
-  mesh.position.set(wxFocus.x + Math.cos(bearing) * dist, alt, wxFocus.z + Math.sin(bearing) * dist);
-  // Spinning the cluster only moves the puff *centres* — the quads stay facing
-  // the eye — so the same handful of pooled geometries never repeat visibly.
-  mesh.rotation.y = Math.random() * Math.PI * 2;
-  mesh.scale.setScalar(sc);
-  cloudGroup.add(mesh);
-  // Matching depth-only mesh for the prepass, sharing the same geometry.
-  const depthMesh = new THREE.Mesh(geo, depthMat);
-  depthMesh.position.copy(mesh.position);
-  depthMesh.rotation.copy(mesh.rotation);
-  depthMesh.scale.copy(mesh.scale);
-  cloudDepthGroup.add(depthMesh);
-
-  // Heading: the shared wind direction, with a little per-cloud scatter for
-  // gusting, so the whole sky drifts together instead of converging on the
-  // player from every side.
-  const head = liveWindDir() + (Math.random() - 0.5) * 0.3;
-  const c = {
-    mesh,
-    depthMesh,
-    mat: material,
-    scale,
-    band,
-    shape,
-    dirX: Math.cos(head),
-    dirZ: Math.sin(head),
-    spdMul: 1.0,
-    radius: geo.userData.width * 0.5 * sc,
-    baseY: alt,
-    boltT: -1,
-    boltIn: boltInterval(scale) * Math.random(),
-  };
-  clouds.push(c);
-  return c;
-}
-
-function clearClouds() {
-  for (const c of clouds) {
-    cloudGroup.remove(c.mesh); c.mat.dispose();
-    cloudDepthGroup.remove(c.depthMesh);
-  }
-  clouds.length = 0;
-  refreshWxUI();
-}
 
 // ----- lightning -----
-const boltInterval = (scale) => (scale >= 8 ? 2.5 + Math.random() * 6 : 7 + Math.random() * 15);
+// One strike at a time for the whole sky, which is all you can perceive anyway,
+// and only while the deck is both stormy and actually overhead.
+const boltInterval = (storm) => (storm >= 8 ? 2.5 + Math.random() * 6 : 7 + Math.random() * 15);
+let boltT = -1;                  // seconds into the current flash, -1 when idle
+let boltIn = boltInterval(5);
+let boltDist = 0;
 
 // The strike envelope: a fast leader, a dip, a brighter return stroke, then the
 // glow rolling away. Real lightning is never a single clean flash.
@@ -2922,10 +2697,11 @@ function playThunder(vol, dist) {
   } catch (e) { /* audio is a nicety; never let it take the frame down */ }
 }
 
-function strike(c, dist) {
-  c.boltT = 0;
-  c.boltIn = boltInterval(c.scale);
-  const vol = THREE.MathUtils.clamp(1 - dist / 2000, 0, 1) * (0.35 + 0.065 * c.scale);
+function strike(storm, dist) {
+  boltT = 0;
+  boltDist = dist;
+  boltIn = boltInterval(storm);
+  const vol = THREE.MathUtils.clamp(1 - dist / 2000, 0, 1) * (0.35 + 0.065 * storm);
   if (audioCtx && vol > 0.02) {
     // Sound lags the flash by the distance over the speed of sound — the reason
     // you count the seconds between them.
@@ -2934,14 +2710,14 @@ function strike(c, dist) {
 }
 
 // ----- rain -----
-// The drops belong to a cloud, not to the camera. A cell's base altitude and
-// the ground under it give the column its live top and bottom, so a streak is
-// born at the cloud's underside and dies at the dirt instead of living in a
+// The drops belong to the deck, not to the camera. The cloud base and the ground
+// under the camera give the column its live top and bottom, so a streak is born
+// at the underside of the layer and dies at the dirt instead of living in a
 // fixed-height box that follows you around. Only the vertical extent is
 // cloud-anchored: the column's footprint still centres on the camera, because
-// rain is only ever switched on while you are stood under the cell and a
-// footprint the width of a storm cell would spread the same drop budget so thin
-// the rain would vanish.
+// rain is only ever switched on while you are stood under it and a footprint the
+// width of a weather system would spread the same drop budget so thin the rain
+// would vanish.
 //
 // The fall itself is straight down in world Y (wrapped modulo the column
 // height), so it never depends on which way the camera is looking — a drop is
@@ -2970,8 +2746,8 @@ const rainMat = new THREE.ShaderMaterial({
     uCamUp:     { value: new THREE.Vector3(0, 1, 0) },
     uIntensity: { value: 0 },
     uCol:       { value: new THREE.Color(0xb0c4de) },
-    uCloudPos:  { value: new THREE.Vector3(0, 140, 0) },   // xz: the raining cell, y: its base
-    uCloudH:    { value: 100 },                            // cloud base down to the ground
+    uCloudPos:  { value: new THREE.Vector3(0, 140, 0) },   // xz: where it leans to, y: the column top
+    uCloudH:    { value: 100 },                            // column top down to the ground
   },
   vertexShader: /* glsl */`
     attribute vec2 aCorner;   // x: -1/+1 across the streak's width, y: 0 at the head, 1 at the wind-drawn tail
@@ -2992,10 +2768,10 @@ const rainMat = new THREE.ShaderMaterial({
       // wrapping over the live cloud-to-ground distance.
       float fall = mod(p.y * span - uTime * 26.0 * (0.8 + 0.5 * j), span);
       float h = fall / span;                      // 0 at the ground, 1 at the cloud base
-      // Lean the top of the column toward the cell that is shedding it, so the
-      // streaks visibly trace back up to that cloud rather than to a point
-      // straight over your head. Only a fraction of the way, or the far end of
-      // the column would slide out of view entirely.
+      // Lean the top of the column downwind, so the streaks visibly trace back
+      // up into the deck they came out of rather than to a point straight over
+      // your head. Only a fraction of the way, or the far end of the column
+      // would slide out of view entirely.
       vec2 lean = (uCloudPos.xz - uCam.xz) * 0.12 * h;
       vec3 w = vec3(uCam.x + p.x + lean.x, uCloudPos.y - span + fall, uCam.z + p.z + lean.y);
       w += aCorner.y * vec3(1.6, 0.0, 0.9) * 0.5;                 // gentle wind slant on the tail
@@ -3060,111 +2836,74 @@ const FOG_BASE  = new THREE.Color(FOG_COLOR);
 const GLOOM_FOG = new THREE.Color(0x8a97a6);
 const GLOOM_Z   = new THREE.Color(0x2c3a4c);
 const GLOOM_H   = new THREE.Color(0x8b98a6);
-const clamp01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
-const shadowList = [];      // scratch, refilled every frame
 
 function updateWeather(dt) {
   wxTime += dt;
-  wxFocus.copy(camera.position);
+  // updateCamera() has moved the camera but three does not flush that into
+  // matrixWorld until it renders, and both the cloud ray basis and the rain
+  // billboarding read it. One frame of lag in a ray basis is a visible smear
+  // while you turn, so pay for the flush here.
+  camera.updateMatrixWorld();
 
-  // --- spawn ---
-  const interval = WX.RATES[WX.rateIdx][1];
-  if (interval > 0) {
-    spawnTimer += dt;
-    while (spawnTimer >= interval && clouds.length < MAX_CLOUDS) {
-      spawnTimer -= interval;
-      spawnCloud(false);
-    }
-    if (clouds.length >= MAX_CLOUDS) spawnTimer = Math.min(spawnTimer, interval);
+  const storm = WEATHER.storminess;
+  const st = storm / 10;
+
+  // --- wind: the field slides, nothing else moves ---
+  const wr = WEATHER.windDir * DEG;
+  const wvx = Math.cos(wr), wvz = Math.sin(wr);
+  const wspd = WEATHER.speed * WIND_UNIT;
+  // Subtracted: a sample point p reads the field at p + offset, so walking the
+  // offset backwards walks the cloud forwards.
+  uWxWind.value.x -= wvx * wspd * dt;
+  uWxWind.value.y -= wvz * wspd * dt;
+
+  // --- how much sky is covered, and how it looks ---
+  // Storminess widens the coverage on its own: a squall is not just darker, it
+  // is a bigger piece of sky.
+  uWxCov.value = WEATHER.density * (0.72 + 0.055 * storm);
+  uWxShade.value = 0.40 + 0.042 * storm;
+
+  const cu = cloudMarchMat.uniforms;
+  cu.uTime.value = wxTime;
+  cu.uThick.value  = 1.7 + 1.5 * st;
+  cu.uExt.value    = 0.010 + 0.012 * st;
+  cu.uAlbedo.value = 0.98 - 0.26 * st;
+  // Fair weather builds cumulus low in the slab; a storm fills it top to bottom.
+  cu.uType.value   = 1.0 - 0.85 * st;
+  cu.uSunDir.value.copy(SUN);
+  // Barely dimmed by the weather. A storm cloud's *top* is as brilliantly white
+  // as any other cloud's — what makes it read as a storm is that it is optically
+  // thick enough for its underside to go black, which is uExt's job, not this
+  // one. Dimming the sun as well just made the whole sky muddy.
+  cu.uSunCol.value.copy(CLOUD_SUN_COLOR).multiplyScalar(1.15 - 0.2 * st);
+  cu.uSkyCol.value.copy(CLOUD_SKY_FAIR).lerp(CLOUD_SKY_STORM, st);
+  cu.uGndCol.value.copy(CLOUD_GND_FAIR).lerp(CLOUD_GND_STORM, st);
+  cu.uHazeCol.value.copy(skyMat.uniforms.uHorizon.value);
+  cu.uCamPos.value.copy(camera.position);
+  cu.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
+  cu.uCamUp.value.setFromMatrixColumn(camera.matrixWorld, 1);
+  cu.uCamFwd.value.setFromMatrixColumn(camera.matrixWorld, 2).negate();
+  const tanH = Math.tan(camera.fov * DEG * 0.5);
+  cu.uHalfExtent.value.set(tanH * camera.aspect, tanH);
+
+  // --- what the sky is doing directly above the camera ---
+  const covHere = coverageAt(camera.position.x, camera.position.z);
+  const cover = clamp01((covHere - 0.32) / 0.45) * (0.35 + 0.065 * storm);
+
+  // --- lightning ---
+  const canStrike = storm >= 6 && covHere > 0.40;
+  if (boltT >= 0) {
+    boltT += dt;
+    if (boltT > 0.5) boltT = -1;
+  } else if (canStrike) {
+    boltIn -= dt;
+    if (boltIn <= 0) strike(storm, 150 + Math.random() * 1700);
   } else {
-    spawnTimer = 0;
+    boltIn = boltInterval(storm);
   }
-
-  // --- drift, cull, and collect what the rest of the scene needs to know ---
-  const speed = WX.SPEEDS[WX.speedIdx][1];
-  let cover = 0, rainWant = 0, flashGlobal = 0;
-  let rainCloud = null;          // the cell currently doing the raining
-  shadowList.length = 0;
-
-  for (let i = clouds.length - 1; i >= 0; i--) {
-    const c = clouds[i];
-    const p = c.mesh.position;
-    p.x += c.dirX * speed * c.spdMul * dt;
-    p.z += c.dirZ * speed * c.spdMul * dt;
-    // The prepass mesh has to ride along, or it writes depth for where the cloud
-    // used to be and starts punching holes in the sky behind it.
-    c.depthMesh.position.copy(p);
-
-    const dx = p.x - wxFocus.x, dz = p.z - wxFocus.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist > CLOUD_DESPAWN) {
-      cloudGroup.remove(c.mesh);
-      cloudDepthGroup.remove(c.depthMesh);
-      c.mat.dispose();
-      clouds.splice(i, 1);
-      continue;
-    }
-
-    // How much of this cloud is directly over the camera: 1 well inside it,
-    // tapering to 0 a little past its edge.
-    const over = 1 - clamp01((dist - c.radius * 0.35) / (c.radius * 0.8));
-    cover = Math.max(cover, over * clamp01(0.30 + 0.075 * c.scale));
-    // Scale 4-5 spits, 6-7 is heavy, 8-10 is a downpour. Only if we are actually
-    // underneath it rather than flying above the cloud deck.
-    if (c.scale >= 4 && wxFocus.y < c.baseY - 6) {
-      const want = over * Math.min(1, (c.scale - 3) / 5);
-      if (want > rainWant) { rainWant = want; rainCloud = c; }
-    }
-
-    // --- lightning ---
-    if (c.scale >= 6) {
-      if (c.boltT >= 0) {
-        c.boltT += dt;
-        if (c.boltT > 0.5) c.boltT = -1;
-      } else {
-        c.boltIn -= dt;
-        if (c.boltIn <= 0) strike(c, dist);
-      }
-    }
-    const flash = c.boltT >= 0 ? boltEnv(c.boltT) : 0;
-    const u = c.mat.uniforms;
-    u.uFlash.value = flash;
-    // The noise field crawls off uTime, so every cell needs it every frame.
-    u.uTime.value = wxTime;
-    u.uSunDir.value.copy(SUN);
-    flashGlobal = Math.max(flashGlobal, flash * (1 - clamp01((dist - 250) / 1300)));
-
-    shadowList.push(c);
-  }
-
-  // --- hand the ground shaders the biggest, nearest footprints ---
-  // The shadow lands well downwind of the cloud that casts it: two hundred
-  // metres of altitude times the tangent of the sun's angle from vertical.
-  for (const c of shadowList) {
-    c.shX = c.mesh.position.x - CLOUD_SHADOW_SLANT.x * c.baseY;
-    c.shZ = c.mesh.position.z - CLOUD_SHADOW_SLANT.y * c.baseY;
-    c.shKey = Math.hypot(c.shX - wxFocus.x, c.shZ - wxFocus.z) - c.radius;
-  }
-  shadowList.sort((a, b) => a.shKey - b.shKey);
-  cloudShadowArr.fill(0);
-  const nSh = Math.min(MAX_CLOUD_SHADOWS, shadowList.length);
-  for (let i = 0; i < nSh; i++) {
-    const c = shadowList[i];
-    const o = i * 4;
-    cloudShadowArr[o]     = c.shX;
-    cloudShadowArr[o + 1] = c.shZ;
-    cloudShadowArr[o + 2] = c.radius * 1.10;
-    // Quadratic in scale rather than linear: a wisp at scale 1 still lays down
-    // a shadow you can watch cross the sand, but a storm cell has to put real
-    // weight on the ground under it, so the top of the range needs to pull away
-    // from the bottom much faster than a straight line does.
-    //
-    // Capped short of 1 now that a single cell's footprint is wider than the
-    // island. The ground shaders take full shade down to half a percent of the
-    // light — fine when a shadow was a patch crossing the sand, but with the
-    // whole island inside one footprint it turned the place into a silhouette.
-    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.30 + 0.10 * c.scale + 0.03 * c.scale * c.scale, 0, 0.82);
-  }
+  const flash = boltT >= 0 ? boltEnv(boltT) : 0;
+  const flashGlobal = flash * (1 - clamp01((boltDist - 250) / 1300));
+  cu.uFlash.value = flash * 2.2;
 
   // --- the sky reacting to what is in it ---
   gloom += (cover - gloom) * (1 - Math.exp(-1.2 * dt));
@@ -3179,26 +2918,31 @@ function updateWeather(dt) {
     scene.fog.color.copy(FOG_BASE).lerp(GLOOM_FOG, gloom * 0.75);
   }
 
+  // Nothing to composite from under the sea — the surface is between you and
+  // the sky, and the tint over the whole frame is doing that job instead.
+  cloudComposite.visible = !underwater;
+
   // --- rain ---
+  // The slider is a floor, not an override: it can make it rain out of a clear
+  // sky, and a storm overhead still rains harder than the slider asks for.
+  const natural = clamp01((covHere - 0.45) / 0.35) * clamp01((storm - 3) / 5);
+  let rainWant = Math.max(natural, WEATHER.rain / 10);
+  // Only if we are actually underneath the deck rather than flying above it.
+  if (camera.position.y > CLOUD_BOT - 6) rainWant = 0;
+
   rainAmt += (rainWant - rainAmt) * (1 - Math.exp(-0.9 * dt));
-  // Anchor the column to whichever cell is raining hardest on us. Left alone
-  // when nothing qualifies, so the last cell's geometry holds while the shower
-  // fades out rather than snapping to a default mid-fade.
-  if (rainCloud) {
-    const cp = rainCloud.mesh.position;
-    const ground = terrainHeight(camera.position.x, camera.position.z);
-    // Capped, and this is not cosmetic: the drop budget is fixed, so spreading
-    // it over the full 450-900 units the deck now sits at would thin the rain
-    // out by a factor of four into a barely-visible drizzle. The column instead
-    // fills the bottom of that gap — the part you can actually see — and the
-    // streaks still lean toward the cell overhead, which is what sells where
-    // they came from.
-    const span = Math.min(380, Math.max(20, rainCloud.baseY - ground));
-    rainMat.uniforms.uCloudPos.value.set(cp.x, ground + span, cp.z);
-    rainMat.uniforms.uCloudH.value = span;
-  }
   rainObj.visible = rainAmt > 0.02 && !underwater;
   if (rainObj.visible) {
+    const ground = terrainHeight(camera.position.x, camera.position.z);
+    // Capped, and this is not cosmetic: the drop budget is fixed, so spreading
+    // it over the full 1500 units the deck sits at would thin the rain out into
+    // a barely-visible drizzle. The column instead fills the bottom of that gap
+    // — the part you can actually see — and the streaks still lean downwind,
+    // which is what sells where they came from.
+    const span = Math.min(380, Math.max(20, CLOUD_BOT - ground));
+    rainMat.uniforms.uCloudPos.value.set(
+      camera.position.x + wvx * 260, ground + span, camera.position.z + wvz * 260);
+    rainMat.uniforms.uCloudH.value = span;
     rainMat.uniforms.uTime.value = wxTime;
     rainMat.uniforms.uCam.value.copy(camera.position);
     // Columns 0 and 1 of the camera's world matrix are its right and up
@@ -3212,32 +2956,81 @@ function updateWeather(dt) {
   }
 }
 
-// ----- weather HUD -----
-const wxRateBtn      = document.getElementById('wx-rate');
-const wxSpeedBtn     = document.getElementById('wx-speed');
-const wxStormBtn     = document.getElementById('wx-storm');
-const wxCountEl      = document.getElementById('wx-count');
-const wxCloudInfoEl  = document.getElementById('wx-cloud-info');
+// ---------------------------------------------------------------------------
+// Weather UI — the hamburger drawer
+// ---------------------------------------------------------------------------
+const wxToggleBtn = document.getElementById('wx-toggle');
+const wxScrimEl   = document.getElementById('wx-scrim');
+const wxPanelEl   = document.getElementById('wx-panel');
+const wxCoverEl   = document.getElementById('wx-cover');
+const wxGloomEl   = document.getElementById('wx-gloom');
+const wxRainPcEl  = document.getElementById('wx-rainpc');
 
-function refreshWxUI() {
-  wxRateBtn.textContent  = WX.RATES[WX.rateIdx][0];
-  wxRateBtn.classList.toggle('off', WX.rateIdx === 0);
-  wxSpeedBtn.textContent = WX.SPEEDS[WX.speedIdx][0];
-  wxStormBtn.textContent = WX.STORMS[WX.stormIdx][0];
-  wxCountEl.textContent  = String(clouds.length);
+// id, the WEATHER key it drives, how its value reads out.
+const WX_SLIDERS = [
+  ['wx-density', 'density',    (v) => v.toFixed(2)],
+  ['wx-speed',   'speed',      (v) => v.toFixed(1)],
+  ['wx-wind',    'windDir',    (v) => v.toFixed(0) + '°'],
+  ['wx-storm',   'storminess', (v) => v.toFixed(1)],
+  ['wx-rain',    'rain',       (v) => v.toFixed(1)],
+];
+
+for (const [id, key, fmt] of WX_SLIDERS) {
+  const el  = document.getElementById(id);
+  const out = document.getElementById(id + '-v');
+  const apply = () => {
+    WEATHER[key] = parseFloat(el.value);
+    out.textContent = fmt(WEATHER[key]);
+  };
+  el.addEventListener('input', apply);
+  el.addEventListener('change', apply);
+  // The world's look/move handlers live on the canvas and on window; a drag
+  // that starts on a slider belongs to the slider and to nothing else.
+  el.addEventListener('pointerdown', (e) => e.stopPropagation());
+  el.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+  el.addEventListener('touchmove', (e) => e.stopPropagation(), { passive: true });
+  apply();
 }
-const cycleRate  = () => { WX.rateIdx  = (WX.rateIdx  + 1) % WX.RATES.length;  refreshWxUI(); };
-const cycleSpeed = () => { WX.speedIdx = (WX.speedIdx + 1) % WX.SPEEDS.length; refreshWxUI(); };
-const cycleStorm = () => { WX.stormIdx = (WX.stormIdx + 1) % WX.STORMS.length; refreshWxUI(); };
 
-bindTap(wxRateBtn,  cycleRate);
-bindTap(wxSpeedBtn, cycleSpeed);
-bindTap(wxStormBtn, cycleStorm);
-refreshWxUI();
+// Pushes WEATHER back out to the sliders — for the reset button, and for
+// anything driving the weather from the console.
+function refreshWxUI() {
+  for (const [id, key, fmt] of WX_SLIDERS) {
+    const el = document.getElementById(id);
+    el.value = String(WEATHER[key]);
+    document.getElementById(id + '-v').textContent = fmt(WEATHER[key]);
+  }
+}
 
-// Seed the sky before the first frame so there is weather to look at on arrival.
-wxFocus.copy(camera.position);
-for (let i = 0; i < (isTouchDevice ? 6 : 10); i++) spawnCloud(true);
+function setWxPanel(open) {
+  document.body.classList.toggle('wx-open', open);
+  wxToggleBtn.innerHTML = open ? '&times;' : '&#9776;';
+}
+function toggleWxPanel() {
+  setWxPanel(!document.body.classList.contains('wx-open'));
+}
+
+bindTap(wxToggleBtn, () => {
+  initAudio();                          // first gesture — unlock thunder
+  toggleWxPanel();
+});
+bindTap(wxScrimEl, () => setWxPanel(false));
+bindTap(document.getElementById('wx-reset'), () => {
+  Object.assign(WEATHER, WEATHER_DEFAULTS);
+  refreshWxUI();
+});
+// A drag inside the drawer is the drawer's, never the camera's.
+wxPanelEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+wxPanelEl.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+
+// The footer readouts, refreshed off the HUD's own slow tick rather than every
+// frame — they are a glance, not an instrument.
+function refreshWxReadout() {
+  wxCoverEl.textContent  = Math.round(coverageAt(camera.position.x, camera.position.z) * 100) + '%';
+  wxGloomEl.textContent  = Math.round(gloom * 100) + '%';
+  wxRainPcEl.textContent = Math.round(rainAmt * 100) + '%';
+}
+
 refreshWxUI();
 
 // ---------------------------------------------------------------------------
@@ -3604,16 +3397,6 @@ window.addEventListener('wheel', (e) => {
 const camModeEl = document.getElementById('cam-mode');
 const instrEl   = document.getElementById('instructions');
 const modeBtn   = document.getElementById('mode-btn');
-const cloudUIEl = document.getElementById('cloud-ui');
-
-// The weather panel is stacked under the help card in the top-right corner, and
-// that card changes height with the camera mode and with the viewport width, so
-// its bottom edge is measured rather than assumed. offsetTop already carries the
-// safe-area inset the card is positioned with.
-function placeCloudUI() {
-  const below = instrEl.offsetTop + instrEl.offsetHeight + 8;
-  cloudUIEl.style.top = below + 'px';
-}
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
@@ -3628,7 +3411,7 @@ const HELP_DESKTOP = {
                 ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['V', 'Next camera'],
                 ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['1 2', 'Weather'], ['4 / 0', 'Add / clear cloud'],
+                ['Mouse', 'Look'], ['M / &#9776;', 'Weather panel'],
                 ['V', 'Next camera'], ['G', 'Enter game'], ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
@@ -3639,7 +3422,7 @@ const HELP_TOUCH = {
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
-                ['Weather', 'Panel, top right']],
+                ['&#9776;', 'Weather sliders']],
 };
 
 function refreshModeUI() {
@@ -3651,12 +3434,6 @@ function refreshModeUI() {
   const rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
   instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
-  // The card just changed height, so the panel underneath has to move with it.
-  placeCloudUI();
-
-  // The weather panel is on screen in every mode; the class only decides whether
-  // it is faded back, since in game mode it is a readout rather than a control
-  // surface you are working in.
   document.body.classList.toggle('free-cam', camMode === CAM.FREE);
 
   // Fly pad doubles as the top-down zoom pad; action pad is for on-foot modes.
@@ -3731,9 +3508,9 @@ function resize() {
     2 * Math.atan(Math.tan(45 * DEG) / aspect) / DEG, 55, 95
   );
   camera.updateProjectionMatrix();
-  // The help card reflows (and swaps to its narrow phone styling) with the
-  // viewport, so the panel stacked under it has to be re-measured.
-  placeCloudUI();
+  // The cloud march renders at a fraction of the frame, so its target is sized
+  // off the live backing-store dimensions rather than off a one-time guess.
+  sizeCloudRT();
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
@@ -3833,23 +3610,14 @@ function tick() {
       p.x.toFixed(1).padStart(6, ' ') + ',' +
       p.y.toFixed(1).padStart(6, ' ') + ',' +
       p.z.toFixed(1).padStart(6, ' ');
-    if (camMode === CAM.FREE) {
-      wxCountEl.textContent = String(clouds.length);
-      let nearest = null, nearestDist = Infinity;
-      for (const c of clouds) {
-        const d = c.mesh.position.distanceTo(p);
-        if (d < nearestDist) { nearestDist = d; nearest = c; }
-      }
-      wxCloudInfoEl.textContent = nearest
-        ? `nearest: storm ${nearest.scale.toFixed(1)} @ ${nearestDist.toFixed(0)}m`
-        : 'nearest: —';
-    }
+    refreshWxReadout();
   }
 
-  // One pass. The cloud depth prepass is opaque, so it is already sorted ahead
-  // of the transparent puff quads inside this render — the previous two-render
-  // arrangement could never have worked anyway, because `autoClear` wipes the
-  // depth buffer at the top of the second render and takes the prepass with it.
+  // The cloud march, into its own half-res target, before the frame that
+  // composites it. It has to be its own render: it writes a different target at
+  // a different resolution, and `autoClear` would wipe the scene's depth buffer
+  // if the two were folded together the other way round.
+  renderCloudLayer();
   renderer.render(scene, camera);
 }
 
@@ -3861,14 +3629,17 @@ window.hermes = {
   // The island is bare by design — these are how you put something on it from
   // the console, collider included.
   addBox, addSphere, mat, objects,
-  // Weather: WX holds the live settings, spawnCloud(true) drops one in near you.
-  WX, clouds, spawnCloud, clearClouds, refreshWxUI,
+  // Weather: WEATHER holds the live slider values — set one and call
+  // refreshWxUI() to pull the drawer back into line with it.
+  WEATHER, refreshWxUI, setWxPanel, coverageAt,
   weather: () => ({
-    count: clouds.length,
-    rate: WX.RATES[WX.rateIdx][0],
-    speed: WX.SPEEDS[WX.speedIdx][0],
+    ...WEATHER,
+    coverAbove: coverageAt(camera.position.x, camera.position.z),
     gloom, rain: rainAmt,
-    scales: clouds.map((c) => c.scale).sort((a, b) => a - b),
+    windOffset: uWxWind.value.toArray(),
+    layer: [CLOUD_BOT, CLOUD_TOP],
+    marchSteps: CLOUD_STEPS,
+    target: [cloudRT.width, cloudRT.height, CLOUD_FLOAT ? 'half-float' : 'rgba8'],
   }),
   // live read-outs of the controller internals (module-scoped `let`s)
   status: () => ({

@@ -1409,12 +1409,12 @@ scene.add(ocean);
         ${NOISE_GLSL}
         ${LAND_GLSL}
 
-        const int NUM_WAVES = 5;
+        const int NUM_WAVES = 7;
 
         // The swell, as a sum of Gerstner waves. A Gerstner wave is a trochoid:
         // as well as lifting the water it rolls it *forward* at the crest and
         // back in the trough, which is what sharpens the crests and flattens
-        // the troughs instead of leaving everything sinusoidal. Five of them,
+        // the troughs instead of leaving everything sinusoidal. Seven of them,
         // all running with the wind but fanned a little either side of it so
         // the sum never reads as a corrugated roof.
         //
@@ -1431,11 +1431,24 @@ scene.add(ocean);
         void gerstner(vec2 p, float t, float spacing, out vec3 disp, out vec3 norm) {
           // wavelength (m), amplitude (m), steepness 0..1, angle off the wind (rad)
           float wl[NUM_WAVES], amp[NUM_WAVES], stp[NUM_WAVES], ang[NUM_WAVES];
-          wl[0] = 60.0;  amp[0] = 1.8;   stp[0] = 0.45;  ang[0] =  0.0;    // primary swell
-          wl[1] = 31.0;  amp[1] = 1.1;   stp[1] = 0.55;  ang[1] =  0.15;   // secondary swell
-          wl[2] = 17.0;  amp[2] = 0.5;   stp[2] = 0.65;  ang[2] = -0.22;   // wind chop
-          wl[3] =  8.0;  amp[3] = 0.2;   stp[3] = 0.75;  ang[3] =  0.35;   // ripples
-          wl[4] =  3.5;  amp[4] = 0.08;  stp[4] = 0.85;  ang[4] = -0.40;   // fine capillary
+          wl[0] = 80.0;  amp[0] = 4.5;   stp[0] = 0.82;  ang[0] =  0.0;    // primary swell — huge, sharp crests
+          wl[1] = 42.0;  amp[1] = 2.8;   stp[1] = 0.75;  ang[1] =  0.18;   // secondary swell
+          wl[2] = 22.0;  amp[2] = 1.4;   stp[2] = 0.70;  ang[2] = -0.25;   // wind chop
+          wl[3] = 11.0;  amp[3] = 0.55;  stp[3] = 0.65;  ang[3] =  0.38;   // ripples
+          wl[4] =  4.5;  amp[4] = 0.15;  stp[4] = 0.60;  ang[4] = -0.42;   // fine capillary
+          wl[5] = 55.0;  amp[5] = 1.8;   stp[5] = 0.72;  ang[5] =  0.10;   // cross-swell
+          wl[6] = 14.0;  amp[6] = 0.35;  stp[6] = 0.68;  ang[6] = -0.32;   // wind ripple
+
+          // What stops a trochoid curling through itself is the sum of every
+          // wave's Q*k*A, not each one on its own, so the whole stack shares a
+          // single steepness budget. Splitting it in proportion to k*A hands
+          // most of it to the big swell — that is where the sharp crests come
+          // from — and leaves the capillary ripples barely rolling at all.
+          float totalKA = 0.0;
+          for (int j = 0; j < NUM_WAVES; j++) {
+            totalKA += (6.28318 / wl[j]) * amp[j];
+          }
+          float budget = 0.92;   // 8% headroom short of self-intersection
 
           disp = vec3(0.0);
           norm = vec3(0.0, 1.0, 0.0);
@@ -1454,10 +1467,9 @@ scene.add(ocean);
 
             float k = 6.28318 / wl[i];              // wavenumber
             float w = sqrt(9.81 * k);               // deep-water dispersion
-            // Q is the steepness in the trochoid's own terms. Dividing by the
-            // wave count keeps the sum of five of them under the point where
-            // the crests curl through themselves and the surface self-intersects.
-            float Q = stp[i] / (k * a * float(NUM_WAVES));
+            // Q is the steepness in the trochoid's own terms: this wave's cut
+            // of the shared budget above.
+            float Q = (stp[i] * budget) / totalKA;
             float phase = k * dot(dir, p) + w * t * (uWindSpeed / 5.0);
             float cp = cos(phase), sp = sin(phase);
 
@@ -1482,8 +1494,10 @@ scene.add(ocean);
         float depth = ${WATER.surfaceY.toFixed(2)} - landAt(wpos.xz);
         // A swell in a hand's depth of water would stand the sheet up through
         // the sand, so it settles back to flat as the bed comes up to meet it.
-        // Calm is glass: at windSpeed 0 nothing moves at all.
-        float depthFade    = smoothstep(0.0, 80.0, depth);
+        // The waves are big enough now that this doubles as how far from shore
+        // you are: gentle in the shallows, full size once there are 120m of
+        // water under them. Calm is glass: at windSpeed 0 nothing moves at all.
+        float depthFade    = smoothstep(0.0, 120.0, depth);
         float windStrength = clamp(uWindSpeed / 15.0, 0.0, 1.0);
         // The fan's rings grow geometrically, so spacing is very nearly a fixed
         // fraction of the distance out from the camera it is centred on.

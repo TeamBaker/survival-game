@@ -2578,7 +2578,8 @@ const windPlaneMat = new THREE.ShaderMaterial({
       // opposite way, i.e. downwind: at 270 the noise streams west -> east.
       vec2 uv = vUv * 10.0 + uWindDir * uTime * uWindSpeed * 0.1;
       float n = fbm(uv);
-      gl_FragColor = vec4(vec3(n), n * uAlpha);
+      n = n * 0.85 + 0.075;
+      gl_FragColor = vec4(vec3(n), uAlpha > 0.0 ? 1.0 : 0.0);
     }
   `,
 });
@@ -2652,7 +2653,7 @@ bindSlider('set-tempoff', (v) => {
 bindSlider('set-windplane', (v) => {
   const on = v >= 1;
   windPlane.visible = on;
-  windPlaneMat.uniforms.uAlpha.value = on ? 0.55 : 0.0;
+  windPlaneMat.uniforms.uAlpha.value = on ? 1.0 : 0.0;
   $('set-windplane-v').textContent = on ? 'ON' : 'OFF';
 });
 

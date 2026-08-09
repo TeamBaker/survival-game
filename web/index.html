@@ -247,9 +247,7 @@
   #mode-btn {
     position: fixed;
     top: calc(10px + env(safe-area-inset-top));
-    /* The weather hamburger owns the corner itself: 44px of button plus the 10px
-       it is inset by, plus a gap. */
-    right: calc(62px + env(safe-area-inset-right));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 11px 18px;
     font-family: inherit;
     font-size: 13px;
@@ -326,19 +324,20 @@
     #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
   }
 
-  /* ---------- Weather menu: hamburger + slide-out panel ---------- */
-  /* The whole weather interface is one thumb-sized target in the corner and a
-     drawer of sliders behind it. This replaced a row of cycling buttons bound to
-     the number keys, which a phone does not have. */
-  #wx-toggle {
+  /* ---------- Menu button ---------- */
+  /* Placeholder for the corner menu: styled and in the DOM, but nothing hangs
+     off it yet, so it stays hidden rather than being a button that does
+     nothing. Unhide it — and drop #mode-btn back to a 62px inset — when there
+     is a drawer behind it again. */
+  #menu-btn {
     position: fixed;
     top: calc(10px + env(safe-area-inset-top));
     right: calc(10px + env(safe-area-inset-right));
-    width: 44px;
-    height: 44px;
-    display: flex;
+    display: none;
     align-items: center;
     justify-content: center;
+    width: 44px;
+    height: 44px;
     font-family: inherit;
     font-size: 20px;
     line-height: 1;
@@ -350,155 +349,9 @@
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    /* Above the pause overlay (50) and the drawer's own scrim, so it is always
-       the thing you can reach — including while paused. */
+    /* Above the pause overlay (50), so it is always the thing you can reach. */
     z-index: 82;
   }
-  #wx-toggle:active,
-  body.wx-open #wx-toggle {
-    color: #06101f;
-    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
-    border-color: rgba(230, 242, 255, 0.7);
-  }
-
-  /* Catches the tap-outside that closes the drawer, and dims the world behind
-     it so the sliders read against a bright sky. */
-  #wx-scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 78;
-    background: rgba(4, 8, 16, 0.45);
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 0.2s ease, visibility 0.2s;
-  }
-  body.wx-open #wx-scrim { opacity: 1; visibility: visible; }
-
-  #wx-panel {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 316px;
-    max-width: 86vw;
-    /* The top padding clears the toggle button, which floats *over* the drawer
-       in the same corner — it becomes the close button once the drawer is open,
-       so it has to stay reachable, and nothing may sit under it. */
-    padding: calc(64px + env(safe-area-inset-top)) 18px calc(18px + env(safe-area-inset-bottom));
-    padding-right: calc(18px + env(safe-area-inset-right));
-    overflow-y: auto;
-    /* The drawer is the one place in the app a finger is allowed to scroll. */
-    touch-action: pan-y;
-    -webkit-overflow-scrolling: touch;
-    background: rgba(8, 14, 24, 0.92);
-    border-left: 1px solid rgba(160, 200, 255, 0.18);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
-    transform: translateX(100%);
-    transition: transform 0.22s cubic-bezier(0.3, 0.8, 0.4, 1);
-    z-index: 80;
-  }
-  body.wx-open #wx-panel { transform: translateX(0); }
-
-  #wx-panel .title {
-    display: block;
-    margin: 0 0 14px;
-    font-size: 11px;
-    letter-spacing: 0.18em;
-    color: #7fa8d8;
-    text-transform: uppercase;
-  }
-
-  .wx-row { margin-bottom: 16px; }
-  .wx-row .lbl {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 4px;
-    font-size: 12px;
-    color: #b9c9dc;
-  }
-  .wx-row .val {
-    font-size: 12px;
-    font-weight: 700;
-    color: #9ecbff;
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Big tracks and big thumbs: this is grabbed with a thumb on a phone, not a
-     mouse pointer. The 40px height is the touch target — the visible track is
-     the ::track pseudo inside it. */
-  .wx-row input[type="range"] {
-    -webkit-appearance: none;
-    appearance: none;
-    display: block;
-    width: 100%;
-    height: 40px;
-    margin: 0;
-    padding: 0;
-    background: transparent;
-    cursor: pointer;
-    touch-action: none;
-  }
-  .wx-row input[type="range"]::-webkit-slider-runnable-track {
-    height: 10px;
-    border-radius: 999px;
-    background: rgba(70, 110, 170, 0.35);
-    border: 1px solid rgba(150, 195, 245, 0.28);
-  }
-  .wx-row input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 28px;
-    height: 28px;
-    margin-top: -10px;             /* centres a 28px thumb on a 10px track */
-    border-radius: 50%;
-    background: radial-gradient(circle at 38% 32%, #f2f8ff, #7db4ee);
-    border: 1.5px solid rgba(235, 245, 255, 0.85);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-  }
-  .wx-row input[type="range"]::-moz-range-track {
-    height: 10px;
-    border-radius: 999px;
-    background: rgba(70, 110, 170, 0.35);
-    border: 1px solid rgba(150, 195, 245, 0.28);
-  }
-  .wx-row input[type="range"]::-moz-range-thumb {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 38% 32%, #f2f8ff, #7db4ee);
-    border: 1.5px solid rgba(235, 245, 255, 0.85);
-  }
-
-  .wx-btn {
-    width: 100%;
-    padding: 11px 12px;
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: #eaf2ff;
-    background: rgba(70, 120, 190, 0.34);
-    border: 1px solid rgba(150, 195, 245, 0.42);
-    border-radius: 8px;
-    cursor: pointer;
-    touch-action: manipulation;
-  }
-  .wx-btn:active { background: rgba(110, 170, 240, 0.6); }
-
-  #wx-foot {
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid rgba(160, 200, 255, 0.14);
-    color: #62819f;
-    font-size: 11px;
-    line-height: 1.6;
-  }
-  #wx-foot b { color: #9ecbff; font-weight: 600; }
 
   /* ---------- Start / pause overlay ---------- */
   #overlay {
@@ -596,47 +449,13 @@
 <canvas id="view"></canvas>
 
 <div id="hud"><span class="k">FPS</span> <span class="v" id="fps">--</span>
-<span class="k">POS</span> <span class="v" id="pos">--</span>
-<span class="k" style="color:#ff0">v22-volumetric</span></div>
+<span class="k">POS</span> <span class="v" id="pos">--</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
 <button id="mode-btn" class="ui-el">Game Mode</button>
 
-<button id="wx-toggle" class="ui-el" aria-label="Weather controls">&#9776;</button>
-<div id="wx-scrim"></div>
-
-<aside id="wx-panel" class="ui-el">
-  <span class="title">Weather</span>
-
-  <div class="wx-row">
-    <label class="lbl" for="wx-density">Cloud density<span class="val" id="wx-density-v">1.00</span></label>
-    <input type="range" id="wx-density" min="0" max="2" step="0.05" value="1">
-  </div>
-  <div class="wx-row">
-    <label class="lbl" for="wx-speed">Cloud speed<span class="val" id="wx-speed-v">1.0</span></label>
-    <input type="range" id="wx-speed" min="0" max="5" step="0.1" value="1">
-  </div>
-  <div class="wx-row">
-    <label class="lbl" for="wx-wind">Wind direction<span class="val" id="wx-wind-v">0&deg;</span></label>
-    <input type="range" id="wx-wind" min="0" max="360" step="1" value="0">
-  </div>
-  <div class="wx-row">
-    <label class="lbl" for="wx-storm">Storminess<span class="val" id="wx-storm-v">5.0</span></label>
-    <input type="range" id="wx-storm" min="0" max="10" step="0.1" value="5">
-  </div>
-  <div class="wx-row">
-    <label class="lbl" for="wx-rain">Rain intensity<span class="val" id="wx-rain-v">0.0</span></label>
-    <input type="range" id="wx-rain" min="0" max="10" step="0.1" value="0">
-  </div>
-
-  <button class="wx-btn" id="wx-reset">Reset</button>
-
-  <div id="wx-foot">
-    cover <b id="wx-cover">0%</b> &middot; gloom <b id="wx-gloom">0%</b> &middot; rain <b id="wx-rainpc">0%</b><br>
-    cluster storm <b id="wx-cstorm">5.0</b>/10 &middot; <span id="wx-note">&mdash;</span>
-  </div>
-</aside>
+<button id="menu-btn" class="ui-el" aria-label="Menu" hidden>&#9776;</button>
 
 <div id="underwater"></div>
 <div id="crosshair"></div>
@@ -774,11 +593,10 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
 
-// The far plane has to swallow the weather: clouds spawn up to 1500 units out and
-// are meant to be readable from there, so 1000 would have clipped them away before
-// they ever appeared. Pushing near out to 0.25 at the same time leaves the depth
-// range *better* conditioned than the old 0.1/1000 pair, and nothing in the scene
-// ever gets within a quarter unit of the eye.
+// A far plane this deep costs nothing here and leaves room overhead for anything
+// the sky picks up later. Pushing near out to 0.25 at the same time leaves the
+// depth range *better* conditioned than the old 0.1/1000 pair, and nothing in
+// the scene ever gets within a quarter unit of the eye.
 const camera = new THREE.PerspectiveCamera(75, 1, 0.25, 3200);
 camera.rotation.order = 'YXZ';
 camera.position.copy(START_POS);
@@ -790,8 +608,7 @@ const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
   uniforms: {
-    // Cloned: the weather lerps these towards an overcast palette every frame,
-    // and the constants have to survive as the fair-weather end of that mix.
+    // Cloned, so the module constants stay the untouched reference values.
     uZenith:  { value: SKY_ZENITH.clone() },
     uHorizon: { value: SKY_HORIZON.clone() },
     uGround:  { value: SKY_GROUND.clone() },
@@ -907,11 +724,8 @@ sun.target.position.copy(SHADOW_CENTER);
 scene.add(sun);
 scene.add(sun.target);
 
-// Named, because the weather drives them: heavy cloud overhead pulls the sun and
-// the sky fill down, and a lightning strike briefly slams the ambient up.
-const SUN_BASE = 2.9, HEMI_BASE = 0.55, AMB_BASE = 0.18;
-const hemiLight = new THREE.HemisphereLight(0xbcd8f5, 0x4a5a3c, HEMI_BASE);
-const ambLight  = new THREE.AmbientLight(0xffffff, AMB_BASE);
+const hemiLight = new THREE.HemisphereLight(0xbcd8f5, 0x4a5a3c, 0.55);
+const ambLight  = new THREE.AmbientLight(0xffffff, 0.18);
 scene.add(hemiLight);
 scene.add(ambLight);
 
@@ -1336,95 +1150,6 @@ const LAND_GLSL = /* glsl */`
 `;
 
 // ---------------------------------------------------------------------------
-// The cloud layer, and the shadow it throws on the ground.
-//
-// The clouds themselves are raymarched in a full-screen pass much further down
-// this file, but three things about them have to be settled *here*, because the
-// terrain and the sea are built before the weather is and both need to darken
-// under a cloud: where the layer sits, what its coverage field looks like, and
-// which way the sun slides the shadow.
-//
-// Shadow-mapping the clouds is not an option — they sit two kilometres up, well
-// above the directional light's own position, so they fall outside its frustum
-// entirely. What the ground gets instead is the *same coverage field* the
-// raymarcher carves the volume out of, evaluated in 2D at the point the sun
-// projects down to. That is what keeps a shadow underneath a cloud you can
-// actually see: it is not an approximation of the cloud, it is the cloud's own
-// noise read at ground level.
-// ---------------------------------------------------------------------------
-const CLOUD_BOT   = 300;                               // layer floor, metres
-const CLOUD_TOP   = 1000;                              // layer ceiling
-const CLOUD_THICK = CLOUD_TOP - CLOUD_BOT;
-const CLOUD_MID   = (CLOUD_BOT + CLOUD_TOP) * 0.5;
-// One lattice cell of the coverage noise per ~3.6 km. Coarse enough that a
-// weather system is a system rather than a puff, fine enough that there are
-// several of them in the sky at once with clear air between them.
-const WX_COV_FREQ = 0.00028;
-
-// Shared with the raymarcher: the weather section writes these every frame and
-// both the ground shaders and the cloud shader read them, so the field can never
-// drift apart between the two.
-const uWxWind  = { value: new THREE.Vector2() };   // world offset the field has drifted by
-const uWxCov   = { value: 1.0 };                   // coverage multiplier (density slider + storminess)
-const uWxStorm = { value: 0.5 };                   // storminess slider / 10 — biases the per-cluster field
-const uWxShade = { value: 0.0 };                   // how dark the ground goes under full cover
-// How far the shadow slides from the cloud that casts it: the sun's horizontal
-// run per unit of altitude, times the middle of the layer.
-const uWxSlant = { value: new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y).multiplyScalar(CLOUD_MID) };
-
-// Needs `fbmC` from NOISE_GLSL, which every shader that pulls this in already
-// includes above it.
-const CLOUD_COVERAGE_GLSL = /* glsl */`
-  uniform vec2 uWxWind;
-  uniform float uWxCov;
-  // 0 clear .. 1 solid overcast, at a world-space xz.
-  float cloudCoverage(vec2 p) {
-    return clamp(fbmC((p + uWxWind) * ${WX_COV_FREQ}) * uWxCov, 0.0, 1.0);
-  }
-`;
-
-// ----- per-cluster storminess -----
-// A second, decorrelated weather field: where cloudCoverage says *how much*
-// cloud is at an xz, this says *what kind*. Offset half a lattice cell away and
-// run slower than the coverage, so a single cluster gets one storm character
-// all the way across while its neighbours get their own — the sky ends up with
-// bright fair-weather cumulus and a black cell you can watch coming, at once.
-//
-// Deliberately its own block rather than part of CLOUD_COVERAGE_GLSL: the
-// terrain and sea pull the coverage in for their shadows and have no use for
-// this, and no uWxStorm uniform to feed it.
-const WX_STORM_FREQ = WX_COV_FREQ * 0.7;
-const WX_STORM_OFF  = 500;
-const CLOUD_STORM_GLSL = /* glsl */`
-  uniform float uWxStorm;   // the global slider, 0..1 — a bias, not a value
-  // 0 fair .. 1 thunderhead. The window the noise is mapped into slides up with
-  // the bias and is at its widest in the middle: calm skies are uniformly fair,
-  // severe skies uniformly black, and the interesting mix is in between.
-  float clusterStormN(vec2 p) {
-    float n = fbmC((p + uWxWind + vec2(${WX_STORM_OFF.toFixed(1)})) * ${WX_STORM_FREQ});
-    float centre = mix(0.11, 0.89, uWxStorm);
-    float spread = mix(0.22, 0.75, 1.0 - abs(uWxStorm * 2.0 - 1.0));
-    return clamp(centre + (n - 0.5) * spread, 0.0, 1.0);
-  }
-  // The same thing on the 1..10 scale the slider and the HUD talk in.
-  float clusterStorm(vec2 p) { return 1.0 + clusterStormN(p) * 9.0; }
-`;
-
-const CLOUD_SHADOW_GLSL = /* glsl */`
-  ${CLOUD_COVERAGE_GLSL}
-  uniform float uWxShade;
-  uniform vec2 uWxSlant;
-  // 0 in full sun .. 1 under the thickest part of the deck. The smoothstep is
-  // deliberately narrower than the coverage range it reads: the raymarcher only
-  // grows cloud where coverage clears its own threshold, so shading the whole
-  // range would put a shadow under clear sky.
-  float cloudShade(vec2 p) {
-    float cov = cloudCoverage(p + uWxSlant);
-    return clamp(smoothstep(0.40, 0.90, cov) * uWxShade, 0.0, 1.0);
-  }
-`;
-
-// ---------------------------------------------------------------------------
 // Ocean — an animated surface at sea level plus a flat deep bed under it, so
 // the water still has something below it out past the edge of the heightfield.
 // The pair rides with the camera on `ocean`, which is what makes the sea read
@@ -1548,10 +1273,6 @@ scene.add(ocean);
   surfMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterTime;
     shader.uniforms.uLandMap = { value: landMap };
-    shader.uniforms.uWxWind  = uWxWind;
-    shader.uniforms.uWxCov   = uWxCov;
-    shader.uniforms.uWxShade = uWxShade;
-    shader.uniforms.uWxSlant = uWxSlant;
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */`
@@ -1591,7 +1312,6 @@ scene.add(ocean);
         varying float vWaveH, vCover, vAmp, vOpen;
         ${NOISE_GLSL}
         ${SEA_PALETTE}
-        ${CLOUD_SHADOW_GLSL}
       `)
       .replace('#include <map_fragment>', /* glsl */`
         #include <map_fragment>
@@ -1632,9 +1352,6 @@ scene.add(ocean);
           float d = max(vCover, 0.0);
           vec3 water = mix(SEA_SHALLOW, SEA_DEEP, smoothstep(0.3, 9.0, d));
           diffuseColor.rgb = mix(water, SEA_FOAM, foam);
-          // Cloud shadow. Water reads a squall harder than the land does — a
-          // shaded patch of sea goes flat and slate-coloured.
-          diffuseColor.rgb *= mix(1.0, 0.01, cloudShade(vWPos.xz));
 
           // Thin water lets the sand through and the very edge fades out
           // completely, which is what keeps the wash from ending in a hard line.
@@ -1708,10 +1425,6 @@ terrainMat.onBeforeCompile = (shader) => {
   shader.uniforms.uCaustCol   = { value: new THREE.Color(0xa8e4ff) };
   shader.uniforms.uCaustSlant = { value: CAUST_SLANT };
   shader.uniforms.uSunDir     = { value: SUN.clone() };
-  shader.uniforms.uWxWind     = uWxWind;
-  shader.uniforms.uWxCov      = uWxCov;
-  shader.uniforms.uWxShade    = uWxShade;
-  shader.uniforms.uWxSlant    = uWxSlant;
 
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', /* glsl */`
@@ -1737,7 +1450,6 @@ terrainMat.onBeforeCompile = (shader) => {
       varying vec3 vWNrm;
       ${NOISE_GLSL}
       ${LAND_PALETTE}
-      ${CLOUD_SHADOW_GLSL}
       // Light piles up along the zero crossings of the crossing swells; raising
       // the fold to a power is what turns those bands into thin filaments.
       float caustNet(vec2 p, float t) {
@@ -1813,9 +1525,6 @@ terrainMat.onBeforeCompile = (shader) => {
         float band = 1.0 - smoothstep(0.0, bandH, abs(h - waterline - bandH * 0.2));
         float lace = 0.35 + 0.65 * smoothstep(0.25, 0.7, fbmC(wp.xz * 1.1 + vec2(uTime * 0.4, 0.0)));
         col = mix(col, FOAM, clamp(band * lace, 0.0, 0.92) * sandM);
-
-        // ---- and whatever is between this patch of ground and the sun ----
-        col *= mix(1.0, 0.005, cloudShade(wp.xz));
 
         diffuseColor.rgb *= col;
       }
@@ -1908,10 +1617,6 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyG') toggleGameMode();
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
-  // The weather used to hang off the number row. It is all sliders in the
-  // hamburger drawer now — a phone has no number row, and that is the device
-  // this gets tested on.
-  else if (e.code === 'KeyM') toggleWxPanel();
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (TRACKED.has(e.code)) { keys.delete(e.code); e.preventDefault(); }
@@ -2152,993 +1857,6 @@ bindToggle(btnSprint, () => state.sprintBtn, (v) => state.sprintBtn = v);
 
 const isSprinting = () =>
   state.sprint || state.sprintBtn || keys.has('ShiftLeft') || keys.has('ShiftRight');
-
-// ---------------------------------------------------------------------------
-// Weather — a raymarched cloud layer, rain, and lightning
-//
-// There is no cloud *object* anywhere in the scene. The whole sky is one
-// full-screen pass that marches a ray per pixel through a slab of procedural
-// noise between CLOUD_BOT and CLOUD_TOP, in the Horizon Zero Dawn shape: a
-// low-frequency coverage field decides where cloud is allowed to exist at all, a
-// mid-frequency 3D field gives it billows, a height gradient flattens its base
-// and rounds its top, and a high-frequency field eats the edges. Density becomes
-// light through Beer-Lambert extinction along the view ray plus a short march
-// back toward the sun for self-shadowing, with a dual-lobe Henyey-Greenstein
-// phase and three multiple-scattering octaves so the shadowed side stays lit and
-// the sunward edge silvers.
-//
-// The pass renders into a half-resolution float target and is composited into
-// the main frame as a screen quad sitting at the far plane, which is what makes
-// it affordable on a phone: the marching cost scales with that target, while the
-// composite runs at full resolution and depth-tests against the scene, so an
-// island in front of a cloud still occludes it exactly.
-//
-// The coverage field is *shared* with the ground — see CLOUD_COVERAGE_GLSL up in
-// the cloud-shadow section — so a shadow crossing the sand always has a cloud
-// over it, and gloom, rain and lightning are all driven by reading that same
-// field on the CPU under the camera.
-// ---------------------------------------------------------------------------
-
-// The live controls, driven by the sliders in the hamburger drawer. Everything
-// below reads these; nothing else writes them.
-const WEATHER = {
-  density: 1.0,      // 0 .. 2   coverage multiplier, 1 is a normal partly-cloudy day
-  speed: 1.0,        // 0 .. 5   how fast the deck drifts
-  windDir: 0,        // 0 .. 360 degrees, 0 = heading +X
-  storminess: 5.0,   // 0 .. 10  thin and white .. deep, dark and electric
-  rain: 0.0,         // 0 .. 10  a floor under whatever the sky would rain anyway
-};
-const WEATHER_DEFAULTS = Object.assign({}, WEATHER);
-
-// Metres per second of drift at speed 1. Fast enough that the sky visibly moves
-// while you stand still, slow enough that a cell takes a couple of minutes to
-// cross overhead.
-const WIND_UNIT = 26;
-
-const clamp01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
-
-// ----- the coverage field, on the CPU -----
-// A line-for-line twin of hash21/vnoise/fbm/fbmC out of NOISE_GLSL. gloom, the
-// rain trigger and the lightning all need to know how much cloud is over the
-// camera, and reading that back off the GPU every frame is not something you do
-// at 60 Hz. Float64 here against float32 there makes the two disagree in the
-// last few digits; the answer is a smooth aggregate, so it never shows.
-const fract1 = (x) => x - Math.floor(x);
-function wxHash21(x, y) {
-  x = fract1(x * 127.31);
-  y = fract1(y * 311.7);
-  const d = x * (x + 34.23) + y * (y + 34.23);
-  return fract1((x + d) * (y + d));
-}
-function wxVnoise(x, y) {
-  const ix = Math.floor(x), iy = Math.floor(y);
-  const fx = x - ix, fy = y - iy;
-  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
-  const a = wxHash21(ix, iy);
-  const b = wxHash21(ix + 1, iy);
-  const c = wxHash21(ix, iy + 1);
-  const d = wxHash21(ix + 1, iy + 1);
-  const lo = a + (b - a) * ux;
-  const hi = c + (d - c) * ux;
-  return lo + (hi - lo) * uy;
-}
-function wxFbm(x, y) {
-  let s = 0, a = 0.5;
-  for (let i = 0; i < 4; i++) {
-    s += a * wxVnoise(x, y);
-    x = x * 2.07 + 13.1;
-    y = y * 2.07 + 13.1;
-    a *= 0.5;
-  }
-  return s;
-}
-// How much cloud is overhead at a world xz, 0 clear .. 1 solid.
-function coverageAt(x, z) {
-  const qx = (x + uWxWind.value.x) * WX_COV_FREQ;
-  const qz = (z + uWxWind.value.y) * WX_COV_FREQ;
-  return clamp01(clamp01((wxFbm(qx, qz) - 0.47) * 2.7 + 0.5) * uWxCov.value);
-}
-// The CPU twin of clusterStormN/clusterStorm — same field, same window, so the
-// cluster the rain and the lightning read is the one you can see overhead.
-// 1 fair .. 10 thunderhead.
-function clusterStormAt(x, z) {
-  const qx = (x + uWxWind.value.x + WX_STORM_OFF) * WX_STORM_FREQ;
-  const qz = (z + uWxWind.value.y + WX_STORM_OFF) * WX_STORM_FREQ;
-  const n = clamp01((wxFbm(qx, qz) - 0.47) * 2.7 + 0.5);
-  const b = uWxStorm.value;
-  const centre = 0.11 + (0.89 - 0.11) * b;
-  const spread = 0.22 + (0.75 - 0.22) * (1 - Math.abs(b * 2 - 1));
-  return 1 + clamp01(centre + (n - 0.5) * spread) * 9;
-}
-
-// ----- the march -----
-// Mobile gets fewer, longer steps and a shorter light march. The scattering
-// integral below is the closed form over each step rather than a point sample,
-// so a long step degrades into a slightly soft cloud instead of into banding,
-// which is what makes a step count this low survivable.
-const CLOUD_STEPS  = isTouchDevice ? 24 : 48;
-const CLOUD_LSTEPS = isTouchDevice ? 5 : 7;
-// Past this the layer is edge-on and would read as a hard wall of cloud sitting
-// on the horizon, so it is faded into the sky's own horizon colour instead. At
-// 26 km against a 1500 m floor the cut sits about 3 degrees up.
-const CLOUD_MAXD   = 26000;
-// ...but no single ray ever integrates more than this much of it. A ray that
-// enters the slab near-horizontally — or one cast from a camera flying *inside*
-// the layer — has tens of kilometres of volume in front of it, and spreading a
-// fixed step budget over that puts the steps a third of a kilometre apart, which
-// is coarser than the billows themselves and turns the per-pixel start dither
-// into visible grain. Capping the span keeps the step length bounded no matter
-// where the camera is, and the density is tapered out over the last of it so the
-// cap is a haze rather than an edge.
-const CLOUD_SPAN   = 9000;
-
-const CLOUD_MARCH_FRAG = /* glsl */`
-  varying vec3 vRay;
-
-  uniform vec3 uCamPos;
-  uniform float uTime;
-  uniform float uThick;      // density multiplier — how solid the deck is
-  uniform float uExt;        // extinction per unit density per metre
-  uniform float uAlbedo;     // scattering albedo: lower reads as a darker cloud
-  uniform float uType;       // 0 flat storm deck .. 1 puffy fair-weather cumulus
-  uniform vec3 uSunDir;
-  uniform vec3 uSunCol;
-  uniform vec3 uSkyCol;      // ambient arriving from above
-  uniform vec3 uGndCol;      // ambient bouncing up from the sea
-  uniform vec3 uHazeCol;
-  uniform float uFlash;      // lightning, lighting the volume from inside
-  uniform float uGain;       // <1 only when the target is 8-bit and needs headroom
-
-  ${NOISE_GLSL}
-  ${CLOUD_COVERAGE_GLSL}
-  ${CLOUD_STORM_GLSL}
-
-  const float CB    = ${CLOUD_BOT.toFixed(1)};
-  const float CT    = ${CLOUD_TOP.toFixed(1)};
-  const float CTHK  = ${CLOUD_THICK.toFixed(1)};
-  const float MAXD  = ${CLOUD_MAXD.toFixed(1)};
-  const float SPAN  = ${CLOUD_SPAN.toFixed(1)};
-
-  // ----- 3D value noise -----
-  // Procedural rather than a texture lookup: a 3D texture is a chunk of memory
-  // and a chunk of bandwidth this does not have to spend on a phone, and the
-  // eight taps below are pure ALU that the GPU is already good at.
-  float hash31(vec3 p) {
-    p = fract(p * vec3(127.31, 311.7, 74.71));
-    p += dot(p, p.yzx + 34.23);
-    return fract((p.x + p.y) * p.z);
-  }
-  float vnoise3(vec3 p) {
-    vec3 i = floor(p), f = fract(p);
-    vec3 u = f * f * (3.0 - 2.0 * f);
-    float a = hash31(i + vec3(0.0, 0.0, 0.0));
-    float b = hash31(i + vec3(1.0, 0.0, 0.0));
-    float c = hash31(i + vec3(0.0, 1.0, 0.0));
-    float d = hash31(i + vec3(1.0, 1.0, 0.0));
-    float e = hash31(i + vec3(0.0, 0.0, 1.0));
-    float g = hash31(i + vec3(1.0, 0.0, 1.0));
-    float h = hash31(i + vec3(0.0, 1.0, 1.0));
-    float k = hash31(i + vec3(1.0, 1.0, 1.0));
-    return mix(mix(mix(a, b, u.x), mix(c, d, u.x), u.y),
-               mix(mix(e, g, u.x), mix(h, k, u.x), u.y), u.z);
-  }
-  // Three octaves for the billows. Normalised so it actually reaches 0 and 1 —
-  // the coverage threshold below subtracts against it, and an fbm huddled around
-  // its own mean would put every cloud edge in the same place.
-  float fbm3(vec3 p) {
-    float s = 0.0, a = 0.5;
-    for (int i = 0; i < 3; i++) {
-      s += a * vnoise3(p);
-      p = p * 2.11 + 17.3;
-      a *= 0.5;
-    }
-    return s * ${(1 / 0.875).toFixed(6)};
-  }
-  // Two octaves of fine detail, only ever asked for where there is already cloud.
-  float fbmDetail(vec3 p) {
-    float s = 0.0, a = 0.5;
-    for (int i = 0; i < 2; i++) {
-      s += a * vnoise3(p);
-      p = p * 2.37 + 5.7;
-      a *= 0.5;
-    }
-    return s * ${(1 / 0.75).toFixed(6)};
-  }
-
-  // Where in the slab cloud is allowed to be. A cumulus sits low with a soft
-  // rounded crown; a storm deck starts hard at the base and fills nearly all of
-  // it, which is what makes the underside of one go flat and black.
-  float heightGrad(float h) {
-    float botEdge = mix(0.01, 0.06, uType);
-    float topEdge = mix(0.92, 0.65, uType);
-    return smoothstep(0.0, botEdge, h) * (1.0 - smoothstep(topEdge, 1.0, h));
-  }
-
-  // The same profile, but driven by one cluster's own storminess instead of the
-  // slider's, so a fair cell keeps its tall rounded crown while a stormy one
-  // beside it flattens into an anvil that fills most of the slab.
-  float heightGradPerCluster(float h, float stormN) {
-    float botEdge = mix(0.01, 0.03, stormN);
-    float topEdge = mix(0.50, 0.85, stormN);
-    return smoothstep(0.0, botEdge, h) * (1.0 - smoothstep(topEdge, 1.0, h));
-  }
-
-  // The density model. Detail is switched off for the light march, where the
-  // fine erosion costs two more noise octaves and changes the shadow by nothing
-  // you could see.
-  float cloudDensity(vec3 p, float detail) {
-    float h = (p.y - CB) / CTHK;
-    if (h < 0.0 || h > 1.0) return 0.0;
-    // The wind is applied to the sample point, not to any geometry: the whole
-    // field slides through world space and the clouds go with it.
-    vec3 wp = vec3(p.x + uWxWind.x, p.y, p.z + uWxWind.y);
-
-    float cov = cloudCoverage(p.xz);
-    if (cov <= 0.02) return 0.0;
-
-    // Which cluster this is. The shape itself depends on it now, so it has to be
-    // read before the billows rather than at the bottom — the coverage early-out
-    // above still keeps it off the samples that are nowhere near a cloud.
-    float stormN = clusterStormN(p.xz);
-    // Fair weather is tight, tall, puffy billows; a storm stretches them wide
-    // and squashes them vertically, which is what reads as an anvil.
-    float billowScale = mix(0.0016, 0.0007, stormN);
-    float billowStretch = mix(1.0, 0.4, stormN);
-    vec3 billowP = vec3(wp.x * billowScale, wp.y * billowScale * billowStretch, wp.z * billowScale);
-    float shape = fbm3(billowP) * heightGradPerCluster(h, stormN);
-    // Remap against coverage: cloud only exists where the billows clear the
-    // threshold the weather field sets, and the leftover is stretched back over
-    // 0..1 so a thinly-covered patch still reaches full density in its middle.
-    float d = shape - (1.0 - cov);
-    if (d <= 0.0) return 0.0;
-    d /= max(cov, 0.05);
-
-    if (detail > 0.5) {
-      // Drifts slowly on its own axis as well as with the wind, so a cloud
-      // standing still overhead still boils rather than freezing into a decal.
-      float det = fbmDetail(wp * 0.0062 + vec3(0.0, uTime * 0.02, 0.0));
-      // Weighted to the edges: the wisps come off the outside of a cloud, and
-      // eating the core at the same rate just makes the whole thing thinner.
-      d -= (1.0 - det) * 0.38 * (1.0 - smoothstep(0.35, 0.9, d));
-    }
-    float stormDensity = mix(1.0, 1.8, stormN);
-    return clamp(d, 0.0, 1.0) * uThick * stormDensity;
-  }
-
-  // Optical depth between a sample and the sun. The steps grow as they go so a
-  // handful of them still reach the far side of a kilometre-thick deck — the
-  // near ones are where the contrast is anyway.
-  float lightMarch(vec3 p) {
-    float tau = 0.0;
-    float s = 45.0;
-    vec3 lp = p;
-    for (int i = 0; i < ${CLOUD_LSTEPS}; i++) {
-      lp += uSunDir * s;
-      tau += cloudDensity(lp, 0.0) * s;
-      s *= 1.7;
-    }
-    return tau;
-  }
-
-  // Henyey-Greenstein, normalised so isotropic is 1.0 rather than 1/4pi, which
-  // keeps the radiance scale below in ordinary units.
-  float hgPhase(float c, float g) {
-    float g2 = g * g;
-    float d = max(1.0 + g2 - 2.0 * g * c, 1e-4);
-    return (1.0 - g2) / (d * sqrt(d));
-  }
-  // Two lobes: a strong forward one for the silver edge you get looking toward
-  // the sun, and a weak backward one so the anti-sun side is not dead flat.
-  float phaseAt(float c, float k) {
-    return mix(hgPhase(c, 0.55 * k), hgPhase(c, -0.30 * k), 0.28);
-  }
-
-  void main() {
-    if (uWxCov < 0.02) { gl_FragColor = vec4(0.0); return; }
-
-    vec3 rd = normalize(vRay);
-    vec3 ro = uCamPos;
-
-    // --- intersect the slab ---
-    float t0, t1;
-    if (abs(rd.y) < 1e-4) {
-      if (ro.y < CB || ro.y > CT) { gl_FragColor = vec4(0.0); return; }
-      t0 = 0.0;
-      t1 = MAXD;
-    } else {
-      float ta = (CB - ro.y) / rd.y;
-      float tb = (CT - ro.y) / rd.y;
-      t0 = min(ta, tb);
-      t1 = max(ta, tb);
-      t0 = max(t0, 0.0);
-      if (t1 <= 0.0) { gl_FragColor = vec4(0.0); return; }
-      t1 = min(t1, MAXD);
-    }
-    if (t0 >= t1) { gl_FragColor = vec4(0.0); return; }
-
-    // Per-pixel start offset. Without it the step lattice is the same for every
-    // ray and shows up as concentric shells through the cloud; with it the error
-    // is per-pixel noise that the upsample out of the reduced-resolution target
-    // smooths straight out. Fixed to the pixel rather than animated, so it never
-    // crawls.
-    //
-    // Interleaved gradient noise rather than the hash21 above, and the reason is
-    // precision: hash21 multiplies its input by 127.31, and a pixel coordinate
-    // four digits long lands where a 32-bit float has less resolution than the
-    // fract() needs — the dither collapses onto a handful of values and comes
-    // back as banding. This stays inside the range floats are exact in.
-    float dither = fract(52.9829189 *
-                         fract(0.06711056 * gl_FragCoord.x + 0.00583715 * gl_FragCoord.y));
-
-    float span = min(t1 - t0, SPAN);
-    float stepLen = span / ${CLOUD_STEPS}.0;
-    float tEnd = t0 + span;
-    float t = t0 + stepLen * dither;
-
-    float cosA = dot(rd, uSunDir);
-    // The phase only depends on the view and sun directions, so all three
-    // scattering octaves are worth exactly one evaluation per pixel.
-    float ph0 = phaseAt(cosA, 1.0);
-    float ph1 = phaseAt(cosA, 0.55);
-    float ph2 = phaseAt(cosA, 0.30);
-
-    vec3 scattered = vec3(0.0);
-    float T = 1.0;
-
-    for (int i = 0; i < ${CLOUD_STEPS}; i++) {
-      if (T < 0.02 || t > tEnd) break;
-      vec3 p = ro + rd * t;
-      // Tapered out over the back of the span. Only ever bites when the span hit
-      // the cap — a ray looking up crosses the slab in a couple of kilometres
-      // and never reaches the falling edge.
-      float d = cloudDensity(p, 1.0) * (1.0 - smoothstep(SPAN * 0.55, SPAN, t - t0));
-
-      if (d > 0.002) {
-        float h = clamp((p.y - CB) / CTHK, 0.0, 1.0);
-        float tau = lightMarch(p);
-        // This cluster's character, on the same field the density used. This is
-        // the whole point of the per-cluster field: two clouds side by side in
-        // the same light, one white and one black, so you can see the weather
-        // coming rather than only feeling it once it is on top of you.
-        float stormN = clusterStormN(p.xz);
-
-        // Multiple scattering, the cheap way: three Beer terms with the
-        // extinction and the phase anisotropy both falling off octave by octave.
-        // Single scattering alone puts a cloud's interior at black; this is what
-        // gives it the bright, low-contrast body a real one has.
-        float sunE = exp(-tau * uExt) * ph0
-                   + 0.45 * exp(-tau * uExt * 0.35) * ph1
-                   + 0.20 * exp(-tau * uExt * 0.12) * ph2;
-        // A stormhead swallows its own sunlight — the multiple-scattering terms
-        // above are exactly what keeps a cloud bright inside, so a storm is made
-        // by taking them away rather than by tinting anything grey.
-        sunE *= mix(1.0, 0.4, stormN);
-        // Powder: thin cloud in front of dense cloud darkens rather than
-        // brightening, which is what carves the creases between billows.
-        float powder = 1.0 - exp(-d * 6.0);
-        vec3 sunS = uSunCol * sunE * mix(0.35, 1.0, powder);
-        // ...and the ambient with it, which is what puts the flat black on the
-        // underside where there is no sun term left to lose.
-        vec3 ambS = mix(uGndCol, uSkyCol, h) * mix(1.0, 0.35, stormN);
-
-        // Optically thicker as well as darker, so a storm cell reads as solid
-        // against the sky where a fair cumulus still has translucent edges.
-        float sigmaE = d * uExt * mix(1.0, 2.2, stormN);
-        float sigmaS = sigmaE * uAlbedo;
-        vec3 S = (sunS + ambS + vec3(uFlash)) * sigmaS;
-        float tr = exp(-sigmaE * stepLen);
-        // Energy-conserving integration of the in-scattering over the whole
-        // step instead of a point sample at one end of it. This is the reason
-        // 24 steps hold up: the answer is exact for a constant-density step, so
-        // a long step loses detail rather than gaining a band.
-        scattered += T * (S - S * tr) / max(sigmaE, 1e-5);
-        T *= tr;
-        t += stepLen;
-      } else {
-        // Nothing here — take a longer stride. Empty sky is most of the volume
-        // and it is not worth a full-rate sample.
-        t += stepLen * 1.6;
-      }
-    }
-
-    float alpha = clamp(1.0 - T, 0.0, 1.0);
-    if (alpha < 0.002) { gl_FragColor = vec4(0.0); return; }
-
-    // Fade the far end of the layer into the sky rather than letting it end.
-    float far = smoothstep(MAXD * 0.5, MAXD, t0);
-    alpha *= 1.0 - far;
-
-    vec3 col = scattered / max(alpha, 1e-4);
-    col = mix(col, uHazeCol, far * 0.7);
-
-    // Straight linear radiance and coverage, un-tonemapped. The accumulator
-    // above is transmittance-weighted — premultiplied, in other words — and the
-    // divide on the line before undoes that, so what lands in the target is an
-    // ordinary colour and an ordinary alpha for the composite to blend. The
-    // tonemapping and the sRGB encode happen there, once, on the way to screen.
-    gl_FragColor = vec4(col * uGain, alpha);
-  }
-`;
-
-const CLOUD_QUAD_VERT = /* glsl */`
-  varying vec3 vRay;
-  uniform vec3 uCamRight, uCamUp, uCamFwd;
-  uniform vec2 uHalfExtent;   // tan(fovY/2) scaled for x and y
-  void main() {
-    // The quad spans -1..1, so its own vertices are the NDC corners and the ray
-    // through each is the camera basis weighted by them. Cheaper and shorter
-    // than shipping an inverse view-projection down.
-    vRay = uCamFwd
-         + uCamRight * (position.x * uHalfExtent.x)
-         + uCamUp    * (position.y * uHalfExtent.y);
-    gl_Position = vec4(position.xy, 0.0, 1.0);
-  }
-`;
-
-const CLOUD_SUN_COLOR = new THREE.Color(0xfff0cf);
-// The ambient a cloud sits in: sky from above, sea and land bounce from below.
-// Both collapse toward slate as the sky turns over, which is most of what makes
-// a storm cell read as a storm cell.
-const CLOUD_SKY_FAIR  = new THREE.Color(0x9fc4ea);
-const CLOUD_SKY_STORM = new THREE.Color(0x44515f);
-const CLOUD_GND_FAIR  = new THREE.Color(0x8399a8);
-const CLOUD_GND_STORM = new THREE.Color(0x2a343f);
-
-// ----- the half-res target the march writes into -----
-// Half resolution is the single biggest reason this runs on a phone: the march
-// is by far the most expensive thing in the frame and this quarters it, while
-// the composite still runs per screen pixel so the edge against the terrain
-// stays sharp.
-const CLOUD_RES = isTouchDevice ? 0.5 : 0.75;
-// Float if we can render to it, so sunlit cloud tops can go above 1.0 before
-// the tonemapper sees them. If we cannot, the march scales itself down into the
-// 0..1 an 8-bit target has and the composite scales it back up.
-const CLOUD_FLOAT = renderer.extensions.has('EXT_color_buffer_float') ||
-                    renderer.extensions.has('EXT_color_buffer_half_float');
-const CLOUD_GAIN  = CLOUD_FLOAT ? 1.0 : 0.25;
-
-const cloudRT = new THREE.WebGLRenderTarget(2, 2, {
-  type: CLOUD_FLOAT ? THREE.HalfFloatType : THREE.UnsignedByteType,
-  depthBuffer: false,
-  stencilBuffer: false,
-  minFilter: THREE.LinearFilter,
-  magFilter: THREE.LinearFilter,
-  wrapS: THREE.ClampToEdgeWrapping,
-  wrapT: THREE.ClampToEdgeWrapping,
-});
-
-const cloudMarchMat = new THREE.ShaderMaterial({
-  vertexShader: CLOUD_QUAD_VERT,
-  fragmentShader: CLOUD_MARCH_FRAG,
-  depthTest: false,
-  depthWrite: false,
-  // The march writes the target outright rather than blending into it.
-  transparent: false,
-  uniforms: {
-    uCamPos:     { value: new THREE.Vector3() },
-    uCamRight:   { value: new THREE.Vector3(1, 0, 0) },
-    uCamUp:      { value: new THREE.Vector3(0, 1, 0) },
-    uCamFwd:     { value: new THREE.Vector3(0, 0, -1) },
-    uHalfExtent: { value: new THREE.Vector2(1, 1) },
-    uTime:       { value: 0 },
-    uThick:      { value: 1.4 },
-    uExt:        { value: 0.012 },
-    uAlbedo:     { value: 0.9 },
-    uType:       { value: 0.6 },
-    uSunDir:     { value: SUN.clone() },
-    uSunCol:     { value: CLOUD_SUN_COLOR.clone() },
-    uSkyCol:     { value: CLOUD_SKY_FAIR.clone() },
-    uGndCol:     { value: CLOUD_GND_FAIR.clone() },
-    uHazeCol:    { value: SKY_HORIZON.clone() },
-    uFlash:      { value: 0 },
-    uGain:       { value: CLOUD_GAIN },
-    // Shared with the terrain and the sea, so the shadow can never drift out of
-    // step with the cloud casting it.
-    uWxWind:     uWxWind,
-    uWxCov:      uWxCov,
-    // Only the march reads this one — the ground's shadow pass works off the
-    // coverage field alone.
-    uWxStorm:    uWxStorm,
-  },
-});
-
-const cloudScene = new THREE.Scene();
-const cloudCam   = new THREE.Camera();     // the quad ignores it; three needs one
-const cloudQuad  = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), cloudMarchMat);
-cloudQuad.frustumCulled = false;
-cloudScene.add(cloudQuad);
-
-// ----- and the screen quad that composites it back -----
-// Parked at the far plane so the depth test does the occlusion for free: sky is
-// still at the cleared depth of 1.0 and passes, anything the scene drew in front
-// is nearer and rejects. Ordered to the front of the transparent queue so the
-// rain, which is drawn later, falls *through* the cloud behind it.
-const cloudCompMat = new THREE.ShaderMaterial({
-  transparent: true,
-  depthWrite: false,
-  depthTest: true,
-  uniforms: {
-    uTex:  { value: cloudRT.texture },
-    uGain: { value: 1.0 / CLOUD_GAIN },
-  },
-  vertexShader: /* glsl */`
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = vec4(position.xy, 1.0, 1.0);
-    }
-  `,
-  fragmentShader: /* glsl */`
-    varying vec2 vUv;
-    uniform sampler2D uTex;
-    uniform float uGain;
-    void main() {
-      vec4 c = texture2D(uTex, vUv);
-      float a = clamp(c.a, 0.0, 1.0);
-      if (a < 0.002) discard;
-      gl_FragColor = vec4(c.rgb * uGain / max(a, 1e-4), a);
-      #include <tonemapping_fragment>
-      #include <colorspace_fragment>
-    }
-  `,
-});
-const cloudComposite = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), cloudCompMat);
-cloudComposite.frustumCulled = false;
-cloudComposite.renderOrder = -900;
-scene.add(cloudComposite);
-
-function sizeCloudRT() {
-  const pr = renderer.getPixelRatio();
-  const w = Math.max(2, Math.round(window.innerWidth * pr * CLOUD_RES));
-  const h = Math.max(2, Math.round(window.innerHeight * pr * CLOUD_RES));
-  cloudRT.setSize(w, h);
-}
-sizeCloudRT();
-
-const _wxClear = new THREE.Color();
-// Called from tick() just before the scene render, so the texture the composite
-// samples is this frame's.
-function renderCloudLayer() {
-  if (!cloudComposite.visible) return;
-  const prevAlpha = renderer.getClearAlpha();
-  renderer.getClearColor(_wxClear);
-  renderer.setClearColor(0x000000, 0);
-  renderer.setRenderTarget(cloudRT);
-  renderer.render(cloudScene, cloudCam);
-  renderer.setRenderTarget(null);
-  renderer.setClearColor(_wxClear, prevAlpha);
-}
-
-let wxTime = 0;
-let gloom = 0;                   // 0 clear sky .. 1 overcast right overhead
-let rainAmt = 0;
-let wxLocalStorm = 5;            // storminess of the cluster over the camera, 1..10
-
-// ----- lightning -----
-// One strike at a time for the whole sky, which is all you can perceive anyway,
-// and only while the deck is both stormy and actually overhead.
-const boltInterval = (storm) => (storm >= 8 ? 2.5 + Math.random() * 6 : 7 + Math.random() * 15);
-let boltT = -1;                  // seconds into the current flash, -1 when idle
-let boltIn = boltInterval(5);
-let boltDist = 0;
-
-// The strike envelope: a fast leader, a dip, a brighter return stroke, then the
-// glow rolling away. Real lightning is never a single clean flash.
-function boltEnv(t) {
-  if (t < 0.06) return t / 0.06;
-  if (t < 0.14) return 1.0 - (t - 0.06) / 0.08 * 0.85;
-  if (t < 0.20) return 0.15 + (t - 0.14) / 0.06 * 0.75;
-  if (t < 0.50) return 0.90 * (1 - (t - 0.20) / 0.30);
-  return 0;
-}
-
-let audioCtx = null;
-function initAudio() {
-  if (audioCtx) return audioCtx;
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return null;
-  try { audioCtx = new AC(); } catch (e) { audioCtx = null; }
-  return audioCtx;
-}
-
-// Thunder, synthesised: brown noise (a random walk, which is what gives it the
-// low rumble) shaped by an envelope and rolled off harder the further away the
-// strike was. Close strikes get a crack on the front; distant ones are all roll.
-function playThunder(vol, dist) {
-  const ctx = audioCtx;
-  if (!ctx || vol <= 0.02) return;
-  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-  try {
-    const near = 1 - Math.min(1, dist / 1800);
-    const sr = ctx.sampleRate;
-    const n = Math.floor(sr * (1.5 + (1 - near) * 2.6));
-    const buf = ctx.createBuffer(1, n, sr);
-    const d = buf.getChannelData(0);
-    let b = 0;
-    for (let i = 0; i < n; i++) {
-      b = b * 0.965 + (Math.random() * 2 - 1) * 0.035;
-      const t = i / sr;
-      const crack = near * Math.exp(-t * 26) * (Math.random() * 2 - 1) * 0.5;
-      const roll  = Math.exp(-t * (1.0 + (1 - near) * 0.7)) * (0.6 + 0.4 * Math.sin(t * 3.1));
-      d[i] = THREE.MathUtils.clamp(b * 7.5 * roll + crack, -1, 1);
-    }
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.value = 180 + near * 900;
-    const g = ctx.createGain();
-    g.gain.value = vol * 0.5;
-    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
-    src.start();
-  } catch (e) { /* audio is a nicety; never let it take the frame down */ }
-}
-
-function strike(storm, dist) {
-  boltT = 0;
-  boltDist = dist;
-  boltIn = boltInterval(storm);
-  const vol = THREE.MathUtils.clamp(1 - dist / 2000, 0, 1) * (0.35 + 0.065 * storm);
-  if (audioCtx && vol > 0.02) {
-    // Sound lags the flash by the distance over the speed of sound — the reason
-    // you count the seconds between them.
-    setTimeout(() => playThunder(vol, dist), Math.min(dist, 2400) / 340 * 1000);
-  }
-}
-
-// ----- rain -----
-// The drops belong to the deck, not to the camera. The cloud base and the ground
-// under the camera give the column its live top and bottom, so a streak is born
-// at the underside of the layer and dies at the dirt instead of living in a
-// fixed-height box that follows you around. Only the vertical extent is
-// cloud-anchored: the column's footprint still centres on the camera, because
-// rain is only ever switched on while you are stood under it and a footprint the
-// width of a weather system would spread the same drop budget so thin the rain
-// would vanish.
-//
-// The fall itself is straight down in world Y (wrapped modulo the column
-// height), so it never depends on which way the camera is looking — a drop is
-// exactly as present when you look straight down as when you look at the
-// horizon.
-//
-// Each drop is a screen-aligned quad — stretched along the camera's own up
-// vector rather than a fixed world-space "streak" direction — so it is never
-// foreshortened away. A quad built from a fixed world-space length axis goes
-// edge-on and all but disappears the moment the view direction lines up with
-// that axis, which is exactly what happened looking straight down at rain
-// falling straight down. Billboarding fully off the camera (right *and* up)
-// keeps the streak's full width and length on screen from every angle.
-const RAIN_N     = isTouchDevice ? 5000 : 14000;
-const RAIN_R     = 42;
-const RAIN_LEN   = 6.0;
-const RAIN_WIDTH = 0.04;
-
-const rainMat = new THREE.ShaderMaterial({
-  transparent: true,
-  depthWrite: false,
-  uniforms: {
-    uTime:      { value: 0 },
-    uCam:       { value: new THREE.Vector3() },
-    uCamRight:  { value: new THREE.Vector3(1, 0, 0) },
-    uCamUp:     { value: new THREE.Vector3(0, 1, 0) },
-    uIntensity: { value: 0 },
-    uCol:       { value: new THREE.Color(0xb0c4de) },
-    uCloudPos:  { value: new THREE.Vector3(0, 140, 0) },   // xz: where it leans to, y: the column top
-    uCloudH:    { value: 100 },                            // column top down to the ground
-  },
-  vertexShader: /* glsl */`
-    attribute vec2 aCorner;   // x: -1/+1 across the streak's width, y: 0 at the head, 1 at the wind-drawn tail
-    uniform float uTime;
-    uniform vec3 uCam;
-    uniform vec3 uCamRight;
-    uniform vec3 uCamUp;
-    uniform vec3 uCloudPos;
-    uniform float uCloudH;
-    varying float vA;
-    varying vec2 vC;
-    void main() {
-      vec3 p = position;      // xz: offset in the column, y: 0..1 along it
-      // Per-drop fall speed, hashed off its own position so it stays put.
-      float j = fract(sin(p.x * 12.9898 + p.z * 78.233) * 43758.5453);
-      float span = max(uCloudH, 1.0);
-      // Straight-down fall in world space, entirely independent of the camera,
-      // wrapping over the live cloud-to-ground distance.
-      float fall = mod(p.y * span - uTime * 26.0 * (0.8 + 0.5 * j), span);
-      float h = fall / span;                      // 0 at the ground, 1 at the cloud base
-      // Lean the top of the column downwind, so the streaks visibly trace back
-      // up into the deck they came out of rather than to a point straight over
-      // your head. Only a fraction of the way, or the far end of the column
-      // would slide out of view entirely.
-      vec2 lean = (uCloudPos.xz - uCam.xz) * 0.12 * h;
-      vec3 w = vec3(uCam.x + p.x + lean.x, uCloudPos.y - span + fall, uCam.z + p.z + lean.y);
-      w += aCorner.y * vec3(1.6, 0.0, 0.9) * 0.5;                 // gentle wind slant on the tail
-      w += uCamUp * -aCorner.y * ${RAIN_LEN.toFixed(2)};          // billboarded length: never edge-on
-      w += uCamRight * aCorner.x * ${RAIN_WIDTH.toFixed(3)};      // billboarded width
-      // Ease the column off at both ends so drops are not cut off dead flat
-      // where they leave the cloud or reach the dirt.
-      vA = smoothstep(0.0, 0.05, h) * (1.0 - smoothstep(0.80, 1.0, h));
-      vC = aCorner;
-      gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
-    }
-  `,
-  fragmentShader: /* glsl */`
-    uniform float uIntensity;
-    uniform vec3 uCol;
-    varying float vA;
-    varying vec2 vC;
-    void main() {
-      // A streak, not a rectangle: soft along its length (bright just behind the
-      // head, tapering out at the tail) and soft across its width.
-      float len  = smoothstep(0.0, 0.12, vC.y) * (1.0 - smoothstep(0.55, 1.0, vC.y));
-      float wide = 1.0 - vC.x * vC.x;
-      gl_FragColor = vec4(uCol, vA * len * wide * 0.95 * uIntensity);
-    }
-  `,
-});
-
-const rainObj = (() => {
-  const pos = new Float32Array(RAIN_N * 4 * 3);
-  const corner = new Float32Array(RAIN_N * 4 * 2);
-  const idx = new Uint32Array(RAIN_N * 6);
-  for (let i = 0; i < RAIN_N; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random()) * RAIN_R;
-    // y is baked as a 0..1 fraction of the column: the shader scales it by the
-    // live cloud-to-ground height, so the same buffer works for any cell.
-    const x = Math.cos(a) * r, z = Math.sin(a) * r, y = Math.random();
-    const corners = [[-1, 0], [1, 0], [-1, 1], [1, 1]];
-    for (let v = 0; v < 4; v++) {
-      const o = (i * 4 + v) * 3;
-      pos[o] = x; pos[o + 1] = y; pos[o + 2] = z;
-      corner[(i * 4 + v) * 2] = corners[v][0];
-      corner[(i * 4 + v) * 2 + 1] = corners[v][1];
-    }
-    const base = i * 4, o6 = i * 6;
-    idx[o6] = base; idx[o6 + 1] = base + 1; idx[o6 + 2] = base + 2;
-    idx[o6 + 3] = base + 2; idx[o6 + 4] = base + 1; idx[o6 + 5] = base + 3;
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('aCorner', new THREE.BufferAttribute(corner, 2));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1));
-  const o = new THREE.Mesh(geo, rainMat);
-  o.frustumCulled = false;      // it is always around the camera by construction
-  o.visible = false;
-  scene.add(o);
-  return o;
-})();
-
-// ----- overcast palettes -----
-const FOG_BASE  = new THREE.Color(FOG_COLOR);
-const GLOOM_FOG = new THREE.Color(0x8a97a6);
-const GLOOM_Z   = new THREE.Color(0x2c3a4c);
-const GLOOM_H   = new THREE.Color(0x8b98a6);
-
-function updateWeather(dt) {
-  wxTime += dt;
-  // updateCamera() has moved the camera but three does not flush that into
-  // matrixWorld until it renders, and both the cloud ray basis and the rain
-  // billboarding read it. One frame of lag in a ray basis is a visible smear
-  // while you turn, so pay for the flush here.
-  camera.updateMatrixWorld();
-
-  const storm = WEATHER.storminess;
-  const st = storm / 10;
-
-  // --- wind: the field slides, nothing else moves ---
-  const wr = WEATHER.windDir * DEG;
-  const wvx = Math.cos(wr), wvz = Math.sin(wr);
-  const wspd = WEATHER.speed * WIND_UNIT;
-  // Subtracted: a sample point p reads the field at p + offset, so walking the
-  // offset backwards walks the cloud forwards.
-  uWxWind.value.x -= wvx * wspd * dt;
-  uWxWind.value.y -= wvz * wspd * dt;
-
-  // --- how much sky is covered, and how it looks ---
-  // Storminess widens the coverage on its own: a squall is not just darker, it
-  // is a bigger piece of sky.
-  uWxCov.value = WEATHER.density * (0.72 + 0.055 * storm);
-  uWxShade.value = 0.40 + 0.042 * storm;
-  // The slider does not set a storminess any more, it *biases* the per-cluster
-  // field: at 0 nearly every cluster comes out fair, at 10 nearly every one
-  // comes out a thunderhead, and the middle is where you get both in one sky.
-  uWxStorm.value = st;
-
-  const cu = cloudMarchMat.uniforms;
-  cu.uTime.value = wxTime;
-  cu.uThick.value  = 1.7 + 1.5 * st;
-  cu.uExt.value    = 0.010 + 0.012 * st;
-  cu.uAlbedo.value = 0.98 - 0.26 * st;
-  // Fair weather builds cumulus low in the slab; a storm fills it top to bottom.
-  cu.uType.value   = 1.0 - 0.85 * st;
-  cu.uSunDir.value.copy(SUN);
-  // Barely dimmed by the weather. A storm cloud's *top* is as brilliantly white
-  // as any other cloud's — what makes it read as a storm is that it is optically
-  // thick enough for its underside to go black, which is uExt's job, not this
-  // one. Dimming the sun as well just made the whole sky muddy.
-  cu.uSunCol.value.copy(CLOUD_SUN_COLOR).multiplyScalar(1.15 - 0.2 * st);
-  cu.uSkyCol.value.copy(CLOUD_SKY_FAIR).lerp(CLOUD_SKY_STORM, st);
-  cu.uGndCol.value.copy(CLOUD_GND_FAIR).lerp(CLOUD_GND_STORM, st);
-  cu.uHazeCol.value.copy(skyMat.uniforms.uHorizon.value);
-  cu.uCamPos.value.copy(camera.position);
-  cu.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
-  cu.uCamUp.value.setFromMatrixColumn(camera.matrixWorld, 1);
-  cu.uCamFwd.value.setFromMatrixColumn(camera.matrixWorld, 2).negate();
-  const tanH = Math.tan(camera.fov * DEG * 0.5);
-  cu.uHalfExtent.value.set(tanH * camera.aspect, tanH);
-
-  // --- what the sky is doing directly above the camera ---
-  // Both fields, read at the camera: how much cloud is overhead, and which
-  // cluster it belongs to. Everything below is that cluster's weather, not the
-  // slider's — stand still and a black cell drifting over you turns the light
-  // down and starts the rain, and walking out from under it stops both.
-  const covHere = coverageAt(camera.position.x, camera.position.z);
-  const localStorm = clusterStormAt(camera.position.x, camera.position.z);
-  wxLocalStorm = localStorm;
-  const cover = clamp01((covHere - 0.32) / 0.45) * (0.35 + 0.065 * localStorm);
-
-  // --- lightning ---
-  // A probability, not a threshold: there is no storminess at which lightning
-  // switches on. A quiet cell almost never fires and a black one fires often,
-  // and everything between is the same curve. The countdown stays, only to keep
-  // the rolls spaced out — otherwise a stormhead would strobe.
-  if (boltT >= 0) {
-    boltT += dt;
-    if (boltT > 0.5) boltT = -1;
-  } else {
-    const lightningProb = Math.pow(clamp01((localStorm - 1) / 9), 3.0) * clamp01((covHere - 0.20) / 0.50);
-    boltIn -= dt;
-    if (boltIn <= 0) {
-      if (Math.random() < lightningProb) strike(localStorm, 150 + Math.random() * 1700);
-      // Missed the roll: try again sooner the stormier it is overhead.
-      else boltIn = 0.5 + Math.random() * (3.0 - lightningProb * 2.5);
-    }
-  }
-  const flash = boltT >= 0 ? boltEnv(boltT) : 0;
-  const flashGlobal = flash * (1 - clamp01((boltDist - 250) / 1300));
-  cu.uFlash.value = flash * 2.2;
-
-  // --- the sky reacting to what is in it ---
-  gloom += (cover - gloom) * (1 - Math.exp(-1.2 * dt));
-  sun.intensity        = SUN_BASE  * (1 - 0.60 * gloom);
-  hemiLight.intensity  = HEMI_BASE * (1 - 0.30 * gloom) + 0.55 * flashGlobal;
-  ambLight.intensity   = AMB_BASE  * (1 - 0.25 * gloom) + 1.9 * flashGlobal;
-
-  const g = gloom * 0.8;
-  skyMat.uniforms.uZenith.value.copy(SKY_ZENITH).lerp(GLOOM_Z, g);
-  skyMat.uniforms.uHorizon.value.copy(SKY_HORIZON).lerp(GLOOM_H, g);
-  if (!underwater) {
-    scene.fog.color.copy(FOG_BASE).lerp(GLOOM_FOG, gloom * 0.75);
-  }
-
-  // Nothing to composite from under the sea — the surface is between you and
-  // the sky, and the tint over the whole frame is doing that job instead.
-  cloudComposite.visible = !underwater;
-
-  // --- rain ---
-  // The slider is a floor, not an override: it can make it rain out of a clear
-  // sky, and a storm overhead still rains harder than the slider asks for.
-  // Continuous in storminess as well: a power curve off 1, so a mild cell spits
-  // a little rather than nothing at all and there is no step to walk across.
-  const rainCurve = Math.pow(clamp01((localStorm - 1) / 9), 2.5);
-  const natural = clamp01((covHere - 0.45) / 0.35) * rainCurve;
-  let rainWant = Math.max(natural, WEATHER.rain / 10);
-  // Only if we are actually underneath the deck rather than flying above it.
-  if (camera.position.y > CLOUD_BOT - 6) rainWant = 0;
-
-  rainAmt += (rainWant - rainAmt) * (1 - Math.exp(-0.9 * dt));
-  rainObj.visible = rainAmt > 0.02 && !underwater;
-  if (rainObj.visible) {
-    const ground = terrainHeight(camera.position.x, camera.position.z);
-    // Capped, and this is not cosmetic: the drop budget is fixed, so spreading
-    // it over the full 1500 units the deck sits at would thin the rain out into
-    // a barely-visible drizzle. The column instead fills the bottom of that gap
-    // — the part you can actually see — and the streaks still lean downwind,
-    // which is what sells where they came from.
-    const span = Math.min(380, Math.max(20, CLOUD_BOT - ground));
-    rainMat.uniforms.uCloudPos.value.set(
-      camera.position.x + wvx * 260, ground + span, camera.position.z + wvz * 260);
-    rainMat.uniforms.uCloudH.value = span;
-    rainMat.uniforms.uTime.value = wxTime;
-    rainMat.uniforms.uCam.value.copy(camera.position);
-    // Columns 0 and 1 of the camera's world matrix are its right and up
-    // vectors — billboarding the streak quads off both keeps them fully
-    // screen-facing (and therefore visible) from any camera angle.
-    rainMat.uniforms.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
-    rainMat.uniforms.uCamUp.value.setFromMatrixColumn(camera.matrixWorld, 1);
-    // A gentle floor keeps even a light drizzle legible instead of fading to a
-    // near-invisible haze, while heavier cells still read as visibly heavier.
-    rainMat.uniforms.uIntensity.value = 0.35 + 0.65 * rainAmt;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Weather UI — the hamburger drawer
-// ---------------------------------------------------------------------------
-const wxToggleBtn = document.getElementById('wx-toggle');
-const wxScrimEl   = document.getElementById('wx-scrim');
-const wxPanelEl   = document.getElementById('wx-panel');
-const wxCoverEl   = document.getElementById('wx-cover');
-const wxGloomEl   = document.getElementById('wx-gloom');
-const wxRainPcEl  = document.getElementById('wx-rainpc');
-const wxCStormEl  = document.getElementById('wx-cstorm');
-const wxNoteEl    = document.getElementById('wx-note');
-
-// What a cluster of that storminess is, in words — the number alone does not
-// tell you whether to expect a shower.
-function stormWord(s) {
-  return s < 3 ? 'fair' : s < 5 ? 'building' : s < 6.5 ? 'showery'
-       : s < 8 ? 'squall' : 'thunderhead';
-}
-
-// id, the WEATHER key it drives, how its value reads out.
-const WX_SLIDERS = [
-  ['wx-density', 'density',    (v) => v.toFixed(2)],
-  ['wx-speed',   'speed',      (v) => v.toFixed(1)],
-  ['wx-wind',    'windDir',    (v) => v.toFixed(0) + '°'],
-  ['wx-storm',   'storminess', (v) => v.toFixed(1)],
-  ['wx-rain',    'rain',       (v) => v.toFixed(1)],
-];
-
-for (const [id, key, fmt] of WX_SLIDERS) {
-  const el  = document.getElementById(id);
-  const out = document.getElementById(id + '-v');
-  const apply = () => {
-    WEATHER[key] = parseFloat(el.value);
-    out.textContent = fmt(WEATHER[key]);
-  };
-  el.addEventListener('input', apply);
-  el.addEventListener('change', apply);
-  // The world's look/move handlers live on the canvas and on window; a drag
-  // that starts on a slider belongs to the slider and to nothing else.
-  el.addEventListener('pointerdown', (e) => e.stopPropagation());
-  el.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
-  el.addEventListener('touchmove', (e) => e.stopPropagation(), { passive: true });
-  apply();
-}
-
-// Pushes WEATHER back out to the sliders — for the reset button, and for
-// anything driving the weather from the console.
-function refreshWxUI() {
-  for (const [id, key, fmt] of WX_SLIDERS) {
-    const el = document.getElementById(id);
-    el.value = String(WEATHER[key]);
-    document.getElementById(id + '-v').textContent = fmt(WEATHER[key]);
-  }
-}
-
-function setWxPanel(open) {
-  document.body.classList.toggle('wx-open', open);
-  wxToggleBtn.innerHTML = open ? '&times;' : '&#9776;';
-}
-function toggleWxPanel() {
-  setWxPanel(!document.body.classList.contains('wx-open'));
-}
-
-bindTap(wxToggleBtn, () => {
-  initAudio();                          // first gesture — unlock thunder
-  toggleWxPanel();
-});
-bindTap(wxScrimEl, () => setWxPanel(false));
-bindTap(document.getElementById('wx-reset'), () => {
-  Object.assign(WEATHER, WEATHER_DEFAULTS);
-  refreshWxUI();
-});
-// A drag inside the drawer is the drawer's, never the camera's.
-wxPanelEl.addEventListener('pointerdown', (e) => e.stopPropagation());
-wxPanelEl.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
-
-// The footer readouts, refreshed off the HUD's own slow tick rather than every
-// frame — they are a glance, not an instrument.
-function refreshWxReadout() {
-  wxCoverEl.textContent  = Math.round(coverageAt(camera.position.x, camera.position.z) * 100) + '%';
-  wxGloomEl.textContent  = Math.round(gloom * 100) + '%';
-  wxRainPcEl.textContent = Math.round(rainAmt * 100) + '%';
-  wxCStormEl.textContent = wxLocalStorm.toFixed(1);
-  wxNoteEl.textContent   = stormWord(wxLocalStorm);
-}
-
-refreshWxUI();
 
 // ---------------------------------------------------------------------------
 // Character controller — a cannon-es body whose velocity is driven by input
@@ -3518,8 +2236,8 @@ const HELP_DESKTOP = {
                 ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['V', 'Next camera'],
                 ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['M / &#9776;', 'Weather panel'],
-                ['V', 'Next camera'], ['G', 'Enter game'], ['Esc', 'Free the cursor']],
+                ['Mouse', 'Look'], ['V', 'Next camera'], ['G', 'Enter game'],
+                ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump / swim up'],
@@ -3528,8 +2246,7 @@ const HELP_TOUCH = {
                 ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint']],
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
-                ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
-                ['&#9776;', 'Weather sliders']],
+                ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)']],
 };
 
 function refreshModeUI() {
@@ -3555,10 +2272,7 @@ function refreshModeUI() {
 // makes itself unclickable the moment it succeeds, which is exactly why this one
 // "didn't always work". Esc frees the cursor (and pops the overlay, which this
 // button now sits above); a click in the world captures it again.
-bindTap(modeBtn, () => {
-  initAudio();                          // first gesture — unlock thunder
-  toggleGameMode();
-});
+bindTap(modeBtn, toggleGameMode);
 refreshModeUI();
 
 // ---------------------------------------------------------------------------
@@ -3590,7 +2304,6 @@ document.getElementById('start-btn').textContent = isTouchDevice ? 'Tap to fly' 
 
 function hideOverlay() {
   overlay.classList.add('hidden');
-  initAudio();                  // the gesture the browser wants before any sound
   if (!isTouchDevice) requestLock();
 }
 function showOverlay() { overlay.classList.remove('hidden'); }
@@ -3615,9 +2328,6 @@ function resize() {
     2 * Math.atan(Math.tan(45 * DEG) / aspect) / DEG, 55, 95
   );
   camera.updateProjectionMatrix();
-  // The cloud march renders at a fraction of the frame, so its target is sized
-  // off the live backing-store dimensions rather than off a one-time guess.
-  sizeCloudRT();
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
@@ -3688,9 +2398,6 @@ function tick() {
   updateCamera(dt);
   waterTime.value = elapsed;
   updateWaterVisuals();
-  // After the water swap, which owns the fog when the camera is submerged — the
-  // weather only repaints it while we are above the surface.
-  updateWeather(dt);
   sky.position.copy(camera.position);
   // Slide the sea under the camera. The waves themselves are a function of world
   // position, so nothing moves with it — the tessellation just follows the eye,
@@ -3717,14 +2424,8 @@ function tick() {
       p.x.toFixed(1).padStart(6, ' ') + ',' +
       p.y.toFixed(1).padStart(6, ' ') + ',' +
       p.z.toFixed(1).padStart(6, ' ');
-    refreshWxReadout();
   }
 
-  // The cloud march, into its own half-res target, before the frame that
-  // composites it. It has to be its own render: it writes a different target at
-  // a different resolution, and `autoClear` would wipe the scene's depth buffer
-  // if the two were folded together the other way round.
-  renderCloudLayer();
   renderer.render(scene, camera);
 }
 
@@ -3736,18 +2437,6 @@ window.hermes = {
   // The island is bare by design — these are how you put something on it from
   // the console, collider included.
   addBox, addSphere, mat, objects,
-  // Weather: WEATHER holds the live slider values — set one and call
-  // refreshWxUI() to pull the drawer back into line with it.
-  WEATHER, refreshWxUI, setWxPanel, coverageAt,
-  weather: () => ({
-    ...WEATHER,
-    coverAbove: coverageAt(camera.position.x, camera.position.z),
-    gloom, rain: rainAmt,
-    windOffset: uWxWind.value.toArray(),
-    layer: [CLOUD_BOT, CLOUD_TOP],
-    marchSteps: CLOUD_STEPS,
-    target: [cloudRT.width, cloudRT.height, CLOUD_FLOAT ? 'half-float' : 'rgba8'],
-  }),
   // live read-outs of the controller internals (module-scoped `let`s)
   status: () => ({
     cam: CAM_NAMES[camMode],

@@ -1409,19 +1409,69 @@ scene.add(ocean);
         ${NOISE_GLSL}
         ${LAND_GLSL}
 
-        // Metres of swell at a world-space point. Same slab of scrolling fbm the
-        // fragment shader gates its foam with, only here it moves geometry.
-        // The octaves start at amplitude 1 and halve, so the raw sum runs 0..1.875
-        // (1 + 0.5 + 0.25 + 0.125) — it has to be divided back down to 0..1 before
-        // the subtraction, or "half" is 0.5 out of 1.875 and the sheet spends most
-        // of its time above sea level instead of straddling it.
-        float waveAt(vec2 p) {
-          vec2 uv = p * 0.005 + uWindDir * uTime * uWindSpeed * 0.08;
-          float s = 0.0;
-          float a = 1.0;
-          for (int i = 0; i < 4; i++) { s += a * vnoise(uv); uv = uv * 2.07 + 13.1; a *= 0.5; }
-          float windStrength = clamp(uWindSpeed / 15.0, 0.0, 1.0);
-          return (s / 1.875 - 0.5) * windStrength * 4.0;
+        const int NUM_WAVES = 5;
+
+        // The swell, as a sum of Gerstner waves. A Gerstner wave is a trochoid:
+        // as well as lifting the water it rolls it *forward* at the crest and
+        // back in the trough, which is what sharpens the crests and flattens
+        // the troughs instead of leaving everything sinusoidal. Five of them,
+        // all running with the wind but fanned a little either side of it so
+        // the sum never reads as a corrugated roof.
+        //
+        // One pass produces both answers, because they share every cosine:
+        //   disp — the offset from the flat sheet, in metres, XZ as well as Y
+        //   norm — the surface normal, differentiated from the same sum rather
+        //          than sampled back out of it with finite differences
+        //
+        // The spacing argument is the mesh's vertex spacing here, in metres.
+        // The ocean fan
+        // gets coarser the further out it goes, so a wave shorter than a few
+        // vertices is only sampled sparsely and swims about; each wave fades
+        // out as the mesh stops being able to carry it.
+        void gerstner(vec2 p, float t, float spacing, out vec3 disp, out vec3 norm) {
+          // wavelength (m), amplitude (m), steepness 0..1, angle off the wind (rad)
+          float wl[NUM_WAVES], amp[NUM_WAVES], stp[NUM_WAVES], ang[NUM_WAVES];
+          wl[0] = 60.0;  amp[0] = 1.8;   stp[0] = 0.45;  ang[0] =  0.0;    // primary swell
+          wl[1] = 31.0;  amp[1] = 1.1;   stp[1] = 0.55;  ang[1] =  0.15;   // secondary swell
+          wl[2] = 17.0;  amp[2] = 0.5;   stp[2] = 0.65;  ang[2] = -0.22;   // wind chop
+          wl[3] =  8.0;  amp[3] = 0.2;   stp[3] = 0.75;  ang[3] =  0.35;   // ripples
+          wl[4] =  3.5;  amp[4] = 0.08;  stp[4] = 0.85;  ang[4] = -0.40;   // fine capillary
+
+          disp = vec3(0.0);
+          norm = vec3(0.0, 1.0, 0.0);
+
+          for (int i = 0; i < NUM_WAVES; i++) {
+            // Fading the amplitude into Q would cancel out — Q * A is fixed by
+            // the steepness — so the whole wave's contribution is scaled
+            // instead, which fades the sideways roll along with the lift.
+            float lod = smoothstep(2.0, 5.0, wl[i] / spacing);
+            if (lod <= 0.0) continue;
+            float a = amp[i];
+
+            float c = cos(ang[i]), s = sin(ang[i]);
+            vec2 dir = vec2(uWindDir.x * c - uWindDir.y * s,
+                            uWindDir.x * s + uWindDir.y * c);
+
+            float k = 6.28318 / wl[i];              // wavenumber
+            float w = sqrt(9.81 * k);               // deep-water dispersion
+            // Q is the steepness in the trochoid's own terms. Dividing by the
+            // wave count keeps the sum of five of them under the point where
+            // the crests curl through themselves and the surface self-intersects.
+            float Q = stp[i] / (k * a * float(NUM_WAVES));
+            float phase = k * dot(dir, p) + w * t * (uWindSpeed / 5.0);
+            float cp = cos(phase), sp = sin(phase);
+
+            disp.x += dir.x * Q * a * cp * lod;
+            disp.z += dir.y * Q * a * cp * lod;
+            disp.y += a * sp * lod;
+
+            float ka = k * a * lod;
+            norm.x -= dir.x * ka * cp;
+            norm.z -= dir.y * ka * cp;
+            norm.y -= Q * ka * sp;
+          }
+
+          norm = normalize(norm);
         }
       `)
       .replace('#include <beginnormal_vertex>', /* glsl */`
@@ -1432,25 +1482,33 @@ scene.add(ocean);
         float depth = ${WATER.surfaceY.toFixed(2)} - landAt(wpos.xz);
         // A swell in a hand's depth of water would stand the sheet up through
         // the sand, so it settles back to flat as the bed comes up to meet it.
-        float waveH = waveAt(wpos.xz) * smoothstep(0.0, 6.0, depth);
-        // Displacement with a flat normal is invisible except on the horizon —
-        // it is the slope that shades. Central-ish differences over a couple of
-        // metres, which is well inside a swell but wider than the ripples the
-        // fragment shader adds on top.
-        float eps  = 2.0;
-        float wdx  = waveAt(wpos.xz + vec2(eps, 0.0)) - waveAt(wpos.xz - vec2(eps, 0.0));
-        float wdz  = waveAt(wpos.xz + vec2(0.0, eps)) - waveAt(wpos.xz - vec2(0.0, eps));
-        objectNormal = normalize(vec3(-wdx, 2.0 * eps, -wdz));
-        wpos.y += waveH;
+        // Calm is glass: at windSpeed 0 nothing moves at all.
+        float depthFade    = smoothstep(0.0, 8.0, depth);
+        float windStrength = clamp(uWindSpeed / 15.0, 0.0, 1.0);
+        // The fan's rings grow geometrically, so spacing is very nearly a fixed
+        // fraction of the distance out from the camera it is centred on.
+        float spacing = max(0.05 * distance(wpos.xz, cameraPosition.xz), 0.05);
+
+        vec3 gDisp, gNorm;
+        gerstner(wpos.xz, uTime, spacing, gDisp, gNorm);
+        gDisp *= depthFade * windStrength;
+        // The normal has to slacken off with the waves it belongs to, or flat
+        // shallows would still shade as though a metre of swell ran through them.
+        objectNormal = normalize(mix(vec3(0.0, 1.0, 0.0), gNorm, depthFade * windStrength));
+
+        wpos += gDisp;
         vWPos  = wpos;                   // the shaded position rides the swell
-        vCover = depth;                  // metres of water over the bed
+        vCover = depth + gDisp.y;        // metres of water over the bed
       `)
       // Where displacement belongs in the stock pipeline: `transformed` exists
       // by here and <project_vertex> has not run yet, so this is the last point
       // at which moving the vertex still reaches gl_Position.
       .replace('#include <displacementmap_vertex>', /* glsl */`
         #include <displacementmap_vertex>
-        transformed.y += waveH;
+        // The mesh sits square with the world and is only ever translated, so
+        // the world-space offset works as an object-space one unchanged. All
+        // three axes move: the sideways roll is what makes it a trochoid.
+        transformed += gDisp;
       `);
 
     shader.fragmentShader = shader.fragmentShader
@@ -1570,8 +1628,10 @@ scene.add(ocean);
             float wndz = windRipple(vWPos.xz + vec2(0.0, eps), uTime) - wn;
             // Finer ripples mean steeper slopes over the same step, so the gain
             // comes down with the feature size — otherwise the extra detail
-            // arrives as glitter rather than as texture.
-            normal = normalize(normal + vec3(-wndx, 0.0, -wndz) * (windStrength * near * 3.0));
+            // arrives as glitter rather than as texture. Lower again now the
+            // Gerstner sum carries the wave shape itself: this is only the
+            // roughening on top of the faces, not the faces.
+            normal = normalize(normal + vec3(-wndx, 0.0, -wndz) * (windStrength * near * 2.0));
           }
         }
       `);

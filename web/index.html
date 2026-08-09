@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 8;
+  var v = 9;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -324,33 +324,127 @@
     #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
   }
 
-  /* ---------- Menu button ---------- */
-  /* Placeholder for the corner menu: styled and in the DOM, but nothing hangs
-     off it yet, so it stays hidden rather than being a button that does
-     nothing. Unhide it — and drop #mode-btn back to a 62px inset — when there
-     is a drawer behind it again. */
-  #menu-btn {
+  /* ---------- World stats / settings ---------- */
+  /* The top-right corner already belongs to #mode-btn and #instructions, so the
+     two toggles live under #cam-mode on the left and the panels they open hang
+     off the same column. #panels is a flex column so stats and settings can
+     both be open without landing on top of each other. */
+  #panel-toggles {
     position: fixed;
-    top: calc(10px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
-    display: none;
+    top: calc(94px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    display: flex;
+    gap: 8px;
+    z-index: 55;
+  }
+  #panel-toggles button {
+    display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: 40px;
+    height: 40px;
     font-family: inherit;
-    font-size: 20px;
+    font-size: 18px;
     line-height: 1;
-    color: #cfe4ff;
-    background: rgba(8, 14, 24, 0.62);
-    border: 1px solid rgba(160, 200, 255, 0.28);
-    border-radius: 10px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    color: #e8eef7;
+    background: rgba(8, 14, 24, 0.6);
+    border: 1px solid rgba(160, 200, 255, 0.2);
+    border-radius: 8px;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
     cursor: pointer;
     touch-action: manipulation;
-    /* Above the pause overlay (50), so it is always the thing you can reach. */
-    z-index: 82;
+  }
+  #panel-toggles button.on {
+    background: rgba(90, 150, 220, 0.5);
+    border-color: rgba(220, 240, 255, 0.7);
+  }
+
+  #panels {
+    position: fixed;
+    top: calc(142px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: calc(100dvh - 200px);
+    overflow-y: auto;
+    z-index: 50;
+  }
+
+  #stats-panel, #settings-panel {
+    padding: 12px 16px;
+    font-size: 13px;
+    line-height: 1.6;
+    background: rgba(8, 14, 24, 0.85);
+    border: 1px solid rgba(160, 200, 255, 0.2);
+    border-radius: 10px;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    min-width: 232px;
+  }
+  #stats-panel .title, #settings-panel .title {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: #7fa8d8;
+    margin-bottom: 8px;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .stat-row .k { color: #7fa8d8; }
+  .stat-row .v { color: #eaf2ff; font-variant-numeric: tabular-nums; }
+
+  .wx-row { margin-bottom: 9px; }
+  .wx-row:last-child { margin-bottom: 0; }
+  .wx-row .lbl {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: #7fa8d8;
+    margin-bottom: 3px;
+  }
+  .wx-row .val { color: #eaf2ff; font-variant-numeric: tabular-nums; }
+  .wx-row input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    display: block;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(160, 200, 255, 0.22);
+    outline: none;
+    touch-action: manipulation;
+  }
+  .wx-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
+    border: none;
+    cursor: pointer;
+  }
+  .wx-row input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #9ecbff;
+    border: none;
+    cursor: pointer;
+  }
+
+  @media (max-width: 620px) {
+    #panel-toggles { top: calc(82px + env(safe-area-inset-top)); }
+    #panels { top: calc(130px + env(safe-area-inset-top)); max-height: calc(100dvh - 190px); }
+    #stats-panel, #settings-panel { font-size: 12px; min-width: 200px; }
   }
 
   /* ---------- Start / pause overlay ---------- */
@@ -455,7 +549,51 @@
 <div id="instructions"></div>
 <button id="mode-btn" class="ui-el">Game Mode</button>
 
-<button id="menu-btn" class="ui-el" aria-label="Menu" hidden>&#9776;</button>
+<div id="panel-toggles">
+  <button id="stats-toggle" class="ui-el" aria-label="World stats">&#128202;</button>
+  <button id="settings-toggle" class="ui-el" aria-label="Settings">&#9881;&#65039;</button>
+</div>
+
+<div id="panels">
+  <aside id="stats-panel" class="ui-el" style="display:none;">
+    <span class="title">World Stats</span>
+    <div class="stats-grid">
+      <div class="stat-row"><span class="k">Direction N</span><span class="v" id="st-north">0&deg;</span></div>
+      <div class="stat-row"><span class="k">Direction E</span><span class="v" id="st-east">90&deg;</span></div>
+      <div class="stat-row"><span class="k">Direction S</span><span class="v" id="st-south">180&deg;</span></div>
+      <div class="stat-row"><span class="k">Direction W</span><span class="v" id="st-west">270&deg;</span></div>
+      <div class="stat-row"><span class="k">Time of Day</span><span class="v" id="st-time">09:00</span></div>
+      <div class="stat-row"><span class="k">Climate</span><span class="v" id="st-climate">Tropical Marine</span></div>
+      <div class="stat-row"><span class="k">Temperature</span><span class="v" id="st-temp">27.0&deg;C</span></div>
+      <div class="stat-row"><span class="k">Wind Direction</span><span class="v" id="st-windir">270&deg; (W)</span></div>
+      <div class="stat-row"><span class="k">Wind Speed</span><span class="v" id="st-winspd">5.0 m/s</span></div>
+    </div>
+  </aside>
+
+  <aside id="settings-panel" class="ui-el" style="display:none;">
+    <span class="title">Settings</span>
+    <div class="wx-row">
+      <label class="lbl" for="set-time">Time of Day<span class="val" id="set-time-v">09:00</span></label>
+      <input type="range" id="set-time" min="0" max="23.98" step="0.01" value="9">
+    </div>
+    <div class="wx-row">
+      <label class="lbl" for="set-windspd">Wind Speed<span class="val" id="set-windspd-v">5.0</span></label>
+      <input type="range" id="set-windspd" min="0" max="30" step="0.5" value="5">
+    </div>
+    <div class="wx-row">
+      <label class="lbl" for="set-winddir">Wind Direction<span class="val" id="set-winddir-v">270&deg;</span></label>
+      <input type="range" id="set-winddir" min="0" max="360" step="1" value="270">
+    </div>
+    <div class="wx-row">
+      <label class="lbl" for="set-tempoff">Temp Offset<span class="val" id="set-tempoff-v">0.0&deg;C</span></label>
+      <input type="range" id="set-tempoff" min="-10" max="10" step="0.5" value="0">
+    </div>
+    <div class="wx-row">
+      <label class="lbl" for="set-windplane">Wind Plane<span class="val" id="set-windplane-v">OFF</span></label>
+      <input type="range" id="set-windplane" min="0" max="1" step="1" value="0">
+    </div>
+  </aside>
+</div>
 
 <div id="underwater"></div>
 <div id="crosshair"></div>
@@ -559,6 +697,52 @@ const FOG_DENSITY = 0.0028;
 
 const DEG = Math.PI / 180;
 const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
+// ---------------------------------------------------------------------------
+// World simulation state
+// ---------------------------------------------------------------------------
+// Everything the world model knows about itself. Clock, climate and wind live
+// here so the sim, the stats panel and the debug sliders all read one source.
+// Bearings are compass degrees: 0 = north (-Z), 90 = east (+X).
+const WORLD = {
+  // Fixed constants
+  directions: { north: 0, east: 90, south: 180, west: 270 },
+  climate: 'Tropical Marine',
+  climateTemp: 27,      // base air temperature in degC for tropical marine
+
+  // Dynamic
+  timeOfDay: 9.0,       // hours, decimal (9.0 = 09:00, 13.5 = 13:30)
+  windDir: 270,         // the trade wind: out of the west, blowing east
+  windSpeed: 5.0,       // m/s — randomised on init
+  temperature: 28.0,    // degC, from climate + time of day + noise
+  lastTempUpdate: 0,    // `elapsed` at the last temperature roll
+};
+
+// Debug-only bias on top of the computed temperature (Settings panel).
+const tempOffset = { value: 0 };
+
+// 1 real second = 1 game minute, so a full day is 24 real minutes.
+const HOURS_PER_SEC = 1 / 60;
+const TEMP_INTERVAL = 30;     // reroll the temperature every 30 game minutes
+
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const compassOf = (deg) => COMPASS[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+
+function computeTemperature() {
+  const hour = WORLD.timeOfDay;
+  // Sinusoidal daily swing. NOTE: a single 24-hour sinusoid puts its trough and
+  // its peak exactly twelve hours apart, so "coolest 05:00 / warmest 14:00" is
+  // not expressible as one; this is the spec's curve as written — zero and
+  // rising at 05:00, peaking at 11:00, trough at 23:00.
+  const dayPhase = Math.sin((hour - 5) / 24 * Math.PI * 2);
+  const timeOffset = dayPhase * 4;              // +/-4 degC from the clock
+  const noise = (Math.random() - 0.5) * 2;      // +/-1 degC of weather
+  WORLD.temperature = WORLD.climateTemp + timeOffset + noise + tempOffset.value;
+}
+
+// A calm-to-fresh breeze to start with; the Settings panel can push it to gale.
+WORLD.windSpeed = 3 + Math.random() * 7;
+computeTemperature();
 
 // ----- the visible sea -----
 // The surface is a disc that rides with the camera, so there is always ocean out
@@ -2335,6 +2519,171 @@ if (window.visualViewport) window.visualViewport.addEventListener('resize', resi
 resize();
 
 // ---------------------------------------------------------------------------
+// Wind noise plane (debug visualisation)
+// ---------------------------------------------------------------------------
+// A slab of scrolling fbm at 500m that makes the wind field visible: bright is
+// strong, dark is slack, and the whole pattern drifts downwind at windSpeed.
+// Hidden by default (uAlpha 0) — the Settings panel switches it on.
+const windPlaneMat = new THREE.ShaderMaterial({
+  transparent: true,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+  uniforms: {
+    uTime:      { value: 0 },
+    // Normalised (east, north) — the meteorological "from" vector, so windDir
+    // 270 gives (-1, 0) and the pattern below ends up drifting east.
+    uWindDir:   { value: new THREE.Vector2(-1, 0) },
+    uWindSpeed: { value: WORLD.windSpeed },
+    uAlpha:     { value: 0.0 },                       // 0 hidden, 0.55 visible
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec2 vUv;
+    uniform float uTime;
+    uniform vec2 uWindDir;
+    uniform float uWindSpeed;
+    uniform float uAlpha;
+
+    float hash21(vec2 p) {
+      p = fract(p * vec2(127.31, 311.7));
+      p += dot(p, p + 34.23);
+      return fract(p.x * p.y);
+    }
+    float vnoise(vec2 p) {
+      vec2 i = floor(p), f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(
+        mix(hash21(i), hash21(i + vec2(1, 0)), u.x),
+        mix(hash21(i + vec2(0, 1)), hash21(i + vec2(1, 1)), u.x),
+        u.y
+      );
+    }
+    float fbm(vec2 p) {
+      float s = 0.0, a = 0.5;
+      for (int i = 0; i < 5; i++) {
+        s += a * vnoise(p);
+        p = p * 2.07 + 13.1;
+        a *= 0.5;
+      }
+      return s;
+    }
+    void main() {
+      // Marching the sample point along the "from" vector drags what we see the
+      // opposite way, i.e. downwind: at 270 the noise streams west -> east.
+      vec2 uv = vUv * 10.0 + uWindDir * uTime * uWindSpeed * 0.1;
+      float n = fbm(uv);
+      gl_FragColor = vec4(vec3(n), n * uAlpha);
+    }
+  `,
+});
+
+const windPlane = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), windPlaneMat);
+windPlane.rotation.x = -Math.PI / 2;   // lies flat; its +V axis points north (-Z)
+windPlane.position.y = 500;
+windPlane.frustumCulled = false;
+windPlane.renderOrder = 5;
+windPlane.visible = false;     // a 2000-unit quad is not worth rasterising unseen
+scene.add(windPlane);
+
+// ---------------------------------------------------------------------------
+// Stats + settings panels
+// ---------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const statsPanel    = $('stats-panel');
+const settingsPanel = $('settings-panel');
+
+// Decimal hours -> military HH:MM.
+function formatClock(hours) {
+  const h = Math.floor(hours);
+  const m = Math.floor((hours - h) * 60);
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+function updateStatsDisplay() {
+  $('st-time').textContent   = formatClock(WORLD.timeOfDay);
+  $('st-climate').textContent = WORLD.climate;
+  $('st-temp').textContent   = WORLD.temperature.toFixed(1) + '°C';
+  $('st-windir').textContent = Math.round(WORLD.windDir) + '° (' + compassOf(WORLD.windDir) + ')';
+  $('st-winspd').textContent = WORLD.windSpeed.toFixed(1) + ' m/s';
+}
+// The four cardinals never change, so they are written once rather than every
+// frame alongside the clock.
+$('st-north').textContent = WORLD.directions.north + '°';
+$('st-east').textContent  = WORLD.directions.east  + '°';
+$('st-south').textContent = WORLD.directions.south + '°';
+$('st-west').textContent  = WORLD.directions.west  + '°';
+updateStatsDisplay();
+
+// ----- sliders -----
+// Sliders sit above the canvas, so their pointer events never reach the lock
+// request — but if the pointer is *already* captured the browser routes
+// everything to the canvas, so opening a panel hands the cursor back.
+function bindSlider(id, fn) {
+  const el = $(id);
+  el.addEventListener('input', () => fn(parseFloat(el.value)));
+  el.addEventListener('pointerdown', (e) => e.stopPropagation());
+  return el;
+}
+
+const setTime = bindSlider('set-time', (v) => {
+  WORLD.timeOfDay = v;
+  $('set-time-v').textContent = formatClock(v);
+  computeTemperature();
+});
+const setWindSpd = bindSlider('set-windspd', (v) => {
+  WORLD.windSpeed = v;
+  $('set-windspd-v').textContent = v.toFixed(1);
+});
+bindSlider('set-winddir', (v) => {
+  WORLD.windDir = v;
+  $('set-winddir-v').textContent = v + '° (' + compassOf(v) + ')';
+});
+bindSlider('set-tempoff', (v) => {
+  tempOffset.value = v;
+  $('set-tempoff-v').textContent = v.toFixed(1) + '°C';
+  computeTemperature();     // apply immediately instead of at the next 30s roll
+});
+bindSlider('set-windplane', (v) => {
+  const on = v >= 1;
+  windPlane.visible = on;
+  windPlaneMat.uniforms.uAlpha.value = on ? 0.55 : 0.0;
+  $('set-windplane-v').textContent = on ? 'ON' : 'OFF';
+});
+
+// Wind speed was randomised at startup — bring the control in line with it.
+setWindSpd.value = WORLD.windSpeed;
+$('set-windspd-v').textContent = WORLD.windSpeed.toFixed(1);
+setTime.value = WORLD.timeOfDay;
+$('set-time-v').textContent = formatClock(WORLD.timeOfDay);
+
+// ----- toggles -----
+function bindPanel(btnId, panel) {
+  const btn = $(btnId);
+  bindTap(btn, () => {
+    const show = panel.style.display === 'none';
+    panel.style.display = show ? 'block' : 'none';
+    btn.classList.toggle('on', show);
+    if (show) {
+      if (panel === statsPanel) updateStatsDisplay();
+      // A locked pointer cannot reach a slider or a scrollbar.
+      if (document.pointerLockElement) document.exitPointerLock();
+    }
+  });
+}
+bindPanel('stats-toggle', statsPanel);
+bindPanel('settings-toggle', settingsPanel);
+
+// The settings sliders keep keyboard focus after a drag, which would otherwise
+// let the arrow keys steer the camera and the slider at the same time.
+settingsPanel.addEventListener('keydown', (e) => e.stopPropagation());
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 const fpsEl = document.getElementById('fps');
@@ -2395,7 +2744,27 @@ function tick() {
     s.mesh.quaternion.copy(s.body.quaternion);
   }
 
+  // --- world simulation: 1 real second = 1 game minute ---
+  WORLD.timeOfDay += dt * HOURS_PER_SEC;
+  if (WORLD.timeOfDay >= 24) WORLD.timeOfDay -= 24;
+  if (elapsed - WORLD.lastTempUpdate >= TEMP_INTERVAL) {
+    WORLD.lastTempUpdate = elapsed;
+    computeTemperature();
+  }
+
   updateCamera(dt);
+
+  // The wind slab rides with the camera so it is always overhead when switched
+  // on, and is only worth driving while it is actually visible.
+  if (windPlane.visible) {
+    windPlane.position.x = camera.position.x;
+    windPlane.position.z = camera.position.z;
+    windPlaneMat.uniforms.uTime.value = elapsed;
+    const wr = WORLD.windDir * DEG;
+    windPlaneMat.uniforms.uWindDir.value.set(Math.sin(wr), Math.cos(wr));
+    windPlaneMat.uniforms.uWindSpeed.value = WORLD.windSpeed;
+  }
+
   waterTime.value = elapsed;
   updateWaterVisuals();
   sky.position.copy(camera.position);
@@ -2424,6 +2793,7 @@ function tick() {
       p.x.toFixed(1).padStart(6, ' ') + ',' +
       p.y.toFixed(1).padStart(6, ' ') + ',' +
       p.z.toFixed(1).padStart(6, ' ');
+    if (statsPanel.style.display !== 'none') updateStatsDisplay();
   }
 
   renderer.render(scene, camera);

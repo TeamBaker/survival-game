@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 7;
+  var v = 8;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -634,7 +634,7 @@
 
   <div id="wx-foot">
     cover <b id="wx-cover">0%</b> &middot; gloom <b id="wx-gloom">0%</b> &middot; rain <b id="wx-rainpc">0%</b><br>
-    <span id="wx-note">volumetric layer 1500&ndash;2500 m</span>
+    cluster storm <b id="wx-cstorm">5.0</b>/10 &middot; <span id="wx-note">&mdash;</span>
   </div>
 </aside>
 
@@ -1366,6 +1366,7 @@ const WX_COV_FREQ = 0.00028;
 // drift apart between the two.
 const uWxWind  = { value: new THREE.Vector2() };   // world offset the field has drifted by
 const uWxCov   = { value: 1.0 };                   // coverage multiplier (density slider + storminess)
+const uWxStorm = { value: 0.5 };                   // storminess slider / 10 — biases the per-cluster field
 const uWxShade = { value: 0.0 };                   // how dark the ground goes under full cover
 // How far the shadow slides from the cloud that casts it: the sun's horizontal
 // run per unit of altitude, times the middle of the layer.
@@ -1380,6 +1381,33 @@ const CLOUD_COVERAGE_GLSL = /* glsl */`
   float cloudCoverage(vec2 p) {
     return clamp(fbmC((p + uWxWind) * ${WX_COV_FREQ}) * uWxCov, 0.0, 1.0);
   }
+`;
+
+// ----- per-cluster storminess -----
+// A second, decorrelated weather field: where cloudCoverage says *how much*
+// cloud is at an xz, this says *what kind*. Offset half a lattice cell away and
+// run slower than the coverage, so a single cluster gets one storm character
+// all the way across while its neighbours get their own — the sky ends up with
+// bright fair-weather cumulus and a black cell you can watch coming, at once.
+//
+// Deliberately its own block rather than part of CLOUD_COVERAGE_GLSL: the
+// terrain and sea pull the coverage in for their shadows and have no use for
+// this, and no uWxStorm uniform to feed it.
+const WX_STORM_FREQ = WX_COV_FREQ * 0.7;
+const WX_STORM_OFF  = 500;
+const CLOUD_STORM_GLSL = /* glsl */`
+  uniform float uWxStorm;   // the global slider, 0..1 — a bias, not a value
+  // 0 fair .. 1 thunderhead. The window the noise is mapped into slides up with
+  // the bias and is at its widest in the middle: calm skies are uniformly fair,
+  // severe skies uniformly black, and the interesting mix is in between.
+  float clusterStormN(vec2 p) {
+    float n = fbmC((p + uWxWind + vec2(${WX_STORM_OFF.toFixed(1)})) * ${WX_STORM_FREQ});
+    float centre = mix(0.11, 0.89, uWxStorm);
+    float spread = mix(0.22, 0.75, 1.0 - abs(uWxStorm * 2.0 - 1.0));
+    return clamp(centre + (n - 0.5) * spread, 0.0, 1.0);
+  }
+  // The same thing on the 1..10 scale the slider and the HUD talk in.
+  float clusterStorm(vec2 p) { return 1.0 + clusterStormN(p) * 9.0; }
 `;
 
 const CLOUD_SHADOW_GLSL = /* glsl */`
@@ -2210,6 +2238,18 @@ function coverageAt(x, z) {
   const qz = (z + uWxWind.value.y) * WX_COV_FREQ;
   return clamp01(clamp01((wxFbm(qx, qz) - 0.47) * 2.7 + 0.5) * uWxCov.value);
 }
+// The CPU twin of clusterStormN/clusterStorm — same field, same window, so the
+// cluster the rain and the lightning read is the one you can see overhead.
+// 1 fair .. 10 thunderhead.
+function clusterStormAt(x, z) {
+  const qx = (x + uWxWind.value.x + WX_STORM_OFF) * WX_STORM_FREQ;
+  const qz = (z + uWxWind.value.y + WX_STORM_OFF) * WX_STORM_FREQ;
+  const n = clamp01((wxFbm(qx, qz) - 0.47) * 2.7 + 0.5);
+  const b = uWxStorm.value;
+  const centre = 0.11 + (0.89 - 0.11) * b;
+  const spread = 0.22 + (0.75 - 0.22) * (1 - Math.abs(b * 2 - 1));
+  return 1 + clamp01(centre + (n - 0.5) * spread) * 9;
+}
 
 // ----- the march -----
 // Mobile gets fewer, longer steps and a shorter light march. The scattering
@@ -2251,6 +2291,7 @@ const CLOUD_MARCH_FRAG = /* glsl */`
 
   ${NOISE_GLSL}
   ${CLOUD_COVERAGE_GLSL}
+  ${CLOUD_STORM_GLSL}
 
   const float CB    = ${CLOUD_BOT.toFixed(1)};
   const float CT    = ${CLOUD_TOP.toFixed(1)};
@@ -2342,7 +2383,12 @@ const CLOUD_MARCH_FRAG = /* glsl */`
       // eating the core at the same rate just makes the whole thing thinner.
       d -= (1.0 - det) * 0.38 * (1.0 - smoothstep(0.35, 0.9, d));
     }
-    return clamp(d, 0.0, 1.0) * uThick;
+    // Which cluster this is. Sampled here, at the bottom, rather than up beside
+    // the coverage read: every early-out above has already fired by this point,
+    // so the extra fbm is only ever paid for on a sample that is actually inside
+    // a cloud, which is a small minority of the samples along a ray.
+    float stormDensity = mix(1.0, 1.8, clusterStormN(p.xz));
+    return clamp(d, 0.0, 1.0) * uThick * stormDensity;
   }
 
   // Optical depth between a sample and the sun. The steps grow as they go so a
@@ -2436,6 +2482,11 @@ const CLOUD_MARCH_FRAG = /* glsl */`
       if (d > 0.002) {
         float h = clamp((p.y - CB) / CTHK, 0.0, 1.0);
         float tau = lightMarch(p);
+        // This cluster's character, on the same field the density used. This is
+        // the whole point of the per-cluster field: two clouds side by side in
+        // the same light, one white and one black, so you can see the weather
+        // coming rather than only feeling it once it is on top of you.
+        float stormN = clusterStormN(p.xz);
 
         // Multiple scattering, the cheap way: three Beer terms with the
         // extinction and the phase anisotropy both falling off octave by octave.
@@ -2444,13 +2495,21 @@ const CLOUD_MARCH_FRAG = /* glsl */`
         float sunE = exp(-tau * uExt) * ph0
                    + 0.45 * exp(-tau * uExt * 0.35) * ph1
                    + 0.20 * exp(-tau * uExt * 0.12) * ph2;
+        // A stormhead swallows its own sunlight — the multiple-scattering terms
+        // above are exactly what keeps a cloud bright inside, so a storm is made
+        // by taking them away rather than by tinting anything grey.
+        sunE *= mix(1.0, 0.4, stormN);
         // Powder: thin cloud in front of dense cloud darkens rather than
         // brightening, which is what carves the creases between billows.
         float powder = 1.0 - exp(-d * 6.0);
         vec3 sunS = uSunCol * sunE * mix(0.35, 1.0, powder);
-        vec3 ambS = mix(uGndCol, uSkyCol, h);
+        // ...and the ambient with it, which is what puts the flat black on the
+        // underside where there is no sun term left to lose.
+        vec3 ambS = mix(uGndCol, uSkyCol, h) * mix(1.0, 0.35, stormN);
 
-        float sigmaE = d * uExt;
+        // Optically thicker as well as darker, so a storm cell reads as solid
+        // against the sky where a fair cumulus still has translucent edges.
+        float sigmaE = d * uExt * mix(1.0, 2.2, stormN);
         float sigmaS = sigmaE * uAlbedo;
         vec3 S = (sunS + ambS + vec3(uFlash)) * sigmaS;
         float tr = exp(-sigmaE * stepLen);
@@ -2563,6 +2622,9 @@ const cloudMarchMat = new THREE.ShaderMaterial({
     // step with the cloud casting it.
     uWxWind:     uWxWind,
     uWxCov:      uWxCov,
+    // Only the march reads this one — the ground's shadow pass works off the
+    // coverage field alone.
+    uWxStorm:    uWxStorm,
   },
 });
 
@@ -2636,6 +2698,7 @@ function renderCloudLayer() {
 let wxTime = 0;
 let gloom = 0;                   // 0 clear sky .. 1 overcast right overhead
 let rainAmt = 0;
+let wxLocalStorm = 5;            // storminess of the cluster over the camera, 1..10
 
 // ----- lightning -----
 // One strike at a time for the whole sky, which is all you can perceive anyway,
@@ -2862,6 +2925,10 @@ function updateWeather(dt) {
   // is a bigger piece of sky.
   uWxCov.value = WEATHER.density * (0.72 + 0.055 * storm);
   uWxShade.value = 0.40 + 0.042 * storm;
+  // The slider does not set a storminess any more, it *biases* the per-cluster
+  // field: at 0 nearly every cluster comes out fair, at 10 nearly every one
+  // comes out a thunderhead, and the middle is where you get both in one sky.
+  uWxStorm.value = st;
 
   const cu = cloudMarchMat.uniforms;
   cu.uTime.value = wxTime;
@@ -2887,19 +2954,25 @@ function updateWeather(dt) {
   cu.uHalfExtent.value.set(tanH * camera.aspect, tanH);
 
   // --- what the sky is doing directly above the camera ---
+  // Both fields, read at the camera: how much cloud is overhead, and which
+  // cluster it belongs to. Everything below is that cluster's weather, not the
+  // slider's — stand still and a black cell drifting over you turns the light
+  // down and starts the rain, and walking out from under it stops both.
   const covHere = coverageAt(camera.position.x, camera.position.z);
-  const cover = clamp01((covHere - 0.32) / 0.45) * (0.35 + 0.065 * storm);
+  const localStorm = clusterStormAt(camera.position.x, camera.position.z);
+  wxLocalStorm = localStorm;
+  const cover = clamp01((covHere - 0.32) / 0.45) * (0.35 + 0.065 * localStorm);
 
   // --- lightning ---
-  const canStrike = storm >= 6 && covHere > 0.40;
+  const canStrike = localStorm >= 6 && covHere > 0.40;
   if (boltT >= 0) {
     boltT += dt;
     if (boltT > 0.5) boltT = -1;
   } else if (canStrike) {
     boltIn -= dt;
-    if (boltIn <= 0) strike(storm, 150 + Math.random() * 1700);
+    if (boltIn <= 0) strike(localStorm, 150 + Math.random() * 1700);
   } else {
-    boltIn = boltInterval(storm);
+    boltIn = boltInterval(localStorm);
   }
   const flash = boltT >= 0 ? boltEnv(boltT) : 0;
   const flashGlobal = flash * (1 - clamp01((boltDist - 250) / 1300));
@@ -2925,7 +2998,7 @@ function updateWeather(dt) {
   // --- rain ---
   // The slider is a floor, not an override: it can make it rain out of a clear
   // sky, and a storm overhead still rains harder than the slider asks for.
-  const natural = clamp01((covHere - 0.45) / 0.35) * clamp01((storm - 3) / 5);
+  const natural = clamp01((covHere - 0.45) / 0.35) * clamp01((localStorm - 3) / 5);
   let rainWant = Math.max(natural, WEATHER.rain / 10);
   // Only if we are actually underneath the deck rather than flying above it.
   if (camera.position.y > CLOUD_BOT - 6) rainWant = 0;
@@ -2965,6 +3038,15 @@ const wxPanelEl   = document.getElementById('wx-panel');
 const wxCoverEl   = document.getElementById('wx-cover');
 const wxGloomEl   = document.getElementById('wx-gloom');
 const wxRainPcEl  = document.getElementById('wx-rainpc');
+const wxCStormEl  = document.getElementById('wx-cstorm');
+const wxNoteEl    = document.getElementById('wx-note');
+
+// What a cluster of that storminess is, in words — the number alone does not
+// tell you whether to expect a shower.
+function stormWord(s) {
+  return s < 3 ? 'fair' : s < 5 ? 'building' : s < 6.5 ? 'showery'
+       : s < 8 ? 'squall' : 'thunderhead';
+}
 
 // id, the WEATHER key it drives, how its value reads out.
 const WX_SLIDERS = [
@@ -3029,6 +3111,8 @@ function refreshWxReadout() {
   wxCoverEl.textContent  = Math.round(coverageAt(camera.position.x, camera.position.z) * 100) + '%';
   wxGloomEl.textContent  = Math.round(gloom * 100) + '%';
   wxRainPcEl.textContent = Math.round(rainAmt * 100) + '%';
+  wxCStormEl.textContent = wxLocalStorm.toFixed(1);
+  wxNoteEl.textContent   = stormWord(wxLocalStorm);
 }
 
 refreshWxUI();

@@ -1158,10 +1158,9 @@ const gridHeight = (x, z) => HEIGHTS
   [gridClamp(Math.round((HALF - z) / CELL))];
 
 // ---------------------------------------------------------------------------
-// Shader library — value noise, the shore wave, and a palette helper. The
-// terrain and the sea both pull from this, which is what makes their shorelines
-// agree: the sand knows where the wash is because it evaluates the same wave
-// the water surface is displaced by.
+// Shader library — value noise and a palette helper. The terrain and the sea
+// both pull from this, which is what makes their shorelines agree: both read
+// the same field, so the sand and the water meet at the same line.
 // ---------------------------------------------------------------------------
 
 // Hex literals are authored in sRGB; the shaders work in the linear space three
@@ -1199,31 +1198,6 @@ const NOISE_GLSL = /* glsl */`
   // 0.35..0.6 and mixing on it raw comes out flat. Everything that picks a
   // colour uses this instead: same field, stretched to actually reach 0 and 1.
   float fbmC(vec2 p) { return clamp((fbm(p) - 0.47) * 2.7 + 0.5, 0.0, 1.0); }
-  // One travelling sine: (height, dH/dx, dH/dz). Displacing by .x and building a
-  // normal from .yz keeps the highlights riding the waves instead of sitting
-  // still on a flat sheet.
-  vec3 waveOct(vec2 p, vec2 k, float a, float speed, float t) {
-    float ph = dot(p, k) + t * speed;
-    float c = a * cos(ph);
-    return vec3(a * sin(ph), c * k.x, c * k.y);
-  }
-  // Rollers running in at the coast, unit amplitude. Crests are rings around the
-  // island, warped by a slow noise so they arrive at an angle in the bays rather
-  // than as a perfect bullseye. The gradient ignores the warp — the error is a
-  // few degrees of tilt and nothing reads it.
-  vec3 shoreRoller(vec2 p, float t) {
-    float r = max(length(p), 1.0);
-    // ~39 units between crests: long enough that the mesh still resolves them
-    // when the beach is a couple of hundred units away across the bay.
-    float ph = -(r + fbm(p * 0.012) * 26.0) * 0.16 + t * 0.62;
-    float c = cos(ph);
-    vec2 g = -0.16 * (p / r) * c;
-    return vec3(sin(ph), g.x, g.y);
-  }
-  // Height the wash reaches on the sand, in metres above sea level. The sea
-  // displaces its edge by exactly this, so foam on the sand lines up with foam
-  // on the water.
-  const float SHORE_RUN = 0.50;
 `;
 
 const LAND_PALETTE = /* glsl */`
@@ -1334,8 +1308,8 @@ const LAND_GLSL = /* glsl */`
 `;
 
 // ---------------------------------------------------------------------------
-// Ocean — an animated surface at sea level plus a flat deep bed under it, so
-// the water still has something below it out past the edge of the heightfield.
+// Ocean — a flat surface at sea level plus a flat deep bed under it, so the
+// water still has something below it out past the edge of the heightfield.
 // The pair rides with the camera on `ocean`, which is what makes the sea read
 // as endless: there is never an edge to reach, and the fog closes long before
 // the disc's rim. Both live directly in the scene rather than in `objects`, so
@@ -1404,56 +1378,10 @@ scene.add(ocean);
     envMapIntensity: 1.6,
   });
 
-  // How the sea is built up, from the horizon in:
-  //
-  //   * four crossing swells, whose amplitude ramps from a hand's height near
-  //     the island to a metre of open-water swell offshore, which is why the
-  //     sea gets visibly heavier the further out you swim;
-  //   * shoaling, which pins all of that back to nothing as the bed rises, so a
-  //     two-metre swell cannot stand up in half a metre of water;
-  //   * the shore rollers, which survive right up to the sand and are what
-  //     actually breaks on the beach.
-  //
-  // Everything is evaluated in world space (via modelMatrix) so the waves stay
-  // put while the mesh slides along under the camera.
-  const WAVE_GLSL = /* glsl */`
-    // (height, dH/dx, dH/dz) of the sea surface, plus how big the local swell is
-    // and how far offshore we are — the fragment shader wants both for foam.
-    vec3 seaSurface(vec2 p, float t, float depth, out float ampOut, out float openOut) {
-      float open  = smoothstep(${ISLAND_R}.0, ${ISLAND_R + 380}.0, length(p));
-      float shoal = smoothstep(0.0, 6.5, depth);
-      float amp   = mix(0.13, 1.05, open) * shoal;
-
-      // The rings of the mesh get coarser the further they are from the camera,
-      // so the short waves have to bow out before there are too few vertices to
-      // carry them — otherwise they beat against the tessellation and the sea
-      // fills with a crawling diamond moire. Each octave fades at the range
-      // where its own wavelength runs out of samples.
-      float dc  = distance(p, cameraPosition.xz);
-      float lod1 = 1.0 - smoothstep(50.0, 165.0, dc);
-      float lod2 = 1.0 - smoothstep(20.0,  80.0, dc);
-
-      vec3 w = vec3(0.0);
-      w += waveOct(p, vec2( 0.0890,  0.0550), 1.00, 0.85, t);          // ~60u swell
-      w += waveOct(p, vec2(-0.0420,  0.0715), 0.72, 0.72, t);          // ~76u, crossing
-      w += waveOct(p, vec2( 0.2160, -0.1640), 0.34, 1.60, t) * lod1;   // ~23u chop
-      w += waveOct(p, vec2( 0.3900,  0.2600), 0.16, 2.30, t) * lod2;   // ~13u ripple
-      w *= amp;
-
-      // The surf. Full height at the waterline and gone by the time the bed
-      // drops past waist depth — the band where it lives is the breaker line.
-      float surfA = SHORE_RUN * (1.0 - smoothstep(2.5, 9.0, depth));
-      w += shoreRoller(p, t) * surfA;
-
-      // The octave amplitudes actually in play here, so that "how close is this
-      // pixel to the top of the local swing" means the same thing at every
-      // range — otherwise the whitecaps thin out wherever the chop has faded.
-      ampOut  = amp * (1.72 + 0.34 * lod1 + 0.16 * lod2) + surfA;
-      openOut = open;
-      return w;
-    }
-  `;
-
+  // The surface carries no displacement at all — it is a flat sheet at sea
+  // level. All the vertex stage does is work out how deep the water is under
+  // each vertex, in world space (via modelMatrix) so the answer stays put while
+  // the mesh slides along under the camera.
   surfMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterTime;
     shader.uniforms.uLandMap = { value: landMap };
@@ -1463,10 +1391,9 @@ scene.add(ocean);
         #include <common>
         uniform float uTime;
         varying vec3 vWPos;
-        varying float vWaveH, vCover, vAmp, vOpen;
+        varying float vCover;
         ${NOISE_GLSL}
         ${LAND_GLSL}
-        ${WAVE_GLSL}
       `)
       .replace('#include <beginnormal_vertex>', /* glsl */`
         #include <beginnormal_vertex>
@@ -1474,18 +1401,9 @@ scene.add(ocean);
         // Signed, not clamped: on dry land this goes negative, and the fragment
         // shader needs that to know where to stop drawing water.
         float depth = ${WATER.surfaceY.toFixed(2)} - landAt(wpos.xz);
-        float amp, open;
-        vec3 wave = seaSurface(wpos.xz, uTime, max(depth, 0.0), amp, open);
-        objectNormal = normalize(vec3(-wave.y, 1.0, -wave.z));
-        vWPos  = wpos + vec3(0.0, wave.x, 0.0);
-        vWaveH = wave.x;
-        vCover = depth + wave.x;         // metres of water over the bed, right now
-        vAmp   = max(amp, 0.001);
-        vOpen  = open;
-      `)
-      .replace('#include <begin_vertex>', /* glsl */`
-        #include <begin_vertex>
-        transformed.y += wave.x;
+        objectNormal = vec3(0.0, 1.0, 0.0);
+        vWPos  = wpos;
+        vCover = depth;                  // metres of water over the bed
       `);
 
     shader.fragmentShader = shader.fragmentShader
@@ -1493,7 +1411,7 @@ scene.add(ocean);
         #include <common>
         uniform float uTime;
         varying vec3 vWPos;
-        varying float vWaveH, vCover, vAmp, vOpen;
+        varying float vCover;
         ${NOISE_GLSL}
         ${SEA_PALETTE}
       `)
@@ -1503,35 +1421,18 @@ scene.add(ocean);
         {
           vec2 q = vWPos.xz;
 
-          // --- foam where the wave meets the land ---
-          // vCover crosses zero exactly where the sand does, and it carries the
-          // wave displacement with it, so this edge runs up and down the beach
-          // with every roller. The band just inside it is the broken water.
-          float lace = fbmC(q * 0.85 + vec2(uTime * 0.5, uTime * 0.2));
+          // --- foam where the water meets the land ---
+          // vCover crosses zero exactly where the sand does, so this edge traces
+          // the coastline. The band just inside it is the broken water. The
+          // noise is static, like the surface it sits on — it only breaks the
+          // waterline up so it does not read as a clean curve.
+          float lace = fbmC(q * 0.85);
           float edge = 1.0 - smoothstep(0.0, 0.75, vCover);
           float shoreFoam = edge * edge * smoothstep(0.15, 0.55, lace);
           // The leading centimetres are solid white however the noise falls.
           shoreFoam = max(shoreFoam, 1.0 - smoothstep(0.0, 0.18, vCover));
 
-          // --- the break ---
-          // In the surf zone the roller runs out of water under it, tips over
-          // and goes white along its leading face. Gating on depth is what makes
-          // that a line running parallel to the coast, and the line marches in
-          // with the wave because vWaveH does.
-          float zone = smoothstep(0.25, 0.9, vCover) * (1.0 - smoothstep(1.3, 3.2, vCover));
-          // Only the top of the swing: a wider gate than this stops being a
-          // breaker and becomes a bay full of milk.
-          float breaker = smoothstep(0.62, 0.97, vWaveH / vAmp) * zone
-                        * (0.45 + 0.55 * fbmC(q * 0.5 + vec2(uTime * 0.3, 0.0)));
-
-          // --- whitecaps on the open-water swell ---
-          // Only crests, only once the swell is big enough to break: near the
-          // island the water is glassy, offshore it is speckled white.
-          float crest = smoothstep(0.45, 0.88, vWaveH / vAmp);
-          float caps = crest * smoothstep(0.3, 0.85, vOpen)
-                     * smoothstep(0.30, 0.75, fbmC(q * 0.14 + vec2(0.0, uTime * 0.15)));
-
-          foam = clamp(max(max(shoreFoam, breaker), caps * 0.9), 0.0, 1.0);
+          foam = clamp(shoreFoam, 0.0, 1.0);
 
           float d = max(vCover, 0.0);
           vec3 water = mix(SEA_SHALLOW, SEA_DEEP, smoothstep(0.3, 9.0, d));
@@ -1546,33 +1447,10 @@ scene.add(ocean);
       .replace('#include <roughnessmap_fragment>', /* glsl */`
         #include <roughnessmap_fragment>
         roughnessFactor = mix(roughnessFactor, 0.86, foam);   // foam is not a mirror
-      `)
-      // Ripples finer than the mesh could ever carry, added straight to the
-      // shading normal. This is most of what the sea looks like up close: a
-      // gently sloped swell with a perfect mirror finish reads as a sheet of
-      // glass, and it is the small stuff that scatters the sun into glitter.
-      // Faded out with distance, where the ripples fall below a pixel and would
-      // only crawl.
-      .replace('#include <normal_fragment_begin>', /* glsl */`
-        #include <normal_fragment_begin>
-        {
-          // The finest octaves fade out first: they are the ones that turn into
-          // a crawling moire once a ripple no longer covers a pixel.
-          float d = length(vWPos - cameraPosition);
-          float closeness = 1.0 - smoothstep(25.0, 130.0, d);
-          float fineness  = 1.0 - smoothstep(10.0,  45.0, d);
-          if (closeness > 0.004) {
-            vec2 q = vWPos.xz;
-            // Amplitudes chosen for the slope they give (a * |k|), which is what
-            // the shading actually reads — roughly a tenth each.
-            vec3 r = waveOct(q, vec2( 0.62,  0.38), 0.150, 1.7, uTime)
-                   + waveOct(q, vec2(-0.47,  0.79), 0.110, 2.1, uTime)
-                   + waveOct(q, vec2( 1.35, -1.02), 0.045, 3.0, uTime) * fineness
-                   + waveOct(q, vec2(-2.60,  1.90), 0.016, 4.4, uTime) * fineness;
-            normal = normalize(normal + vec3(-r.y, 0.0, -r.z) * closeness * (1.0 - foam));
-          }
-        }
       `);
+    // Nothing perturbs the shading normal: the sheet is flat and lit flat, so
+    // the geometric normal straight out of <normal_fragment_begin> is what the
+    // lighting reads.
   };
 
   const surf = new THREE.Mesh(buildOceanGeo(), surfMat);
@@ -1685,9 +1563,9 @@ terrainMat.onBeforeCompile = (shader) => {
         sand *= 1.0 + (vnoise(wp.xz * 1.7) - 0.5) * 0.14;
         sand *= 1.0 + (vnoise(wp.xz * 9.0) - 0.5) * 0.18 * fine;
 
-        // Where the sea is right now: the same roller the water surface is
-        // displaced by, so the dark line of wet sand tracks the actual wash.
-        float waterline = shoreRoller(wp.xz, uTime).x * SHORE_RUN;
+        // Where the sea is: a flat sheet at sea level, so the dark line of wet
+        // sand sits at a fixed height and does not move.
+        float waterline = uWaterY;
         wetness = 1.0 - smoothstep(waterline - 0.05, waterline + 0.85, h);
         sand = mix(sand, sand * vec3(0.50, 0.52, 0.58), wetness);
         sand = mix(sand, SEABED, smoothstep(1.0, 9.0, -h));   // into the drop-off
@@ -1707,7 +1585,7 @@ terrainMat.onBeforeCompile = (shader) => {
         float grad = sqrt(max(0.0, 1.0 - vWNrm.y * vWNrm.y)) / max(vWNrm.y, 0.05);
         float bandH = clamp(0.05 + 1.2 * grad, 0.05, 0.45);
         float band = 1.0 - smoothstep(0.0, bandH, abs(h - waterline - bandH * 0.2));
-        float lace = 0.35 + 0.65 * smoothstep(0.25, 0.7, fbmC(wp.xz * 1.1 + vec2(uTime * 0.4, 0.0)));
+        float lace = 0.35 + 0.65 * smoothstep(0.25, 0.7, fbmC(wp.xz * 1.1));
         col = mix(col, FOAM, clamp(band * lace, 0.0, 0.92) * sandM);
 
         diffuseColor.rgb *= col;

@@ -1483,7 +1483,7 @@ scene.add(ocean);
         // A swell in a hand's depth of water would stand the sheet up through
         // the sand, so it settles back to flat as the bed comes up to meet it.
         // Calm is glass: at windSpeed 0 nothing moves at all.
-        float depthFade    = smoothstep(0.0, 8.0, depth);
+        float depthFade    = smoothstep(0.0, 80.0, depth);
         float windStrength = clamp(uWindSpeed / 15.0, 0.0, 1.0);
         // The fan's rings grow geometrically, so spacing is very nearly a fixed
         // fraction of the distance out from the camera it is centred on.

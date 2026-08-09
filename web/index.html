@@ -1410,16 +1410,18 @@ scene.add(ocean);
         ${LAND_GLSL}
 
         // Metres of swell at a world-space point. Same slab of scrolling fbm the
-        // fragment shader gates its foam with, only here it moves geometry: fbm
-        // sits around 0.5, so subtracting it puts the water as far below sea
-        // level as above and the mean stays where the shoreline expects it.
+        // fragment shader gates its foam with, only here it moves geometry.
+        // The octaves start at amplitude 1 and halve, so the raw sum runs 0..1.875
+        // (1 + 0.5 + 0.25 + 0.125) — it has to be divided back down to 0..1 before
+        // the subtraction, or "half" is 0.5 out of 1.875 and the sheet spends most
+        // of its time above sea level instead of straddling it.
         float waveAt(vec2 p) {
           vec2 uv = p * 0.005 + uWindDir * uTime * uWindSpeed * 0.08;
           float s = 0.0;
           float a = 1.0;
           for (int i = 0; i < 4; i++) { s += a * vnoise(uv); uv = uv * 2.07 + 13.1; a *= 0.5; }
           float windStrength = clamp(uWindSpeed / 15.0, 0.0, 1.0);
-          return (s - 0.5) * windStrength * 4.0;
+          return (s / 1.875 - 0.5) * windStrength * 4.0;
         }
       `)
       .replace('#include <beginnormal_vertex>', /* glsl */`
@@ -1471,10 +1473,15 @@ scene.add(ocean);
           // pattern travels downwind at a fixed fraction of the wind speed no
           // matter how finely the field is being sampled. Marching the sample
           // point along the "from" vector drags what you see the other way.
-          vec2 uv = (p + windDir * time * windSpeed * 0.6) * 0.005;
+          // Tighter than the vertex stage's 0.005: displacement is there to carry
+          // the big swells, and this field is what breaks their faces up, so it
+          // wants a smaller feature size than the geometry it sits on. The fifth
+          // octave is below a metre and only reads up close, which is exactly
+          // where the shading normal is doing any work.
+          vec2 uv = (p + windDir * time * windSpeed * 0.6) * 0.012;
           float s = 0.0;
           float a = 0.5;
-          for (int i = 0; i < 4; i++) {
+          for (int i = 0; i < 5; i++) {
             s += a * vnoise(uv);
             uv = uv * 2.07 + 13.1;
             a *= 0.5;
@@ -1557,11 +1564,14 @@ scene.add(ocean);
           float near = 1.0 - smoothstep(70.0, 420.0, distance(vWPos, cameraPosition));
           float windStrength = clamp(uWindSpeed / 15.0, 0.0, 1.0);
           if (near * windStrength > 0.001) {
-            float eps = 1.5;
+            float eps = 1.0;
             float wn   = windRipple(vWPos.xz, uTime);
             float wndx = windRipple(vWPos.xz + vec2(eps, 0.0), uTime) - wn;
             float wndz = windRipple(vWPos.xz + vec2(0.0, eps), uTime) - wn;
-            normal = normalize(normal + vec3(-wndx, 0.0, -wndz) * (windStrength * near * 6.0));
+            // Finer ripples mean steeper slopes over the same step, so the gain
+            // comes down with the feature size — otherwise the extra detail
+            // arrives as glitter rather than as texture.
+            normal = normalize(normal + vec3(-wndx, 0.0, -wndz) * (windStrength * near * 3.0));
           }
         }
       `);
@@ -1602,7 +1612,9 @@ const caustBoost = { value: 1.0 };
 terrainMat.onBeforeCompile = (shader) => {
   shader.uniforms.uTime       = waterTime;
   shader.uniforms.uWaterY     = { value: WATER.surfaceY };
-  shader.uniforms.uCaustCol   = { value: new THREE.Color(0xa8e4ff) };
+  // Past white: the net is the brightest thing under the water and the tone map
+  // pulls anything merely at 1.0 back into the surrounding blue.
+  shader.uniforms.uCaustCol   = { value: new THREE.Color(0xbfeeff).multiplyScalar(1.35) };
   shader.uniforms.uCaustSlant = { value: CAUST_SLANT };
   shader.uniforms.uSunDir     = { value: SUN.clone() };
   shader.uniforms.uCaustBoost = caustBoost;
@@ -1633,12 +1645,16 @@ terrainMat.onBeforeCompile = (shader) => {
       ${NOISE_GLSL}
       ${LAND_PALETTE}
       // Light piles up along the zero crossings of the crossing swells; raising
-      // the fold to a power is what turns those bands into thin filaments.
+      // the fold to a power is what turns those bands into thin filaments. The
+      // fold width and the exponent together are the contrast: a narrower fold
+      // and a harder power give a thinner, hotter filament with more dark water
+      // between the strands, which is what the net actually looks like from
+      // under it.
       float caustNet(vec2 p, float t) {
         float c = sin(dot(p, vec2( 0.42,  0.26) * 1.9) + t * 1.15)
                 + sin(dot(p, vec2(-0.31,  0.53) * 2.3) - t * 1.55)
                 + sin(dot(p, vec2( 0.95, -0.72) * 1.5) + t * 2.20);
-        return pow(max(0.0, 1.0 - abs(c) * 0.55), 8.0);
+        return pow(max(0.0, 1.0 - abs(c) * 0.62), 11.0);
       }
     `)
     .replace('#include <map_fragment>', /* glsl */`
@@ -1741,12 +1757,18 @@ terrainMat.onBeforeCompile = (shader) => {
         // surface whose lensing lights this point. On the flats it only shifts
         // the pattern, but it is what makes the net climb a slope instead of
         // streaking straight down it.
-        vec2 q = vWPos.xz + uCaustSlant * below;
+        // On top of the wave phases inside caustNet, the whole net wanders: a
+        // slow drift of the sample point, a few metres over half a minute, so
+        // the pattern is never quite where it was without ever reading as
+        // something scrolling past.
+        vec2 drift = vec2(sin(uTime * 0.045), cos(uTime * 0.037)) * 4.0;
+        vec2 q = vWPos.xz + uCaustSlant * below + drift;
         // Wet, and shallow enough for the surface to still focus anything. The
         // reach runs a good deal deeper than it used to: the absorption above
-        // now darkens the bed on its own, so the net can follow the shelf down
-        // instead of being cut off while the ground is still bright.
-        float wet = step(0.0, below) * (1.0 - smoothstep(1.0, 14.0, below));
+        // now darkens the bed on its own, so the net can follow the shelf right
+        // out over the drop-off instead of being cut off while the ground is
+        // still bright.
+        float wet = step(0.0, below) * (1.0 - smoothstep(1.0, 24.0, below));
         // Faces turned away from the sun catch none of it.
         float facing = clamp(dot(vWNrm, uSunDir), 0.0, 1.0) * 2.2;
         // A hand's depth of water barely focuses; a couple of metres does.
@@ -1755,8 +1777,13 @@ terrainMat.onBeforeCompile = (shader) => {
         // any depth to defocus through — so the first few metres get a lift on
         // top of the usual falloff.
         float shallow = 1.0 + 1.2 * (1.0 - smoothstep(0.0, 3.5, below));
-        float caust = caustNet(q, uTime) * 1.55
-                    + caustNet(q * 1.9 + vec2(7.3, 2.1), uTime * 1.35) * 0.85;
+        // Three scales rather than two. The coarse layer is the one that widens
+        // the effect: its cells are half again as big as the main net, so it
+        // reaches across the stretches of bed the other two leave dark instead
+        // of leaving the floor lit only in the one band of cell size.
+        float caust = caustNet(q * 0.62, uTime * 0.80) * 1.15
+                    + caustNet(q,        uTime       ) * 1.75
+                    + caustNet(q * 1.9 + vec2(7.3, 2.1), uTime * 1.35) * 0.95;
         // Caustics are light landing on the surface, so what you see is what
         // the surface reflects: without the albedo term the dark rock lights
         // up harder than the pale sand it stands in.

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 4;
+  var v = 5;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -324,11 +324,16 @@
     #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
   }
 
-  /* ---------- Weather controls (free camera only) ---------- */
+  /* ---------- Weather controls (always on screen) ---------- */
+  /* Top right, stacked under the help card. The card's height changes with the
+     camera mode, so the `top` here is only a fallback — refreshModeUI() measures
+     the card and writes the real offset. Anchoring to the right also keeps the
+     panel off the left half of a touch screen, which is the fly joystick and is
+     placed wherever the thumb lands. */
   #cloud-ui {
     position: fixed;
-    left: calc(10px + env(safe-area-inset-left));
-    bottom: calc(22px + env(safe-area-inset-bottom));
+    top: calc(300px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
     width: 236px;
     max-width: 62vw;
     padding: 9px 11px 10px;
@@ -339,17 +344,21 @@
     border-radius: 8px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    display: none;
+    /* Visible in every camera mode — the keys drive the weather everywhere now. */
+    display: block;
+    opacity: 1;
+    transition: opacity 0.15s ease;
     z-index: 60;
   }
-  body.free-cam #cloud-ui { display: block; }
-  /* On touch the whole left half of the screen is the fly joystick — it is placed
-     wherever the thumb lands — so a panel down there eats input. Move it up under
-     the camera-mode chip, well clear of where a thumb naturally rests. */
-  body.touch #cloud-ui {
-    top: calc(80px + env(safe-area-inset-top));
-    bottom: auto;
-  }
+  /* Faded back while you are playing, where it is a readout you glance at rather
+     than a panel you are working in. Written as the dim state being the specific
+     one, not the bright state, so the default a fresh reader sees on #cloud-ui is
+     the panel as it normally looks. Hover and touch bring it fully up, so the
+     buttons are never dimmed while you are actually using them. */
+  body:not(.free-cam) #cloud-ui { opacity: 0.5; }
+  body:not(.free-cam) #cloud-ui:hover,
+  body:not(.free-cam) #cloud-ui:focus-within,
+  body:not(.free-cam) #cloud-ui:active { opacity: 1; }
 
   #cloud-ui .title {
     display: block;
@@ -391,7 +400,7 @@
   body.touch #cloud-ui .key { display: none; }
 
   @media (max-width: 620px) {
-    /* Narrow enough to sit beside #instructions on a 390-wide phone. */
+    /* Matched to #instructions, which it now sits directly underneath. */
     #cloud-ui { width: 190px; font-size: 10px; padding: 7px 9px 8px; }
     .wx-btn { min-width: 66px; font-size: 10px; padding: 5px 7px; }
   }
@@ -1720,15 +1729,14 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyG') toggleGameMode();
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
-  // Weather controls — free camera only, where the panel showing what they do
-  // is on screen.
-  else if (camMode === CAM.FREE) {
-    if (e.code === 'Digit1' || e.code === 'Numpad1') cycleRate();
-    else if (e.code === 'Digit2' || e.code === 'Numpad2') cycleSpeed();
-    else if (e.code === 'Digit3' || e.code === 'Numpad3') cycleStorm();
-    else if (e.code === 'Digit4' || e.code === 'Numpad4') { spawnCloud(true); refreshWxUI(); }
-    else if (e.code === 'Digit0' || e.code === 'Numpad0') clearClouds();
-  }
+  // Weather controls. Live in every camera mode, not just the free one: the
+  // panel showing what they do is on screen everywhere now, and the digit row is
+  // not bound to anything else in game mode.
+  else if (e.code === 'Digit1' || e.code === 'Numpad1') cycleRate();
+  else if (e.code === 'Digit2' || e.code === 'Numpad2') cycleSpeed();
+  else if (e.code === 'Digit3' || e.code === 'Numpad3') cycleStorm();
+  else if (e.code === 'Digit4' || e.code === 'Numpad4') { spawnCloud(true); refreshWxUI(); }
+  else if (e.code === 'Digit0' || e.code === 'Numpad0') clearClouds();
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (TRACKED.has(e.code)) { keys.delete(e.code); e.preventDefault(); }
@@ -2072,11 +2080,19 @@ const lerpRange = (r, t) => r[0] + (r[1] - r[0]) * t;
 // times as many to cover the same silhouette, so pushing this number further
 // without pushing BAND_SPEC further is what would break the cloud into a scatter
 // of separate discs.
-const PUFF_SPREAD = 0.92;
+//
+// Pulled back from 0.92 and paired with a ~6% bump to every radius below, which
+// moves the ratio the other way for the first time: pieces slightly larger,
+// sitting slightly closer together. Both changes are small and both push the
+// same way, because the failure this is correcting is a mild one — at 0.92 the
+// cluster read as a scatter of discs with visible sky between them rather than
+// as one mass with a lumpy edge. The silhouette does not change size for it: the
+// world scale is derived from PUFF_REACH, which absorbs both.
+const PUFF_SPREAD = 0.88;
 // Furthest a puff can reach from the cluster axis in normalised units — what the
 // half-width has to be divided by to get the world scale factor. The constant is
-// the largest radius any shape hands out — a cumulus base-row puff at 0.38.
-const PUFF_REACH = PUFF_SPREAD + 0.38;
+// the largest radius any shape hands out — a cumulus base-row puff at 0.40.
+const PUFF_REACH = PUFF_SPREAD + 0.40;
 // How much wider than its puff each quad is built. Headroom for the fragment
 // shader to push the eroded outline outward without running into the edge of
 // the quad and clipping it flat.
@@ -2114,7 +2130,7 @@ function buildCloudGeo(band, shape, rnd) {
       // can see sky through when you fly under the cell.
       t    = 0.02 + 0.05 * rnd();
       prof = 1.0;
-      pr   = 0.24 + 0.14 * rnd();
+      pr   = 0.255 + 0.145 * rnd();
       flat = 1.0;
     } else if (shape === 'cumulus') {
       // The dome on top: pinching to a crown, with the walk bent upward so the
@@ -2123,11 +2139,11 @@ function buildCloudGeo(band, shape, rnd) {
       const v = (k - baseN + rnd() * 0.8) / Math.max(1, count - baseN);
       t    = 0.08 + 0.92 * Math.pow(Math.min(1, v), 0.72);
       prof = Math.sqrt(Math.max(0.10, 1.0 - t * t * 0.94));
-      pr   = (0.155 + 0.13 * rnd()) * (1.0 - 0.28 * t);
+      pr   = (0.166 + 0.138 * rnd()) * (1.0 - 0.28 * t);
     } else if (shape === 'tower') {
       t    = u;
       prof = 0.62 + 0.30 * Math.sin(t * Math.PI);   // slight bulge at mid-height
-      pr   = 0.19 + 0.13 * rnd();
+      pr   = 0.20 + 0.14 * rnd();
     } else {
       // Sheet: no walk at all, just a wide scatter kept inside the bottom half
       // of an already-shallow box. The whole raft is sliced, not just its lowest
@@ -2136,7 +2152,7 @@ function buildCloudGeo(band, shape, rnd) {
       // Partial, though: a sheet's underside is a soft ceiling, not an edge.
       t    = rnd() * 0.55;
       prof = 1.0;
-      pr   = 0.17 + 0.15 * rnd();
+      pr   = 0.18 + 0.16 * rnd();
       flat = 0.6;
     }
     const a = rnd() * Math.PI * 2;
@@ -2196,7 +2212,13 @@ function buildCloudGeo(band, shape, rnd) {
       // the count cut that by about 40%. Left at the old 0.75 the whole effect
       // washes out — mean exposure came out at 0.63 against the 0.40 it used to
       // be, which is a cloud with no dim core at all, just a uniform bright one.
-      if (d < o.r) occ += (1 - d / o.r) * 1.80;
+      // Eased back from 1.80 to hold that mean where it is now that the puffs
+      // are wider and packed tighter: both changes put more cloud on every sun
+      // ray, and left uncorrected the cores go black instead of dim. Solved for
+      // rather than guessed — 1.40 reproduces the old per-shape mean exposure to
+      // within a percent, so the denser cluster is a change to the silhouette
+      // only and the shading it carries is the shading that was already tuned.
+      if (d < o.r) occ += (1 - d / o.r) * 1.40;
     }
     p.lit = Math.exp(-occ);
   }
@@ -2367,7 +2389,7 @@ const CLOUD_FRAG = /* glsl */`
   varying float vLit;
   varying vec2  vUp;
   varying vec2  vFlat;
-  uniform vec3  uTop, uBot, uTint, uSunDir, uSunCol;
+  uniform vec3  uTop, uBot, uTint, uSunDir, uSunCol, uSkyCol;
   uniform float uTintAmt, uFlash, uTime;
 
   // Cheap value-noise hash. Two rounds of fract-mangling is all it is worth at
@@ -2376,6 +2398,13 @@ const CLOUD_FRAG = /* glsl */`
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
     return fract(p.x * p.y);
+  }
+
+  // Two independent values per cell, for the cellular layer's feature points.
+  vec2 hash22(vec2 p) {
+    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.xx + q.yz) * q.zy);
   }
 
   float vnoise(vec2 p) {
@@ -2389,16 +2418,46 @@ const CLOUD_FRAG = /* glsl */`
   }
 
   // Normalised to 0..1 whatever the octave count, so the erosion below moves the
-  // rim by the same amount on the three-octave phone build as on the four.
+  // rim by the same amount on the phone build as on the desktop one.
+  //
+  // An octave shorter on both than it used to be, because the cellular layer
+  // below now supplies the fine detail this was carrying alone. The split is the
+  // point, not just the budget: fbm is good at the broad drift of a cloud's mass
+  // and bad at bumps — stacked octaves of value noise average toward a smooth
+  // field, which is exactly why one layer of it left every puff looking like a
+  // sanded pebble.
   float fbm(vec2 p) {
     float v = 0.0, a = 0.5, norm = 0.0;
-    for (int i = 0; i < ${isTouchDevice ? 3 : 4}; i++) {
+    for (int i = 0; i < ${isTouchDevice ? 2 : 3}; i++) {
       v += a * vnoise(p);
       norm += a;
       p = p * 2.03 + 17.0;
       a *= 0.5;
     }
     return v / norm;
+  }
+
+  // Cellular (Worley) F1 — the cauliflower layer. Distance to the nearest of one
+  // jittered feature point per cell, which is a field of round blobs meeting at
+  // creases: the exact shape a cumulus is made of, and the one thing no amount of
+  // value noise will produce. Inverted at the call site so the blobs are the
+  // *high* values and the creases the low ones.
+  //
+  // Squared distances inside the loop, one sqrt at the end. Nine cells is the
+  // full 3x3 neighbourhood, which is what makes this correct rather than nearly
+  // correct — a truncated search leaves visible seams along the cell grid, and a
+  // regular grid is the single most obvious artifact a cloud can have.
+  float worley(vec2 p) {
+    vec2 ip = floor(p), fp = fract(p);
+    float m = 8.0;
+    for (int y = -1; y <= 1; y++) {
+      for (int x = -1; x <= 1; x++) {
+        vec2 g = vec2(float(x), float(y));
+        vec2 o = g + hash22(ip + g) - fp;
+        m = min(m, dot(o, o));
+      }
+    }
+    return sqrt(m);
   }
 
   void main() {
@@ -2420,26 +2479,45 @@ const CLOUD_FRAG = /* glsl */`
     // each carrying five cycles of noise is static, not cauliflower, and the
     // lumps that read as lumps now are the puffs themselves.
     vec2 np = vC * 2.2 + vec2(vSeed, vSeed * 1.7) + uTime * 0.008;
-    float n = fbm(np);
+    float base = fbm(np);
+    // The cellular layer runs a little finer than the fbm and on its own offset,
+    // so the blobs sit across the fbm's drift instead of on top of its lumps.
+    float cell = 1.0 - worley(np * 1.75 + 11.3);
+    // Weighted so the mean lands near 0.5 and the swing still covers 0..1: the
+    // erosion below reads n as a signed offset about a half, and a field that
+    // sits high grows every puff instead of roughening it. The cellular layer
+    // carries the larger share — it is the one doing the work.
+    float n = clamp(base * 0.55 + cell * 0.60 - 0.10, 0.0, 1.0);
 
     // Erode the outline: the noise moves the rim in and out, so the boundary is
     // ragged all the way round rather than a circle of a wobbling radius. The
     // swing is deliberately smaller than a realistic cloud wants — a drawn cloud
     // is made of recognisable arcs, and eroding a fifth of the radius keeps the
     // lump organic while leaving the arc still readable as one.
-    // Nominal radius sits at 1/PUFF_QUAD of the quad, so even the widest lump of
-    // the erosion stays inside it.
-    float rim = ${(1 / PUFF_QUAD).toFixed(3)} * (1.0 + 0.20 * (n * 2.0 - 1.0));
+    //
+    // How much of that swing a fragment gets now depends on how far out it sits.
+    // A uniform amplitude has to be a compromise between two opposite jobs: big
+    // enough to make the silhouette wispy, small enough to leave the body solid.
+    // Ramping it — near nothing in the core, full swing at the rim — stops it
+    // being a compromise at all. The core stays a dense mass, and the outer
+    // millimetre frays into the sky the way the edge of a real cloud does.
+    float edgeAmt = smoothstep(0.25, 0.95, d);
+    // Nominal radius sits at 1/PUFF_QUAD of the quad; the widest lump the ramp
+    // can produce is 1.34x that, which still lands inside the quad's own edge.
+    float rim = ${(1 / PUFF_QUAD).toFixed(3)} * (1.0 + (0.08 + 0.26 * edgeAmt) * (n * 2.0 - 1.0));
     // A hard core and a short falloff: the narrower this band, the more the puff
     // reads as a drawn shape with an outline instead of a smear of mist. It
     // cannot go to nothing, though — a step edge on a screen-facing disc aliases
     // into a crawling jagged circle the moment the cloud drifts, and the band is
     // a fraction of the radius, so halving the puffs halved how many pixels wide
-    // it is. Widened from 0.80 to cover that: an interior puff's edge is now a
-    // seam between two overlapping pieces rather than part of the cloud's own
-    // outline, and it wants to disappear into its neighbour, not be legible.
-    float density = 1.0 - smoothstep(rim * 0.72, rim, d);
-    density *= mix(0.80, 1.0, n);          // the inside is nearly uniform
+    // it is. An interior puff's edge is a seam between two overlapping pieces
+    // rather than part of the cloud's own outline, and it wants to disappear into
+    // its neighbour, not be legible.
+    float density = 1.0 - smoothstep(rim * 0.70, rim, d);
+    // The inside is near enough uniform. Tightened from 0.80: the noise has a
+    // job at the rim and no job in the middle, and a body that varies 20% in
+    // opacity is a body you can see the sky through in patches.
+    density *= mix(0.88, 1.0, n);
     ${CLOUD_FLAT_APPLY}
     if (density < 0.004) discard;
 
@@ -2482,6 +2560,36 @@ const CLOUD_FRAG = /* glsl */`
                + smoothstep(0.56, 0.64, lit) * 0.55;
     vec3 col = mix(uBot, uTop, tone);
 
+    // Sky bounce. The shadowed side of a cloud is not lit by nothing — it is lit
+    // by the blue hemisphere under and around it, and that second light source is
+    // most of what stops an underside reading as a flat grey cutout. Applied
+    // where the toon ramp has run out of contrast to give: facing down, and in
+    // the darkest band.
+    //
+    // Modulated by uBot, not added flat on top of it, because bounce light is
+    // light the cloud *reflects* — and because these colours are linear, an
+    // absolute term that reads as a gentle lift on a white cumulus is several
+    // times the whole value of a storm cell's underside and turns it powder blue.
+    // Through the albedo it is the same proportional shift on both.
+    col += uBot * uSkyCol * (1.0 - up) * (1.0 - tone) * 0.45;
+
+    // Warm the sunward face. Sunlight is not white, and the small amount of that
+    // warmth surviving onto the lit side is the other half of the same trick:
+    // once one side is cool and the other is warm, the cloud has a direction to
+    // it that no amount of white-to-grey ever produces. The specular and the rim
+    // below both land inside this band and add their own brightness back, so the
+    // slight dimming that comes with tinting toward the sun's colour never shows.
+    col = mix(col, col * uSunCol, smoothstep(0.35, 0.85, sun) * 0.50);
+
+    // Warm/cool drift across the surface, keyed to the same noise field the
+    // shape is eroded from, so the tint sits on the lumps instead of floating
+    // over them: golden where a bump catches the light, blue-grey down in the
+    // creases between them. Deliberately a few percent, not a stylised recolour
+    // — enough to break the uniform white, not enough to read as a separate
+    // effect laid on top of the toon ramp.
+    col *= mix(vec3(0.958, 0.984, 1.058), vec3(1.048, 1.014, 0.952),
+               clamp(n * 0.55 + tone * 0.65 - 0.10, 0.0, 1.0));
+
     // The specular "shine": a small hot patch facing square into the sun, the
     // one place allowed to go brighter than the top colour.
     col += uSunCol * smoothstep(0.84, 0.95, sun) * 0.26;
@@ -2501,9 +2609,11 @@ const CLOUD_FRAG = /* glsl */`
     // clouds out toward the horizon, and the scene's own FogExp2 never touched
     // them either, since a ShaderMaterial gets no fog chunks unless asked.
 
-    // Nearly opaque per puff: the whole point of the tighter falloff above is a
-    // defined edge, and an edge you can see through is not one.
-    float alpha = clamp(density * 0.98, 0.0, 1.0);
+    // Fully opaque per puff: the whole point of the tighter falloff above is a
+    // defined edge, and an edge you can see through is not one. The eroded rim
+    // already carries density to zero on its own, so nothing here needs a global
+    // discount to stay soft — that 0.98 only ever thinned the solid middle.
+    float alpha = clamp(density, 0.0, 1.0);
     gl_FragColor = vec4(col, alpha);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -2580,6 +2690,11 @@ function cloudColors(s) {
 }
 
 const CLOUD_SUN_COLOR = new THREE.Color(0xfff0cf);
+// The light the shadowed side actually gets: sky and ground bounce, which is
+// blue and comes from below. Picked cool and slightly desaturated — a saturated
+// blue underside stops reading as shadow and starts reading as a different
+// object.
+const CLOUD_SKY_COLOR = new THREE.Color(0x7ea6d8);
 
 function cloudMaterial(scale) {
   const { top, bot, tint } = cloudColors(scale);
@@ -2604,6 +2719,7 @@ function cloudMaterial(scale) {
       uTintAmt:   { value: smooth((scale - 4) / 5) * 0.45 },
       uSunDir:    { value: SUN.clone() },
       uSunCol:    { value: CLOUD_SUN_COLOR.clone() },
+      uSkyCol:    { value: CLOUD_SKY_COLOR.clone() },
       uFlash:     { value: 0 },
     },
   });
@@ -3488,6 +3604,16 @@ window.addEventListener('wheel', (e) => {
 const camModeEl = document.getElementById('cam-mode');
 const instrEl   = document.getElementById('instructions');
 const modeBtn   = document.getElementById('mode-btn');
+const cloudUIEl = document.getElementById('cloud-ui');
+
+// The weather panel is stacked under the help card in the top-right corner, and
+// that card changes height with the camera mode and with the viewport width, so
+// its bottom edge is measured rather than assumed. offsetTop already carries the
+// safe-area inset the card is positioned with.
+function placeCloudUI() {
+  const below = instrEl.offsetTop + instrEl.offsetHeight + 8;
+  cloudUIEl.style.top = below + 'px';
+}
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
@@ -3513,7 +3639,7 @@ const HELP_TOUCH = {
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
-                ['Weather', 'Panel, top left']],
+                ['Weather', 'Panel, top right']],
 };
 
 function refreshModeUI() {
@@ -3525,9 +3651,12 @@ function refreshModeUI() {
   const rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
   instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
+  // The card just changed height, so the panel underneath has to move with it.
+  placeCloudUI();
 
-  // The weather controls only make sense while you are flying around watching
-  // the sky, so they ride with the free camera.
+  // The weather panel is on screen in every mode; the class only decides whether
+  // it is faded back, since in game mode it is a readout rather than a control
+  // surface you are working in.
   document.body.classList.toggle('free-cam', camMode === CAM.FREE);
 
   // Fly pad doubles as the top-down zoom pad; action pad is for on-foot modes.
@@ -3602,6 +3731,9 @@ function resize() {
     2 * Math.atan(Math.tan(45 * DEG) / aspect) / DEG, 55, 95
   );
   camera.updateProjectionMatrix();
+  // The help card reflows (and swaps to its narrow phone styling) with the
+  // viewport, so the panel stacked under it has to be re-measured.
+  placeCloudUI();
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));

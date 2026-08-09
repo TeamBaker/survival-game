@@ -1388,10 +1388,10 @@ scene.add(ocean);
     envMapIntensity: 1.6,
   });
 
-  // The surface carries no displacement at all — it is a flat sheet at sea
-  // level. All the vertex stage does is work out how deep the water is under
-  // each vertex, in world space (via modelMatrix) so the answer stays put while
-  // the mesh slides along under the camera.
+  // The vertex stage does two things: work out how deep the water is under each
+  // vertex, in world space (via modelMatrix) so the answer stays put while the
+  // mesh slides along under the camera, and lift the sheet into real swells
+  // driven by the same wind field the fragment shader shades with.
   surfMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterTime;
     shader.uniforms.uLandMap = { value: landMap };
@@ -1402,10 +1402,25 @@ scene.add(ocean);
       .replace('#include <common>', /* glsl */`
         #include <common>
         uniform float uTime;
+        uniform vec2  uWindDir;
+        uniform float uWindSpeed;
         varying vec3 vWPos;
         varying float vCover;
         ${NOISE_GLSL}
         ${LAND_GLSL}
+
+        // Metres of swell at a world-space point. Same slab of scrolling fbm the
+        // fragment shader gates its foam with, only here it moves geometry: fbm
+        // sits around 0.5, so subtracting it puts the water as far below sea
+        // level as above and the mean stays where the shoreline expects it.
+        float waveAt(vec2 p) {
+          vec2 uv = p * 0.005 + uWindDir * uTime * uWindSpeed * 0.08;
+          float s = 0.0;
+          float a = 1.0;
+          for (int i = 0; i < 4; i++) { s += a * vnoise(uv); uv = uv * 2.07 + 13.1; a *= 0.5; }
+          float windStrength = clamp(uWindSpeed / 15.0, 0.0, 1.0);
+          return (s - 0.5) * windStrength * 4.0;
+        }
       `)
       .replace('#include <beginnormal_vertex>', /* glsl */`
         #include <beginnormal_vertex>
@@ -1413,9 +1428,27 @@ scene.add(ocean);
         // Signed, not clamped: on dry land this goes negative, and the fragment
         // shader needs that to know where to stop drawing water.
         float depth = ${WATER.surfaceY.toFixed(2)} - landAt(wpos.xz);
-        objectNormal = vec3(0.0, 1.0, 0.0);
-        vWPos  = wpos;
+        // A swell in a hand's depth of water would stand the sheet up through
+        // the sand, so it settles back to flat as the bed comes up to meet it.
+        float waveH = waveAt(wpos.xz) * smoothstep(0.0, 6.0, depth);
+        // Displacement with a flat normal is invisible except on the horizon —
+        // it is the slope that shades. Central-ish differences over a couple of
+        // metres, which is well inside a swell but wider than the ripples the
+        // fragment shader adds on top.
+        float eps  = 2.0;
+        float wdx  = waveAt(wpos.xz + vec2(eps, 0.0)) - waveAt(wpos.xz - vec2(eps, 0.0));
+        float wdz  = waveAt(wpos.xz + vec2(0.0, eps)) - waveAt(wpos.xz - vec2(0.0, eps));
+        objectNormal = normalize(vec3(-wdx, 2.0 * eps, -wdz));
+        wpos.y += waveH;
+        vWPos  = wpos;                   // the shaded position rides the swell
         vCover = depth;                  // metres of water over the bed
+      `)
+      // Where displacement belongs in the stock pipeline: `transformed` exists
+      // by here and <project_vertex> has not run yet, so this is the last point
+      // at which moving the vertex still reaches gl_Position.
+      .replace('#include <displacementmap_vertex>', /* glsl */`
+        #include <displacementmap_vertex>
+        transformed.y += waveH;
       `);
 
     shader.fragmentShader = shader.fragmentShader

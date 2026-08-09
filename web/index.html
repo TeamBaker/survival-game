@@ -1397,6 +1397,7 @@ scene.add(ocean);
     shader.uniforms.uLandMap = { value: landMap };
     shader.uniforms.uWindDir = windDirU;
     shader.uniforms.uWindSpeed = windSpeedU;
+    shader.uniforms.uSunDir = { value: SUN.clone() };   // towards the sun
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */`
@@ -1406,6 +1407,8 @@ scene.add(ocean);
         uniform float uWindSpeed;
         varying vec3 vWPos;
         varying float vCover;
+        varying float vWaveHeight;   // metres above the flat sheet: + crest, - trough
+        varying vec3  vGNorm;        // the swell's own normal, before the ripples
         ${NOISE_GLSL}
         ${LAND_GLSL}
 
@@ -1513,6 +1516,10 @@ scene.add(ocean);
         wpos += gDisp;
         vWPos  = wpos;                   // the shaded position rides the swell
         vCover = depth + gDisp.y;        // metres of water over the bed
+        // Both already carry the depth/wind fade, so a calm or a shallow gets
+        // no crest foam and no glow without the fragment stage asking twice.
+        vWaveHeight = gDisp.y;
+        vGNorm = objectNormal;
       `)
       // Where displacement belongs in the stock pipeline: `transformed` exists
       // by here and <project_vertex> has not run yet, so this is the last point
@@ -1531,8 +1538,11 @@ scene.add(ocean);
         uniform float uTime;
         uniform vec2  uWindDir;
         uniform float uWindSpeed;
+        uniform vec3  uSunDir;
         varying vec3 vWPos;
         varying float vCover;
+        varying float vWaveHeight;
+        varying vec3  vGNorm;
         ${NOISE_GLSL}
         ${SEA_PALETTE}
 
@@ -1610,9 +1620,48 @@ scene.add(ocean);
 
           foam = clamp(shoreFoam + caps, 0.0, 1.0);
 
+          // --- foam riding the crests of the swell ---
+          // The caps above only know about the wind field, so they drift across
+          // the waves rather than sitting on them. This one reads the swell
+          // itself: water breaks where the face is both high *and* steep, which
+          // on a trochoid is the last few metres before the crest and nowhere
+          // else. Height alone would whiten whole wave tops; slope alone would
+          // pick out every ripple in the trough as well.
+          float crestFoam = 0.0;
+          {
+            float heightFoam = smoothstep(1.0, 3.5, vWaveHeight);
+            // vGNorm is the swell's normal with the ripples left off, so this is
+            // the tilt of the wave face and not of the chop sitting on it.
+            float steepness = 1.0 - vGNorm.y;          // 0 flat, 1 vertical
+            float slopeFoam = smoothstep(0.15, 0.45, steepness);
+            crestFoam = heightFoam * slopeFoam;
+
+            // Neat crests read as plastic. Breaking the band up with noise, and
+            // letting a second slower field wash over it, gives the patchy
+            // torn-up edge that water actually has.
+            crestFoam *= smoothstep(0.2, 0.8, fbmC(vWPos.xz * 0.04 + vec2(uTime * 0.1, uTime * 0.07)));
+            crestFoam *= 0.7 + 0.3 * fbmC(vWPos.xz * 0.08 + uWindDir * uTime * 0.3);
+          }
+          foam = clamp(foam + crestFoam * windStrength, 0.0, 1.0);
+
           float d = max(vCover, 0.0);
-          vec3 water = mix(SEA_SHALLOW, SEA_DEEP, smoothstep(0.3, 9.0, d));
-          diffuseColor.rgb = mix(water, SEA_FOAM, foam);
+          // Colour by height as well as by depth: a trough is looking down
+          // through the whole water column and goes nearly black, a crest is a
+          // thin sheet with light coming through it and goes turquoise. That
+          // spread between the two is most of what gives a swell its volume.
+          float heightColor = smoothstep(-2.0, 3.0, vWaveHeight);
+          vec3 deepColor  = vec3(0.01, 0.06, 0.12);
+          vec3 midColor   = mix(SEA_SHALLOW, SEA_DEEP, smoothstep(0.3, 9.0, d));
+          vec3 crestColor = vec3(0.05, 0.25, 0.30);
+          // The shallows keep their sandy colour — the height ramp only takes
+          // over once there is enough water under it to be dark in the first place.
+          vec3 water = mix(midColor, mix(deepColor, crestColor, heightColor),
+                           smoothstep(1.0, 8.0, d));
+
+          // Not quite white: foam is water with air in it, so it keeps a little
+          // of the sky's blue rather than reading as paint.
+          vec3 foamColor = mix(SEA_FOAM, vec3(0.95, 0.97, 1.0), 0.3);
+          diffuseColor.rgb = mix(water, foamColor, foam);
 
           // Thin water lets the sand through and the very edge fades out
           // completely, which is what keeps the wash from ending in a hard line.
@@ -1622,7 +1671,7 @@ scene.add(ocean);
       `)
       .replace('#include <roughnessmap_fragment>', /* glsl */`
         #include <roughnessmap_fragment>
-        roughnessFactor = mix(roughnessFactor, 0.86, foam);   // foam is not a mirror
+        roughnessFactor = mix(roughnessFactor, 0.90, foam);   // foam is not a mirror
       `)
       // The sheet is still geometrically flat — what tilts is the shading
       // normal, driven by the slope of the wind field. That is enough to break
@@ -1647,6 +1696,32 @@ scene.add(ocean);
             // roughening on top of the faces, not the faces.
             normal = normalize(normal + vec3(-wndx, 0.0, -wndz) * (windStrength * near * 2.0));
           }
+        }
+      `)
+      // Subsurface scattering, faked. With the sun behind a crest the water is
+      // thin enough to light up from the far side, and the wave glows green
+      // instead of going into shadow. It has to be added as *emission*, not
+      // mixed into the albedo: the whole point is that it fires where the
+      // surface is turned away from the sun and the direct term has given up.
+      .replace('#include <emissivemap_fragment>', /* glsl */`
+        #include <emissivemap_fragment>
+        {
+          vec3 viewDir = normalize(cameraPosition - vWPos);
+          // uSunDir points *at* the sun, so -uSunDir is the way its light
+          // travels; where that runs towards the eye, we are looking into a
+          // back-lit face.
+          float sunBehind = max(0.0, dot(-normalize(uSunDir), viewDir));
+          // Only the crests: a trough is looking through the full column and
+          // nothing gets through it.
+          float heightMask = smoothstep(0.5, 3.0, vWaveHeight);
+          float thinWater  = smoothstep(0.0, 2.0, vWaveHeight) * 0.5;
+          float windStrength = clamp(uWindSpeed / 15.0, 0.0, 1.0);
+          // Foam is opaque froth — light stops at it — and the shallows have
+          // sand behind them rather than more water.
+          float sss = sunBehind * heightMask * thinWater * 1.5
+                    * (1.0 - foam) * smoothstep(1.0, 8.0, max(vCover, 0.0));
+          vec3 sssColor = mix(vec3(0.1, 0.4, 0.35), vec3(0.2, 0.6, 0.5), sunBehind);
+          totalEmissiveRadiance += sssColor * sss * windStrength;
         }
       `);
   };

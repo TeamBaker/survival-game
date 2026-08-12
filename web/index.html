@@ -596,22 +596,24 @@ const inWaterColumn = () => true;
 // texel per column of it.
 const BLOCK      = 0.2;
 // Nominal radius of the land mass. The shoreline is a noisy fraction of this —
-// somewhere around 12-19 metres out — so the island runs roughly 150 blocks
-// across, with headlands and bays rather than a clean circle.
-const ISLAND_R   = 20;
-const ISLAND_PEAK = 6.5;      // scale of the relief; summits land around 5 m
+// somewhere around 40-55 metres out, depending on whether you are on a headland
+// or in a bay — so dry land runs a bit under 500 blocks across. That is a couple
+// of minutes' walk end to end rather than a bump you can see all of at once.
+const ISLAND_R   = 52;
+const ISLAND_PEAK = 12.0;     // scale of the relief; summits land around 10 m
 // Half-width of the generated field, in metres. Wide enough that the island's
 // mask has died to nothing by the edge, which is what lets the sea shader hand
 // off from the baked heightmap to a plain analytic seabed without a seam.
-const GEN_R      = 24;
-const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (240)
+const GEN_R      = 64;
+const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (640)
 // The shallowest sea floor still worth building blocks for. Below this the water
 // has already swallowed everything, so the island simply stops.
 const SEA_CUT    = -1.35;
 const SEABED_DEPTH = 16;     // how far the sea floor drops away offshore
 // How far a swell has to travel from the island before it is at full open-water
-// size, so the water inshore of that stays readable.
-const CALM_R     = 30;
+// size, so the water inshore of that stays readable. Scaled with the island, so
+// the calm belt still starts just outside the surf rather than halfway inland.
+const CALM_R     = 88;
 
 const SUN = new THREE.Vector3(0.45, 0.72, 0.52).normalize();
 const SKY_ZENITH  = new THREE.Color(0x1a56b8);
@@ -999,20 +1001,25 @@ const SEA_PALETTE = /* glsl */`
 // ---------------------------------------------------------------------------
 // The island — a procedural heightmap, quantised into BLOCK-sized cubes.
 //
-// It is built once, at load, in four passes:
+// It is built once, at load, in five passes:
 //
 //   1. sample islandHeight() over a GEN_N x GEN_N field of columns;
 //   2. quantise each column to a block level and pick its surface material from
 //      elevation and slope;
-//   3. build one THREE.InstancedMesh per material out of the result;
+//  2b. fill the voxel store — the material of every block in the volume, not
+//      just the one on top, which is what anything digging into the island will
+//      read and write;
+//   3. build the THREE.InstancedMeshes, per chunk and per material;
 //   4. hand the same numbers to the sea (as a texture, so the water knows where
 //      to shoal and break) and to cannon (as a heightfield, so you can walk).
 //
-// Only what could actually be seen is built: the top block of every column, plus
-// however far its skirt has to reach to cover the drop to its lowest neighbour.
-// A vertical run inside that skirt is one box rather than a stack of them — the
-// cubes share their faces and their colour, so there is nothing on the outside
-// of the run to tell the two apart.
+// The store knows about every block; only what could actually be *seen* is
+// built into a mesh — the top block of every column, plus however far its skirt
+// has to reach to cover the drop to its lowest neighbour. A vertical run inside
+// that skirt is one box rather than a stack of them: the cubes share their faces
+// and their colour, so there is nothing on the outside of the run to tell the
+// two apart. Dig a hole and the store is the thing that already knows what is in
+// the walls of it; the meshes and the collider would have to be rebuilt.
 // ---------------------------------------------------------------------------
 
 // ----- value noise, on the seed the weather already uses -----
@@ -1054,6 +1061,16 @@ const sstep = (a, b, x) => smooth((x - a) / (b - a));
 // the two agree the shoreline is.
 const SHORE_DROP = 0.55;
 const SHELF_DROP = 3.4;
+// How wide a belt the shoreline mask runs out over, in metres — the coast, in
+// other words. Fixed rather than a fraction of ISLAND_R: a coast is a coast
+// whatever the island behind it is, and scaling this with the radius is what
+// flattens a big island into a saucer with no cliff anywhere on it.
+const COAST_W = 20;
+// Frequency of the radius warp, tied to the island so headlands and bays come
+// out proportional to it.
+const WARP_F  = 0.80 / ISLAND_R;
+// How hard the relief bands are stretched about their midpoint — see islandHeight.
+const RELIEF_GAIN = 1.7;
 
 // Metres above sea level at (x, z), before quantisation. Three things stacked: a
 // noisy radial mask that decides where there is land at all, the relief inside
@@ -1062,16 +1079,46 @@ function islandHeight(x, z) {
   const r = Math.hypot(x, z);
   // The shoreline. Warping the *radius* rather than the height is what turns a
   // disc into headlands and bays without ever breaking the island into pieces.
-  const rr = r + fbm2(x * 0.040 + 11.2, z * 0.040 - 4.7, 3) * (ISLAND_R * 0.18);
-  const m  = 1 - sstep(ISLAND_R * 0.30, ISLAND_R * 1.02, rr);
+  // Two warps: the first swings the whole shoreline in and out by a quarter of
+  // the island's radius, which is what makes the headlands and the bays; the
+  // second is a few metres at a third of the scale, for the coves and points
+  // along them. One warp on an island this size only reads as a dented disc.
+  // The first one's frequency scales with the island so the bays come out the
+  // same shape at any size — held fixed, a wider island would only get a more
+  // crenellated edge, and the extra folding per metre would turn the whole
+  // coast into cliff.
+  const rr = r
+    + fbm2(x * WARP_F + 11.2, z * WARP_F - 4.7, 3) * (ISLAND_R * 0.26)
+    + fbm2(x * WARP_F * 3.5 - 3.3, z * WARP_F * 3.5 + 6.1, 3) * 3.2;
+  // How far the mask takes to run out varies along the coast, and that variation
+  // is what decides what kind of coast it is: where it is wide the land shelves
+  // gently into the water and the wash lays down a beach, where it is narrow the
+  // ground runs out in a few metres and the shore is a bluff with rock in its
+  // face. One width for the whole island gives one or the other, never both.
+  const cw = COAST_W * (1 + 0.55 * fbm2(x * WARP_F * 1.7 - 5.1, z * WARP_F * 1.7 + 8.3, 2));
+  const m  = 1 - sstep(ISLAND_R * 1.02 - cw, ISLAND_R * 1.02, rr);
 
-  const hills  = fbm2(x * 0.048, z * 0.048, 4) * 0.5 + 0.5;   // ridges and valleys
-  const detail = fbm2(x * 0.180, z * 0.180, 3) * 0.5 + 0.5;   // metre-scale bumps
+  // Relief in three bands, because one band of noise over a hundred metres of
+  // island reads as a rough texture rather than as terrain. The broad band is
+  // most of the height and decides where the high ground and the valleys are —
+  // features you pick out from offshore. The ridges cut into it at the scale you
+  // notice while walking over one. The detail is the metre-scale roughness that
+  // stops a hillside coming out as a smooth ramp.
+  const broad  = fbm2(x * 0.030, z * 0.030, 3) * 0.5 + 0.5;
+  const ridges = fbm2(x * 0.080, z * 0.080, 3) * 0.5 + 0.5;
+  const detail = fbm2(x * 0.180, z * 0.180, 3) * 0.5 + 0.5;
 
+  // Summed octaves of value noise cluster hard around their mean — left as they
+  // come, the two bands above vary by about a metre over the whole island and it
+  // comes out a mesa: a flat table with every bit of the relief in its rim.
+  // Stretching them about the midpoint is what turns that into hills, and the
+  // smoothstep doing the stretching also flattens the ends it pushes past 0 and
+  // 1, so the summits get tops and the valleys get floors instead of points.
+  const relief = smooth(0.5 + RELIEF_GAIN * (0.55 * broad + 0.45 * ridges - 0.5));
   // Just under linear in the mask, so the interior is rolling ground the relief
   // can carve hills and valleys out of. Squaring it instead would make a cone,
   // and a cone has no flat anywhere to stand on.
-  let h = Math.pow(m, 0.90) * ISLAND_PEAK * (0.26 + 0.74 * hills)
+  let h = Math.pow(m, 0.90) * ISLAND_PEAK * (0.12 + 0.88 * relief)
         + m * detail * 0.50;
   // The shore: a flat drop, plus one that bites hardest where the mask has
   // already faded, so the land runs out under the water rather than at a wall.
@@ -1100,6 +1147,9 @@ function fieldAt(i, j) {
 
 // ----- pass 2: block levels and materials -----
 const SAND = 0, DIRT = 1, ROCK = 2;
+// Not a terrain material: the value the voxel store below uses for a block that
+// is not there. It sorts after the three real ones so `m < AIR` means solid.
+const AIR = 3;
 const NO_COLUMN = -32768;
 // Level k is the block filling y from k*BLOCK to (k+1)*BLOCK, so level -1 is the
 // first one under water.
@@ -1111,14 +1161,17 @@ const SLOPE_STEP = 6;      // blocks either side of a column that its slope is r
 // Minecraft-ish banding, except that the thresholds themselves wander: without
 // that the boundary between two materials is a contour line, and nothing in a
 // landscape has one of those.
+//
+// Three rules, and the order matters. Steep beats everything, so a cliff is bare
+// rock however high or low it is; under that, low ground is beach; everything
+// else — including the tops, which used to come out grey — is soil. The only
+// rock you can see from above is therefore a face you could not have stood on.
 function pickMaterial(h, slope, x, z) {
   const n = vnoise2(x * 0.35, z * 0.35);           // -1 .. 1, ~3 m features
   if (h < -0.2) return SAND;                       // the sea floor and the wash
-  if (slope > 1.25 + n * 0.25) return ROCK;        // anything you could not stand on
+  if (slope > 1.15 + n * 0.25) return ROCK;        // anything you could not stand on
   if (h < 1.25 + n * 0.55) return SAND;            // the beach, up to knee height
-  if (h > 3.00 + n * 0.90) return ROCK;            // and the tops
-  if (slope > 0.85 + n * 0.15) return ROCK;        // outcrops on the steeper flanks
-  return DIRT;                                     // everything in between
+  return DIRT;                                     // all the gentle ground above it
 }
 
 {
@@ -1142,17 +1195,120 @@ function pickMaterial(h, slope, x, z) {
   }
 }
 
+// ----- pass 2b: the voxel store -----
+// Everything above is surface only: the top block of each column and what it is
+// made of. This is the whole solid volume — the material of every block in every
+// column, from bedrock up to the surface — so that something cutting into the
+// island can ask what is under the block it just took out rather than guess.
+// Nothing digs yet; this is the data a digger would need.
+//
+// The layout is one flat Uint8Array with a per-column offset into it, not an
+// array per column: at GEN_N^2 columns that would be half a million small
+// objects, and the whole point of the store is that it stays cheap enough to
+// keep resident. Every column starts at the same VOX_FLOOR, so the bottom of the
+// world is flat and a level maps to an index by subtraction alone.
+const VOX_FLOOR = Math.round(-9 / BLOCK);   // level -45: bedrock, well under the deepest cut
+// Blocks of surface material before it turns to rock. Thick on purpose: at 20 cm
+// a block this is over a metre and a half of soil, so a gentle hillside is dirt
+// the whole way through anything you would dig by hand, and a cut face shows a
+// band of earth over stone rather than one brown pixel.
+const SOIL_DEPTH = 8;
+
+// Where column k's blocks start in voxMat, or -1 where there is no column.
+const voxOff = new Int32Array(GEN_N * GEN_N).fill(-1);
+let voxCount = 0;
+for (let k = 0; k < GEN_N * GEN_N; k++) {
+  if (topLvl[k] === NO_COLUMN) continue;
+  voxOff[k] = voxCount;
+  voxCount += topLvl[k] - VOX_FLOOR + 1;
+}
+// voxMat[voxOff[k] + lvl - VOX_FLOOR] is the material of block `lvl` in column k.
+const voxMat = new Uint8Array(voxCount);
+for (let k = 0; k < GEN_N * GEN_N; k++) {
+  const top = topLvl[k];
+  if (top === NO_COLUMN) continue;
+  const o = voxOff[k] - VOX_FLOOR, surf = topMat[k];
+  // Sand or dirt in a band under the surface, and bedrock under that whatever is
+  // on top — which is what gives a sand-capped headland its grey base.
+  const soilLo = Math.max(VOX_FLOOR, top - SOIL_DEPTH);
+  voxMat.fill(ROCK, voxOff[k], o + soilLo);
+  voxMat.fill(surf, o + soilLo, o + top + 1);
+}
+
+// ----- reading and writing the store -----
+// Levels are the ones topLvl is in: level k is the block filling y from k*BLOCK
+// to (k+1)*BLOCK, so level -1 is the first one under water.
+const lvlOfY = (y) => Math.floor(y / BLOCK);
+const colI = (x) => Math.floor((x + GEN_R) / BLOCK);
+const colJ = (z) => Math.floor((z + GEN_R) / BLOCK);
+
+// The material at (i, j, lvl), or AIR for anything outside the solid volume —
+// so a caller can walk a column off either end without bounds-checking first.
+function voxelAt(i, j, lvl) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
+  const k = j * GEN_N + i;
+  const top = topLvl[k];
+  if (top === NO_COLUMN || lvl < VOX_FLOOR || lvl > top) return AIR;
+  return voxMat[voxOff[k] + lvl - VOX_FLOOR];
+}
+const voxelAtWorld = (x, y, z) => voxelAt(colI(x), colJ(z), lvlOfY(y));
+
+// Writing one back. This is the whole of what a shovel would need from the data
+// side; the meshes and the collider are baked, so a caller that changes a block
+// still has to rebuild those before it shows up. Returns what was there.
+function setVoxel(i, j, lvl, m) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
+  const k = j * GEN_N + i;
+  const top = topLvl[k];
+  if (top === NO_COLUMN || lvl < VOX_FLOOR || lvl > top) return AIR;
+  const p = voxOff[k] + lvl - VOX_FLOOR;
+  const was = voxMat[p];
+  voxMat[p] = m;
+  return was;
+}
+
+// The highest block in a column that is still there. Identical to topLvl until
+// something digs the top off, which is the point of asking through here.
+function solidTopAt(i, j) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return NO_COLUMN;
+  const k = j * GEN_N + i;
+  const top = topLvl[k];
+  if (top === NO_COLUMN) return NO_COLUMN;
+  const o = voxOff[k] - VOX_FLOOR;
+  for (let lvl = top; lvl >= VOX_FLOOR; lvl--) if (voxMat[o + lvl] !== AIR) return lvl;
+  return NO_COLUMN;
+}
+
+// A whole column, for anyone who wants to read down it: a view onto the store
+// running from `base` upwards, one entry per level. It aliases the store, so
+// writes through setVoxel show up in a view already taken.
+function voxelColumn(i, j) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return null;
+  const k = j * GEN_N + i;
+  const top = topLvl[k];
+  if (top === NO_COLUMN) return null;
+  return { base: VOX_FLOOR, top, materials: voxMat.subarray(voxOff[k], voxOff[k] + top - VOX_FLOOR + 1) };
+}
+
 // ----- pass 3: the instanced meshes -----
 const RIM_DEPTH  = 5;    // blocks of skirt on a column with open water beside it
 const MAX_DEPTH  = 24;   // and the most any column will ever draw
-const SOIL_DEPTH = 3;    // blocks of surface material before it turns to rock
 
-// Per material, a flat list of runs: x, y-centre, z, height in blocks, tint.
-const runs = [[], [], []];
-function pushRun(m, cx, cz, lo, hi, t) {
+// The island is far too wide to be one mesh per material now: a single instanced
+// mesh has a single bounding sphere, so every block in it is submitted on every
+// frame and on every shadow pass whether or not it is behind you. Splitting it
+// into a grid of chunks costs a few dozen draw calls and buys back real frustum
+// culling, which on the ground — where most of the island is out of shot — is
+// most of the geometry.
+const CHUNK   = 120;                        // columns per chunk side (24 m)
+const CHUNK_N = Math.ceil(GEN_N / CHUNK);
+// Per chunk, per material, a flat list of runs: x, y-centre, z, height, tint.
+const runs = [];
+for (let c = 0; c < CHUNK_N * CHUNK_N; c++) runs.push([[], [], []]);
+function pushRun(c, m, cx, cz, lo, hi, t) {
   const n = hi - lo + 1;
   if (n <= 0) return;
-  runs[m].push(cx, (lo + n * 0.5) * BLOCK, cz, n, t);
+  runs[c][m].push(cx, (lo + n * 0.5) * BLOCK, cz, n, t);
 }
 
 for (let j = 0; j < GEN_N; j++) {
@@ -1174,20 +1330,29 @@ for (let j = 0; j < GEN_N; j++) {
       const vv = v === NO_COLUMN ? top - RIM_DEPTH : v;
       if (vv < low) low = vv;
     }
-    const bottom = Math.min(top, Math.max(low + 1, top - MAX_DEPTH));
+    const bottom = Math.max(VOX_FLOOR, Math.min(top, Math.max(low + 1, top - MAX_DEPTH)));
 
-    const m = topMat[k], t = tint[k];
+    const c = ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
+    const t = tint[k], o = voxOff[k] - VOX_FLOOR;
     const cx = colX(i), cz = colZ(j);
 
     // The top block on its own, so its tint reads as one block from above while
     // the run under it reads as the face of the column.
-    pushRun(m, cx, cz, top, top, t);
-    if (bottom < top) {
-      const soilLo = Math.max(bottom, top - SOIL_DEPTH);
-      pushRun(m, cx, cz, soilLo, top - 1, t * 0.94);
-      // Deeper than a few blocks it is bedrock whatever is on the surface, which
-      // is what gives the sea cliffs their grey base under a sand-topped headland.
-      if (soilLo > bottom) pushRun(ROCK, cx, cz, bottom, soilLo - 1, t * 0.86);
+    pushRun(c, voxMat[o + top], cx, cz, top, top, t);
+    // Under it, the store's own column, collapsed into runs: a vertical run of
+    // one material is one box rather than a stack of them — the cubes share
+    // their faces and their colour, so there is nothing on the outside of the
+    // run to tell the two apart. The soil band is shaded a shade off the rock
+    // under it even where both are rock, so a cliff still reads as a cliff.
+    let lvl = top - 1;
+    while (lvl >= bottom) {
+      const m = voxMat[o + lvl];
+      const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
+      let lo = lvl;
+      while (lo > bottom && voxMat[o + lo - 1] === m
+             && (top - lo + 1 <= SOIL_DEPTH ? 1 : 0) === band) lo--;
+      if (m !== AIR) pushRun(c, m, cx, cz, lo, lvl, t * (band ? 0.94 : 0.86));
+      lvl = lo - 1;
     }
   }
 }
@@ -1203,31 +1368,38 @@ const blockGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 const terrain = new THREE.Group();
 scene.add(terrain);
 
-let blockCount = 0;
+let blockCount = 0, instanceCount = 0;
 {
   const mtx = new THREE.Matrix4();
   const col = new THREE.Color();
-  for (let m = 0; m < 3; m++) {
-    const a = runs[m];
-    const n = a.length / 5;
-    const im = new THREE.InstancedMesh(blockGeo, TERRAIN_MATS[m], n);
-    for (let q = 0; q < n; q++) {
-      const o = q * 5;
-      mtx.makeScale(1, a[o + 3], 1);               // one run, however many blocks tall
-      mtx.setPosition(a[o], a[o + 1], a[o + 2]);
-      im.setMatrixAt(q, mtx);
-      col.setScalar(a[o + 4]);
-      im.setColorAt(q, col);
-      blockCount += a[o + 3];
+  for (let c = 0; c < runs.length; c++) {
+    for (let m = 0; m < 3; m++) {
+      const a = runs[c][m];
+      const n = a.length / 5;
+      if (n === 0) continue;                       // most chunks are all sea
+      const im = new THREE.InstancedMesh(blockGeo, TERRAIN_MATS[m], n);
+      for (let q = 0; q < n; q++) {
+        const o = q * 5;
+        mtx.makeScale(1, a[o + 3], 1);             // one run, however many blocks tall
+        mtx.setPosition(a[o], a[o + 1], a[o + 2]);
+        im.setMatrixAt(q, mtx);
+        col.setScalar(a[o + 4]);
+        im.setColorAt(q, col);
+        blockCount += a[o + 3];
+      }
+      instanceCount += n;
+      im.instanceMatrix.needsUpdate = true;
+      if (im.instanceColor) im.instanceColor.needsUpdate = true;
+      im.receiveShadow = true;
+      // Casting is a second full pass over every block. A phone gets the sun's
+      // shading and the player's shadow, but not the island shadowing itself.
+      im.castShadow = !isTouchDevice;
+      // The per-chunk bound is the whole reason for the split — without it three
+      // quarters of the island would be drawn from behind the camera.
+      if (im.computeBoundingSphere) im.computeBoundingSphere();
+      terrain.add(im);
     }
-    im.instanceMatrix.needsUpdate = true;
-    if (im.instanceColor) im.instanceColor.needsUpdate = true;
-    im.receiveShadow = true;
-    // Casting is a second full pass over every block. A phone gets the sun's
-    // shading and the player's shadow, but not the island shadowing itself.
-    im.castShadow = !isTouchDevice;
-    if (im.computeBoundingSphere) im.computeBoundingSphere();
-    terrain.add(im);
+    runs[c] = null;
   }
   runs.length = 0;
 }
@@ -1238,7 +1410,12 @@ let blockCount = 0;
 // smooth sandy bed on the same heightmap, held below the deepest block anywhere
 // the island exists so it can never poke up through one.
 {
-  const SPAN = 104, SEG = 128;
+  // Wide enough to still be under the analytic sea floor where that bottoms out
+  // (ISLAND_R * 1.95), so the flat deep bed further out never shows a seam. The
+  // segment count stays where it was even though the span more than doubled:
+  // every vertex is another islandHeight(), the bed is smooth and underwater,
+  // and two-metre cells are indistinguishable through that much water.
+  const SPAN = 250, SEG = 128;
   const geo = new THREE.PlaneGeometry(SPAN, SPAN, SEG, SEG);
   const pos = geo.attributes.position;
   for (let v = 0; v < pos.count; v++) {
@@ -1258,10 +1435,12 @@ let blockCount = 0;
 // ----- pass 4a: the land texture the sea reads -----
 // One texel per column, aligned on the column centres, so the water's idea of
 // where the ground is agrees with the blocks it can see. Height is packed into a
-// byte over LAND_MIN .. LAND_MIN + LAND_SPAN: seven centimetres of quantisation
-// near the shore, and anything deeper than about nine metres is already "deep"
-// as far as a swell is concerned.
-const LAND_MIN = -10, LAND_SPAN = 18;
+// byte over LAND_MIN .. LAND_MIN + LAND_SPAN: eight centimetres of quantisation
+// near the shore, which is the only place the precision matters. Both ends of
+// the range clip, and neither end minds: nine metres down is already "deep" to
+// any swell, and the island's summits are ten metres clear of the water, which
+// the sea reads as "dry" whether it thinks they are ten metres up or twelve.
+const LAND_MIN = -10, LAND_SPAN = 20;
 const landTex = (() => {
   const data = new Uint8Array(GEN_N * GEN_N * 4);
   for (let k = 0; k < GEN_N * GEN_N; k++) {
@@ -1302,6 +1481,9 @@ const LAND_GLSL = /* glsl */`
 // steps, but the ramp is 20 cm long and the player walks on spheres of twice
 // that radius — it climbs exactly like a stack of cubes and never catches on an
 // edge. Two levels apart is 63 degrees, past maxSlope, and stays a cliff.
+//
+// Baked from topLvl once, like the meshes: if blocks ever start coming out of
+// the island, this body has to be rebuilt along with them.
 const HF_FLOOR = -3.2;         // where the field bottoms out under open water
 {
   const data = [];
@@ -1326,18 +1508,20 @@ const HF_FLOOR = -3.2;         // where the field bottoms out under open water
 }
 
 // Where the ground is, for anything that needs to ask — the top of the block you
-// would be standing on, or the sea floor where there is no block.
+// would be standing on, or the sea floor where there is no block. It reads the
+// voxel store rather than topLvl so that it keeps answering correctly once
+// blocks can be taken out of the top of a column.
 function groundHeightAt(x, z) {
-  const i = Math.floor((x + GEN_R) / BLOCK);
-  const j = Math.floor((z + GEN_R) / BLOCK);
+  const i = colI(x), j = colJ(z);
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return -SEABED_DEPTH;
-  const k = j * GEN_N + i;
-  return topLvl[k] === NO_COLUMN ? Math.max(hRaw[k], HF_FLOOR) : (topLvl[k] + 1) * BLOCK;
+  const top = solidTopAt(i, j);
+  return top === NO_COLUMN ? Math.max(hRaw[j * GEN_N + i], HF_FLOOR) : (top + 1) * BLOCK;
 }
 const onLand = (x, z) => groundHeightAt(x, z) > WATER.surfaceY;
 
-// The summit sits around the origin, so the player starts on the column there
-// with their feet a couple of centimetres clear of the block.
+// The origin is well inland whatever the seed does with the relief, so the
+// player starts on the column there with their feet a couple of centimetres
+// clear of whichever block happens to be on top of it.
 SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
 
 
@@ -3391,7 +3575,15 @@ window.hermes = {
   SEED, groundHeightAt, onLand,
   // The island: the block size everything is quantised to, the raw heightmap
   // behind it, and the meshes it was built into.
-  BLOCK, islandHeight, terrain, blockCount, SPAWN,
+  BLOCK, islandHeight, terrain, blockCount, instanceCount, SPAWN,
+  // The voxel store — the material of every block in the volume, not just the
+  // surface, which is what a digging system would work against. voxelAtWorld
+  // takes metres; the rest take column indices and levels. SAND/DIRT/ROCK/AIR
+  // are the material values. Editing through setVoxel changes what the world
+  // *is* but not what is drawn: the meshes and the collider are baked.
+  SAND, DIRT, ROCK, AIR, VOX_FLOOR, SOIL_DEPTH, voxCount,
+  voxelAt, voxelAtWorld, voxelColumn, setVoxel, solidTopAt,
+  colI, colJ, colX, colZ, lvlOfY,
   // The island is bare by design — these are how you put something on it from
   // the console, collider included.
   addBox, addSphere, mat, objects,

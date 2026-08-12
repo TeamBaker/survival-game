@@ -701,29 +701,27 @@ const inWaterColumn = () => true;
 // physics surface is sampled on it, and the land texture the sea reads has one
 // texel per column of it.
 //
-// Half a metre, not the 20 cm it used to be. A block only reads as a *block* in
-// proportion to the person standing on it: at 20 cm the player was eight and a
-// half cubes tall and every hillside came out as a fine sandy grain — a
-// realistic landscape shrunk down, which is exactly what it looked like. At 50 cm
-// the player is a little over three cubes, a terrace step is a step you can see
-// from across the bay, and the whole field is 6x cheaper to build, which is what
-// pays for voxelising the sea floor below.
-const BLOCK      = 0.5;
+// Fixed at 20 cm. Everything downstream is expressed in metres and divided by
+// this, so nothing else has to be touched to keep the world the same size — but
+// the constants counted in *blocks* (soil depth, skirt depths, chunk width,
+// slope stencil) are all scaled to it below, and moving this without moving
+// those changes the island rather than just its resolution.
+const BLOCK      = 0.2;
 // Nominal radius of the land mass. The shoreline is a noisy fraction of this —
 // somewhere around 40-55 metres out, depending on whether you are on a headland
-// or in a bay — so dry land runs a bit under 200 blocks across. That is a couple
-// of minutes' walk end to end rather than a bump you can see all of at once.
+// or in a bay — so dry land runs a bit under a hundred metres across. That is a
+// couple of minutes' walk end to end rather than a bump you can see all at once.
 const ISLAND_R   = 52;
-// Scale of the relief. Higher than it was, because terracing spends height: the
-// snap to the nearest band rounds the summits down, and 12 left the island with
-// four plateau levels between the water and the top. At 16 there are six, which
-// is enough for the terraces to read as terraces from a distance.
-const ISLAND_PEAK = 16.0;
+// Scale of the relief; summits land around 10 m. Back down from the 16 the
+// terraced field wanted: snapping to bands rounded every summit down, so the
+// peak had to be inflated to get the height back. Nothing rounds it down now, and
+// at 16 the same relief comes out as steep sided hills rather than rolling ones.
+const ISLAND_PEAK = 12.0;
 // Half-width of the generated field, in metres. Everything inside this is cubes,
 // sea floor included, so it has to reach well past the shoreline: at the rim the
 // bed is already twenty metres down, which is deeper than the water is legible.
 const GEN_R      = 96;
-const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (384)
+const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (960)
 const SEABED_DEPTH = 16;     // how far the sea floor drops away offshore
 // How far a swell has to travel from the island before it is at full open-water
 // size, so the water inshore of that stays readable. Scaled with the island, so
@@ -1137,7 +1135,7 @@ const SEA_PALETTE = /* glsl */`
 // the walls of it; the mesh chunk and the collider column are patched from it.
 //
 // There is no sea-level cut-off anywhere in here. The field is cubes from the
-// summit to the rim, so the island steps down into the water in terraces and the
+// summit to the rim, so the island runs down into the water in blocks and the
 // sea floor under it is the same blocks the beach is — which is the point of a
 // voxel world, and is what a smooth bed stitched onto the bottom of one destroys.
 // ---------------------------------------------------------------------------
@@ -1192,40 +1190,14 @@ const WARP_F  = 0.80 / ISLAND_R;
 // How hard the relief bands are stretched about their midpoint — see islandHeight.
 const RELIEF_GAIN = 1.9;
 
-// ----- terracing -----
-// The single thing that decides whether this reads as a voxel world or as a
-// smooth landscape that happens to be drawn out of cubes. Height is snapped into
-// bands TERRACE_H tall with a short ramp between them, so the ground is flat over
-// most of its area and does all of its climbing in a few places.
-//
-// What comes out of that depends on how steep the underlying relief already was,
-// which is the point: where the hillside is gentle the ramp is spread over
-// several metres and you get a shallow staircase you can walk up; where it is
-// steep the same ramp is squeezed into half a metre and you get a sheer four
-// block face. Plateaus and cliffs out of one rule, with nothing in between.
-const TERRACE_H = BLOCK * 4;   // 2 m — four blocks from one plateau to the next
-const RISER     = 0.18;        // fraction of a band spent climbing rather than flat
-function terrace(h) {
-  const t = h / TERRACE_H;
-  const f = Math.floor(t);
-  // smooth() clamps, so everything outside the riser window lands exactly on a
-  // band edge — that exactness is what makes the flats actually flat once the
-  // column below quantises them to a block level.
-  return (f + smooth((t - f - (0.5 - RISER * 0.5)) / RISER)) * TERRACE_H;
-}
-
 // Metres above sea level at (x, z), before quantisation. Three things stacked: a
 // noisy radial mask that decides where there is land at all, the relief inside
-// it, and the bed falling away outside it — and then the whole stack is
-// terraced, sea floor included, so nothing anywhere is a smooth curve.
+// it, and the bed falling away outside it — and nothing else. The field is
+// continuous everywhere: no snapping to height bands, no terracing, no plateaus
+// with a riser between them. The only thing that makes steps out of it is the
+// quantisation to block levels in pass 2, which at 20 cm a block is a grain you
+// read as texture on a hillside rather than as a staircase.
 function islandHeight(x, z) {
-  return terrace(islandSmooth(x, z));
-}
-
-// The same field before terracing. Nothing renders from this — it is what the
-// terrace bands are cut out of, and it is kept separate only because it reads
-// more clearly that way.
-function islandSmooth(x, z) {
   const r = Math.hypot(x, z);
   // The shoreline. Warping the *radius* rather than the height is what turns a
   // disc into headlands and bays without ever breaking the island into pieces.
@@ -1252,10 +1224,10 @@ function islandSmooth(x, z) {
   // 0.18 — six-metre features — with three octaves on top of it, and that band is
   // the reason the island read as noise: it put a bump every couple of metres over
   // every hillside, which after quantisation is a permanent field of one-block
-  // pimples that no amount of terracing can flatten out. What is left is the
-  // shape you pick out from offshore (the broad band) and the shape you notice
-  // while walking over it (the hills). Anything finer than that is now the
-  // terracing's job, and it makes steps out of it rather than fuzz.
+  // pimples. What is left is the shape you pick out from offshore (the broad
+  // band) and the shape you notice while walking over it (the hills) — two
+  // wavelengths, both tens of metres long, which is what makes the ground roll
+  // instead of either stepping or fidgeting.
   const broad = fbm2(x * 0.016 + 3.1, z * 0.016 - 2.4, 2) * 0.5 + 0.5;   // ~60 m
   const hills = fbm2(x * 0.045 - 8.2, z * 0.045 + 5.6, 2) * 0.5 + 0.5;   // ~22 m
 
@@ -1306,12 +1278,10 @@ const NO_COLUMN = -32768;
 const topLvl = new Int16Array(GEN_N * GEN_N).fill(NO_COLUMN);
 const topMat = new Uint8Array(GEN_N * GEN_N);
 const tint   = new Float32Array(GEN_N * GEN_N);
-// Blocks either side of a column that its slope is read over. Three, not the six
-// it used to be: the field is terraced now, so its slope is either zero (a
-// plateau) or the pitch of a riser, and a stencil three metres wide would average
-// the two into a number that is neither. One and a half metres reads the riser
-// it is standing on.
-const SLOPE_STEP = 3;
+// Blocks either side of a column that its slope is read over — 1.2 m, wide
+// enough that the stencil reads the hillside rather than the one-block jitter
+// quantisation leaves on it, narrow enough to still find the face of a bluff.
+const SLOPE_STEP = 6;
 
 // Minecraft-ish banding, except that the thresholds themselves wander: without
 // that the boundary between two materials is a contour line, and nothing in a
@@ -1328,10 +1298,6 @@ function pickMaterial(h, slope, x, z) {
   const n = vnoise2(x * 0.12, z * 0.12);           // -1 .. 1
   if (h < -0.2) return SAND;                       // the sea floor and the wash
   if (slope > 1.05 + n * 0.30) return ROCK;        // anything you could not stand on
-  // Deliberately under the first inland terrace rather than through it. Terracing
-  // puts most of the island on a handful of exact heights, and a threshold that
-  // lands on one of them turns a whole plateau half sand and half dirt in broad
-  // blotches. This catches the shore steps and stops.
   if (h < 1.2 + n * 0.5) return SAND;              // the beach, up to knee height
   return DIRT;                                     // all the gentle ground above it
 }
@@ -1347,8 +1313,8 @@ function pickMaterial(h, slope, x, z) {
       const h = hRaw[k];
       // No cut-off any more: every column in the field gets blocks, however deep
       // the water over it is. The sea floor is the same cubes as the island and
-      // steps down to the deep in the same terraces, so there is nowhere the
-      // world hands off from voxels to a smooth surface.
+      // falls away to the deep on the same field, so there is nowhere the world
+      // hands off from voxels to a smooth surface.
       topLvl[k] = Math.floor(h / BLOCK);
       // |grad h| is the tangent of the slope.
       const dx = (fieldAt(i + SLOPE_STEP, j) - fieldAt(i - SLOPE_STEP, j)) / (2 * SLOPE_STEP * BLOCK);
@@ -1366,21 +1332,23 @@ function pickMaterial(h, slope, x, z) {
 // The shovel below is the thing that reads and writes it.
 //
 // The layout is one flat Uint8Array with a per-column offset into it, not an
-// array per column: at GEN_N^2 columns that would be a hundred thousand small
+// array per column: at GEN_N^2 columns that would be nine hundred thousand small
 // objects, and the whole point of the store is that it stays cheap enough to
 // keep resident. Every column starts at the same VOX_FLOOR, so the bottom of the
 // world is flat and a level maps to an index by subtraction alone.
-const VOX_FLOOR = Math.round(-24 / BLOCK);  // level -48: bedrock, under the deepest sea floor
+const VOX_FLOOR = Math.round(-24 / BLOCK);  // level -120: bedrock, under the deepest sea floor
 // Levels of empty space allocated on top of every column, so a block can be
 // *put back* somewhere higher than the ground was ever generated. Without this
 // the store has no room above the surface and the shovel could only ever fill in
-// holes it had already dug.
-const VOX_HEAD = 12;
-// Blocks of surface material before it turns to rock. At 50 cm a block this is
-// a metre and a half of soil, so a gentle hillside is dirt the whole way through
-// anything you would dig by hand, and a terrace riser shows a band of earth over
-// stone rather than one brown pixel.
-const SOIL_DEPTH = 3;
+// holes it had already dug. Three metres of it: at 20 cm a block the store pays
+// for this on every one of the field's columns, so it buys the stack you would
+// actually build by hand and not a storey more.
+const VOX_HEAD = 15;
+// Blocks of surface material before it turns to rock — a metre and a half of
+// soil, so a gentle hillside is dirt the whole way through anything you would dig
+// by hand, and the face of a bluff shows a band of earth over stone rather than
+// one brown pixel.
+const SOIL_DEPTH = 8;
 
 // The highest level column k has storage for — its generated surface plus the
 // headroom. Above this is permanently air and nothing can be placed there.
@@ -1500,8 +1468,8 @@ function voxelColumn(i, j) {
 }
 
 // ----- pass 3: the instanced meshes -----
-const RIM_DEPTH  = 10;   // blocks of skirt on a column with nothing beside it
-const MAX_DEPTH  = 32;   // and the most any column will ever draw
+const RIM_DEPTH  = 25;   // blocks of skirt on a column with nothing beside it (5 m)
+const MAX_DEPTH  = 80;   // and the most any column will ever draw (16 m)
 
 // The island is far too wide to be one mesh per material: a single instanced
 // mesh has a single bounding sphere, so every block in it is submitted on every
@@ -1510,8 +1478,8 @@ const MAX_DEPTH  = 32;   // and the most any column will ever draw
 // culling, which on the ground — where most of the island is out of shot — is
 // most of the geometry. The split is also the unit the shovel rebuilds in: one
 // edited block redraws its chunk and the ones its neighbours' faces reach into,
-// which is a couple of thousand columns rather than a hundred and fifty thousand.
-const CHUNK   = 48;                         // columns per chunk side (24 m)
+// which is fourteen thousand columns rather than nine hundred thousand.
+const CHUNK   = 120;                        // columns per chunk side (24 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 
@@ -1715,9 +1683,10 @@ const LAND_GLSL = /* glsl */`
 // A cannon heightfield on the same grid, its vertices sitting on the centres of
 // the block tops. Between two columns one level apart it ramps rather than
 // steps, but the ramp is one block long against one block of rise — 45 degrees,
-// just inside maxSlope — and the player walks on spheres the same size, so it
-// climbs like a stack of cubes and never catches on an edge. Two levels apart is
-// 63 degrees, past maxSlope, and stays a cliff.
+// just inside maxSlope — and at 20 cm a block that ramp is well under the
+// player's own radius, so a hillside climbs as a walkable slope and never
+// catches on an edge. Two levels apart is 63 degrees, past maxSlope, and stays a
+// cliff — which is what a dug face or a bluff is made of.
 //
 // Baked from the store, and patched a column at a time by the shovel: a
 // heightfield only knows the top of each column, so a hole you dig lowers it and
@@ -4102,7 +4071,7 @@ window.hermes = {
   SEED, groundHeightAt, onLand,
   // The island: the block size everything is quantised to, the raw heightmap
   // behind it, and the meshes it was built into.
-  BLOCK, TERRACE_H, islandHeight, islandSmooth, terrain, SPAWN,
+  BLOCK, islandHeight, terrain, SPAWN,
   stats: () => ({ worldBlocks, held: shovel.held.length, drawn: blockCount, instances: instanceCount }),
   // The shovel. `shovel.held` is the stack of materials in your hands; moving a
   // block through it is the only way anything ever changes.

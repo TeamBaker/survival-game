@@ -595,12 +595,12 @@
   <span class="title">World Grid Size</span>
   <div id="grid-row">
     <button class="grid-btn" id="grid-minus" aria-label="Smaller cells">&minus;</button>
-    <input id="grid-input" type="number" inputmode="numeric" pattern="[0-9]*"
-           min="1" max="20" step="1" value="4" aria-label="World grid size in metres">
+    <input id="grid-input" type="number" inputmode="decimal"
+           min="0.1" max="20" step="0.1" value="4" aria-label="World grid size in metres">
     <button class="grid-btn" id="grid-plus" aria-label="Bigger cells">+</button>
   </div>
   <div id="grid-foot">metres per cell &middot; <span id="grid-cells">25.0</span> cells across the deck
-    <span class="key"><br><b>[</b> / <b>]</b> adjust from the keyboard</span></div>
+    <span class="key"><br><b>[</b> / <b>]</b> adjust &middot; hold <b>Shift</b> for whole metres</span></div>
 </div>
 
 <div id="underwater"></div>
@@ -1563,14 +1563,20 @@ const TRACKED = new Set([
 const typing = (e) => !!e.target && (e.target.tagName === 'INPUT' || e.target.isContentEditable);
 
 window.addEventListener('keydown', (e) => {
-  if (e.repeat || typing(e)) return;
-  if (TRACKED.has(e.code)) { keys.add(e.code); e.preventDefault(); }
+  if (typing(e)) return;
   // The grid controls, for when the pointer is locked and the panel's own buttons
-  // cannot be clicked. Only while you are actually standing at the cube.
+  // cannot be clicked. Only while you are actually standing at the cube — and
+  // ahead of the auto-repeat guard, because a tenth of a metre a press is
+  // something you want to be able to hold down.
   if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
-    if (gridPanelOpen) { nudgeGrid(e.code === 'BracketRight' ? 1 : -1); e.preventDefault(); }
+    // One step is 0.1 m, which is far too fine to cross the whole range with, so
+    // shift moves a whole metre at a time.
+    const mag = e.shiftKey ? Math.round(1 / GRID.step) : 1;
+    if (gridPanelOpen) { nudgeGrid((e.code === 'BracketRight' ? 1 : -1) * mag); e.preventDefault(); }
     return;
   }
+  if (e.repeat) return;
+  if (TRACKED.has(e.code)) { keys.add(e.code); e.preventDefault(); }
   if (e.code === 'KeyV') cycleCamera();
   else if (e.code === 'KeyG') toggleGameMode();
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
@@ -3033,13 +3039,19 @@ window.addEventListener('wheel', (e) => {
 // snapping block, the panel and the HUD are all re-derived from there.
 // ---------------------------------------------------------------------------
 const GRID = {
-  size: 4,        // metres per cell
-  min: 1,
+  size: 4,        // metres per cell — fractional sizes are fine
+  min: 0.1,
   max: 20,
-  step: 1,
+  step: 0.1,
   near: 5.0,      // walk within this of the cube and the panel opens ...
   hyst: 1.5,      // ... and this much further back out before it closes again
 };
+
+// Sizes are held to a tenth of a metre, which is what keeps a run of +0.1 taps
+// from drifting into 2.7000000000000006 and showing it on the sign.
+const gridQuantum = (v) => Math.round(v * 10) / 10;
+// "4", "0.5" — a trailing .0 on every whole number reads as noise on a sign.
+const gridLabel = (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
 
 // Straight ahead of the spawn (SPAWN_YAW looks down -Z), 30 units out.
 const GRID_CUBE_POS = new THREE.Vector3(0, PLATFORM_Y, -30);
@@ -3127,7 +3139,7 @@ function drawSign() {
 
   g.fillStyle = '#ffd7a0';
   g.font = `700 108px ${MONO}`;
-  g.fillText(String(GRID.size), c.width / 2, 178);
+  g.fillText(gridLabel(GRID.size), c.width / 2, 178);
 
   g.fillStyle = '#6f92bd';
   g.font = `500 26px ${MONO}`;
@@ -3182,7 +3194,11 @@ function drawBoard() {
   const area = S - pad * 2;
   const px = area / BOARD_SPAN;            // canvas pixels per metre
   const cell = GRID.size * px;
-  const n = Math.ceil(BOARD_SPAN / GRID.size) + 2;
+  // A tenth-metre grid over 16 metres is 160 cells a side, which is both illegible
+  // and 100k fillRect calls: past the point where a cell is a few pixels wide the
+  // board draws ruling only, and only as much of it as can be told apart.
+  const n = Math.min(Math.ceil(BOARD_SPAN / GRID.size) + 2, Math.ceil(area / 3));
+  const checker = cell >= 6;
   const x0 = pad + area / 2, y0 = top + (S - top - pad) / 2;   // centre of the field
 
   g.save();
@@ -3191,11 +3207,13 @@ function drawBoard() {
   g.clip();
 
   // Checker, so the cells read as cells and not just as ruling.
-  g.fillStyle = 'rgba(120, 170, 230, 0.10)';
-  for (let i = -n; i <= n; i++) {
-    for (let j = -n; j <= n; j++) {
-      if ((i + j) & 1) continue;
-      g.fillRect(x0 + i * cell, y0 + j * cell, cell, cell);
+  if (checker) {
+    g.fillStyle = 'rgba(120, 170, 230, 0.10)';
+    for (let i = -n; i <= n; i++) {
+      for (let j = -n; j <= n; j++) {
+        if ((i + j) & 1) continue;
+        g.fillRect(x0 + i * cell, y0 + j * cell, cell, cell);
+      }
     }
   }
 
@@ -3212,7 +3230,8 @@ function drawBoard() {
   g.fillStyle = 'rgba(95, 224, 255, 0.35)';
   g.fillRect(x0, y0 - cell, cell, cell);
   g.strokeStyle = '#9ff4ff';
-  g.lineWidth = 3;
+  // A 3px stroke swallows a 3px cell, so the outline thins down with the cell.
+  g.lineWidth = THREE.MathUtils.clamp(cell * 0.25, 1, 3);
   g.strokeRect(x0, y0 - cell, cell, cell);
   g.restore();
 
@@ -3224,13 +3243,13 @@ function drawBoard() {
   g.textAlign = 'right';
   g.fillStyle = '#ffd7a0';
   g.font = `700 30px ${MONO}`;
-  g.fillText(`${GRID.size} m`, S - pad, 40);
+  g.fillText(`${gridLabel(GRID.size)} m`, S - pad, 40);
   g.textAlign = 'left';
   g.fillStyle = '#6f92bd';
   g.font = `500 20px ${MONO}`;
   g.fillText(`${BOARD_SPAN} m across`, pad, 64);
   g.textAlign = 'right';
-  g.fillText(`${(PLATFORM_SIZE / GRID.size).toFixed(1)} cells / deck`, S - pad, 64);
+  g.fillText(`${(PLATFORM_SIZE / GRID.size).toFixed(GRID.size < 1 ? 0 : 1)} cells / deck`, S - pad, 64);
 
   boardArt.tex.needsUpdate = true;
 }
@@ -3262,7 +3281,14 @@ const gridCells  = document.getElementById('grid-cells');
 const gridHudEl  = document.getElementById('grid-hud');
 
 function setGridSize(v) {
-  const g = THREE.MathUtils.clamp(Math.round(Number(v) || 0), GRID.min, GRID.max);
+  // An empty or half-typed field keeps whatever is already set: Number('') is 0,
+  // and clamping that would snap the grid to its minimum the moment you cleared
+  // the box to type a new number into it.
+  const raw = typeof v === 'string' ? v.trim() : v;
+  const n = raw === '' ? NaN : Number(raw);
+  const g = THREE.MathUtils.clamp(
+    gridQuantum(Number.isFinite(n) ? n : GRID.size), GRID.min, GRID.max
+  );
   GRID.size = g;
 
   // The deck is one repeating 2x2-cell tile. The offset cancels the half-platform
@@ -3273,9 +3299,9 @@ function setGridSize(v) {
 
   drawSign();
   drawBoard();
-  if (gridInput && document.activeElement !== gridInput) gridInput.value = String(g);
-  if (gridCells) gridCells.textContent = (PLATFORM_SIZE / g).toFixed(1);
-  if (gridHudEl) gridHudEl.textContent = String(g);
+  if (gridInput && document.activeElement !== gridInput) gridInput.value = gridLabel(g);
+  if (gridCells) gridCells.textContent = (PLATFORM_SIZE / g).toFixed(g < 1 ? 0 : 1);
+  if (gridHudEl) gridHudEl.textContent = gridLabel(g);
 }
 const nudgeGrid = (d) => setGridSize(GRID.size + d * GRID.step);
 
@@ -3291,7 +3317,7 @@ for (const ev of ['pointerdown', 'touchstart', 'mousedown']) {
 // back with what was actually accepted.
 const commitGridInput = () => {
   setGridSize(gridInput.value);
-  gridInput.value = String(GRID.size);
+  gridInput.value = gridLabel(GRID.size);
 };
 gridInput.addEventListener('change', commitGridInput);
 gridInput.addEventListener('blur', commitGridInput);
@@ -3338,8 +3364,12 @@ function updateGridSandbox(dt) {
   const lim = Math.max(0, PLATFORM_HALF - g / 2);
   const sx = THREE.MathUtils.clamp(snapToGrid(aim.x, g), -lim, lim);
   const sz = THREE.MathUtils.clamp(snapToGrid(aim.z, g), -lim, lim);
-  snapBlock.position.set(sx, PLATFORM_Y + g / 2, sz);
-  snapBlock.scale.setScalar(g * 0.94);
+  // Exactly one cell on a side, whatever the cell is: at 0.5 it is a half-metre
+  // box, at 3 it is a three-metre one, and its edges sit on the lines painted on
+  // the deck. The 4mm lift is only to keep its underside off the deck, which is
+  // coplanar with it and would otherwise fight for the same depth.
+  snapBlock.position.set(sx, PLATFORM_Y + g / 2 + 0.004, sz);
+  snapBlock.scale.setScalar(g);
   snapEdges.position.copy(snapBlock.position);
   snapEdges.scale.copy(snapBlock.scale);
 }

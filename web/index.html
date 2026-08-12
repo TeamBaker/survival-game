@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 4;
+  var v = 5;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -396,90 +396,6 @@
     .wx-btn { min-width: 66px; font-size: 10px; padding: 5px 7px; }
   }
 
-  /* ---------- Grid size panel (opens next to the control cube) ---------- */
-  #grid-ui {
-    position: fixed;
-    left: 50%;
-    bottom: calc(88px + env(safe-area-inset-bottom));
-    transform: translateX(-50%);
-    width: 300px;
-    max-width: 88vw;
-    padding: 12px 14px 11px;
-    text-align: center;
-    background: rgba(8, 14, 24, 0.66);
-    border: 1px solid rgba(150, 200, 255, 0.28);
-    border-radius: 12px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
-    display: none;
-    /* Above the pause overlay, like the mode button: on desktop you have to free
-       the cursor before a DOM control can be clicked at all. */
-    z-index: 60;
-  }
-  #grid-ui.on { display: block; }
-  #grid-ui .title {
-    display: block;
-    margin-bottom: 9px;
-    font-size: 10px;
-    letter-spacing: 0.16em;
-    color: #9ecbff;
-    text-transform: uppercase;
-  }
-
-  #grid-row {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-  }
-  .grid-btn {
-    flex: 0 0 auto;
-    width: 60px;
-    height: 60px;
-    font-family: inherit;
-    font-size: 30px;
-    font-weight: 700;
-    line-height: 1;
-    color: #eaf2ff;
-    background: rgba(70, 120, 190, 0.36);
-    border: 1px solid rgba(150, 195, 245, 0.45);
-    border-radius: 14px;
-    cursor: pointer;
-    touch-action: manipulation;
-  }
-  .grid-btn:active { background: rgba(110, 170, 240, 0.62); transform: translateY(1px); }
-  #grid-input {
-    flex: 1 1 auto;
-    min-width: 0;
-    height: 60px;
-    padding: 0 6px;
-    font-family: inherit;
-    font-size: 30px;
-    font-weight: 700;
-    text-align: center;
-    color: #ffd7a0;
-    background: rgba(10, 20, 34, 0.75);
-    border: 1px solid rgba(150, 195, 245, 0.3);
-    border-radius: 12px;
-    -moz-appearance: textfield;
-    appearance: textfield;
-  }
-  #grid-input::-webkit-outer-spin-button,
-  #grid-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-  #grid-foot { margin-top: 9px; font-size: 10px; line-height: 1.5; color: #62819f; }
-  #grid-foot b { color: #9ecbff; }
-  body.touch #grid-ui .key { display: none; }
-
-  /* On touch the panel has to clear the joystick (bottom left) and the action
-     pad (bottom right), so it sits above both of them. */
-  body.touch #grid-ui { bottom: calc(232px + env(safe-area-inset-bottom)); }
-  @media (max-width: 620px) {
-    #grid-ui { width: 280px; padding: 10px 12px; }
-    .grid-btn, #grid-input { height: 56px; font-size: 27px; }
-    .grid-btn { width: 56px; }
-  }
-
   /* ---------- Start / pause overlay ---------- */
   #overlay {
     position: fixed;
@@ -577,8 +493,8 @@
 
 <div id="hud"><span class="k">FPS</span> <span class="v" id="fps">--</span>
 <span class="k">POS</span> <span class="v" id="pos">--</span>
-<span class="k">GRID</span> <span class="v" id="grid-hud">4</span>
-<span class="k" style="color:#ff0">v8-grid</span></div>
+<span class="k">BLKS</span> <span class="v" id="blocks-hud">--</span>
+<span class="k" style="color:#ff0">v9-island</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
@@ -589,18 +505,6 @@
   <div class="wx-row"><span class="lbl"><b class="key">1</b> Spawn rate</span><button class="wx-btn" id="wx-rate">Medium</button></div>
   <div class="wx-row"><span class="lbl"><b class="key">2</b> Wind speed</span><button class="wx-btn" id="wx-speed">Medium</button></div>
   <div id="wx-foot"><span class="key"><b>4</b> spawn now &middot; <b>0</b> clear &mdash; </span>sky: <span id="wx-count">0</span><br><span id="wx-cloud-info">nearest: &mdash;</span></div>
-</div>
-
-<div id="grid-ui" class="ui-el">
-  <span class="title">World Grid Size</span>
-  <div id="grid-row">
-    <button class="grid-btn" id="grid-minus" aria-label="Smaller cells">&minus;</button>
-    <input id="grid-input" type="number" inputmode="decimal"
-           min="0.1" max="20" step="0.1" value="4" aria-label="World grid size in metres">
-    <button class="grid-btn" id="grid-plus" aria-label="Bigger cells">+</button>
-  </div>
-  <div id="grid-foot">metres per cell &middot; <span id="grid-cells">25.0</span> cells across the deck
-    <span class="key"><br><b>[</b> / <b>]</b> adjust &middot; hold <b>Shift</b> for whole metres</span></div>
 </div>
 
 <div id="underwater"></div>
@@ -639,15 +543,15 @@ const MOUSE_SENSITIVITY = 0.15;   // degrees of rotation per pixel of pointer mo
 const MOVE_SPEED        = 14.0;   // world units / second
 const SPRINT_MULT       = 3.0;
 const TOUCH_LOOK_MULT   = 1.6;    // finger drags cover fewer pixels than a mouse
-const START_POS         = new THREE.Vector3(0, 34, -104);
-const START_YAW         = 180;    // degrees — looks back at the platform
-const START_PITCH       = -13;    // degrees
+const START_POS         = new THREE.Vector3(0, 21, -62);
+const START_YAW         = 180;    // degrees — looks back at the island
+const START_PITCH       = -14;    // degrees
 
 // ----- character controller -----
-// Dead centre of the spawn platform. Body centre 1.2 above the deck, so the feet
-// start a hand's width clear of it and settle on the first step.
-const SPAWN      = new THREE.Vector3(0, 1.2, 0);
-const SPAWN_YAW  = 0;             // degrees — facing the grid cube
+// Filled in once the island exists: the top of the block column at the origin,
+// which is the summit region, plus enough clearance to settle onto it.
+const SPAWN      = new THREE.Vector3(0, 12, 0);
+const SPAWN_YAW  = 0;             // degrees
 const PHYS_STEP  = 1 / 60;        // fixed physics timestep
 const PLAYER = {
   radius:       0.4,
@@ -685,22 +589,29 @@ const WATER = {
 const WATER_FOG = 0x11506f;
 const inWaterColumn = () => true;
 
-// ----- the spawn platform -----
-// The island is gone; what rises out of the ocean now is one flat square deck at
-// sea level, centred on the origin. It is the ground the whole grid sandbox — the
-// player, the control cube, the snapping preview — stands on.
-const PLATFORM_SIZE  = 100;                    // metres across
-const PLATFORM_HALF  = PLATFORM_SIZE / 2;
-const PLATFORM_Y     = 0;                      // the walking surface, at sea level
-const PLATFORM_THICK = 2;                      // how far the slab hangs below it
-// What the sea shader is told the deck stands proud of the water by. Nothing is
-// drawn at that height — it is only how the ocean knows to stop drawing itself
-// where the platform is, and where to break its surf.
-const PLATFORM_RISE  = 0.75;
-const SEABED_DEPTH   = 16;   // how far the sea floor drops away around it
-// How far a swell has to travel from the platform before it is at full
-// open-water size, so the water inshore of that stays readable.
-const CALM_R         = 70;
+// ----- the island -----
+// Every solid thing in the world is a cube this many metres on a side. It is the
+// one number the terrain is built out of: the heightmap is quantised to it, the
+// physics surface is sampled on it, and the land texture the sea reads has one
+// texel per column of it.
+const BLOCK      = 0.2;
+// Nominal radius of the land mass. The shoreline is a noisy fraction of this —
+// somewhere around 12-19 metres out — so the island runs roughly 150 blocks
+// across, with headlands and bays rather than a clean circle.
+const ISLAND_R   = 20;
+const ISLAND_PEAK = 6.5;      // scale of the relief; summits land around 5 m
+// Half-width of the generated field, in metres. Wide enough that the island's
+// mask has died to nothing by the edge, which is what lets the sea shader hand
+// off from the baked heightmap to a plain analytic seabed without a seam.
+const GEN_R      = 24;
+const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (240)
+// The shallowest sea floor still worth building blocks for. Below this the water
+// has already swallowed everything, so the island simply stops.
+const SEA_CUT    = -1.35;
+const SEABED_DEPTH = 16;     // how far the sea floor drops away offshore
+// How far a swell has to travel from the island before it is at full open-water
+// size, so the water inshore of that stays readable.
+const CALM_R     = 30;
 
 const SUN = new THREE.Vector3(0.45, 0.72, 0.52).normalize();
 const SKY_ZENITH  = new THREE.Color(0x1a56b8);
@@ -848,10 +759,12 @@ pmrem.dispose();
 // ---------------------------------------------------------------------------
 // Lighting
 // ---------------------------------------------------------------------------
-// The platform is centred on the origin, so the shadow frustum is too — it is
-// sized to swallow the deck and a margin of the water around it.
+// The island is centred on the origin, so the shadow frustum is too — it is
+// sized to swallow the land and a margin of the water around it. Tight, because
+// the terrain is made of 20cm blocks and every metre of slack in here is shadow
+// resolution the blocks do not get.
 const SHADOW_CENTER = new THREE.Vector3(0, 2, 0);
-const SHADOW_HALF   = 78;
+const SHADOW_HALF   = 30;
 const SUN_DIST      = 190;
 
 const sun = new THREE.DirectionalLight(0xfff4e0, 2.9);
@@ -1009,11 +922,6 @@ function mulberry32(a) {
 // Hermite smoothstep on a raw ratio — used by the cloud shaping below.
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 
-// Where the ground is, for anything that needs to ask: the deck inside the
-// platform footprint, the sea floor outside it.
-const onPlatform = (x, z) => Math.abs(x) <= PLATFORM_HALF && Math.abs(z) <= PLATFORM_HALF;
-const groundHeightAt = (x, z) => (onPlatform(x, z) ? PLATFORM_Y : -SEABED_DEPTH);
-
 // ---------------------------------------------------------------------------
 // Shader library — value noise, the shore wave, and a palette helper. The sea
 // pulls from this, and so does anything else that needs to agree with where the
@@ -1089,135 +997,348 @@ const SEA_PALETTE = /* glsl */`
 `;
 
 // ---------------------------------------------------------------------------
-// Spawn platform — a flat square deck at sea level, and the ground for
-// everything else. Nothing procedural about it: one textured plane, one slab
-// under it for the edge, one box collider whose top face is the walking surface.
+// The island — a procedural heightmap, quantised into BLOCK-sized cubes.
 //
-// The grid painted on the deck is the world grid, so the texture is re-tiled
-// (never rebuilt) whenever the control cube out on the platform changes it.
+// It is built once, at load, in four passes:
+//
+//   1. sample islandHeight() over a GEN_N x GEN_N field of columns;
+//   2. quantise each column to a block level and pick its surface material from
+//      elevation and slope;
+//   3. build one THREE.InstancedMesh per material out of the result;
+//   4. hand the same numbers to the sea (as a texture, so the water knows where
+//      to shoal and break) and to cannon (as a heightfield, so you can walk).
+//
+// Only what could actually be seen is built: the top block of every column, plus
+// however far its skirt has to reach to cover the drop to its lowest neighbour.
+// A vertical run inside that skirt is one box rather than a stack of them — the
+// cubes share their faces and their colour, so there is nothing on the outside
+// of the run to tell the two apart.
 // ---------------------------------------------------------------------------
 
-// One texture carries a 2x2 patch of cells, so repeating it lays down a real
-// checkerboard rather than a flat tone with lines ruled across it.
-function makeGridTexture() {
-  const S = 256, H = S / 2;
-  const c = document.createElement('canvas');
-  c.width = c.height = S;
-  const g = c.getContext('2d');
-  g.fillStyle = '#b8c6d6'; g.fillRect(0, 0, S, S);
-  g.fillStyle = '#8ca1b8'; g.fillRect(0, 0, H, H); g.fillRect(H, H, H, H);
-  g.strokeStyle = 'rgba(16, 30, 50, 0.55)';
-  g.lineWidth = 4;
-  for (const [x, y] of [[0, 0], [H, 0], [0, H], [H, H]]) g.strokeRect(x + 2, y + 2, H - 4, H - 4);
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  return tex;
+// ----- value noise, on the seed the weather already uses -----
+// Integer-only hashing, so the same seed lays down the same island on every
+// device that loads it.
+function nhash(ix, iy) {
+  let n = (Math.imul(ix, 1619) + Math.imul(iy, 31337) + Math.imul(SEED | 0, 1013)) | 0;
+  n = (n << 13) ^ n;
+  n = (Math.imul(n, Math.imul(Math.imul(n, n), 15731) + 789221) + 1376312589) & 0x7fffffff;
+  return 1 - n / 1073741824;                       // -1 .. 1
+}
+// Quintic fade rather than the cubic the sea shader uses: the material rules
+// below read the *slope* of this field, and a cubic fade leaves the lattice
+// visible in it as a grid of creases.
+const nfade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+function vnoise2(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = nfade(x - ix), fy = nfade(y - iy);
+  const a = nhash(ix, iy),     b = nhash(ix + 1, iy);
+  const c = nhash(ix, iy + 1), d = nhash(ix + 1, iy + 1);
+  const lo = a + (b - a) * fx;
+  return lo + ((c + (d - c) * fx) - lo) * fy;
+}
+function fbm2(x, y, oct) {
+  let s = 0, a = 0.5, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    s += a * vnoise2(x, y);
+    norm += a;
+    x = x * 2.03 + 17.3;
+    y = y * 2.03 - 9.1;
+    a *= 0.5;
+  }
+  return s / norm;                                 // -1 .. 1
+}
+const sstep = (a, b, x) => smooth((x - a) / (b - a));
+
+// How far the land is pushed under the water as the island's mask runs out. The
+// sea shader repeats both of these, so they are the numbers that decide where
+// the two agree the shoreline is.
+const SHORE_DROP = 0.55;
+const SHELF_DROP = 3.4;
+
+// Metres above sea level at (x, z), before quantisation. Three things stacked: a
+// noisy radial mask that decides where there is land at all, the relief inside
+// it, and the bed falling away outside it.
+function islandHeight(x, z) {
+  const r = Math.hypot(x, z);
+  // The shoreline. Warping the *radius* rather than the height is what turns a
+  // disc into headlands and bays without ever breaking the island into pieces.
+  const rr = r + fbm2(x * 0.040 + 11.2, z * 0.040 - 4.7, 3) * (ISLAND_R * 0.18);
+  const m  = 1 - sstep(ISLAND_R * 0.30, ISLAND_R * 1.02, rr);
+
+  const hills  = fbm2(x * 0.048, z * 0.048, 4) * 0.5 + 0.5;   // ridges and valleys
+  const detail = fbm2(x * 0.180, z * 0.180, 3) * 0.5 + 0.5;   // metre-scale bumps
+
+  // Just under linear in the mask, so the interior is rolling ground the relief
+  // can carve hills and valleys out of. Squaring it instead would make a cone,
+  // and a cone has no flat anywhere to stand on.
+  let h = Math.pow(m, 0.90) * ISLAND_PEAK * (0.26 + 0.74 * hills)
+        + m * detail * 0.50;
+  // The shore: a flat drop, plus one that bites hardest where the mask has
+  // already faded, so the land runs out under the water rather than at a wall.
+  h -= SHORE_DROP + SHELF_DROP * (1 - m) * (1 - m);
+  // ... and past that, the open sea floor.
+  h -= SEABED_DEPTH * sstep(ISLAND_R, ISLAND_R * 1.95, r);
+  return h;
 }
 
-const deckTex = makeGridTexture();
-const platform = new THREE.Mesh(
-  new THREE.PlaneGeometry(PLATFORM_SIZE, PLATFORM_SIZE),
-  new THREE.MeshStandardMaterial({
-    map: deckTex,
-    roughness: 0.82,
-    metalness: 0.0,
-    envMapIntensity: 0.6,
-    // An open surface, so casting from backfaces would drop it out of the shadow
-    // map entirely — the faces the sun sees are the front ones.
-    shadowSide: THREE.FrontSide,
-  })
-);
-platform.rotation.x = -Math.PI / 2;
-platform.position.y = PLATFORM_Y;
-platform.receiveShadow = true;
-scene.add(platform);
+// ----- pass 1: the field -----
+// Column (i, j) is centred on (colX(i), colZ(j)); i runs +x and j runs +z.
+const colX = (i) => -GEN_R + (i + 0.5) * BLOCK;
+const colZ = (j) => -GEN_R + (j + 0.5) * BLOCK;
 
-// The slab under the deck, so it has a visible edge instead of reading as a
-// sheet of paper floating on the sea.
-const platformSkirt = new THREE.Mesh(
-  new THREE.BoxGeometry(PLATFORM_SIZE, PLATFORM_THICK, PLATFORM_SIZE),
-  mat(0x24313f, 0.88, 0.05)
-);
-// A hair below the deck plane rather than flush with it: coplanar faces would
-// fight for the same depth, and a 1cm seam is invisible from anywhere you can
-// actually stand.
-platformSkirt.position.y = PLATFORM_Y - PLATFORM_THICK / 2 - 0.01;
-platformSkirt.castShadow = true;
-platformSkirt.receiveShadow = true;
-scene.add(platformSkirt);
-
-// The collider. Half-thickness below PLATFORM_Y puts its top face exactly on the
-// walking surface the plane above draws.
-{
-  const deckBody = new CANNON.Body({ mass: 0, material: physWorld });
-  deckBody.addShape(new CANNON.Box(
-    new CANNON.Vec3(PLATFORM_HALF, PLATFORM_THICK / 2, PLATFORM_HALF)
-  ));
-  deckBody.position.set(0, PLATFORM_Y - PLATFORM_THICK / 2, 0);
-  deckBody.updateAABB();
-  world.addBody(deckBody);
+const hRaw = new Float32Array(GEN_N * GEN_N);
+for (let j = 0; j < GEN_N; j++) {
+  const z = colZ(j);
+  for (let i = 0; i < GEN_N; i++) hRaw[j * GEN_N + i] = islandHeight(colX(i), z);
+}
+// Clamped at the rim, so the slope stencil below never falls off the field.
+function fieldAt(i, j) {
+  const ii = i < 0 ? 0 : (i >= GEN_N ? GEN_N - 1 : i);
+  const jj = j < 0 ? 0 : (j >= GEN_N ? GEN_N - 1 : j);
+  return hRaw[jj * GEN_N + ii];
 }
 
-// Ramps at all four edges. Without them a fall into the sea is a one-way trip:
-// the deck is exactly at sea level, and a swimmer floating at the surface cannot
-// get their feet above it. Swim into one of these instead and the slope simply
-// lifts you back out, the way a beach used to.
+// ----- pass 2: block levels and materials -----
+const SAND = 0, DIRT = 1, ROCK = 2;
+const NO_COLUMN = -32768;
+// Level k is the block filling y from k*BLOCK to (k+1)*BLOCK, so level -1 is the
+// first one under water.
+const topLvl = new Int16Array(GEN_N * GEN_N).fill(NO_COLUMN);
+const topMat = new Uint8Array(GEN_N * GEN_N);
+const tint   = new Float32Array(GEN_N * GEN_N);
+const SLOPE_STEP = 6;      // blocks either side of a column that its slope is read over
+
+// Minecraft-ish banding, except that the thresholds themselves wander: without
+// that the boundary between two materials is a contour line, and nothing in a
+// landscape has one of those.
+function pickMaterial(h, slope, x, z) {
+  const n = vnoise2(x * 0.35, z * 0.35);           // -1 .. 1, ~3 m features
+  if (h < -0.2) return SAND;                       // the sea floor and the wash
+  if (slope > 1.25 + n * 0.25) return ROCK;        // anything you could not stand on
+  if (h < 1.25 + n * 0.55) return SAND;            // the beach, up to knee height
+  if (h > 3.00 + n * 0.90) return ROCK;            // and the tops
+  if (slope > 0.85 + n * 0.15) return ROCK;        // outcrops on the steeper flanks
+  return DIRT;                                     // everything in between
+}
+
 {
-  const RUN   = 4.5;                            // how far out from the deck it reaches
-  const RISE  = PLATFORM_THICK + 0.6;           // and how far down
-  const THICK = 0.6;
-  const ang = Math.atan2(RISE, RUN);            // ~30 degrees — well inside maxSlope
-  const len = Math.hypot(RUN, RISE);
-  const rampMat = mat(0x33465c, 0.82, 0.1);
-  const rampGeo = new THREE.BoxGeometry(PLATFORM_SIZE + 2 * RUN, THICK, len);
-
-  for (let i = 0; i < 4; i++) {
-    // Tilt in the slab's own frame, then swing that around to face each edge —
-    // hence YXZ, which applies the yaw outermost.
-    const yaw = i * Math.PI / 2;
-    const quat = new THREE.Quaternion().setFromEuler(new THREE.Euler(ang, yaw, 0, 'YXZ'));
-    // Centre of the sloped top face, pushed back along the slab normal by half
-    // its thickness, so the high edge lands flush with the lip of the deck.
-    const outward = PLATFORM_HALF + RUN / 2 - (THICK / 2) * Math.sin(ang);
-    const px = Math.sin(yaw) * outward;
-    const pz = Math.cos(yaw) * outward;
-    const py = PLATFORM_Y - RISE / 2 - (THICK / 2) * Math.cos(ang);
-
-    const m = new THREE.Mesh(rampGeo, rampMat);
-    m.position.set(px, py, pz);
-    m.quaternion.copy(quat);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    scene.add(m);
-
-    const body = new CANNON.Body({ mass: 0, material: physWorld });
-    body.addShape(new CANNON.Box(new CANNON.Vec3(
-      (PLATFORM_SIZE + 2 * RUN) / 2, THICK / 2, len / 2
-    )));
-    body.position.set(px, py, pz);
-    body.quaternion.set(quat.x, quat.y, quat.z, quat.w);
-    linkBody(m, body);
+  const rnd = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
+  for (let j = 0; j < GEN_N; j++) {
+    for (let i = 0; i < GEN_N; i++) {
+      const k = j * GEN_N + i;
+      // Per-column brightness, which is most of what keeps a field of one-colour
+      // cubes from reading as a single flat surface.
+      tint[k] = 0.86 + rnd() * 0.28;
+      const h = hRaw[k];
+      if (h <= SEA_CUT) continue;
+      topLvl[k] = Math.floor(h / BLOCK);
+      // |grad h| is the tangent of the slope. The stencil is deliberately wide —
+      // over a couple of blocks it would be reading the metre-scale bumps rather
+      // than the shape of the hillside, and every knoll would come out rock.
+      const dx = (fieldAt(i + SLOPE_STEP, j) - fieldAt(i - SLOPE_STEP, j)) / (2 * SLOPE_STEP * BLOCK);
+      const dz = (fieldAt(i, j + SLOPE_STEP) - fieldAt(i, j - SLOPE_STEP)) / (2 * SLOPE_STEP * BLOCK);
+      topMat[k] = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j));
+    }
   }
 }
 
-// What the sea reads where it used to read the island's heightmap. The deck
-// stands PLATFORM_RISE proud of the water inside its footprint and the bed drops
-// to -SEABED_DEPTH outside it, over a band wide enough to leave shallow water
-// washing across the ramps. That band is the whole shoreline as far as the water
-// is concerned, so the swell still shoals, breaks and foams against the platform
-// the way it did against the beach. Nothing is ever drawn at PLATFORM_RISE; it
-// only tells the water where to stop.
+// ----- pass 3: the instanced meshes -----
+const RIM_DEPTH  = 5;    // blocks of skirt on a column with open water beside it
+const MAX_DEPTH  = 24;   // and the most any column will ever draw
+const SOIL_DEPTH = 3;    // blocks of surface material before it turns to rock
+
+// Per material, a flat list of runs: x, y-centre, z, height in blocks, tint.
+const runs = [[], [], []];
+function pushRun(m, cx, cz, lo, hi, t) {
+  const n = hi - lo + 1;
+  if (n <= 0) return;
+  runs[m].push(cx, (lo + n * 0.5) * BLOCK, cz, n, t);
+}
+
+for (let j = 0; j < GEN_N; j++) {
+  for (let i = 0; i < GEN_N; i++) {
+    const k = j * GEN_N + i;
+    const top = topLvl[k];
+    if (top === NO_COLUMN) continue;
+
+    // How far down the exposed face has to reach: to the top of the lowest of
+    // the four neighbours, since everything under that is walled in on all sides
+    // and could never be seen. A missing neighbour is open water, and a column
+    // on the rim shows a lip of its own instead of a hole.
+    let low = top;
+    const nb0 = i > 0          ? topLvl[k - 1]     : NO_COLUMN;
+    const nb1 = i < GEN_N - 1  ? topLvl[k + 1]     : NO_COLUMN;
+    const nb2 = j > 0          ? topLvl[k - GEN_N] : NO_COLUMN;
+    const nb3 = j < GEN_N - 1  ? topLvl[k + GEN_N] : NO_COLUMN;
+    for (const v of [nb0, nb1, nb2, nb3]) {
+      const vv = v === NO_COLUMN ? top - RIM_DEPTH : v;
+      if (vv < low) low = vv;
+    }
+    const bottom = Math.min(top, Math.max(low + 1, top - MAX_DEPTH));
+
+    const m = topMat[k], t = tint[k];
+    const cx = colX(i), cz = colZ(j);
+
+    // The top block on its own, so its tint reads as one block from above while
+    // the run under it reads as the face of the column.
+    pushRun(m, cx, cz, top, top, t);
+    if (bottom < top) {
+      const soilLo = Math.max(bottom, top - SOIL_DEPTH);
+      pushRun(m, cx, cz, soilLo, top - 1, t * 0.94);
+      // Deeper than a few blocks it is bedrock whatever is on the surface, which
+      // is what gives the sea cliffs their grey base under a sand-topped headland.
+      if (soilLo > bottom) pushRun(ROCK, cx, cz, bottom, soilLo - 1, t * 0.86);
+    }
+  }
+}
+
+// Sand light and dry, dirt brown, rock grey. Nothing green anywhere — no grass
+// on this island yet.
+const TERRAIN_MATS = [
+  mat(0xd8c69c, 0.97, 0.00, { envMapIntensity: 0.45 }),   // SAND
+  mat(0x8a6a46, 0.98, 0.00, { envMapIntensity: 0.32 }),   // DIRT
+  mat(0x8c9198, 0.90, 0.02, { envMapIntensity: 0.55 }),   // ROCK
+];
+const blockGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+const terrain = new THREE.Group();
+scene.add(terrain);
+
+let blockCount = 0;
+{
+  const mtx = new THREE.Matrix4();
+  const col = new THREE.Color();
+  for (let m = 0; m < 3; m++) {
+    const a = runs[m];
+    const n = a.length / 5;
+    const im = new THREE.InstancedMesh(blockGeo, TERRAIN_MATS[m], n);
+    for (let q = 0; q < n; q++) {
+      const o = q * 5;
+      mtx.makeScale(1, a[o + 3], 1);               // one run, however many blocks tall
+      mtx.setPosition(a[o], a[o + 1], a[o + 2]);
+      im.setMatrixAt(q, mtx);
+      col.setScalar(a[o + 4]);
+      im.setColorAt(q, col);
+      blockCount += a[o + 3];
+    }
+    im.instanceMatrix.needsUpdate = true;
+    if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    im.receiveShadow = true;
+    // Casting is a second full pass over every block. A phone gets the sun's
+    // shading and the player's shadow, but not the island shadowing itself.
+    im.castShadow = !isTouchDevice;
+    if (im.computeBoundingSphere) im.computeBoundingSphere();
+    terrain.add(im);
+  }
+  runs.length = 0;
+}
+
+// ----- the sea floor under it all -----
+// The blocks stop at SEA_CUT, a metre or so down, because past that the water is
+// opaque enough that building them is pure cost. This is what is behind them: a
+// smooth sandy bed on the same heightmap, held below the deepest block anywhere
+// the island exists so it can never poke up through one.
+{
+  const SPAN = 104, SEG = 128;
+  const geo = new THREE.PlaneGeometry(SPAN, SPAN, SEG, SEG);
+  const pos = geo.attributes.position;
+  for (let v = 0; v < pos.count; v++) {
+    // The plane is still in XY here; rotating it -90 degrees about X sends local
+    // y to world -z and local z to world up.
+    const x = pos.getX(v), y = pos.getY(v);
+    pos.setZ(v, Math.min(islandHeight(x, -y), SEA_CUT - 0.25));
+  }
+  geo.computeVertexNormals();
+  const bed = new THREE.Mesh(geo, mat(0xbcae8c, 1.0, 0.0, {
+    envMapIntensity: 0.3, shadowSide: THREE.FrontSide,
+  }));
+  bed.rotation.x = -Math.PI / 2;
+  scene.add(bed);
+}
+
+// ----- pass 4a: the land texture the sea reads -----
+// One texel per column, aligned on the column centres, so the water's idea of
+// where the ground is agrees with the blocks it can see. Height is packed into a
+// byte over LAND_MIN .. LAND_MIN + LAND_SPAN: seven centimetres of quantisation
+// near the shore, and anything deeper than about nine metres is already "deep"
+// as far as a swell is concerned.
+const LAND_MIN = -10, LAND_SPAN = 18;
+const landTex = (() => {
+  const data = new Uint8Array(GEN_N * GEN_N * 4);
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    // The block *top* where there is one: the sea has to stop at the surface it
+    // can see, not at the smooth curve underneath it.
+    const h = topLvl[k] === NO_COLUMN ? hRaw[k] : (topLvl[k] + 1) * BLOCK;
+    const e = Math.round(THREE.MathUtils.clamp((h - LAND_MIN) / LAND_SPAN, 0, 1) * 255);
+    data[k * 4] = data[k * 4 + 1] = data[k * 4 + 2] = e;
+    data[k * 4 + 3] = 255;
+  }
+  const tex = new THREE.DataTexture(data, GEN_N, GEN_N, THREE.RGBAFormat);
+  tex.minFilter = tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return tex;
+})();
+
+// What the sea reads instead of a heightmap of its own. Inside the generated
+// field it is the bake above; outside it the island's mask is already zero, so
+// the same analytic sea floor the bake ends on simply carries on and the two
+// meet without a seam.
 const LAND_GLSL = /* glsl */`
+  uniform sampler2D uLandTex;
   float landAt(vec2 p) {
-    // Signed distance to the square footprint, negative on the deck.
-    vec2 d = abs(p) - vec2(${PLATFORM_HALF.toFixed(1)});
-    float sd = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
-    return mix(${PLATFORM_RISE.toFixed(2)}, ${(-SEABED_DEPTH).toFixed(1)},
-               smoothstep(0.5, 14.0, sd));
+    float deep = ${(-(SHORE_DROP + SHELF_DROP)).toFixed(2)}
+      - ${SEABED_DEPTH.toFixed(1)} * smoothstep(
+          ${ISLAND_R.toFixed(1)}, ${(ISLAND_R * 1.95).toFixed(1)}, length(p));
+    vec2 uv = p * ${(1 / (2 * GEN_R)).toFixed(8)} + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return deep;
+    return texture2D(uLandTex, uv).r * ${LAND_SPAN.toFixed(1)} + ${LAND_MIN.toFixed(1)};
   }
 `;
+
+// ----- pass 4b: the collider -----
+// A cannon heightfield on the same grid, its vertices sitting on the centres of
+// the block tops. Between two columns one level apart it ramps rather than
+// steps, but the ramp is 20 cm long and the player walks on spheres of twice
+// that radius — it climbs exactly like a stack of cubes and never catches on an
+// edge. Two levels apart is 63 degrees, past maxSlope, and stays a cliff.
+const HF_FLOOR = -3.2;         // where the field bottoms out under open water
+{
+  const data = [];
+  for (let i = 0; i < GEN_N; i++) {
+    const strip = new Array(GEN_N);
+    for (let jj = 0; jj < GEN_N; jj++) {
+      // Tipping the body up sends the heightfield's local +y to world -z, so the
+      // row index has to count back down the field.
+      const k = (GEN_N - 1 - jj) * GEN_N + i;
+      strip[jj] = topLvl[k] === NO_COLUMN
+        ? Math.max(hRaw[k], HF_FLOOR)
+        : (topLvl[k] + 1) * BLOCK;
+    }
+    data.push(strip);
+  }
+  const hfBody = new CANNON.Body({ mass: 0, material: physWorld });
+  hfBody.addShape(new CANNON.Heightfield(data, { elementSize: BLOCK }));
+  hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+  hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
+  hfBody.updateAABB();
+  world.addBody(hfBody);
+}
+
+// Where the ground is, for anything that needs to ask — the top of the block you
+// would be standing on, or the sea floor where there is no block.
+function groundHeightAt(x, z) {
+  const i = Math.floor((x + GEN_R) / BLOCK);
+  const j = Math.floor((z + GEN_R) / BLOCK);
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return -SEABED_DEPTH;
+  const k = j * GEN_N + i;
+  return topLvl[k] === NO_COLUMN ? Math.max(hRaw[k], HF_FLOOR) : (topLvl[k] + 1) * BLOCK;
+}
+const onLand = (x, z) => groundHeightAt(x, z) > WATER.surfaceY;
+
+// The summit sits around the origin, so the player starts on the column there
+// with their feet a couple of centimetres clear of the block.
+SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
 
 
 // ---------------------------------------------------------------------------
@@ -1275,7 +1396,7 @@ scene.add(ocean);
     new THREE.MeshStandardMaterial({ color: 0x2b4550, roughness: 1.0, metalness: 0.0 })
   );
   deep.rotation.x = -Math.PI / 2;
-  deep.position.y = -SEABED_DEPTH - 0.6;    // just under the bed the water shoals on
+  deep.position.y = -SEABED_DEPTH - 4.6;    // just under the bed the water shoals on
   ocean.add(deep);
 
   // A radial grid instead of a uniform one. Rings grow geometrically outwards,
@@ -1382,6 +1503,7 @@ scene.add(ocean);
   surfMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterTime;
     shader.uniforms.uCloudShadows = uCloudShadows;
+    shader.uniforms.uLandTex = { value: landTex };
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */`
@@ -1558,23 +1680,12 @@ const TRACKED = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
   'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
-// Typing a grid size into the panel must not also drive the character, so any
-// key that lands in a text field is the field's business and nothing else's.
+// A key that lands in a text field is the field's business and nothing else's —
+// it must not also drive the character.
 const typing = (e) => !!e.target && (e.target.tagName === 'INPUT' || e.target.isContentEditable);
 
 window.addEventListener('keydown', (e) => {
   if (typing(e)) return;
-  // The grid controls, for when the pointer is locked and the panel's own buttons
-  // cannot be clicked. Only while you are actually standing at the cube — and
-  // ahead of the auto-repeat guard, because a tenth of a metre a press is
-  // something you want to be able to hold down.
-  if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
-    // One step is 0.1 m, which is far too fine to cross the whole range with, so
-    // shift moves a whole metre at a time.
-    const mag = e.shiftKey ? Math.round(1 / GRID.step) : 1;
-    if (gridPanelOpen) { nudgeGrid((e.code === 'BracketRight' ? 1 : -1) * mag); e.preventDefault(); }
-    return;
-  }
   if (e.repeat) return;
   if (TRACKED.has(e.code)) { keys.add(e.code); e.preventDefault(); }
   if (e.code === 'KeyV') cycleCamera();
@@ -3029,352 +3140,6 @@ window.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 // ---------------------------------------------------------------------------
-// Grid sandbox — everything that lets you size the world grid from inside the
-// world: a control cube out on the deck, the sign floating over it, the board
-// beside it that draws the current cell layout, and a block that snaps to
-// whichever cell you are standing in so you can see how a placement would land.
-//
-// One number drives the lot (GRID.size, in metres per cell) and setGridSize() is
-// the only thing that writes it — the deck texture, the sign, the board, the
-// snapping block, the panel and the HUD are all re-derived from there.
-// ---------------------------------------------------------------------------
-const GRID = {
-  size: 4,        // metres per cell — fractional sizes are fine
-  min: 0.1,
-  max: 20,
-  step: 0.1,
-  near: 5.0,      // walk within this of the cube and the panel opens ...
-  hyst: 1.5,      // ... and this much further back out before it closes again
-};
-
-// Sizes are held to a tenth of a metre, which is what keeps a run of +0.1 taps
-// from drifting into 2.7000000000000006 and showing it on the sign.
-const gridQuantum = (v) => Math.round(v * 10) / 10;
-// "4", "0.5" — a trailing .0 on every whole number reads as noise on a sign.
-const gridLabel = (v) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
-
-// Straight ahead of the spawn (SPAWN_YAW looks down -Z), 30 units out.
-const GRID_CUBE_POS = new THREE.Vector3(0, PLATFORM_Y, -30);
-const GRID_CUBE_SIZE = 2.2;
-
-// Cell centres, so a snapped block sits inside a cell rather than on its corner.
-const snapToGrid = (v, g = GRID.size) => (Math.floor(v / g) + 0.5) * g;
-
-// ----- the control cube -----
-// A real prop with a collider, so you can walk into it rather than through it.
-const gridCubeMat = mat(0xffa63d, 0.36, 0.18, {
-  emissive: 0x5a2600,
-  emissiveIntensity: 0.35,
-});
-const gridCube = addBox(
-  GRID_CUBE_POS.x, GRID_CUBE_POS.y + GRID_CUBE_SIZE / 2, GRID_CUBE_POS.z,
-  GRID_CUBE_SIZE, GRID_CUBE_SIZE, GRID_CUBE_SIZE, gridCubeMat
-);
-
-// A ring painted on the deck at the radius where the panel opens, so the cube
-// advertises what it does before you are close enough to use it.
-{
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(GRID.near - 0.18, GRID.near, 64),
-    new THREE.MeshBasicMaterial({
-      color: 0xffc27a, transparent: true, opacity: 0.5,
-      side: THREE.DoubleSide, depthWrite: false,
-    })
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.set(GRID_CUBE_POS.x, PLATFORM_Y + 0.02, GRID_CUBE_POS.z);
-  scene.add(ring);
-}
-
-// ----- canvas helpers shared by the sign and the board -----
-function roundRectPath(g, x, y, w, h, r) {
-  // Hand-rolled: ctx.roundRect only landed in Safari 16.4 and this has to run on
-  // older phones.
-  g.beginPath();
-  g.moveTo(x + r, y);
-  g.arcTo(x + w, y,     x + w, y + h, r);
-  g.arcTo(x + w, y + h, x,     y + h, r);
-  g.arcTo(x,     y + h, x,     y,     r);
-  g.arcTo(x,     y,     x + w, y,     r);
-  g.closePath();
-}
-
-function makeCanvasTexture(w, h) {
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  return { canvas: c, ctx: c.getContext('2d'), tex };
-}
-
-const MONO = 'ui-monospace, Menlo, Consolas, monospace';
-
-// ----- the floating sign -----
-// A sprite, so it faces you from wherever you walk up to the cube.
-const signArt = makeCanvasTexture(512, 256);
-const gridSign = new THREE.Sprite(new THREE.SpriteMaterial({
-  map: signArt.tex, transparent: true, depthWrite: false,
-}));
-gridSign.scale.set(5.6, 2.8, 1);
-gridSign.position.set(GRID_CUBE_POS.x, GRID_CUBE_POS.y + 5.0, GRID_CUBE_POS.z);
-scene.add(gridSign);
-
-function drawSign() {
-  const { ctx: g, canvas: c } = signArt;
-  g.clearRect(0, 0, c.width, c.height);
-
-  roundRectPath(g, 12, 12, c.width - 24, c.height - 24, 26);
-  g.fillStyle = 'rgba(8, 16, 28, 0.82)';
-  g.fill();
-  g.strokeStyle = 'rgba(150, 200, 255, 0.55)';
-  g.lineWidth = 4;
-  g.stroke();
-
-  g.textAlign = 'center';
-  g.fillStyle = '#7fa8d8';
-  g.font = `600 30px ${MONO}`;
-  g.fillText('WORLD GRID SIZE', c.width / 2, 76);
-
-  g.fillStyle = '#ffd7a0';
-  g.font = `700 108px ${MONO}`;
-  g.fillText(gridLabel(GRID.size), c.width / 2, 178);
-
-  g.fillStyle = '#6f92bd';
-  g.font = `500 26px ${MONO}`;
-  g.fillText('metres per cell', c.width / 2, 218);
-
-  signArt.tex.needsUpdate = true;
-}
-
-// ----- the 2D grid board -----
-// A panel standing beside the cube, tilted back so it reads from the deck. It
-// draws BOARD_SPAN metres of the world grid at the current cell size, which is
-// what makes a change to the number legible as a change to the *layout*.
-const BOARD_SPAN = 16;      // metres of world the board covers
-const boardArt = makeCanvasTexture(512, 512);
-const gridBoard = new THREE.Mesh(
-  new THREE.PlaneGeometry(8, 8),
-  new THREE.MeshBasicMaterial({ map: boardArt.tex, transparent: true, side: THREE.DoubleSide })
-);
-gridBoard.position.set(GRID_CUBE_POS.x + 7.5, PLATFORM_Y + 4.2, GRID_CUBE_POS.z);
-gridBoard.rotation.set(-0.28, -0.42, 0);      // tilted back and turned to face the cube
-scene.add(gridBoard);
-
-// The legs, so the board is standing on the deck rather than hanging in the air.
-{
-  const legMat = mat(0x39485a, 0.7, 0.25);
-  for (const dx of [-2.6, 2.6]) {
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, 4.2, 0.22), legMat);
-    leg.position.set(
-      gridBoard.position.x + dx * Math.cos(gridBoard.rotation.y),
-      PLATFORM_Y + 2.1,
-      gridBoard.position.z - dx * Math.sin(gridBoard.rotation.y)
-    );
-    leg.castShadow = true;
-    scene.add(leg);
-  }
-}
-
-function drawBoard() {
-  const { ctx: g, canvas: c } = boardArt;
-  const S = c.width;
-  g.clearRect(0, 0, S, S);
-
-  roundRectPath(g, 4, 4, S - 8, S - 8, 18);
-  g.fillStyle = 'rgba(9, 17, 30, 0.92)';
-  g.fill();
-  g.strokeStyle = 'rgba(150, 200, 255, 0.5)';
-  g.lineWidth = 5;
-  g.stroke();
-
-  // The drawing area, under a header strip.
-  const pad = 26, top = 74;
-  const area = S - pad * 2;
-  const px = area / BOARD_SPAN;            // canvas pixels per metre
-  const cell = GRID.size * px;
-  // A tenth-metre grid over 16 metres is 160 cells a side, which is both illegible
-  // and 100k fillRect calls: past the point where a cell is a few pixels wide the
-  // board draws ruling only, and only as much of it as can be told apart.
-  const n = Math.min(Math.ceil(BOARD_SPAN / GRID.size) + 2, Math.ceil(area / 3));
-  const checker = cell >= 6;
-  const x0 = pad + area / 2, y0 = top + (S - top - pad) / 2;   // centre of the field
-
-  g.save();
-  g.beginPath();
-  g.rect(pad, top, area, S - top - pad);
-  g.clip();
-
-  // Checker, so the cells read as cells and not just as ruling.
-  if (checker) {
-    g.fillStyle = 'rgba(120, 170, 230, 0.10)';
-    for (let i = -n; i <= n; i++) {
-      for (let j = -n; j <= n; j++) {
-        if ((i + j) & 1) continue;
-        g.fillRect(x0 + i * cell, y0 + j * cell, cell, cell);
-      }
-    }
-  }
-
-  g.strokeStyle = 'rgba(150, 200, 255, 0.45)';
-  g.lineWidth = Math.max(1, Math.min(3, cell * 0.05));
-  g.beginPath();
-  for (let i = -n; i <= n; i++) {
-    g.moveTo(x0 + i * cell, top);           g.lineTo(x0 + i * cell, S - pad);
-    g.moveTo(pad, y0 + i * cell);           g.lineTo(S - pad, y0 + i * cell);
-  }
-  g.stroke();
-
-  // One cell called out — the same cell the snapping block is standing in.
-  g.fillStyle = 'rgba(95, 224, 255, 0.35)';
-  g.fillRect(x0, y0 - cell, cell, cell);
-  g.strokeStyle = '#9ff4ff';
-  // A 3px stroke swallows a 3px cell, so the outline thins down with the cell.
-  g.lineWidth = THREE.MathUtils.clamp(cell * 0.25, 1, 3);
-  g.strokeRect(x0, y0 - cell, cell, cell);
-  g.restore();
-
-  // Header.
-  g.textAlign = 'left';
-  g.fillStyle = '#7fa8d8';
-  g.font = `600 26px ${MONO}`;
-  g.fillText('GRID PREVIEW', pad, 40);
-  g.textAlign = 'right';
-  g.fillStyle = '#ffd7a0';
-  g.font = `700 30px ${MONO}`;
-  g.fillText(`${gridLabel(GRID.size)} m`, S - pad, 40);
-  g.textAlign = 'left';
-  g.fillStyle = '#6f92bd';
-  g.font = `500 20px ${MONO}`;
-  g.fillText(`${BOARD_SPAN} m across`, pad, 64);
-  g.textAlign = 'right';
-  g.fillText(`${(PLATFORM_SIZE / GRID.size).toFixed(GRID.size < 1 ? 0 : 1)} cells / deck`, S - pad, 64);
-
-  boardArt.tex.needsUpdate = true;
-}
-
-// ----- the block that snaps to a cell -----
-// It follows you around the deck, jumping cell to cell: a placement preview for
-// whatever the grid is currently sized at.
-const snapBlock = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({
-  color: 0x5fe0ff,
-  transparent: true,
-  opacity: 0.34,
-  roughness: 0.25,
-  metalness: 0.0,
-  emissive: 0x0d3f52,
-  emissiveIntensity: 0.8,
-  depthWrite: false,
-}));
-scene.add(snapBlock);
-const snapEdges = new THREE.LineSegments(
-  new THREE.EdgesGeometry(boxGeo),
-  new THREE.LineBasicMaterial({ color: 0x9ff4ff, transparent: true, opacity: 0.9 })
-);
-scene.add(snapEdges);
-
-// ----- the panel -----
-const gridPanel  = document.getElementById('grid-ui');
-const gridInput  = document.getElementById('grid-input');
-const gridCells  = document.getElementById('grid-cells');
-const gridHudEl  = document.getElementById('grid-hud');
-
-function setGridSize(v) {
-  // An empty or half-typed field keeps whatever is already set: Number('') is 0,
-  // and clamping that would snap the grid to its minimum the moment you cleared
-  // the box to type a new number into it.
-  const raw = typeof v === 'string' ? v.trim() : v;
-  const n = raw === '' ? NaN : Number(raw);
-  const g = THREE.MathUtils.clamp(
-    gridQuantum(Number.isFinite(n) ? n : GRID.size), GRID.min, GRID.max
-  );
-  GRID.size = g;
-
-  // The deck is one repeating 2x2-cell tile. The offset cancels the half-platform
-  // shift baked into the plane's UVs, so the painted grid lines up with the grid
-  // the snapping block uses — both are anchored on the world origin.
-  deckTex.repeat.set(PLATFORM_SIZE / (2 * g), PLATFORM_SIZE / (2 * g));
-  deckTex.offset.set(-PLATFORM_HALF / (2 * g), -PLATFORM_HALF / (2 * g));
-
-  drawSign();
-  drawBoard();
-  if (gridInput && document.activeElement !== gridInput) gridInput.value = gridLabel(g);
-  if (gridCells) gridCells.textContent = (PLATFORM_SIZE / g).toFixed(g < 1 ? 0 : 1);
-  if (gridHudEl) gridHudEl.textContent = gridLabel(g);
-}
-const nudgeGrid = (d) => setGridSize(GRID.size + d * GRID.step);
-
-bindTap(document.getElementById('grid-minus'), () => nudgeGrid(-1));
-bindTap(document.getElementById('grid-plus'),  () => nudgeGrid(+1));
-// The input is typed into rather than tapped, so it keeps its native handlers —
-// bindTap would eat the focus. It only has to be kept out of the canvas's way.
-for (const ev of ['pointerdown', 'touchstart', 'mousedown']) {
-  gridInput.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
-}
-// Committed on change/blur rather than per keystroke, so a half-typed "1" on the
-// way to "12" does not re-tile the deck twice. Either way the field is written
-// back with what was actually accepted.
-const commitGridInput = () => {
-  setGridSize(gridInput.value);
-  gridInput.value = gridLabel(GRID.size);
-};
-gridInput.addEventListener('change', commitGridInput);
-gridInput.addEventListener('blur', commitGridInput);
-gridInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') gridInput.blur();
-});
-
-setGridSize(GRID.size);
-
-let gridPanelOpen = false;
-let gridBob = 0;
-
-function updateGridSandbox(dt) {
-  // Free camera flies rather than walks, so it stands in for the player there.
-  const p = camMode === CAM.FREE ? camera.position : playerBody.position;
-  const dist = Math.hypot(p.x - GRID_CUBE_POS.x, p.z - GRID_CUBE_POS.z);
-
-  // Hysteresis on the trigger radius, so standing exactly on the line does not
-  // flicker the panel in and out once a frame.
-  const open = dist < (gridPanelOpen ? GRID.near + GRID.hyst : GRID.near);
-  if (open !== gridPanelOpen) {
-    gridPanelOpen = open;
-    gridPanel.classList.toggle('on', open);
-    gridCubeMat.emissiveIntensity = open ? 1.1 : 0.35;
-    if (!open && document.activeElement === gridInput) gridInput.blur();
-  }
-
-  // The sign breathes a little so it reads as live, and lifts when you are in
-  // range of the controls.
-  gridBob += dt;
-  gridSign.position.y = GRID_CUBE_POS.y + 5.0
-    + Math.sin(gridBob * 1.6) * 0.12 + (open ? 0.45 : 0);
-
-  // The snapping block. It previews the cell *in front of* you rather than the
-  // one you are standing in — a translucent box around your own head is not a
-  // preview of anything, and this is what placing something would actually look
-  // like. Clamped to the deck so it stays put when you swim off the edge.
-  const g = GRID.size;
-  const reach = g * 0.9 + 1.2;
-  const aim = {
-    x: p.x - Math.sin(state.yaw) * reach,
-    z: p.z - Math.cos(state.yaw) * reach,
-  };
-  const lim = Math.max(0, PLATFORM_HALF - g / 2);
-  const sx = THREE.MathUtils.clamp(snapToGrid(aim.x, g), -lim, lim);
-  const sz = THREE.MathUtils.clamp(snapToGrid(aim.z, g), -lim, lim);
-  // Exactly one cell on a side, whatever the cell is: at 0.5 it is a half-metre
-  // box, at 3 it is a three-metre one, and its edges sit on the lines painted on
-  // the deck. The 4mm lift is only to keep its underside off the deck, which is
-  // coplanar with it and would otherwise fight for the same depth.
-  snapBlock.position.set(sx, PLATFORM_Y + g / 2 + 0.004, sz);
-  snapBlock.scale.setScalar(g);
-  snapEdges.position.copy(snapBlock.position);
-  snapEdges.scale.copy(snapBlock.scale);
-}
-
-// ---------------------------------------------------------------------------
 // Mode UI
 // ---------------------------------------------------------------------------
 const camModeEl = document.getElementById('cam-mode');
@@ -3385,12 +3150,10 @@ const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['Space / C', 'Swim up / down'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
-                ['[ / ]', 'Grid size, at the cube'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['Space / C', 'Swim up / down'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
-                ['[ / ]', 'Grid size, at the cube'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['V', 'Next camera'],
@@ -3401,11 +3164,9 @@ const HELP_DESKTOP = {
 };
 const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump / swim up'],
-                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint'],
-                ['Orange cube', 'Walk up &rarr; grid panel']],
+                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint']],
   [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump / swim up'],
-                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint'],
-                ['Orange cube', 'Walk up &rarr; grid panel']],
+                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint']],
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
@@ -3509,6 +3270,8 @@ resize();
 // ---------------------------------------------------------------------------
 const fpsEl = document.getElementById('fps');
 const posEl = document.getElementById('pos');
+// Static — the island is generated once and never changes shape.
+document.getElementById('blocks-hud').textContent = blockCount.toLocaleString();
 const clock = new THREE.Clock();
 let frames = 0, fpsAccum = 0, fps = 0, hudAccum = 0;
 
@@ -3566,7 +3329,6 @@ function tick() {
   }
 
   updateCamera(dt);
-  updateGridSandbox(dt);
   waterTime.value = elapsed;
   updateWaterVisuals();
   // After the water swap, which owns the fog when the camera is submerged — the
@@ -3626,11 +3388,12 @@ function tick() {
 window.hermes = {
   THREE, CANNON, scene, camera, renderer, state, keys, world, playerBody,
   CAM, setCamMode, cycleCamera, toggleGameMode, respawn,
-  SEED, platform, groundHeightAt, onPlatform,
-  // The grid sandbox: read or drive the cell size from the console.
-  GRID, setGridSize, snapToGrid,
-  // The deck is bare by design — these are how you put something on it from the
-  // console, collider included.
+  SEED, groundHeightAt, onLand,
+  // The island: the block size everything is quantised to, the raw heightmap
+  // behind it, and the meshes it was built into.
+  BLOCK, islandHeight, terrain, blockCount, SPAWN,
+  // The island is bare by design — these are how you put something on it from
+  // the console, collider included.
   addBox, addSphere, mat, objects,
   // Weather: WX holds the live settings, spawnCloud(true) drops one in near you.
   WX, clouds, spawnCloud, clearClouds, refreshWxUI,

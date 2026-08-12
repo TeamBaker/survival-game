@@ -347,7 +347,7 @@
      wherever the thumb lands — so a panel down there eats input. Move it up under
      the camera-mode chip, well clear of where a thumb naturally rests. */
   body.touch #cloud-ui {
-    top: calc(80px + env(safe-area-inset-top));
+    top: calc(134px + env(safe-area-inset-top));
     bottom: auto;
   }
 
@@ -394,6 +394,102 @@
     /* Narrow enough to sit beside #instructions on a 390-wide phone. */
     #cloud-ui { width: 190px; font-size: 10px; padding: 7px 9px 8px; }
     .wx-btn { min-width: 66px; font-size: 10px; padding: 5px 7px; }
+  }
+
+  /* ---------- Shovel (temporary block-moving tool) ---------- */
+  #btn-shovel {
+    position: fixed;
+    top: calc(94px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-shovel.on {
+    color: #06101f;
+    background: linear-gradient(180deg, #ffe0a8, #f0b054);
+    border-color: transparent;
+  }
+
+  #shovel-ui {
+    position: fixed;
+    left: 50%;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    z-index: 13;
+  }
+  body.shovel-on #shovel-ui { display: flex; }
+
+  #shovel-held {
+    padding: 5px 13px;
+    font-size: 12px;
+    color: #eaf2ff;
+    background: rgba(8, 14, 24, 0.62);
+    border: 1px solid rgba(160, 200, 255, 0.2);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    white-space: nowrap;
+  }
+  #shovel-row { display: flex; gap: 12px; }
+
+  .sv-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: 122px;
+    height: 64px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    line-height: 1;
+    color: #dce9f8;
+    background: rgba(20, 34, 54, 0.6);
+    border: 1.5px solid rgba(150, 195, 245, 0.4);
+    border-radius: 14px;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    cursor: pointer;
+    touch-action: none;
+  }
+  .sv-btn .glyph { font-size: 19px; }
+  .sv-btn:active { background: rgba(90, 160, 235, 0.6); border-color: rgba(220, 240, 255, 0.85); color: #fff; }
+  /* Greyed when the move it would make is not a legal one — nothing under the
+     crosshair to take, or nothing in your hands to put down. */
+  .sv-btn.dim { opacity: 0.34; }
+
+  /* The pick/place pad sits along the bottom edge, so everything else that lives
+     down there steps up out of its way while the shovel is out. */
+  body.shovel-on #stick-base { bottom: calc(120px + env(safe-area-inset-bottom)); }
+  body.shovel-on #btn-jump   { bottom: calc(130px + env(safe-area-inset-bottom)); }
+  body.shovel-on #btn-crouch { bottom: calc(126px + env(safe-area-inset-bottom)); }
+  body.shovel-on #btn-sprint { bottom: calc(232px + env(safe-area-inset-bottom)); }
+  body.shovel-on #btn-down   { bottom: calc(126px + env(safe-area-inset-bottom)); }
+  body.shovel-on #btn-up     { bottom: calc(216px + env(safe-area-inset-bottom)); }
+
+  @media (max-width: 620px) {
+    #btn-shovel { top: calc(84px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    .sv-btn { width: 106px; height: 58px; font-size: 10px; }
+    #shovel-held { font-size: 11px; padding: 4px 11px; }
   }
 
   /* ---------- Start / pause overlay ---------- */
@@ -494,7 +590,8 @@
 <div id="hud"><span class="k">FPS</span> <span class="v" id="fps">--</span>
 <span class="k">POS</span> <span class="v" id="pos">--</span>
 <span class="k">BLKS</span> <span class="v" id="blocks-hud">--</span>
-<span class="k" style="color:#ff0">v9-island</span></div>
+<span class="k">HELD</span> <span class="v" id="held-hud">0</span>
+<span class="k" style="color:#ff0">v10-voxel</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
@@ -518,6 +615,15 @@
   <div class="act-btn" id="btn-jump"><span class="glyph">&#8679;</span>JUMP</div>
   <div class="act-btn" id="btn-crouch"><span class="glyph">&#8681;</span>CROUCH</div>
   <div class="act-btn" id="btn-sprint"><span class="glyph">&#187;</span>SPRINT</div>
+</div>
+
+<button id="btn-shovel" class="ui-el">Shovel &mdash; Off</button>
+<div id="shovel-ui">
+  <div id="shovel-held">Blocks held: 0</div>
+  <div id="shovel-row">
+    <button class="sv-btn" id="btn-pick"><span class="glyph">&#9935;</span>PICK UP</button>
+    <button class="sv-btn" id="btn-place"><span class="glyph">&#9635;</span>PLACE</button>
+  </div>
 </div>
 
 <div id="overlay">
@@ -594,21 +700,30 @@ const inWaterColumn = () => true;
 // one number the terrain is built out of: the heightmap is quantised to it, the
 // physics surface is sampled on it, and the land texture the sea reads has one
 // texel per column of it.
-const BLOCK      = 0.2;
+//
+// Half a metre, not the 20 cm it used to be. A block only reads as a *block* in
+// proportion to the person standing on it: at 20 cm the player was eight and a
+// half cubes tall and every hillside came out as a fine sandy grain — a
+// realistic landscape shrunk down, which is exactly what it looked like. At 50 cm
+// the player is a little over three cubes, a terrace step is a step you can see
+// from across the bay, and the whole field is 6x cheaper to build, which is what
+// pays for voxelising the sea floor below.
+const BLOCK      = 0.5;
 // Nominal radius of the land mass. The shoreline is a noisy fraction of this —
 // somewhere around 40-55 metres out, depending on whether you are on a headland
-// or in a bay — so dry land runs a bit under 500 blocks across. That is a couple
+// or in a bay — so dry land runs a bit under 200 blocks across. That is a couple
 // of minutes' walk end to end rather than a bump you can see all of at once.
 const ISLAND_R   = 52;
-const ISLAND_PEAK = 12.0;     // scale of the relief; summits land around 10 m
-// Half-width of the generated field, in metres. Wide enough that the island's
-// mask has died to nothing by the edge, which is what lets the sea shader hand
-// off from the baked heightmap to a plain analytic seabed without a seam.
-const GEN_R      = 64;
-const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (640)
-// The shallowest sea floor still worth building blocks for. Below this the water
-// has already swallowed everything, so the island simply stops.
-const SEA_CUT    = -1.35;
+// Scale of the relief. Higher than it was, because terracing spends height: the
+// snap to the nearest band rounds the summits down, and 12 left the island with
+// four plateau levels between the water and the top. At 16 there are six, which
+// is enough for the terraces to read as terraces from a distance.
+const ISLAND_PEAK = 16.0;
+// Half-width of the generated field, in metres. Everything inside this is cubes,
+// sea floor included, so it has to reach well past the shoreline: at the rim the
+// bed is already twenty metres down, which is deeper than the water is legible.
+const GEN_R      = 96;
+const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (384)
 const SEABED_DEPTH = 16;     // how far the sea floor drops away offshore
 // How far a swell has to travel from the island before it is at full open-water
 // size, so the water inshore of that stays readable. Scaled with the island, so
@@ -763,8 +878,8 @@ pmrem.dispose();
 // ---------------------------------------------------------------------------
 // The island is centred on the origin, so the shadow frustum is too — it is
 // sized to swallow the land and a margin of the water around it. Tight, because
-// the terrain is made of 20cm blocks and every metre of slack in here is shadow
-// resolution the blocks do not get.
+// the terrain is made of half-metre blocks and every metre of slack in here is
+// shadow resolution the blocks do not get.
 const SHADOW_CENTER = new THREE.Vector3(0, 2, 0);
 const SHADOW_HALF   = 30;
 const SUN_DIST      = 190;
@@ -1019,7 +1134,12 @@ const SEA_PALETTE = /* glsl */`
 // that skirt is one box rather than a stack of them: the cubes share their faces
 // and their colour, so there is nothing on the outside of the run to tell the
 // two apart. Dig a hole and the store is the thing that already knows what is in
-// the walls of it; the meshes and the collider would have to be rebuilt.
+// the walls of it; the mesh chunk and the collider column are patched from it.
+//
+// There is no sea-level cut-off anywhere in here. The field is cubes from the
+// summit to the rim, so the island steps down into the water in terraces and the
+// sea floor under it is the same blocks the beach is — which is the point of a
+// voxel world, and is what a smooth bed stitched onto the bottom of one destroys.
 // ---------------------------------------------------------------------------
 
 // ----- value noise, on the seed the weather already uses -----
@@ -1070,12 +1190,42 @@ const COAST_W = 20;
 // out proportional to it.
 const WARP_F  = 0.80 / ISLAND_R;
 // How hard the relief bands are stretched about their midpoint — see islandHeight.
-const RELIEF_GAIN = 1.7;
+const RELIEF_GAIN = 1.9;
+
+// ----- terracing -----
+// The single thing that decides whether this reads as a voxel world or as a
+// smooth landscape that happens to be drawn out of cubes. Height is snapped into
+// bands TERRACE_H tall with a short ramp between them, so the ground is flat over
+// most of its area and does all of its climbing in a few places.
+//
+// What comes out of that depends on how steep the underlying relief already was,
+// which is the point: where the hillside is gentle the ramp is spread over
+// several metres and you get a shallow staircase you can walk up; where it is
+// steep the same ramp is squeezed into half a metre and you get a sheer four
+// block face. Plateaus and cliffs out of one rule, with nothing in between.
+const TERRACE_H = BLOCK * 4;   // 2 m — four blocks from one plateau to the next
+const RISER     = 0.18;        // fraction of a band spent climbing rather than flat
+function terrace(h) {
+  const t = h / TERRACE_H;
+  const f = Math.floor(t);
+  // smooth() clamps, so everything outside the riser window lands exactly on a
+  // band edge — that exactness is what makes the flats actually flat once the
+  // column below quantises them to a block level.
+  return (f + smooth((t - f - (0.5 - RISER * 0.5)) / RISER)) * TERRACE_H;
+}
 
 // Metres above sea level at (x, z), before quantisation. Three things stacked: a
 // noisy radial mask that decides where there is land at all, the relief inside
-// it, and the bed falling away outside it.
+// it, and the bed falling away outside it — and then the whole stack is
+// terraced, sea floor included, so nothing anywhere is a smooth curve.
 function islandHeight(x, z) {
+  return terrace(islandSmooth(x, z));
+}
+
+// The same field before terracing. Nothing renders from this — it is what the
+// terrace bands are cut out of, and it is kept separate only because it reads
+// more clearly that way.
+function islandSmooth(x, z) {
   const r = Math.hypot(x, z);
   // The shoreline. Warping the *radius* rather than the height is what turns a
   // disc into headlands and bays without ever breaking the island into pieces.
@@ -1088,8 +1238,8 @@ function islandHeight(x, z) {
   // crenellated edge, and the extra folding per metre would turn the whole
   // coast into cliff.
   const rr = r
-    + fbm2(x * WARP_F + 11.2, z * WARP_F - 4.7, 3) * (ISLAND_R * 0.26)
-    + fbm2(x * WARP_F * 3.5 - 3.3, z * WARP_F * 3.5 + 6.1, 3) * 3.2;
+    + fbm2(x * WARP_F + 11.2, z * WARP_F - 4.7, 2) * (ISLAND_R * 0.26)
+    + fbm2(x * WARP_F * 2.6 - 3.3, z * WARP_F * 2.6 + 6.1, 2) * 2.6;
   // How far the mask takes to run out varies along the coast, and that variation
   // is what decides what kind of coast it is: where it is wide the land shelves
   // gently into the water and the wash lays down a beach, where it is narrow the
@@ -1098,15 +1248,16 @@ function islandHeight(x, z) {
   const cw = COAST_W * (1 + 0.55 * fbm2(x * WARP_F * 1.7 - 5.1, z * WARP_F * 1.7 + 8.3, 2));
   const m  = 1 - sstep(ISLAND_R * 1.02 - cw, ISLAND_R * 1.02, rr);
 
-  // Relief in three bands, because one band of noise over a hundred metres of
-  // island reads as a rough texture rather than as terrain. The broad band is
-  // most of the height and decides where the high ground and the valleys are —
-  // features you pick out from offshore. The ridges cut into it at the scale you
-  // notice while walking over one. The detail is the metre-scale roughness that
-  // stops a hillside coming out as a smooth ramp.
-  const broad  = fbm2(x * 0.030, z * 0.030, 3) * 0.5 + 0.5;
-  const ridges = fbm2(x * 0.080, z * 0.080, 3) * 0.5 + 0.5;
-  const detail = fbm2(x * 0.180, z * 0.180, 3) * 0.5 + 0.5;
+  // Relief in two broad bands, two octaves each. There used to be a third band at
+  // 0.18 — six-metre features — with three octaves on top of it, and that band is
+  // the reason the island read as noise: it put a bump every couple of metres over
+  // every hillside, which after quantisation is a permanent field of one-block
+  // pimples that no amount of terracing can flatten out. What is left is the
+  // shape you pick out from offshore (the broad band) and the shape you notice
+  // while walking over it (the hills). Anything finer than that is now the
+  // terracing's job, and it makes steps out of it rather than fuzz.
+  const broad = fbm2(x * 0.016 + 3.1, z * 0.016 - 2.4, 2) * 0.5 + 0.5;   // ~60 m
+  const hills = fbm2(x * 0.045 - 8.2, z * 0.045 + 5.6, 2) * 0.5 + 0.5;   // ~22 m
 
   // Summed octaves of value noise cluster hard around their mean — left as they
   // come, the two bands above vary by about a metre over the whole island and it
@@ -1114,12 +1265,11 @@ function islandHeight(x, z) {
   // Stretching them about the midpoint is what turns that into hills, and the
   // smoothstep doing the stretching also flattens the ends it pushes past 0 and
   // 1, so the summits get tops and the valleys get floors instead of points.
-  const relief = smooth(0.5 + RELIEF_GAIN * (0.55 * broad + 0.45 * ridges - 0.5));
+  const relief = smooth(0.5 + RELIEF_GAIN * (0.66 * broad + 0.34 * hills - 0.5));
   // Just under linear in the mask, so the interior is rolling ground the relief
   // can carve hills and valleys out of. Squaring it instead would make a cone,
   // and a cone has no flat anywhere to stand on.
-  let h = Math.pow(m, 0.90) * ISLAND_PEAK * (0.12 + 0.88 * relief)
-        + m * detail * 0.50;
+  let h = Math.pow(m, 0.90) * ISLAND_PEAK * (0.12 + 0.88 * relief);
   // The shore: a flat drop, plus one that bites hardest where the mask has
   // already faded, so the land runs out under the water rather than at a wall.
   h -= SHORE_DROP + SHELF_DROP * (1 - m) * (1 - m);
@@ -1156,7 +1306,12 @@ const NO_COLUMN = -32768;
 const topLvl = new Int16Array(GEN_N * GEN_N).fill(NO_COLUMN);
 const topMat = new Uint8Array(GEN_N * GEN_N);
 const tint   = new Float32Array(GEN_N * GEN_N);
-const SLOPE_STEP = 6;      // blocks either side of a column that its slope is read over
+// Blocks either side of a column that its slope is read over. Three, not the six
+// it used to be: the field is terraced now, so its slope is either zero (a
+// plateau) or the pitch of a riser, and a stencil three metres wide would average
+// the two into a number that is neither. One and a half metres reads the riser
+// it is standing on.
+const SLOPE_STEP = 3;
 
 // Minecraft-ish banding, except that the thresholds themselves wander: without
 // that the boundary between two materials is a contour line, and nothing in a
@@ -1167,10 +1322,17 @@ const SLOPE_STEP = 6;      // blocks either side of a column that its slope is r
 // else — including the tops, which used to come out grey — is soil. The only
 // rock you can see from above is therefore a face you could not have stood on.
 function pickMaterial(h, slope, x, z) {
-  const n = vnoise2(x * 0.35, z * 0.35);           // -1 .. 1, ~3 m features
+  // ~8 m patches, where it used to be ~3 m. Slower wander gives the material
+  // boundaries the same broad scale as everything else on the island — at 3 m
+  // they were a per-block speckle along every edge.
+  const n = vnoise2(x * 0.12, z * 0.12);           // -1 .. 1
   if (h < -0.2) return SAND;                       // the sea floor and the wash
-  if (slope > 1.15 + n * 0.25) return ROCK;        // anything you could not stand on
-  if (h < 1.25 + n * 0.55) return SAND;            // the beach, up to knee height
+  if (slope > 1.05 + n * 0.30) return ROCK;        // anything you could not stand on
+  // Deliberately under the first inland terrace rather than through it. Terracing
+  // puts most of the island on a handful of exact heights, and a threshold that
+  // lands on one of them turns a whole plateau half sand and half dirt in broad
+  // blotches. This catches the shore steps and stops.
+  if (h < 1.2 + n * 0.5) return SAND;              // the beach, up to knee height
   return DIRT;                                     // all the gentle ground above it
 }
 
@@ -1183,11 +1345,12 @@ function pickMaterial(h, slope, x, z) {
       // cubes from reading as a single flat surface.
       tint[k] = 0.86 + rnd() * 0.28;
       const h = hRaw[k];
-      if (h <= SEA_CUT) continue;
+      // No cut-off any more: every column in the field gets blocks, however deep
+      // the water over it is. The sea floor is the same cubes as the island and
+      // steps down to the deep in the same terraces, so there is nowhere the
+      // world hands off from voxels to a smooth surface.
       topLvl[k] = Math.floor(h / BLOCK);
-      // |grad h| is the tangent of the slope. The stencil is deliberately wide —
-      // over a couple of blocks it would be reading the metre-scale bumps rather
-      // than the shape of the hillside, and every knoll would come out rock.
+      // |grad h| is the tangent of the slope.
       const dx = (fieldAt(i + SLOPE_STEP, j) - fieldAt(i - SLOPE_STEP, j)) / (2 * SLOPE_STEP * BLOCK);
       const dz = (fieldAt(i, j + SLOPE_STEP) - fieldAt(i, j - SLOPE_STEP)) / (2 * SLOPE_STEP * BLOCK);
       topMat[k] = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j));
@@ -1200,19 +1363,28 @@ function pickMaterial(h, slope, x, z) {
 // made of. This is the whole solid volume — the material of every block in every
 // column, from bedrock up to the surface — so that something cutting into the
 // island can ask what is under the block it just took out rather than guess.
-// Nothing digs yet; this is the data a digger would need.
+// The shovel below is the thing that reads and writes it.
 //
 // The layout is one flat Uint8Array with a per-column offset into it, not an
-// array per column: at GEN_N^2 columns that would be half a million small
+// array per column: at GEN_N^2 columns that would be a hundred thousand small
 // objects, and the whole point of the store is that it stays cheap enough to
 // keep resident. Every column starts at the same VOX_FLOOR, so the bottom of the
 // world is flat and a level maps to an index by subtraction alone.
-const VOX_FLOOR = Math.round(-9 / BLOCK);   // level -45: bedrock, well under the deepest cut
-// Blocks of surface material before it turns to rock. Thick on purpose: at 20 cm
-// a block this is over a metre and a half of soil, so a gentle hillside is dirt
-// the whole way through anything you would dig by hand, and a cut face shows a
-// band of earth over stone rather than one brown pixel.
-const SOIL_DEPTH = 8;
+const VOX_FLOOR = Math.round(-24 / BLOCK);  // level -48: bedrock, under the deepest sea floor
+// Levels of empty space allocated on top of every column, so a block can be
+// *put back* somewhere higher than the ground was ever generated. Without this
+// the store has no room above the surface and the shovel could only ever fill in
+// holes it had already dug.
+const VOX_HEAD = 12;
+// Blocks of surface material before it turns to rock. At 50 cm a block this is
+// a metre and a half of soil, so a gentle hillside is dirt the whole way through
+// anything you would dig by hand, and a terrace riser shows a band of earth over
+// stone rather than one brown pixel.
+const SOIL_DEPTH = 3;
+
+// The highest level column k has storage for — its generated surface plus the
+// headroom. Above this is permanently air and nothing can be placed there.
+const voxCap = (k) => topLvl[k] + VOX_HEAD;
 
 // Where column k's blocks start in voxMat, or -1 where there is no column.
 const voxOff = new Int32Array(GEN_N * GEN_N).fill(-1);
@@ -1220,10 +1392,14 @@ let voxCount = 0;
 for (let k = 0; k < GEN_N * GEN_N; k++) {
   if (topLvl[k] === NO_COLUMN) continue;
   voxOff[k] = voxCount;
-  voxCount += topLvl[k] - VOX_FLOOR + 1;
+  voxCount += voxCap(k) - VOX_FLOOR + 1;
 }
 // voxMat[voxOff[k] + lvl - VOX_FLOOR] is the material of block `lvl` in column k.
 const voxMat = new Uint8Array(voxCount);
+// Solid blocks in the world. The shovel moves blocks between here and the
+// player's hands and never anywhere else, so this plus what is held is an
+// invariant of the whole session.
+let worldBlocks = 0;
 for (let k = 0; k < GEN_N * GEN_N; k++) {
   const top = topLvl[k];
   if (top === NO_COLUMN) continue;
@@ -1233,7 +1409,23 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   const soilLo = Math.max(VOX_FLOOR, top - SOIL_DEPTH);
   voxMat.fill(ROCK, voxOff[k], o + soilLo);
   voxMat.fill(surf, o + soilLo, o + top + 1);
+  // The headroom is empty — and AIR is 3, not the 0 a fresh Uint8Array is full
+  // of, so it has to be written rather than left alone.
+  voxMat.fill(AIR, o + top + 1, o + voxCap(k) + 1);
+  worldBlocks += top - VOX_FLOOR + 1;
 }
+
+// The highest solid level in each column, cached rather than searched for. It
+// starts equal to topLvl and only setVoxel moves it. Everything that asks where
+// the ground is — the camera boom, the collider patch, the mesh rebuild, the
+// player's feet — asks several times a frame, and a scan down the column each
+// time is a scan nobody needs to pay for.
+const sTop = new Int16Array(GEN_N * GEN_N);
+sTop.set(topLvl);
+// Set the first time anything edits a column. A column that is still as it was
+// generated is solid from its surface down to bedrock, which is what lets the
+// mesh builder stop looking as soon as it is out of sight of the neighbours.
+const colDug = new Uint8Array(GEN_N * GEN_N);
 
 // ----- reading and writing the store -----
 // Levels are the ones topLvl is in: level k is the block filling y from k*BLOCK
@@ -1247,36 +1439,53 @@ const colJ = (z) => Math.floor((z + GEN_R) / BLOCK);
 function voxelAt(i, j, lvl) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
   const k = j * GEN_N + i;
-  const top = topLvl[k];
-  if (top === NO_COLUMN || lvl < VOX_FLOOR || lvl > top) return AIR;
+  if (topLvl[k] === NO_COLUMN || lvl < VOX_FLOOR || lvl > voxCap(k)) return AIR;
   return voxMat[voxOff[k] + lvl - VOX_FLOOR];
 }
 const voxelAtWorld = (x, y, z) => voxelAt(colI(x), colJ(z), lvlOfY(y));
 
-// Writing one back. This is the whole of what a shovel would need from the data
-// side; the meshes and the collider are baked, so a caller that changes a block
-// still has to rebuild those before it shows up. Returns what was there.
-function setVoxel(i, j, lvl, m) {
-  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
+// Is (i, j, lvl) a level the store can hold a block at all — in the field, above
+// bedrock and under the headroom? Air inside this range is a hole; air outside it
+// is the edge of the world, and the shovel refuses to place there.
+function inVoxelRange(i, j, lvl) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return false;
   const k = j * GEN_N + i;
-  const top = topLvl[k];
-  if (top === NO_COLUMN || lvl < VOX_FLOOR || lvl > top) return AIR;
+  return topLvl[k] !== NO_COLUMN && lvl >= VOX_FLOOR && lvl <= voxCap(k);
+}
+
+// Writing one back. This is the whole of what the shovel needs from the data
+// side; the meshes and the collider are baked, so a caller that changes a block
+// still has to rebuild those before it shows up — editBlock() below does both.
+// Returns what was there.
+function setVoxel(i, j, lvl, m) {
+  if (!inVoxelRange(i, j, lvl)) return AIR;
+  const k = j * GEN_N + i;
   const p = voxOff[k] + lvl - VOX_FLOOR;
   const was = voxMat[p];
+  if (was === m) return was;
   voxMat[p] = m;
+  if (was === AIR) worldBlocks++;
+  else if (m === AIR) worldBlocks--;
+  // Keep the cached surface honest. Stacking one on top only ever raises it;
+  // taking the top one off is the single case that has to look for the next one
+  // down, and only ever walks as far as the block it uncovers.
+  if (m !== AIR) {
+    if (sTop[k] === NO_COLUMN || lvl > sTop[k]) sTop[k] = lvl;
+  } else if (lvl === sTop[k]) {
+    const o = voxOff[k] - VOX_FLOOR;
+    let t = NO_COLUMN;
+    for (let l = lvl - 1; l >= VOX_FLOOR; l--) if (voxMat[o + l] !== AIR) { t = l; break; }
+    sTop[k] = t;
+  }
   return was;
 }
 
 // The highest block in a column that is still there. Identical to topLvl until
-// something digs the top off, which is the point of asking through here.
+// something digs the top off or stacks a block above it, which is the point of
+// asking through here.
 function solidTopAt(i, j) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return NO_COLUMN;
-  const k = j * GEN_N + i;
-  const top = topLvl[k];
-  if (top === NO_COLUMN) return NO_COLUMN;
-  const o = voxOff[k] - VOX_FLOOR;
-  for (let lvl = top; lvl >= VOX_FLOOR; lvl--) if (voxMat[o + lvl] !== AIR) return lvl;
-  return NO_COLUMN;
+  return sTop[j * GEN_N + i];
 }
 
 // A whole column, for anyone who wants to read down it: a view onto the store
@@ -1285,77 +1494,26 @@ function solidTopAt(i, j) {
 function voxelColumn(i, j) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return null;
   const k = j * GEN_N + i;
-  const top = topLvl[k];
-  if (top === NO_COLUMN) return null;
-  return { base: VOX_FLOOR, top, materials: voxMat.subarray(voxOff[k], voxOff[k] + top - VOX_FLOOR + 1) };
+  if (topLvl[k] === NO_COLUMN) return null;
+  const cap = voxCap(k);
+  return { base: VOX_FLOOR, top: cap, materials: voxMat.subarray(voxOff[k], voxOff[k] + cap - VOX_FLOOR + 1) };
 }
 
 // ----- pass 3: the instanced meshes -----
-const RIM_DEPTH  = 5;    // blocks of skirt on a column with open water beside it
-const MAX_DEPTH  = 24;   // and the most any column will ever draw
+const RIM_DEPTH  = 10;   // blocks of skirt on a column with nothing beside it
+const MAX_DEPTH  = 32;   // and the most any column will ever draw
 
-// The island is far too wide to be one mesh per material now: a single instanced
+// The island is far too wide to be one mesh per material: a single instanced
 // mesh has a single bounding sphere, so every block in it is submitted on every
 // frame and on every shadow pass whether or not it is behind you. Splitting it
 // into a grid of chunks costs a few dozen draw calls and buys back real frustum
 // culling, which on the ground — where most of the island is out of shot — is
-// most of the geometry.
-const CHUNK   = 120;                        // columns per chunk side (24 m)
+// most of the geometry. The split is also the unit the shovel rebuilds in: one
+// edited block redraws its chunk and the ones its neighbours' faces reach into,
+// which is a couple of thousand columns rather than a hundred and fifty thousand.
+const CHUNK   = 48;                         // columns per chunk side (24 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
-// Per chunk, per material, a flat list of runs: x, y-centre, z, height, tint.
-const runs = [];
-for (let c = 0; c < CHUNK_N * CHUNK_N; c++) runs.push([[], [], []]);
-function pushRun(c, m, cx, cz, lo, hi, t) {
-  const n = hi - lo + 1;
-  if (n <= 0) return;
-  runs[c][m].push(cx, (lo + n * 0.5) * BLOCK, cz, n, t);
-}
-
-for (let j = 0; j < GEN_N; j++) {
-  for (let i = 0; i < GEN_N; i++) {
-    const k = j * GEN_N + i;
-    const top = topLvl[k];
-    if (top === NO_COLUMN) continue;
-
-    // How far down the exposed face has to reach: to the top of the lowest of
-    // the four neighbours, since everything under that is walled in on all sides
-    // and could never be seen. A missing neighbour is open water, and a column
-    // on the rim shows a lip of its own instead of a hole.
-    let low = top;
-    const nb0 = i > 0          ? topLvl[k - 1]     : NO_COLUMN;
-    const nb1 = i < GEN_N - 1  ? topLvl[k + 1]     : NO_COLUMN;
-    const nb2 = j > 0          ? topLvl[k - GEN_N] : NO_COLUMN;
-    const nb3 = j < GEN_N - 1  ? topLvl[k + GEN_N] : NO_COLUMN;
-    for (const v of [nb0, nb1, nb2, nb3]) {
-      const vv = v === NO_COLUMN ? top - RIM_DEPTH : v;
-      if (vv < low) low = vv;
-    }
-    const bottom = Math.max(VOX_FLOOR, Math.min(top, Math.max(low + 1, top - MAX_DEPTH)));
-
-    const c = ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
-    const t = tint[k], o = voxOff[k] - VOX_FLOOR;
-    const cx = colX(i), cz = colZ(j);
-
-    // The top block on its own, so its tint reads as one block from above while
-    // the run under it reads as the face of the column.
-    pushRun(c, voxMat[o + top], cx, cz, top, top, t);
-    // Under it, the store's own column, collapsed into runs: a vertical run of
-    // one material is one box rather than a stack of them — the cubes share
-    // their faces and their colour, so there is nothing on the outside of the
-    // run to tell the two apart. The soil band is shaded a shade off the rock
-    // under it even where both are rock, so a cliff still reads as a cliff.
-    let lvl = top - 1;
-    while (lvl >= bottom) {
-      const m = voxMat[o + lvl];
-      const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
-      let lo = lvl;
-      while (lo > bottom && voxMat[o + lo - 1] === m
-             && (top - lo + 1 <= SOIL_DEPTH ? 1 : 0) === band) lo--;
-      if (m !== AIR) pushRun(c, m, cx, cz, lo, lvl, t * (band ? 0.94 : 0.86));
-      lvl = lo - 1;
-    }
-  }
-}
+const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 
 // Sand light and dry, dirt brown, rock grey. Nothing green anywhere — no grass
 // on this island yet.
@@ -1368,69 +1526,145 @@ const blockGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 const terrain = new THREE.Group();
 scene.add(terrain);
 
+// Per chunk: the three instanced meshes (any of them null where the chunk has no
+// block of that material), and what it contributes to the two HUD totals.
+const chunkMesh   = new Array(CHUNK_N * CHUNK_N).fill(null);
+const chunkBlocks = new Int32Array(CHUNK_N * CHUNK_N);
+const chunkInsts  = new Int32Array(CHUNK_N * CHUNK_N);
 let blockCount = 0, instanceCount = 0;
-{
-  const mtx = new THREE.Matrix4();
-  const col = new THREE.Color();
-  for (let c = 0; c < runs.length; c++) {
-    for (let m = 0; m < 3; m++) {
-      const a = runs[c][m];
-      const n = a.length / 5;
-      if (n === 0) continue;                       // most chunks are all sea
-      const im = new THREE.InstancedMesh(blockGeo, TERRAIN_MATS[m], n);
-      for (let q = 0; q < n; q++) {
-        const o = q * 5;
-        mtx.makeScale(1, a[o + 3], 1);             // one run, however many blocks tall
-        mtx.setPosition(a[o], a[o + 1], a[o + 2]);
-        im.setMatrixAt(q, mtx);
-        col.setScalar(a[o + 4]);
-        im.setColorAt(q, col);
-        blockCount += a[o + 3];
-      }
-      instanceCount += n;
-      im.instanceMatrix.needsUpdate = true;
-      if (im.instanceColor) im.instanceColor.needsUpdate = true;
-      im.receiveShadow = true;
-      // Casting is a second full pass over every block. A phone gets the sun's
-      // shading and the player's shadow, but not the island shadowing itself.
-      im.castShadow = !isTouchDevice;
-      // The per-chunk bound is the whole reason for the split — without it three
-      // quarters of the island would be drawn from behind the camera.
-      if (im.computeBoundingSphere) im.computeBoundingSphere();
-      terrain.add(im);
-    }
-    runs[c] = null;
-  }
-  runs.length = 0;
+
+// Scratch, reused by every rebuild: per material, a flat list of runs —
+// x, y-centre, z, height in blocks, tint.
+const runBuf = [[], [], []];
+function pushRun(m, cx, cz, lo, hi, t) {
+  const n = hi - lo + 1;
+  if (n <= 0) return;
+  runBuf[m].push(cx, (lo + n * 0.5) * BLOCK, cz, n, t);
 }
 
-// ----- the sea floor under it all -----
-// The blocks stop at SEA_CUT, a metre or so down, because past that the water is
-// opaque enough that building them is pure cost. This is what is behind them: a
-// smooth sandy bed on the same heightmap, held below the deepest block anywhere
-// the island exists so it can never poke up through one.
-{
-  // Wide enough to still be under the analytic sea floor where that bottoms out
-  // (ISLAND_R * 1.95), so the flat deep bed further out never shows a seam. The
-  // segment count stays where it was even though the span more than doubled:
-  // every vertex is another islandHeight(), the bed is smooth and underwater,
-  // and two-metre cells are indistinguishable through that much water.
-  const SPAN = 250, SEG = 128;
-  const geo = new THREE.PlaneGeometry(SPAN, SPAN, SEG, SEG);
-  const pos = geo.attributes.position;
-  for (let v = 0; v < pos.count; v++) {
-    // The plane is still in XY here; rotating it -90 degrees about X sends local
-    // y to world -z and local z to world up.
-    const x = pos.getX(v), y = pos.getY(v);
-    pos.setZ(v, Math.min(islandHeight(x, -y), SEA_CUT - 0.25));
+// Everything of column (i, j) that could be seen from outside it, appended to
+// runBuf. Returns the number of blocks it accounted for.
+function collectColumn(i, j) {
+  const k = j * GEN_N + i;
+  const top = sTop[k];
+  if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return 0;
+
+  // How far down the exposed face has to reach: to the top of the lowest of the
+  // four neighbours, since everything under that is walled in on all sides and
+  // could never be seen. A missing neighbour is the rim of the field, and a
+  // column there shows a lip of its own instead of a hole.
+  let low = top;
+  for (const v of [
+    i > 0         ? sTop[k - 1]     : NO_COLUMN,
+    i < GEN_N - 1 ? sTop[k + 1]     : NO_COLUMN,
+    j > 0         ? sTop[k - GEN_N] : NO_COLUMN,
+    j < GEN_N - 1 ? sTop[k + GEN_N] : NO_COLUMN,
+  ]) {
+    const vv = v === NO_COLUMN ? top - RIM_DEPTH : v;
+    if (vv < low) low = vv;
   }
-  geo.computeVertexNormals();
-  const bed = new THREE.Mesh(geo, mat(0xbcae8c, 1.0, 0.0, {
-    envMapIntensity: 0.3, shadowSide: THREE.FrontSide,
-  }));
-  bed.rotation.x = -Math.PI / 2;
-  scene.add(bed);
+  const deepest = Math.max(VOX_FLOOR, top - MAX_DEPTH);
+  const bottom  = Math.max(deepest, Math.min(top, low + 1));
+
+  const t = tint[k], o = voxOff[k] - VOX_FLOOR;
+  const cx = colX(i), cz = colZ(j);
+  let drawn = 0;
+
+  // Once the shovel has been in a column it can have air in the middle of it — a
+  // dug hole, or a block stacked over a gap — and the floor of that hole is as
+  // visible from above as the surface is, so the walk has to go all the way down
+  // looking for exposed tops. A column nobody has touched is solid from its
+  // surface to bedrock and there is provably nothing to find under `bottom`.
+  const scanFloor = colDug[k] ? deepest : bottom;
+
+  let lvl = top;
+  while (lvl >= scanFloor) {
+    const m = voxMat[o + lvl];
+    if (m === AIR) { lvl--; continue; }
+    // The exposed top block on its own, so its tint reads as one block from
+    // above while the run under it reads as the face of the column.
+    const capped = lvl === top || voxMat[o + lvl + 1] === AIR;
+    if (capped) {
+      pushRun(m, cx, cz, lvl, lvl, t);
+      drawn++;
+      lvl--;
+      continue;
+    }
+    // Under it, the store's own column collapsed into runs: a vertical run of
+    // one material is one box rather than a stack of them — the cubes share
+    // their faces and their colour, so there is nothing on the outside of the
+    // run to tell the two apart. The soil band is shaded a shade off the rock
+    // under it even where both are rock, so a cliff still reads as a cliff.
+    if (lvl < bottom) { lvl--; continue; }
+    const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
+    let lo = lvl;
+    while (lo > bottom && voxMat[o + lo - 1] === m
+           && (top - lo + 1 <= SOIL_DEPTH ? 1 : 0) === band) lo--;
+    pushRun(m, cx, cz, lo, lvl, t * (band ? 0.94 : 0.86));
+    drawn += lvl - lo + 1;
+    lvl = lo - 1;
+  }
+  return drawn;
 }
+
+const runMtx = new THREE.Matrix4();
+const runCol = new THREE.Color();
+
+// (Re)build one chunk's meshes from the store. Cheap enough to call from a tap:
+// the whole cost is one pass over the chunk's columns plus three buffer uploads.
+function rebuildChunk(c) {
+  const old = chunkMesh[c];
+  if (old) {
+    for (const im of old) {
+      if (!im) continue;
+      terrain.remove(im);
+      im.dispose();              // frees the instance buffers, not the shared geo
+    }
+  }
+  runBuf[0].length = runBuf[1].length = runBuf[2].length = 0;
+
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+  let blocks = 0;
+  for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) blocks += collectColumn(i, j);
+
+  const meshes = [null, null, null];
+  let insts = 0;
+  for (let m = 0; m < 3; m++) {
+    const a = runBuf[m];
+    const n = a.length / 5;
+    if (n === 0) continue;                       // plenty of chunks are all sand
+    const im = new THREE.InstancedMesh(blockGeo, TERRAIN_MATS[m], n);
+    for (let q = 0; q < n; q++) {
+      const o = q * 5;
+      runMtx.makeScale(1, a[o + 3], 1);          // one run, however many blocks tall
+      runMtx.setPosition(a[o], a[o + 1], a[o + 2]);
+      im.setMatrixAt(q, runMtx);
+      runCol.setScalar(a[o + 4]);
+      im.setColorAt(q, runCol);
+    }
+    insts += n;
+    im.instanceMatrix.needsUpdate = true;
+    if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    im.receiveShadow = true;
+    // Casting is a second full pass over every block. A phone gets the sun's
+    // shading and the player's shadow, but not the island shadowing itself.
+    im.castShadow = !isTouchDevice;
+    // The per-chunk bound is the whole reason for the split — without it three
+    // quarters of the island would be drawn from behind the camera.
+    if (im.computeBoundingSphere) im.computeBoundingSphere();
+    terrain.add(im);
+    meshes[m] = im;
+  }
+
+  chunkMesh[c] = meshes;
+  blockCount    += blocks - chunkBlocks[c];
+  instanceCount += insts  - chunkInsts[c];
+  chunkBlocks[c] = blocks;
+  chunkInsts[c]  = insts;
+}
+
+for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 
 // ----- pass 4a: the land texture the sea reads -----
 // One texel per column, aligned on the column centres, so the water's idea of
@@ -1441,17 +1675,19 @@ let blockCount = 0, instanceCount = 0;
 // any swell, and the island's summits are ten metres clear of the water, which
 // the sea reads as "dry" whether it thinks they are ten metres up or twelve.
 const LAND_MIN = -10, LAND_SPAN = 20;
+const landData = new Uint8Array(GEN_N * GEN_N * 4);
+// The block *top*: the sea has to stop at the surface it can see, not at the
+// smooth curve underneath it.
+function landTexel(k) {
+  const top = sTop[k];
+  const h = top === NO_COLUMN ? LAND_MIN : (top + 1) * BLOCK;
+  const e = Math.round(THREE.MathUtils.clamp((h - LAND_MIN) / LAND_SPAN, 0, 1) * 255);
+  landData[k * 4] = landData[k * 4 + 1] = landData[k * 4 + 2] = e;
+  landData[k * 4 + 3] = 255;
+}
 const landTex = (() => {
-  const data = new Uint8Array(GEN_N * GEN_N * 4);
-  for (let k = 0; k < GEN_N * GEN_N; k++) {
-    // The block *top* where there is one: the sea has to stop at the surface it
-    // can see, not at the smooth curve underneath it.
-    const h = topLvl[k] === NO_COLUMN ? hRaw[k] : (topLvl[k] + 1) * BLOCK;
-    const e = Math.round(THREE.MathUtils.clamp((h - LAND_MIN) / LAND_SPAN, 0, 1) * 255);
-    data[k * 4] = data[k * 4 + 1] = data[k * 4 + 2] = e;
-    data[k * 4 + 3] = 255;
-  }
-  const tex = new THREE.DataTexture(data, GEN_N, GEN_N, THREE.RGBAFormat);
+  for (let k = 0; k < GEN_N * GEN_N; k++) landTexel(k);
+  const tex = new THREE.DataTexture(landData, GEN_N, GEN_N, THREE.RGBAFormat);
   tex.minFilter = tex.magFilter = THREE.LinearFilter;
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
   tex.generateMipmaps = false;
@@ -1478,14 +1714,18 @@ const LAND_GLSL = /* glsl */`
 // ----- pass 4b: the collider -----
 // A cannon heightfield on the same grid, its vertices sitting on the centres of
 // the block tops. Between two columns one level apart it ramps rather than
-// steps, but the ramp is 20 cm long and the player walks on spheres of twice
-// that radius — it climbs exactly like a stack of cubes and never catches on an
-// edge. Two levels apart is 63 degrees, past maxSlope, and stays a cliff.
+// steps, but the ramp is one block long against one block of rise — 45 degrees,
+// just inside maxSlope — and the player walks on spheres the same size, so it
+// climbs like a stack of cubes and never catches on an edge. Two levels apart is
+// 63 degrees, past maxSlope, and stays a cliff.
 //
-// Baked from topLvl once, like the meshes: if blocks ever start coming out of
-// the island, this body has to be rebuilt along with them.
+// Baked from the store, and patched a column at a time by the shovel: a
+// heightfield only knows the top of each column, so a hole you dig lowers it and
+// a block you stack raises it. That is the whole of what a heightfield can
+// represent — dig sideways under a ledge and the collider will not follow you —
+// but it is exact for the one-block-at-a-time editing the shovel actually does.
 const HF_FLOOR = -3.2;         // where the field bottoms out under open water
-{
+const hfShape = (() => {
   const data = [];
   for (let i = 0; i < GEN_N; i++) {
     const strip = new Array(GEN_N);
@@ -1493,18 +1733,29 @@ const HF_FLOOR = -3.2;         // where the field bottoms out under open water
       // Tipping the body up sends the heightfield's local +y to world -z, so the
       // row index has to count back down the field.
       const k = (GEN_N - 1 - jj) * GEN_N + i;
-      strip[jj] = topLvl[k] === NO_COLUMN
-        ? Math.max(hRaw[k], HF_FLOOR)
-        : (topLvl[k] + 1) * BLOCK;
+      strip[jj] = sTop[k] === NO_COLUMN ? HF_FLOOR : (sTop[k] + 1) * BLOCK;
     }
     data.push(strip);
   }
-  const hfBody = new CANNON.Body({ mass: 0, material: physWorld });
-  hfBody.addShape(new CANNON.Heightfield(data, { elementSize: BLOCK }));
-  hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-  hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
-  hfBody.updateAABB();
-  world.addBody(hfBody);
+  return new CANNON.Heightfield(data, { elementSize: BLOCK });
+})();
+const hfBody = new CANNON.Body({ mass: 0, material: physWorld });
+hfBody.addShape(hfShape);
+hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
+hfBody.updateAABB();
+world.addBody(hfBody);
+
+// One column of the collider, after the store under it changed.
+function patchCollider(i, j) {
+  const top = sTop[j * GEN_N + i];
+  const y = top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
+  hfShape.setHeightValueAtIndex(i, GEN_N - 1 - j, y);
+  // Only ever widened. Recomputing the true extremes means walking the whole
+  // field, and a bound that is a little loose costs a broadphase test, where one
+  // that is too tight drops contacts.
+  if (y > hfShape.maxValue) { hfShape.maxValue = y; hfBody.updateAABB(); }
+  if (y < hfShape.minValue) { hfShape.minValue = y; hfBody.updateAABB(); }
 }
 
 // Where the ground is, for anything that needs to ask — the top of the block you
@@ -1514,8 +1765,8 @@ const HF_FLOOR = -3.2;         // where the field bottoms out under open water
 function groundHeightAt(x, z) {
   const i = colI(x), j = colJ(z);
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return -SEABED_DEPTH;
-  const top = solidTopAt(i, j);
-  return top === NO_COLUMN ? Math.max(hRaw[j * GEN_N + i], HF_FLOOR) : (top + 1) * BLOCK;
+  const top = sTop[j * GEN_N + i];
+  return top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
 }
 const onLand = (x, z) => groundHeightAt(x, z) > WATER.surfaceY;
 
@@ -1580,7 +1831,13 @@ scene.add(ocean);
     new THREE.MeshStandardMaterial({ color: 0x2b4550, roughness: 1.0, metalness: 0.0 })
   );
   deep.rotation.x = -Math.PI / 2;
-  deep.position.y = -SEABED_DEPTH - 4.6;    // just under the bed the water shoals on
+  // The one flat surface left in the world, and it is only ever seen edge-on from
+  // twenty metres under water more than ninety metres offshore, where the fog and
+  // the depth tint have long since closed over it. It exists so the ocean has
+  // something under it past the rim of the voxel field; everything inside that
+  // rim, sea floor included, is cubes. It sits low enough that the skirt on the
+  // rim columns reaches past it and no gap ever opens between the two.
+  deep.position.y = -SEABED_DEPTH - 6.0;
   ocean.add(deep);
 
   // A radial grid instead of a uniform one. Rings grow geometrically outwards,
@@ -1862,6 +2119,7 @@ const keys = new Set();
 // ----- keyboard -----
 const TRACKED = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
+  'KeyF', 'KeyZ', 'KeyX',
   'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 // A key that lands in a text field is the field's business and nothing else's —
@@ -1875,6 +2133,9 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyV') cycleCamera();
   else if (e.code === 'KeyG') toggleGameMode();
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
+  else if (e.code === 'KeyF') setShovel(!shovel.on);
+  else if (e.code === 'KeyZ') shovelPickUp();
+  else if (e.code === 'KeyX') shovelPlace();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
   // Weather controls — free camera only, where the panel showing what they do
   // is on screen.
@@ -1903,7 +2164,15 @@ function requestLock() {
 }
 const isLocked = () => document.pointerLockElement === renderer.domElement;
 
-renderer.domElement.addEventListener('mousedown', () => { if (!isLocked()) requestLock(); });
+renderer.domElement.addEventListener('mousedown', (e) => {
+  if (!isLocked()) { requestLock(); return; }
+  // Once the pointer is captured the two buttons are the shovel: left takes the
+  // block under the crosshair, right puts one back. Nothing else in the world is
+  // clickable, so there is nothing to steal them from.
+  if (!shovel.on) return;
+  if (e.button === 0) shovelPickUp();
+  else if (e.button === 2) shovelPlace();
+});
 
 document.addEventListener('mousemove', (e) => {
   if (!isLocked()) return;
@@ -1923,7 +2192,6 @@ document.addEventListener('pointerlockchange', () => {
 const stickBase = document.getElementById('stick-base');
 const stickKnob = document.getElementById('stick-knob');
 const STICK_R = 55;
-const stickHome = { left: stickBase.style.left, bottom: stickBase.style.bottom };
 
 const touches = new Map();   // identifier -> { zone, role }
 let moveId = null;
@@ -1947,9 +2215,13 @@ function placeStick(x, y) {
 
 function resetStick() {
   stickBase.classList.remove('active');
-  stickBase.style.left = stickHome.left || '28px';
-  stickBase.style.top = 'auto';
-  stickBase.style.bottom = stickHome.bottom || 'calc(34px + env(safe-area-inset-bottom))';
+  // Cleared rather than written back to a remembered value: the resting place is
+  // a stylesheet rule now, and the shovel pad moves it by overriding that rule.
+  // An inline `bottom` left behind here would win over the override and park the
+  // stick under the PICK UP button.
+  stickBase.style.left = '';
+  stickBase.style.top = '';
+  stickBase.style.bottom = '';
   stickKnob.style.transform = 'translate(0px, 0px)';
   state.joyX = state.joyY = 0;
 }
@@ -3324,6 +3596,246 @@ window.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 // ---------------------------------------------------------------------------
+// The shovel — a temporary tool for picking blocks up and putting them down.
+//
+// The one rule it enforces is conservation: a block leaves the world only by
+// going into your hands and re-enters it only by coming back out of them, so
+// `worldBlocks + shovel.held.length` is the same number it was at load, forever.
+// That is why the two halves are not symmetrical in the code below — the pick-up
+// checks that there is really something there before it pushes, and the place
+// checks that the write will really land before it pops. Neither one can leak.
+//
+// Each block carries its material with it, so a rock you take out of a cliff
+// goes back down as rock wherever you put it.
+//
+// It is meant to be temporary: it edits the store, patches the collider column
+// under the block and redraws the mesh chunk around it, and that is the whole of
+// it. There is no undo, nothing is saved, and the heightfield collider can only
+// follow the *top* of each column — dig sideways into a cliff and you will walk
+// through the overhang you left above you.
+// ---------------------------------------------------------------------------
+const SHOVEL_REACH = 6.0;      // metres of reach from the eye
+const SHOVEL_CAP   = 64;       // blocks your hands hold
+const MAT_NAMES = ['sand', 'dirt', 'rock'];
+
+const shovel = {
+  on: false,
+  held: [],       // materials, last in first out — you put back what you just took
+  hit: null,      // {i, j, lvl} the block being looked at, or null
+  spot: null,     // {i, j, lvl} the empty cell a placed block would go into
+};
+
+// ----- the ray -----
+// Amanatides & Woo over the column grid. It reports the first solid cell along
+// the ray *and* the last empty one before it, which are exactly the two cells a
+// pick-up and a place need — a face you can see is a block to take and a gap in
+// front of it to fill.
+const ddaHit  = { i: 0, j: 0, lvl: 0 };
+const ddaPrev = { i: 0, j: 0, lvl: 0 };
+function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
+  // One grid unit per block, so the DDA is the textbook unit-cell one and the
+  // direction carries over unchanged (the scaling is uniform).
+  const gx = (ox + GEN_R) / BLOCK, gy = oy / BLOCK, gz = (oz + GEN_R) / BLOCK;
+  let i = Math.floor(gx), lvl = Math.floor(gy), j = Math.floor(gz);
+  const si = dx > 0 ? 1 : -1, sl = dy > 0 ? 1 : -1, sj = dz > 0 ? 1 : -1;
+  const tdI = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+  const tdL = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+  const tdJ = dz !== 0 ? Math.abs(1 / dz) : Infinity;
+  let tI = dx !== 0 ? (dx > 0 ? i + 1 - gx : gx - i) * tdI : Infinity;
+  let tL = dy !== 0 ? (dy > 0 ? lvl + 1 - gy : gy - lvl) * tdL : Infinity;
+  let tJ = dz !== 0 ? (dz > 0 ? j + 1 - gz : gz - j) * tdJ : Infinity;
+  const tMax = reach / BLOCK;
+
+  let pi = i, pj = j, pl = lvl, t = 0;
+  for (let step = 0; step < 256; step++) {
+    if (voxelAt(i, j, lvl) !== AIR) {
+      ddaHit.i = i;   ddaHit.j = j;   ddaHit.lvl = lvl;
+      ddaPrev.i = pi; ddaPrev.j = pj; ddaPrev.lvl = pl;
+      return true;
+    }
+    pi = i; pj = j; pl = lvl;
+    if (tI <= tL && tI <= tJ)  { t = tI; i   += si; tI += tdI; }
+    else if (tL <= tJ)         { t = tL; lvl += sl; tL += tdL; }
+    else                       { t = tJ; j   += sj; tJ += tdJ; }
+    if (t > tMax) return false;
+  }
+  return false;
+}
+
+// Would a block at this cell be inside the player? Placing one there would leave
+// them stuck in the ground, so the tool refuses.
+function spotBlocked(i, j, lvl) {
+  if (camMode === CAM.FREE) return false;          // nobody is standing anywhere
+  const p = playerBody.position;
+  const r = PLAYER.radius, half = centerOffset();
+  const x0 = -GEN_R + i * BLOCK, z0 = -GEN_R + j * BLOCK, y0 = lvl * BLOCK;
+  return p.x + r > x0 && p.x - r < x0 + BLOCK
+      && p.z + r > z0 && p.z - r < z0 + BLOCK
+      && p.y + half > y0 && p.y - half < y0 + BLOCK;
+}
+
+const aimDir = new THREE.Vector3();
+
+// Refresh what the tool is pointing at. Runs every frame while the shovel is out
+// so the highlight boxes and the two buttons are always telling the truth.
+function shovelAim() {
+  shovel.hit = null;
+  shovel.spot = null;
+  if (!shovel.on) return;
+
+  camera.getWorldDirection(aimDir);
+  let ox, oy, oz;
+  if (camMode === CAM.FREE) {
+    ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
+  } else {
+    // From the player's eye, not the camera: in third person the camera is five
+    // metres behind their head and would reach through the hill they stand on.
+    const p = playerBody.position;
+    ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
+  }
+
+  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, SHOVEL_REACH)) {
+    shovel.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
+    shovel.spot = { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl };
+  } else if (camMode !== CAM.FREE) {
+    // Nothing under the crosshair. Fall back to what you are standing on, and to
+    // the ground a stride ahead of you for the other half — looking at the sky
+    // should not make the tool useless.
+    const p = playerBody.position;
+    const i = colI(p.x), j = colJ(p.z);
+    const top = solidTopAt(i, j);
+    if (top !== NO_COLUMN) shovel.hit = { i, j, lvl: top };
+    const ai = colI(p.x - Math.sin(state.yaw) * 1.5);
+    const aj = colJ(p.z - Math.cos(state.yaw) * 1.5);
+    const atop = solidTopAt(ai, aj);
+    if (atop !== NO_COLUMN) shovel.spot = { i: ai, j: aj, lvl: atop + 1 };
+  }
+
+  // A place has to land in a cell the store can actually hold a block in, that
+  // is empty, and that the player is not standing in.
+  const s = shovel.spot;
+  if (s && (!inVoxelRange(s.i, s.j, s.lvl) || voxelAt(s.i, s.j, s.lvl) !== AIR
+            || spotBlocked(s.i, s.j, s.lvl))) shovel.spot = null;
+}
+
+// ----- writing it back -----
+// Chunks whose meshes no longer match the store. Flushed once per frame rather
+// than per edit, so holding a button down does not rebuild the same chunk twice.
+const dirtyChunks = new Set();
+
+function editBlock(i, j, lvl, m) {
+  const was = setVoxel(i, j, lvl, m);
+  const k = j * GEN_N + i;
+  colDug[k] = 1;
+  landTexel(k);
+  landTex.needsUpdate = true;
+  patchCollider(i, j);
+  // A column's faces are drawn against its neighbours' tops, so an edit on a
+  // chunk border changes what the chunk next door has to draw as well.
+  for (let dj = -1; dj <= 1; dj++) {
+    for (let di = -1; di <= 1; di++) {
+      const ii = i + di, jj = j + dj;
+      if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+      dirtyChunks.add(chunkOf(ii, jj));
+    }
+  }
+  return was;
+}
+
+function flushDirtyChunks() {
+  if (!dirtyChunks.size) return;
+  for (const c of dirtyChunks) rebuildChunk(c);
+  dirtyChunks.clear();
+  blocksHudEl.textContent = worldBlocks.toLocaleString();
+}
+
+function shovelPickUp() {
+  if (!shovel.on || !shovel.hit || shovel.held.length >= SHOVEL_CAP) return false;
+  const { i, j, lvl } = shovel.hit;
+  const m = voxelAt(i, j, lvl);
+  if (m === AIR) return false;
+  editBlock(i, j, lvl, AIR);
+  shovel.held.push(m);            // out of the world and into your hands
+  refreshShovelUI();
+  return true;
+}
+
+function shovelPlace() {
+  if (!shovel.on || !shovel.spot || shovel.held.length === 0) return false;
+  const { i, j, lvl } = shovel.spot;
+  // Re-check rather than trusting the aim from earlier in the frame. Popping a
+  // block off the stack for a write that then gets rejected would destroy it.
+  if (!inVoxelRange(i, j, lvl) || voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) return false;
+  editBlock(i, j, lvl, shovel.held.pop());
+  refreshShovelUI();
+  return true;
+}
+
+// ----- what it looks like -----
+// A wire cage on the block you would take and a ghost cube in the cell you would
+// fill. Without them the tool is unusable on a phone, where there is no mouse to
+// hover with and the crosshair is a faint cross on a field of identical cubes.
+const hlPick = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(BLOCK * 1.05, BLOCK * 1.05, BLOCK * 1.05)),
+  new THREE.LineBasicMaterial({ color: 0xfff0b4, transparent: true, opacity: 0.95, depthWrite: false })
+);
+const hlPlace = new THREE.Mesh(
+  new THREE.BoxGeometry(BLOCK * 0.92, BLOCK * 0.92, BLOCK * 0.92),
+  new THREE.MeshBasicMaterial({ color: 0x8fd8ff, transparent: true, opacity: 0.3, depthWrite: false })
+);
+hlPick.visible = hlPlace.visible = false;
+hlPick.frustumCulled = hlPlace.frustumCulled = false;
+scene.add(hlPick, hlPlace);
+
+const cellCenter = (o, v) => v.set(colX(o.i), (o.lvl + 0.5) * BLOCK, colZ(o.j));
+
+const shovelBtn  = document.getElementById('btn-shovel');
+const pickBtn    = document.getElementById('btn-pick');
+const placeBtn   = document.getElementById('btn-place');
+const heldPanel  = document.getElementById('shovel-held');
+const heldHudEl  = document.getElementById('held-hud');
+const blocksHudEl = document.getElementById('blocks-hud');
+
+function refreshShovelUI() {
+  const n = shovel.held.length;
+  const by = [0, 0, 0];
+  for (const m of shovel.held) by[m]++;
+  const parts = [];
+  for (let m = 0; m < 3; m++) if (by[m]) parts.push(by[m] + ' ' + MAT_NAMES[m]);
+  heldPanel.textContent = 'Blocks held: ' + n + (parts.length ? '  —  ' + parts.join(', ') : '');
+  heldHudEl.textContent = String(n);
+  shovelBtn.innerHTML = 'Shovel &mdash; ' + (shovel.on ? 'On' : 'Off');
+  shovelBtn.classList.toggle('on', shovel.on);
+}
+
+// Called every frame while the shovel is out: the highlights follow the aim and
+// the buttons grey out when the move they offer is not a legal one.
+function updateShovel() {
+  shovelAim();
+  const canPick = !!shovel.hit && shovel.held.length < SHOVEL_CAP;
+  const canPlace = !!shovel.spot && shovel.held.length > 0;
+  hlPick.visible  = shovel.on && canPick;
+  hlPlace.visible = shovel.on && canPlace;
+  if (hlPick.visible)  cellCenter(shovel.hit, hlPick.position);
+  if (hlPlace.visible) cellCenter(shovel.spot, hlPlace.position);
+  pickBtn.classList.toggle('dim', !canPick);
+  placeBtn.classList.toggle('dim', !canPlace);
+}
+
+function setShovel(on) {
+  shovel.on = on;
+  document.body.classList.toggle('shovel-on', on);
+  if (!on) hlPick.visible = hlPlace.visible = false;
+  refreshShovelUI();
+  refreshModeUI();               // the crosshair and the help rows both change
+}
+
+bindTap(shovelBtn, () => setShovel(!shovel.on));
+bindTap(pickBtn,   () => { if (shovel.on) shovelPickUp(); });
+bindTap(placeBtn,  () => { if (shovel.on) shovelPlace(); });
+refreshShovelUI();
+
+// ---------------------------------------------------------------------------
 // Mode UI
 // ---------------------------------------------------------------------------
 const camModeEl = document.getElementById('cam-mode');
@@ -3333,29 +3845,34 @@ const modeBtn   = document.getElementById('mode-btn');
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['Space / C', 'Swim up / down'],
-                ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['F', 'Shovel on / off'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['Space / C', 'Swim up / down'],
-                ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['F', 'Shovel on / off'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['V', 'Next camera'],
-                ['G', 'Free camera'], ['Esc', 'Free the cursor']],
+                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'],
+                ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
                 ['Mouse', 'Look'], ['1 2', 'Weather'], ['4 / 0', 'Add / clear cloud'],
-                ['V', 'Next camera'], ['G', 'Enter game'], ['Esc', 'Free the cursor']],
+                ['F', 'Shovel on / off'], ['V', 'Next camera'], ['G', 'Enter game'],
+                ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump / swim up'],
-                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint']],
+                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
   [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump / swim up'],
-                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint']],
-  [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in']],
+                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+  [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in'],
+                ['Shovel', 'Button, top left']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
                 ['Weather', 'Panel, top left']],
 };
+// Appended while the shovel is out, in whichever camera you are in.
+const HELP_SHOVEL_DESKTOP = [['LMB / Z', 'Pick up block'], ['RMB / X', 'Place block']];
+const HELP_SHOVEL_TOUCH   = [['PICK UP', 'Take the lit block'], ['PLACE', 'Fill the ghost cell']];
 
 function refreshModeUI() {
   const inGame = camMode !== CAM.FREE;
@@ -3363,7 +3880,8 @@ function refreshModeUI() {
   modeBtn.textContent = inGame ? 'Free Camera' : 'Game Mode';
   modeBtn.classList.toggle('game', inGame);
 
-  const rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
+  let rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
+  if (shovel.on) rows = rows.concat(isTouchDevice ? HELP_SHOVEL_TOUCH : HELP_SHOVEL_DESKTOP);
   instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
 
@@ -3374,7 +3892,10 @@ function refreshModeUI() {
   // Fly pad doubles as the top-down zoom pad; action pad is for on-foot modes.
   document.body.classList.toggle('pad-fly', camMode === CAM.FREE || camMode === CAM.TOP);
   document.body.classList.toggle('pad-act', camMode === CAM.FIRST || camMode === CAM.THIRD);
-  document.getElementById('crosshair').style.display = (camMode === CAM.THIRD || camMode === CAM.TOP) ? 'none' : '';
+  // Third person normally has nothing to aim, but with the shovel out the
+  // crosshair is what picks the block — so it comes back for that.
+  const noCross = (camMode === CAM.THIRD && !shovel.on) || camMode === CAM.TOP;
+  document.getElementById('crosshair').style.display = noCross ? 'none' : '';
 }
 
 // Deliberately does NOT grab the pointer on the way into game mode. While the
@@ -3454,8 +3975,10 @@ resize();
 // ---------------------------------------------------------------------------
 const fpsEl = document.getElementById('fps');
 const posEl = document.getElementById('pos');
-// Static — the island is generated once and never changes shape.
-document.getElementById('blocks-hud').textContent = blockCount.toLocaleString();
+// Solid blocks in the world, from the store rather than from what is drawn. It
+// moves only when the shovel moves one, and always by exactly one: BLKS + HELD
+// is the same number for the whole session.
+blocksHudEl.textContent = worldBlocks.toLocaleString();
 const clock = new THREE.Clock();
 let frames = 0, fpsAccum = 0, fps = 0, hudAccum = 0;
 
@@ -3513,6 +4036,10 @@ function tick() {
   }
 
   updateCamera(dt);
+  // After the camera, since the aim is taken down the view direction, and before
+  // the render so the highlight boxes are in the right place this frame.
+  if (shovel.on) updateShovel();
+  flushDirtyChunks();
   waterTime.value = elapsed;
   updateWaterVisuals();
   // After the water swap, which owns the fog when the camera is submerged — the
@@ -3575,7 +4102,11 @@ window.hermes = {
   SEED, groundHeightAt, onLand,
   // The island: the block size everything is quantised to, the raw heightmap
   // behind it, and the meshes it was built into.
-  BLOCK, islandHeight, terrain, blockCount, instanceCount, SPAWN,
+  BLOCK, TERRACE_H, islandHeight, islandSmooth, terrain, SPAWN,
+  stats: () => ({ worldBlocks, held: shovel.held.length, drawn: blockCount, instances: instanceCount }),
+  // The shovel. `shovel.held` is the stack of materials in your hands; moving a
+  // block through it is the only way anything ever changes.
+  shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,
   // The voxel store — the material of every block in the volume, not just the
   // surface, which is what a digging system would work against. voxelAtWorld
   // takes metres; the rest take column indices and levels. SAND/DIRT/ROCK/AIR

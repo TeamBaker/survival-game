@@ -1683,12 +1683,12 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // On this island that is the odd cliff face and nothing else. Overhangs dug into
 // a column are invisible to it for the same reason.
 
-// Vertices per block along each axis. 2 puts one on every column centre and one
-// on every boundary between them, which is the fewest that can carry the shape
-// at all: each arc comes out as two segments, and since the normals below are
-// differentiated from the curve rather than averaged off the triangles, it still
-// shades as a curve. Every step up from here costs (sub/2)^2 in memory.
-const FILLET_SUB = 2;
+// Vertices per block along each axis. 4 gives two flat quads and two curve
+// quads per block cycle so flat surfaces look flat and height transitions get a
+// proper multi-segment arc. The tight smoothstep below keeps the curve confined
+// to the middle half of each block, so only the last quarter-block before a
+// boundary is affected. Every step up from here costs (sub/2)^2 in memory.
+const FILLET_SUB = 4;
 // How far out from the middle of the field gets a skin, in metres. Past the
 // shoreline and its wash and not much further: at a vertex every 10 cm this
 // costs far more per square metre than the cubes do, and the sea floor beyond
@@ -1753,6 +1753,14 @@ function filletCovers(i0, j0, i1, j1) {
   return Math.hypot(nx, nz) <= FILLET_R;
 }
 
+// Tight smoothstep: flat on block surfaces (t in [0,0.25] and [0.75,1]),
+// curves only in the middle half [0.25, 0.75]. Keeps block tops flat and
+// confines the rounded corner to the last quarter-block before each boundary.
+const tightSmooth = (t) => {
+  const s = Math.max(0, Math.min(1, (t - 0.25) * 2));
+  return s * s * (3 - 2 * s);
+};
+
 function buildFilletChunk(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N - 1), j1 = Math.min(j0 + CHUNK, GEN_N - 1);
@@ -1769,11 +1777,13 @@ function buildFilletChunk(c) {
     // Which cell of the grid this row is in, and how far across it — 0 on a
     // column centre, 0.5 on the boundary between two columns.
     const jq = (b / FILLET_SUB) | 0, fz = (b % FILLET_SUB) / FILLET_SUB;
-    const wz = smooth(fz), dwz = 6 * fz * (1 - fz);
+    const sz = Math.max(0, Math.min(1, (fz - 0.25) * 2));
+    const wz = sz * sz * (3 - 2 * sz), dwz = 6 * sz * (1 - sz) * 2;
     const z = colZ(j0 + jq) + fz * BLOCK;
     for (let a = 0; a < nx; a++) {
       const iq = (a / FILLET_SUB) | 0, fx = (a % FILLET_SUB) / FILLET_SUB;
-      const wx = smooth(fx), dwx = 6 * fx * (1 - fx);
+      const sx = Math.max(0, Math.min(1, (fx - 0.25) * 2));
+      const wx = sx * sx * (3 - 2 * sx), dwx = 6 * sx * (1 - sx) * 2;
       const x = colX(i0 + iq) + fx * BLOCK;
 
       const p00 = jq * FILLET_STRIDE + iq, p10 = p00 + 1;

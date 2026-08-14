@@ -1501,6 +1501,24 @@ const chunkBlocks = new Int32Array(CHUNK_N * CHUNK_N);
 const chunkInsts  = new Int32Array(CHUNK_N * CHUNK_N);
 let blockCount = 0, instanceCount = 0;
 
+// Which of the two surfaces you are looking at. Pass 3b below builds a smooth
+// mesh over the same blocks; where it covers a chunk the cubes underneath it are
+// hidden, since the two occupy the same half-block of space and would otherwise
+// poke through one another. Declared up here because rebuildChunk() has to know
+// the answer for a chunk it has just rebuilt.
+const VIEW = { SMOOTH: 0, BLOCKS: 1, BOTH: 2 };
+const VIEW_NAMES = ['smooth', 'blocks', 'both'];
+let terrainView = VIEW.SMOOTH;
+// Filled in by pass 3b; null for a chunk too far out to have a smooth mesh, and
+// those keep their cubes in every view so the far sea floor is never a hole.
+const filletMesh = new Array(CHUNK_N * CHUNK_N).fill(null);
+
+function applyChunkView(c) {
+  const show = terrainView !== VIEW.SMOOTH || !filletMesh[c];
+  const ms = chunkMesh[c];
+  if (ms) for (const im of ms) if (im) im.visible = show;
+}
+
 // Scratch, reused by every rebuild: per material, a flat list of runs —
 // x, y-centre, z, height in blocks, tint.
 const runBuf = [[], [], []];
@@ -1626,6 +1644,7 @@ function rebuildChunk(c) {
   }
 
   chunkMesh[c] = meshes;
+  applyChunkView(c);
   blockCount    += blocks - chunkBlocks[c];
   instanceCount += insts  - chunkInsts[c];
   chunkBlocks[c] = blocks;
@@ -1633,6 +1652,210 @@ function rebuildChunk(c) {
 }
 
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
+
+// ----- pass 3b: the fillet surface -----
+// The same terrain as one smooth skin instead of a field of cubes. It is not a
+// different shape: it traces the outline the blocks already have, and the only
+// thing it does differently is round the corners.
+//
+// The rule, in cross section. Walk the staircase the blocks make — along the top
+// of a block, up the face of the next one, along its top. Every edge of that
+// walk is one block face, BLOCK long. Leave each face at its midpoint, rejoin
+// the next one at its midpoint, and put a smoothstep arc between those two
+// points; the half of every face on either side of an arc stays exactly where
+// the block put it. So a flat run is flat, the middle of a tall face is still
+// straight up it, and the only thing that ever moves is the last half-block
+// going into a corner.
+//
+// What makes that cheap here is where the midpoints land. The midpoint of a
+// block top is the centre of a column; the midpoint of a riser is half way
+// between the two column heights either side of it. So sampling the block tops
+// at the column centres and interpolating between neighbours with smoothstep
+// instead of a straight line *is* the rule: on a column centre the skin is on
+// the block top, half way to the next column it is half way up the riser, and
+// where two columns are level the interpolation is flat and the skin lies on the
+// block faces exactly. Once in x and once in z is the 3D version.
+//
+// The one place it cannot follow the rule: a riser more than one block tall
+// wants a straight vertical section between its two arcs, and a heightfield has
+// no vertical in it. Those get the two arcs back to back — an S from one column
+// centre to the next — which is as steep as a height function is allowed to be.
+// On this island that is the odd cliff face and nothing else. Overhangs dug into
+// a column are invisible to it for the same reason.
+
+// Vertices per block along each axis. 2 puts one on every column centre and one
+// on every boundary between them, which is the fewest that can carry the shape
+// at all: each arc comes out as two segments, and since the normals below are
+// differentiated from the curve rather than averaged off the triangles, it still
+// shades as a curve. Every step up from here costs (sub/2)^2 in memory.
+const FILLET_SUB = 2;
+// How far out from the middle of the field gets a skin, in metres. Past the
+// shoreline and its wash and not much further: at a vertex every 10 cm this
+// costs far more per square metre than the cubes do, and the sea floor beyond
+// here is under enough water and fog that its corners were never legible. Chunks
+// outside it keep their cubes in every view, so there is no hole.
+const FILLET_R = 64;
+
+const filletGroup = new THREE.Group();
+scene.add(filletGroup);
+// One material for all three terrain colours. The skin blends across a material
+// boundary rather than stepping over it, so the colour has to ride on the
+// vertices — which is also where the per-column tint goes. Roughness is split
+// between the three the cubes use.
+// shadowSide overrides the back-face default mat() uses for the cubes: that one
+// works because a cube is a closed solid, and this is an open sheet with nothing
+// behind it to cast from.
+const filletMat = mat(0xffffff, 0.95, 0.0, {
+  envMapIntensity: 0.45, vertexColors: true, shadowSide: THREE.DoubleSide,
+});
+const filletTris = new Int32Array(CHUNK_N * CHUNK_N);
+
+// A chunk's skin runs centre to centre over its own columns plus one past its
+// far edge, so it meets its neighbour's on a shared column with no seam.
+const FILLET_STRIDE = CHUNK + 2;
+const filletH   = new Float32Array(FILLET_STRIDE * FILLET_STRIDE);
+const filletRGB = new Float32Array(FILLET_STRIDE * FILLET_STRIDE * 3);
+
+// The top of the highest block still standing in each column of the chunk, and
+// the colour of the face on top of it. Read once into a cache because the vertex
+// loop below asks for every column four times over.
+function filletCache(i0, j0) {
+  for (let b = 0; b < FILLET_STRIDE; b++) {
+    const jj = Math.min(GEN_N - 1, j0 + b);
+    for (let a = 0; a < FILLET_STRIDE; a++) {
+      const ii = Math.min(GEN_N - 1, i0 + a);
+      const k = jj * GEN_N + ii, p = b * FILLET_STRIDE + a;
+      const t = sTop[k];
+      // A column dug away to nothing falls back to bedrock rather than leaving
+      // the skin undefined over it.
+      filletH[p] = (t === NO_COLUMN ? VOX_FLOOR : t + 1) * BLOCK;
+      // Whatever is face-up now, which after a dig is not what the generator
+      // left on top.
+      let m = topMat[k];
+      if (t !== NO_COLUMN && voxOff[k] >= 0) {
+        const v = voxMat[voxOff[k] + t - VOX_FLOOR];
+        if (v !== AIR) m = v;
+      }
+      const col = TERRAIN_MATS[m].color, s = tint[k];
+      filletRGB[p * 3]     = col.r * s;
+      filletRGB[p * 3 + 1] = col.g * s;
+      filletRGB[p * 3 + 2] = col.b * s;
+    }
+  }
+}
+
+// Does the chunk's footprint reach inside FILLET_R? Nearest point of it to the
+// middle of the field, so a chunk the circle only clips still gets a skin.
+function filletCovers(i0, j0, i1, j1) {
+  const x0 = colX(i0) - BLOCK * 0.5, x1 = colX(i1) + BLOCK * 0.5;
+  const z0 = colZ(j0) - BLOCK * 0.5, z1 = colZ(j1) + BLOCK * 0.5;
+  const nx = Math.min(Math.max(0, x0), x1), nz = Math.min(Math.max(0, z0), z1);
+  return Math.hypot(nx, nz) <= FILLET_R;
+}
+
+function buildFilletChunk(c) {
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  const i1 = Math.min(i0 + CHUNK, GEN_N - 1), j1 = Math.min(j0 + CHUNK, GEN_N - 1);
+  if (i1 <= i0 || j1 <= j0 || !filletCovers(i0, j0, i1, j1)) return;
+
+  filletCache(i0, j0);
+  const nx = (i1 - i0) * FILLET_SUB + 1, nz = (j1 - j0) * FILLET_SUB + 1;
+  const nv = nx * nz;
+  const pos = new Float32Array(nv * 3);
+  const nor = new Float32Array(nv * 3);
+  const col = new Float32Array(nv * 3);
+
+  for (let b = 0; b < nz; b++) {
+    // Which cell of the grid this row is in, and how far across it — 0 on a
+    // column centre, 0.5 on the boundary between two columns.
+    const jq = (b / FILLET_SUB) | 0, fz = (b % FILLET_SUB) / FILLET_SUB;
+    const wz = smooth(fz), dwz = 6 * fz * (1 - fz);
+    const z = colZ(j0 + jq) + fz * BLOCK;
+    for (let a = 0; a < nx; a++) {
+      const iq = (a / FILLET_SUB) | 0, fx = (a % FILLET_SUB) / FILLET_SUB;
+      const wx = smooth(fx), dwx = 6 * fx * (1 - fx);
+      const x = colX(i0 + iq) + fx * BLOCK;
+
+      const p00 = jq * FILLET_STRIDE + iq, p10 = p00 + 1;
+      const p01 = p00 + FILLET_STRIDE,     p11 = p01 + 1;
+      const h00 = filletH[p00], h10 = filletH[p10];
+      const h01 = filletH[p01], h11 = filletH[p11];
+      // The arc, in x and then in z. Straight-line weights here would give the
+      // blocks a chamfer; smoothstep is what rounds the corner, and what puts
+      // the skin exactly on the block top at fx = 0 and exactly half way up the
+      // riser at fx = 0.5.
+      const hx0 = h00 + (h10 - h00) * wx, hx1 = h01 + (h11 - h01) * wx;
+      const y = hx0 + (hx1 - hx0) * wz;
+      // The same curve differentiated. Averaging the facet normals instead would
+      // flatten the arc back out at two vertices a block.
+      const dydx = ((h10 - h00) * (1 - wz) + (h11 - h01) * wz) * dwx / BLOCK;
+      const dydz = (hx1 - hx0) * dwz / BLOCK;
+      const inv = 1 / Math.hypot(dydx, 1, dydz);
+
+      const v = (b * nx + a) * 3;
+      pos[v] = x;           pos[v + 1] = y;   pos[v + 2] = z;
+      nor[v] = -dydx * inv; nor[v + 1] = inv; nor[v + 2] = -dydz * inv;
+      const q00 = p00 * 3, q10 = p10 * 3, q01 = p01 * 3, q11 = p11 * 3;
+      for (let ch = 0; ch < 3; ch++) {
+        const c0 = filletRGB[q00 + ch] + (filletRGB[q10 + ch] - filletRGB[q00 + ch]) * wx;
+        const c1 = filletRGB[q01 + ch] + (filletRGB[q11 + ch] - filletRGB[q01 + ch]) * wx;
+        col[v + ch] = c0 + (c1 - c0) * wz;
+      }
+    }
+  }
+
+  const quads = (nx - 1) * (nz - 1);
+  const idx = nv > 65535 ? new Uint32Array(quads * 6) : new Uint16Array(quads * 6);
+  let o = 0;
+  for (let b = 0; b < nz - 1; b++) {
+    for (let a = 0; a < nx - 1; a++) {
+      const v0 = b * nx + a, v1 = v0 + 1, v2 = v0 + nx, v3 = v2 + 1;
+      idx[o++] = v0; idx[o++] = v3; idx[o++] = v1;   // wound to face up
+      idx[o++] = v0; idx[o++] = v2; idx[o++] = v3;
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal',   new THREE.BufferAttribute(nor, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.computeBoundingSphere();      // per chunk, for the same culling the cubes get
+
+  const m = new THREE.Mesh(geo, filletMat);
+  m.receiveShadow = true;
+  m.castShadow = !isTouchDevice;
+  filletGroup.add(m);
+  filletMesh[c] = m;
+  filletTris[c] = quads * 2;
+}
+
+// (Re)build one chunk's skin. Same unit and same trigger as the cubes: the
+// shovel dirties a chunk and both surfaces over it come back.
+function rebuildFilletChunk(c) {
+  const old = filletMesh[c];
+  if (old) {
+    filletGroup.remove(old);
+    old.geometry.dispose();         // the material is shared, so it stays
+    filletMesh[c] = null;
+    filletTris[c] = 0;
+  }
+  buildFilletChunk(c);
+  applyChunkView(c);                // the cubes under it hide or come back
+}
+
+// Which surface is on screen. Cycles smooth → blocks → both; `both` is a debug
+// view and the two do interpenetrate in it, since the skin cuts the corner off
+// every cube it runs over, which is the entire point of it.
+function setTerrainView(v) {
+  terrainView = ((v % 3) + 3) % 3;
+  filletGroup.visible = terrainView !== VIEW.BLOCKS;
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) applyChunkView(c);
+  return VIEW_NAMES[terrainView];
+}
+
+for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildFilletChunk(c);
+setTerrainView(terrainView);
 
 // ----- pass 4a: the land texture the sea reads -----
 // One texel per column, aligned on the column centres, so the water's idea of
@@ -2088,7 +2311,7 @@ const keys = new Set();
 // ----- keyboard -----
 const TRACKED = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
-  'KeyF', 'KeyZ', 'KeyX',
+  'KeyF', 'KeyZ', 'KeyX', 'KeyM',
   'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 // A key that lands in a text field is the field's business and nothing else's —
@@ -2105,6 +2328,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyF') setShovel(!shovel.on);
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
+  else if (e.code === 'KeyM') setTerrainView(terrainView + 1);
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
   // Weather controls — free camera only, where the panel showing what they do
   // is on screen.
@@ -3713,7 +3937,7 @@ function editBlock(i, j, lvl, m) {
 
 function flushDirtyChunks() {
   if (!dirtyChunks.size) return;
-  for (const c of dirtyChunks) rebuildChunk(c);
+  for (const c of dirtyChunks) { rebuildChunk(c); rebuildFilletChunk(c); }
   dirtyChunks.clear();
   blocksHudEl.textContent = worldBlocks.toLocaleString();
 }
@@ -3814,18 +4038,18 @@ const modeBtn   = document.getElementById('mode-btn');
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['Space / C', 'Swim up / down'],
-                ['F', 'Shovel on / off'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['Space / C', 'Swim up / down'],
-                ['F', 'Shovel on / off'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'],
+                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
                 ['Mouse', 'Look'], ['1 2', 'Weather'], ['4 / 0', 'Add / clear cloud'],
-                ['F', 'Shovel on / off'], ['V', 'Next camera'], ['G', 'Enter game'],
+                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
@@ -4073,6 +4297,15 @@ window.hermes = {
   // behind it, and the meshes it was built into.
   BLOCK, islandHeight, terrain, SPAWN,
   stats: () => ({ worldBlocks, held: shovel.held.length, drawn: blockCount, instances: instanceCount }),
+  // The fillet surface — the block outline with every corner rounded off over
+  // the last half block into it. setTerrainView(0|1|2) picks smooth / cubes /
+  // both, and FILLET_SUB is how many vertices a block gets across an arc.
+  VIEW, setTerrainView, filletGroup, filletMat, rebuildFilletChunk, FILLET_SUB, FILLET_R,
+  fillet: () => ({
+    view: VIEW_NAMES[terrainView],
+    chunks: filletMesh.reduce((n, m) => n + (m ? 1 : 0), 0),
+    tris: filletTris.reduce((n, t) => n + t, 0),
+  }),
   // The shovel. `shovel.held` is the stack of materials in your hands; moving a
   // block through it is the only way anything ever changes.
   shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,

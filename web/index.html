@@ -1676,18 +1676,18 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // where two columns are level the interpolation is flat and the skin lies on the
 // block faces exactly. Once in x and once in z is the 3D version.
 //
-// A riser more than one block tall cannot be smoothly filleted within the
-// one-block fade budget. Those edges keep a sharp step (wx or wz stays 0)
-// so towers and cliffs retain crisp vertical faces. Only single-block
-// height differences get the smoothstep curve.
+// The one place it cannot follow the rule: a riser more than one block tall
+// wants a straight vertical section between its two arcs, and a heightfield has
+// no vertical in it. Those get the two arcs back to back — an S from one column
+// centre to the next — which is as steep as a height function is allowed to be.
+// On this island that is the odd cliff face and nothing else. Overhangs dug into
+// a column are invisible to it for the same reason.
 
-// Vertices per block along each axis. 4 gives two flat quads and two curve
-// quads per block cycle so flat surfaces look flat and height transitions get a
-// proper multi-segment arc. The smoothstep fires on edges where the height
-// difference is at most one block, confining the curve to the half-block
-// from column centre to boundary. Larger steps keep a sharp edge. Flat
-// terrain is entirely unaffected. Every step up from here costs (sub/2)^2
-// in memory.
+// Vertices per block along each axis. 2 puts one on every column centre and one
+// on every boundary between them, which is the fewest that can carry the shape
+// at all: each arc comes out as two segments, and since the normals below are
+// differentiated from the curve rather than averaged off the triangles, it still
+// shades as a curve. Every step up from here costs (sub/2)^2 in memory.
 const FILLET_SUB = 4;
 // How far out from the middle of the field gets a skin, in metres. Past the
 // shoreline and its wash and not much further: at a vertex every 10 cm this
@@ -1753,15 +1753,6 @@ function filletCovers(i0, j0, i1, j1) {
   return Math.hypot(nx, nz) <= FILLET_R;
 }
 
-// Corner-fillet smoothstep: the curve only fires on edges whose height
-// difference is at most one block (BLOCK). Larger steps keep a sharp edge.
-// The S-curve fills the half-block from column centre (fx=0) to boundary
-// (fx=0.5); past the boundary it stays at the neighbour's height.
-const tightSmooth4 = (t) => {
-  const s = Math.max(0, Math.min(1, t * 2));
-  return s * s * (3 - 2 * s);
-};
-
 function buildFilletChunk(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N - 1), j1 = Math.min(j0 + CHUNK, GEN_N - 1);
@@ -1778,24 +1769,21 @@ function buildFilletChunk(c) {
     // Which cell of the grid this row is in, and how far across it — 0 on a
     // column centre, 0.5 on the boundary between two columns.
     const jq = (b / FILLET_SUB) | 0, fz = (b % FILLET_SUB) / FILLET_SUB;
+    const wz = smooth(fz), dwz = 6 * fz * (1 - fz);
     const z = colZ(j0 + jq) + fz * BLOCK;
     for (let a = 0; a < nx; a++) {
       const iq = (a / FILLET_SUB) | 0, fx = (a % FILLET_SUB) / FILLET_SUB;
+      const wx = smooth(fx), dwx = 6 * fx * (1 - fx);
       const x = colX(i0 + iq) + fx * BLOCK;
 
       const p00 = jq * FILLET_STRIDE + iq, p10 = p00 + 1;
       const p01 = p00 + FILLET_STRIDE,     p11 = p01 + 1;
       const h00 = filletH[p00], h10 = filletH[p10];
       const h01 = filletH[p01], h11 = filletH[p11];
-
-      // Smoothstep only fires where the height difference is at most one
-      // block.  Larger steps keep a sharp edge (w stays 0).  The curve fills
-      // the half-block from column centre (fx 0) to boundary (fx 0.5).
-      const sx = Math.abs(h10 - h00) <= BLOCK ? Math.max(0, Math.min(1, fx * 2)) : 0;
-      const sz = Math.abs(h01 - h00) <= BLOCK ? Math.max(0, Math.min(1, fz * 2)) : 0;
-      const wx = sx * sx * (3 - 2 * sx), dwx = 12 * sx * (1 - sx);
-      const wz = sz * sz * (3 - 2 * sz), dwz = 12 * sz * (1 - sz);
-
+      // The arc, in x and then in z. Straight-line weights here would give the
+      // blocks a chamfer; smoothstep is what rounds the corner, and what puts
+      // the skin exactly on the block top at fx = 0 and exactly half way up the
+      // riser at fx = 0.5.
       const hx0 = h00 + (h10 - h00) * wx, hx1 = h01 + (h11 - h01) * wx;
       const y = hx0 + (hx1 - hx0) * wz;
       // The same curve differentiated. Averaging the facet normals instead would
@@ -1869,6 +1857,7 @@ function setTerrainView(v) {
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildFilletChunk(c);
 setTerrainView(terrainView);
 
+// ----- pass 4a: the land texture the sea reads -----
 // ----- pass 4a: the land texture the sea reads -----
 // One texel per column, aligned on the column centres, so the water's idea of
 // where the ground is agrees with the blocks it can see. Height is packed into a

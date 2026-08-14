@@ -1715,6 +1715,7 @@ const filletTris = new Int32Array(CHUNK_N * CHUNK_N);
 const FILLET_STRIDE = CHUNK + 2;
 const filletH   = new Float32Array(FILLET_STRIDE * FILLET_STRIDE);
 const filletRGB = new Float32Array(FILLET_STRIDE * FILLET_STRIDE * 3);
+const filletCont = new Uint8Array(FILLET_STRIDE * FILLET_STRIDE);  // 1 = column continuous (no air gaps), 0 = has gaps
 
 // The top of the highest block still standing in each column of the chunk, and
 // the colour of the face on top of it. Read once into a cache because the vertex
@@ -1729,6 +1730,17 @@ function filletCache(i0, j0) {
       // A column dug away to nothing falls back to bedrock rather than leaving
       // the skin undefined over it.
       filletH[p] = (t === NO_COLUMN ? VOX_FLOOR : t + 1) * BLOCK;
+      // Check continuity: all blocks from VOX_FLOOR to sTop[k] must be non-AIR.
+      // This prevents the fillet from smoothing from ground up to a floating block.
+      let cont = 0;
+      if (t !== NO_COLUMN && voxOff[k] >= 0) {
+        cont = 1;
+        const o = voxOff[k] - VOX_FLOOR;
+        for (let l = VOX_FLOOR; l <= t; l++) {
+          if (voxMat[o + l] === AIR) { cont = 0; break; }
+        }
+      }
+      filletCont[p] = cont;
       // Whatever is face-up now, which after a dig is not what the generator
       // left on top.
       let m = topMat[k];
@@ -1784,12 +1796,24 @@ function buildFilletChunk(c) {
       // blocks a chamfer; smoothstep is what rounds the corner, and what puts
       // the skin exactly on the block top at fx = 0 and exactly half way up the
       // riser at fx = 0.5.
-      const hx0 = h00 + (h10 - h00) * wx, hx1 = h01 + (h11 - h01) * wx;
-      const y = hx0 + (hx1 - hx0) * wz;
+      // Only apply smoothstep when BOTH columns are continuous (no air gaps from
+      // VOX_FLOOR to top) AND the height difference is ≤ 1 block (BLOCK = 0.2m).
+      // This prevents: (a) smoothing from ground up to floating blocks, and
+      // (b) making smooth curves on tall cliffs that should stay sharp.
+      let sx = wx, dsx = dwx;
+      if (filletCont[p00] === 0 || filletCont[p10] === 0 || Math.abs(h10 - h00) > BLOCK) {
+        sx = fx; dsx = 1;  // straight-line interpolation (no smoothing)
+      }
+      let sz = wz, dsz = dwz;
+      if (filletCont[p00] === 0 || filletCont[p01] === 0 || Math.abs(h01 - h00) > BLOCK) {
+        sz = fz; dsz = 1;  // straight-line interpolation (no smoothing)
+      }
+      const hx0 = h00 + (h10 - h00) * sx, hx1 = h01 + (h11 - h01) * sx;
+      const y = hx0 + (hx1 - hx0) * sz;
       // The same curve differentiated. Averaging the facet normals instead would
       // flatten the arc back out at two vertices a block.
-      const dydx = ((h10 - h00) * (1 - wz) + (h11 - h01) * wz) * dwx / BLOCK;
-      const dydz = (hx1 - hx0) * dwz / BLOCK;
+      const dydx = ((h10 - h00) * (1 - sz) + (h11 - h01) * sz) * dsx / BLOCK;
+      const dydz = (hx1 - hx0) * dsz / BLOCK;
       const inv = 1 / Math.hypot(dydx, 1, dydz);
 
       const v = (b * nx + a) * 3;

@@ -582,6 +582,70 @@
     white-space: pre-wrap;
     text-align: left;
   }
+
+  /* ---------- 2D Debug View ---------- */
+  #debug2d-wrap {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(4, 8, 16, 0.82);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 100;
+    touch-action: none;
+  }
+  #debug2d-wrap.on { display: flex; }
+  #debug2d-panel {
+    position: relative;
+    background: rgba(10, 18, 32, 0.92);
+    border: 1px solid rgba(160, 200, 255, 0.22);
+    border-radius: 10px;
+    padding: 12px;
+  }
+  #debug2d-panel canvas {
+    display: block;
+    border-radius: 6px;
+    cursor: crosshair;
+  }
+  #debug2d-panel .title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #7fa8d8;
+    margin-bottom: 8px;
+  }
+  #debug2d-close {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    background: none;
+    border: none;
+    color: #7fa8d8;
+    font-size: 18px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: inherit;
+    touch-action: manipulation;
+  }
+  #debug2d-close:hover { background: rgba(120, 170, 230, 0.15); }
+  #debug2d-panel .legend {
+    font-size: 10px;
+    color: #6a8ab0;
+    margin-top: 6px;
+    line-height: 1.5;
+  }
+  #debug2d-panel .legend span {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-right: 3px;
+  }
 </style>
 </head>
 <body>
@@ -636,6 +700,21 @@
 </div>
 
 <div id="loading">Loading&hellip;</div>
+
+<!-- 2D Debug: terrain smoothing cross-section -->
+<div id="debug2d-wrap">
+  <div id="debug2d-panel">
+    <button id="debug2d-close">&times;</button>
+    <div class="title">2D Smoothing Debug &mdash; Click to toggle blocks</div>
+    <canvas id="debug2d-cv" width="800" height="320"></canvas>
+    <div class="legend">
+      <span style="background:#5a8a3c"></span>grass
+      <span style="background:#8b6b3d"></span>dirt
+      <span style="background:#6a6e78"></span>rock
+      <span style="background:#2a6ea8"></span>smooth line
+    </div>
+  </div>
+</div>
 
 <script src="lib/three.js?v=2"></script>
 <script src="lib/cannon-global.js?v=2"></script>
@@ -4313,6 +4392,225 @@ function tick() {
   renderer.render(scene, camera);
   cloudDepthGroup.visible = true;
 }
+
+// ---------------------------------------------------------------------------
+// 2D Debug View — terrain smoothing cross-section
+// ---------------------------------------------------------------------------
+(function() {
+  const D2D_COLS = 40, D2D_ROWS = 16;
+  const CV_W = 800, CV_H = 320;
+  const CELL_W = CV_W / D2D_COLS, CELL_H = CV_H / D2D_ROWS;
+  // Block materials: 0=air, 1=rock, 2=dirt, 3=grass (top)
+  const D2D_AIR = 0, D2D_ROCK = 1, D2D_DIRT = 2, D2D_GRASS = 3;
+  const D2D_COLORS = ['', '#6a6e78', '#8b6b3d', '#5a8a3c'];
+
+  // 1D grid — each cell is a material (0 = empty)
+  const d2dGrid = new Uint8Array(D2D_COLS * D2D_ROWS);
+
+  // Seed some initial terrain
+  function d2dSeedTerrain() {
+    d2dGrid.fill(0);
+    const profile = [2, 4, 6, 7, 9, 11, 12, 13, 14, 14, 14, 13, 12, 10, 9, 8,
+                     7, 7, 8, 9, 10, 11, 12, 13, 13, 12, 11, 10, 8, 6, 5, 4,
+                     3, 3, 4, 5, 6, 7, 8, 9];
+    for (let x = 0; x < D2D_COLS; x++) {
+      const h = Math.min(profile[x] || 0, D2D_ROWS);
+      for (let y = 0; y < h; y++) {
+        const row = D2D_ROWS - 1 - y;
+        if (y === h - 1) d2dGrid[row * D2D_COLS + x] = D2D_GRASS;
+        else if (y < 3) d2dGrid[row * D2D_COLS + x] = D2D_DIRT;
+        else d2dGrid[row * D2D_COLS + x] = D2D_ROCK;
+      }
+    }
+  }
+  d2dSeedTerrain();
+
+  // Get column height (number of filled blocks), 0 if empty
+  function d2dColHeight(x) {
+    let h = 0;
+    for (let y = 0; y < D2D_ROWS; y++) {
+      if (d2dGrid[y * D2D_COLS + x] !== D2D_AIR) h++;
+    }
+    return h;
+  }
+
+  // Smoothstep (same as the game's `smooth`)
+  function d2dSmooth(t) { return t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t); }
+
+  // Compute the smooth surface as an array of (screenX, screenY) points
+  function d2dSmoothLine() {
+    const pts = [];
+    // Sample at sub-column resolution (4 sub-steps per block, same as FILLET_SUB)
+    const SUB = 4;
+    const totalSamples = D2D_COLS * SUB + 1;
+    // Heights at column centers (top of column + 1 block up = surface)
+    const colH = new Float32Array(D2D_COLS);
+    for (let x = 0; x < D2D_COLS; x++) {
+      const h = d2dColHeight(x);
+      // Surface is at the top of the highest block + 1 block = h blocks high
+      // In our grid: top block is at row (D2D_ROWS - h), surface at row (D2D_ROWS - h)
+      // In screen Y: row r means y from r*CELL_H to (r+1)*CELL_H
+      // Surface y = (D2D_ROWS - h) * CELL_H
+      colH[x] = h;
+    }
+    for (let i = 0; i <= D2D_COLS * SUB; i++) {
+      const col = i / SUB;
+      const iq = Math.min(Math.floor(col), D2D_COLS - 1);
+      const fx = (col - iq);
+      const clampedFx = Math.min(fx, 1);
+      const h0 = colH[iq];
+      const h1 = iq < D2D_COLS - 1 ? colH[iq + 1] : h0;
+      // Apply smoothstep between adjacent column heights
+      // The difference threshold: only smoothstep when diff <= 1 block
+      const diff = Math.abs(h1 - h0);
+      const w = diff <= 1 ? d2dSmooth(clampedFx) : clampedFx;
+      const h = h0 + (h1 - h0) * w;
+      const screenX = (col / D2D_COLS) * CV_W;
+      const screenY = (D2D_ROWS - h) * CELL_H;
+      pts.push(screenX, screenY);
+    }
+    return pts;
+  }
+
+  // Drawing
+  const cv = document.getElementById('debug2d-cv');
+  const ctx = cv.getContext('2d');
+
+  function d2dDraw() {
+    ctx.clearRect(0, 0, CV_W, CV_H);
+    // Background
+    ctx.fillStyle = '#0d1522';
+    ctx.fillRect(0, 0, CV_W, CV_H);
+
+    // Draw blocks
+    for (let x = 0; x < D2D_COLS; x++) {
+      for (let y = 0; y < D2D_ROWS; y++) {
+        const mat = d2dGrid[y * D2D_COLS + x];
+        if (mat === D2D_AIR) continue;
+        const px = x * CELL_W, py = y * CELL_H;
+        // Slight gap between blocks for clarity
+        ctx.fillStyle = D2D_COLORS[mat];
+        ctx.fillRect(px + 0.5, py + 0.5, CELL_W - 1, CELL_H - 1);
+        // Highlight top edge of grass
+        if (mat === D2D_GRASS) {
+          ctx.fillStyle = '#7cb342';
+          ctx.fillRect(px + 0.5, py + 0.5, CELL_W - 1, 3);
+        }
+      }
+    }
+
+    // Draw grid lines (subtle)
+    ctx.strokeStyle = 'rgba(100, 140, 190, 0.08)';
+    ctx.lineWidth = 0.5;
+    for (let x = 0; x <= D2D_COLS; x++) {
+      ctx.beginPath();
+      ctx.moveTo(x * CELL_W, 0);
+      ctx.lineTo(x * CELL_W, CV_H);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= D2D_ROWS; y++) {
+      ctx.beginPath();
+      ctx.moveTo(0, y * CELL_H);
+      ctx.lineTo(CV_W, y * CELL_H);
+      ctx.stroke();
+    }
+
+    // Draw the smooth surface line
+    const pts = d2dSmoothLine();
+    ctx.strokeStyle = '#2a8ed8';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = 'rgba(42, 142, 216, 0.5)';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.moveTo(pts[0], pts[1]);
+    for (let i = 2; i < pts.length; i += 2) {
+      ctx.lineTo(pts[i], pts[i + 1]);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Draw column center dots (where the smooth samples are)
+    ctx.fillStyle = 'rgba(42, 142, 216, 0.6)';
+    for (let x = 0; x < D2D_COLS; x++) {
+      const h = d2dColHeight(x);
+      const cx = (x + 0.5) * CELL_W;
+      const cy = (D2D_ROWS - h) * CELL_H;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Click/tap to toggle blocks
+  function d2dToggle(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = cv.getBoundingClientRect();
+    const mx = (e.clientX || (e.touches && e.touches[0].clientX) || 0) - rect.left;
+    const my = (e.clientY || (e.touches && e.touches[0].clientY) || 0) - rect.top;
+    const scale = CV_W / rect.width;
+    const gx = Math.floor((mx * scale) / CELL_W);
+    const gy = Math.floor((my * scale) / CELL_H);
+    if (gx < 0 || gx >= D2D_COLS || gy < 0 || gy >= D2D_ROWS) return;
+    const idx = gy * D2D_COLS + gx;
+    if (d2dGrid[idx] !== D2D_AIR) {
+      d2dGrid[idx] = D2D_AIR;
+    } else {
+      // Place the appropriate material: grass if top of column, dirt if near top, rock below
+      let topY = D2D_ROWS;
+      for (let y = 0; y < D2D_ROWS; y++) {
+        if (d2dGrid[y * D2D_COLS + gx] !== D2D_AIR) { topY = y; break; }
+      }
+      const distFromTop = topY - gy;
+      if (topY === D2D_ROWS) {
+        // Empty column — place rock
+        d2dGrid[idx] = D2D_ROCK;
+      } else if (gy === topY) {
+        // Just above existing blocks — place grass
+        d2dGrid[idx] = D2D_GRASS;
+      } else if (distFromTop <= 2) {
+        d2dGrid[idx] = D2D_DIRT;
+      } else {
+        d2dGrid[idx] = D2D_ROCK;
+      }
+    }
+    d2dDraw();
+  }
+
+  cv.addEventListener('click', d2dToggle);
+  cv.addEventListener('touchend', (e) => {
+    // Use changedTouches for touchend
+    if (e.changedTouches && e.changedTouches.length > 0) {
+      const t = e.changedTouches[0];
+      d2dToggle({ clientX: t.clientX, clientY: t.clientY, preventDefault(){}, stopPropagation(){} });
+    }
+  }, { passive: false });
+
+  // Toggle the debug view
+  const wrap = document.getElementById('debug2d-wrap');
+  const closeBtn = document.getElementById('debug2d-close');
+  let debug2dOpen = false;
+
+  function toggleDebug2d() {
+    debug2dOpen = !debug2dOpen;
+    wrap.classList.toggle('on', debug2dOpen);
+    if (debug2dOpen) d2dDraw();
+  }
+
+  closeBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleDebug2d(); });
+  closeBtn.addEventListener('touchend', (e) => { e.stopPropagation(); toggleDebug2d(); }, { passive: false });
+
+  // Expose for the keyboard handler
+  window._toggleDebug2d = toggleDebug2d;
+  window._debug2dIsOpen = () => debug2dOpen;
+
+  // Also allow 'P' key to toggle
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyP' && !typing(e)) {
+      toggleDebug2d();
+    }
+  }, { passive: true });
+})();
 
 // Debug handle — handy from the console / remote inspector on a phone.
 window.hermes = {

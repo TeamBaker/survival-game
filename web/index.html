@@ -588,50 +588,62 @@
     position: fixed;
     inset: 0;
     display: none;
-    align-items: center;
-    justify-content: center;
-    background: rgba(4, 8, 16, 0.82);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    flex-direction: column;
+    background: rgba(4, 8, 16, 0.94);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     z-index: 100;
     touch-action: none;
   }
   #debug2d-wrap.on { display: flex; }
   #debug2d-panel {
-    position: relative;
-    background: rgba(10, 18, 32, 0.92);
-    border: 1px solid rgba(160, 200, 255, 0.22);
-    border-radius: 10px;
-    padding: 12px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: calc(14px + env(safe-area-inset-top)) 14px 14px 14px;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
   }
   #debug2d-panel canvas {
     display: block;
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: crosshair;
+    touch-action: none;
   }
   #debug2d-panel .title {
-    font-size: 11px;
+    font-size: 15px;
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
+    color: #9ecbff;
+    margin-bottom: 2px;
+    flex-shrink: 0;
+  }
+  #debug2d-panel .instructions {
+    font-size: 13px;
     color: #7fa8d8;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
+    flex-shrink: 0;
   }
   #debug2d-close {
-    position: absolute;
-    top: 6px;
-    right: 8px;
-    background: none;
-    border: none;
-    color: #7fa8d8;
-    font-size: 18px;
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    background: rgba(220, 70, 70, 0.7);
+    border: 1.5px solid rgba(255, 130, 130, 0.6);
+    color: #fff;
+    font-size: 28px;
+    font-weight: 700;
     cursor: pointer;
-    padding: 2px 6px;
-    border-radius: 4px;
+    padding: 8px 18px;
+    border-radius: 12px;
     font-family: inherit;
     touch-action: manipulation;
+    z-index: 110;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
   }
-  #debug2d-close:hover { background: rgba(120, 170, 230, 0.15); }
+  #debug2d-close:active { background: rgba(255, 80, 80, 0.85); transform: scale(0.95); }
 
   /* ---------- Debug 2D toggle button ---------- */
   #btn-debug2d {
@@ -664,18 +676,19 @@
     #btn-debug2d { font-size: 10px; padding: 7px 12px; }
   }
   #debug2d-panel .legend {
-    font-size: 10px;
-    color: #6a8ab0;
-    margin-top: 6px;
-    line-height: 1.5;
+    font-size: 12px;
+    color: #8aa0bc;
+    margin-top: 10px;
+    line-height: 1.8;
+    flex-shrink: 0;
   }
   #debug2d-panel .legend span {
     display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
     vertical-align: middle;
-    margin-right: 3px;
+    margin-right: 5px;
   }
 </style>
 </head>
@@ -736,16 +749,17 @@
 <!-- 2D Debug: terrain smoothing cross-section -->
 <div id="debug2d-wrap">
   <div id="debug2d-panel">
-    <button id="debug2d-close">&times;</button>
-    <div class="title">2D Smoothing Debug &mdash; Click to toggle blocks</div>
-    <canvas id="debug2d-cv" width="800" height="320"></canvas>
+    <div class="title">2D Terrain Debug</div>
+    <div class="instructions">Tap blocks to add/remove · Scroll to pan</div>
+    <canvas id="debug2d-cv"></canvas>
     <div class="legend">
       <span style="background:#5a8a3c"></span>grass
       <span style="background:#8b6b3d"></span>dirt
       <span style="background:#6a6e78"></span>rock
-      <span style="background:#2a6ea8"></span>smooth line
+      <span style="background:#2a8ed8"></span>smoothstep line
     </div>
   </div>
+  <button id="debug2d-close">&times;</button>
 </div>
 
 <script src="lib/three.js?v=2"></script>
@@ -4430,7 +4444,8 @@ function tick() {
 // ---------------------------------------------------------------------------
 (function() {
   const D2D_COLS = 40, D2D_ROWS = 16;
-  const CV_W = 800, CV_H = 320;
+  const CELL_PX = 40; // logical CSS pixels per block — large enough to tap on iPhone
+  const CV_W = D2D_COLS * CELL_PX, CV_H = D2D_ROWS * CELL_PX;
   const CELL_W = CV_W / D2D_COLS, CELL_H = CV_H / D2D_ROWS;
   // Block materials: 0=air, 1=rock, 2=dirt, 3=grass (top)
   const D2D_AIR = 0, D2D_ROCK = 1, D2D_DIRT = 2, D2D_GRASS = 3;
@@ -4504,9 +4519,19 @@ function tick() {
     return pts;
   }
 
-  // Drawing
+  // Tap-flash state
+  let d2dFlashX = -1, d2dFlashY = -1, d2dFlashT = 0;
+  const D2D_FLASH_MS = 350;
+
+  // Drawing — retina-sharp canvas
   const cv = document.getElementById('debug2d-cv');
   const ctx = cv.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  cv.width  = CV_W * dpr;
+  cv.height = CV_H * dpr;
+  cv.style.width  = CV_W + 'px';
+  cv.style.height = CV_H + 'px';
+  ctx.scale(dpr, dpr);
 
   function d2dDraw() {
     ctx.clearRect(0, 0, CV_W, CV_H);
@@ -4547,12 +4572,14 @@ function tick() {
       ctx.stroke();
     }
 
-    // Draw the smooth surface line
+    // Draw the smooth surface line — thick and glowing
     const pts = d2dSmoothLine();
     ctx.strokeStyle = '#2a8ed8';
-    ctx.lineWidth = 3;
-    ctx.shadowColor = 'rgba(42, 142, 216, 0.5)';
-    ctx.shadowBlur = 8;
+    ctx.lineWidth = 6;
+    ctx.shadowColor = 'rgba(42, 142, 216, 0.65)';
+    ctx.shadowBlur = 14;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(pts[0], pts[1]);
     for (let i = 2; i < pts.length; i += 2) {
@@ -4568,8 +4595,19 @@ function tick() {
       const cx = (x + 0.5) * CELL_W;
       const cy = (D2D_ROWS - h) * CELL_H;
       ctx.beginPath();
-      ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // Tap-flash highlight
+    if (d2dFlashX >= 0 && performance.now() - d2dFlashT < D2D_FLASH_MS) {
+      const alpha = 1 - (performance.now() - d2dFlashT) / D2D_FLASH_MS;
+      ctx.fillStyle = 'rgba(255, 255, 120, ' + (0.55 * alpha).toFixed(3) + ')';
+      ctx.fillRect(d2dFlashX * CELL_W, d2dFlashY * CELL_H, CELL_W, CELL_H);
+      ctx.strokeStyle = 'rgba(255, 255, 200, ' + (0.8 * alpha).toFixed(3) + ')';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(d2dFlashX * CELL_W + 1, d2dFlashY * CELL_H + 1, CELL_W - 2, CELL_H - 2);
+      requestAnimationFrame(d2dDraw);
     }
   }
 
@@ -4606,6 +4644,9 @@ function tick() {
         d2dGrid[idx] = D2D_ROCK;
       }
     }
+    d2dFlashX = gx;
+    d2dFlashY = gy;
+    d2dFlashT = performance.now();
     d2dDraw();
   }
 

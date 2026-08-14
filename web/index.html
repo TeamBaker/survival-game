@@ -632,6 +632,37 @@
     touch-action: manipulation;
   }
   #debug2d-close:hover { background: rgba(120, 170, 230, 0.15); }
+
+  /* ---------- Debug 2D toggle button ---------- */
+  #btn-debug2d {
+    position: fixed;
+    top: calc(52px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-debug2d.on {
+    color: #06101f;
+    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
+    border-color: transparent;
+  }
+  #btn-debug2d:active { transform: translateY(1px); }
+  @media (max-width: 620px) {
+    #btn-debug2d { font-size: 10px; padding: 7px 12px; }
+  }
   #debug2d-panel .legend {
     font-size: 10px;
     color: #6a8ab0;
@@ -660,6 +691,7 @@
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
 <button id="mode-btn" class="ui-el">Game Mode</button>
+<button id="btn-debug2d">2D Map</button>
 
 <div id="cloud-ui" class="ui-el">
   <span class="title">Weather</span>
@@ -4589,16 +4621,22 @@ function tick() {
   // Toggle the debug view
   const wrap = document.getElementById('debug2d-wrap');
   const closeBtn = document.getElementById('debug2d-close');
+  const debugBtn = document.getElementById('btn-debug2d');
   let debug2dOpen = false;
 
   function toggleDebug2d() {
     debug2dOpen = !debug2dOpen;
     wrap.classList.toggle('on', debug2dOpen);
+    debugBtn.classList.toggle('on', debug2dOpen);
     if (debug2dOpen) d2dDraw();
   }
 
   closeBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleDebug2d(); });
   closeBtn.addEventListener('touchend', (e) => { e.stopPropagation(); toggleDebug2d(); }, { passive: false });
+
+  // Touch-friendly toggle button (primary access on mobile)
+  debugBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleDebug2d(); });
+  debugBtn.addEventListener('touchend', (e) => { e.stopPropagation(); toggleDebug2d(); }, { passive: false });
 
   // Expose for the keyboard handler
   window._toggleDebug2d = toggleDebug2d;

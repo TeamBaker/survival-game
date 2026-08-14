@@ -1796,16 +1796,18 @@ function buildFilletChunk(c) {
       // blocks a chamfer; smoothstep is what rounds the corner, and what puts
       // the skin exactly on the block top at fx = 0 and exactly half way up the
       // riser at fx = 0.5.
-      // Only apply smoothstep when BOTH columns are continuous (no air gaps from
-      // VOX_FLOOR to top) AND the height difference is ≤ 1 block (BLOCK = 0.2m).
-      // This prevents: (a) smoothing from ground up to floating blocks, and
-      // (b) making smooth curves on tall cliffs that should stay sharp.
+      // Only apply smoothstep when ALL four surrounding columns are continuous
+      // (no air gaps from VOX_FLOOR to top) AND every height difference across
+      // the cell is ≤ 1 block (BLOCK = 0.2m). Larger diffs → sharp step, gaps
+      // → no smoothing to/from the floating column.
+      const anyGap = filletCont[p00] === 0 || filletCont[p10] === 0 ||
+                     filletCont[p01] === 0 || filletCont[p11] === 0;
       let sx = wx, dsx = dwx;
-      if (filletCont[p00] === 0 || filletCont[p10] === 0 || Math.abs(h10 - h00) > BLOCK) {
+      if (anyGap || Math.abs(h10 - h00) > BLOCK || Math.abs(h11 - h01) > BLOCK) {
         sx = fx; dsx = 1;  // straight-line interpolation (no smoothing)
       }
       let sz = wz, dsz = dwz;
-      if (filletCont[p00] === 0 || filletCont[p01] === 0 || Math.abs(h01 - h00) > BLOCK) {
+      if (anyGap || Math.abs(h01 - h00) > BLOCK || Math.abs(h11 - h10) > BLOCK) {
         sz = fz; dsz = 1;  // straight-line interpolation (no smoothing)
       }
       const hx0 = h00 + (h10 - h00) * sx, hx1 = h01 + (h11 - h01) * sx;

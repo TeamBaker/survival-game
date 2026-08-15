@@ -4491,33 +4491,34 @@ function tick() {
     const pts = [];
     // Sample at sub-column resolution (4 sub-steps per block, same as FILLET_SUB)
     const SUB = 4;
-    const totalSamples = D2D_COLS * SUB + 1;
     // Heights at column centers (top of column + 1 block up = surface)
     const colH = new Float32Array(D2D_COLS);
-    for (let x = 0; x < D2D_COLS; x++) {
-      const h = d2dColHeight(x);
-      // Surface is at the top of the highest block + 1 block = h blocks high
-      // In our grid: top block is at row (D2D_ROWS - h), surface at row (D2D_ROWS - h)
-      // In screen Y: row r means y from r*CELL_H to (r+1)*CELL_H
-      // Surface y = (D2D_ROWS - h) * CELL_H
-      colH[x] = h;
-    }
+    for (let x = 0; x < D2D_COLS; x++) colH[x] = d2dColHeight(x);
     // Same rule as the 3D fillet mesh (FILLET_TIGHT): flat at each column's own
     // height except in a narrow band straddling the boundary, where a
     // smoothstep arc carries it across. Not a full-cell slope.
+    //
+    // The 3D mesh samples relative to column CENTRES (fz=0 sits on a centre,
+    // fz=0.5 sits on the boundary between two columns), not relative to a
+    // column's left edge. `x` below is screen-space in left-edge units (0 =
+    // left edge of column 0), so it's shifted by half a cell to `s` — centre
+    // of column 0 is s=0 — before finding which two centres bracket it. That
+    // keeps the flat plateau on each column's own centre and the curve
+    // confined to the boundary, instead of putting the curve mid-column.
     const D2D_TIGHT = 0.5, D2D_FLAT = (1 - D2D_TIGHT) / 2;
     for (let i = 0; i <= D2D_COLS * SUB; i++) {
-      const col = i / SUB;
-      const iq = Math.min(Math.floor(col), D2D_COLS - 1);
-      const fx = Math.min(col - iq, 1);
+      const x = i / SUB;
+      const s = Math.max(0, Math.min(D2D_COLS - 1, x - 0.5));
+      const iq = Math.min(Math.floor(s), D2D_COLS - 1);
+      const fz = s - iq;
       const h0 = colH[iq];
       const h1 = iq < D2D_COLS - 1 ? colH[iq + 1] : h0;
       let w;
-      if (fx <= D2D_FLAT) w = 0;
-      else if (fx >= 1 - D2D_FLAT) w = 1;
-      else w = d2dSmooth((fx - D2D_FLAT) / D2D_TIGHT);
+      if (fz <= D2D_FLAT) w = 0;
+      else if (fz >= 1 - D2D_FLAT) w = 1;
+      else w = d2dSmooth((fz - D2D_FLAT) / D2D_TIGHT);
       const h = h0 + (h1 - h0) * w;
-      const screenX = (col / D2D_COLS) * CV_W;
+      const screenX = x * CELL_W;
       const screenY = (D2D_ROWS - h) * CELL_H;
       pts.push(screenX, screenY);
     }

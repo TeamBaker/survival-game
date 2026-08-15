@@ -609,7 +609,9 @@
     display: block;
     border-radius: 8px;
     cursor: crosshair;
-    touch-action: none;
+    /* Allow the panel's native scroll to pan the canvas (it's wider than an
+       iPhone viewport); pointer handlers distinguish a tap from a drag. */
+    touch-action: manipulation;
   }
   #debug2d-panel .title {
     font-size: 15px;
@@ -4616,8 +4618,8 @@ function tick() {
     e.preventDefault();
     e.stopPropagation();
     const rect = cv.getBoundingClientRect();
-    const mx = (e.clientX || (e.touches && e.touches[0].clientX) || 0) - rect.left;
-    const my = (e.clientY || (e.touches && e.touches[0].clientY) || 0) - rect.top;
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
     const scale = CV_W / rect.width;
     const gx = Math.floor((mx * scale) / CELL_W);
     const gy = Math.floor((my * scale) / CELL_H);
@@ -4650,14 +4652,29 @@ function tick() {
     d2dDraw();
   }
 
-  cv.addEventListener('click', d2dToggle);
-  cv.addEventListener('touchend', (e) => {
-    // Use changedTouches for touchend
-    if (e.changedTouches && e.changedTouches.length > 0) {
-      const t = e.changedTouches[0];
-      d2dToggle({ clientX: t.clientX, clientY: t.clientY, preventDefault(){}, stopPropagation(){} });
-    }
-  }, { passive: false });
+  // A tap toggles a block; a drag pans the (wider-than-viewport) canvas via the
+  // panel's native scroll. iOS fires a synthetic click after touchend, so — as
+  // with bindTap below — pointer events are the single source of truth and
+  // click is never wired up on the canvas at all. Movement past a few pixels
+  // means the finger was panning, not tapping, so only a still pointerup fires
+  // d2dToggle.
+  const D2D_TAP_MOVE_PX = 10;
+  let d2dPtrStart = null;
+  let d2dPtrMoved = false;
+  cv.addEventListener('pointerdown', (e) => {
+    d2dPtrStart = { x: e.clientX, y: e.clientY };
+    d2dPtrMoved = false;
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!d2dPtrStart) return;
+    const dx = e.clientX - d2dPtrStart.x, dy = e.clientY - d2dPtrStart.y;
+    if (Math.hypot(dx, dy) > D2D_TAP_MOVE_PX) d2dPtrMoved = true;
+  });
+  cv.addEventListener('pointerup', (e) => {
+    if (d2dPtrStart && !d2dPtrMoved) d2dToggle(e);
+    d2dPtrStart = null;
+  });
+  cv.addEventListener('pointercancel', () => { d2dPtrStart = null; });
 
   // Toggle the debug view
   const wrap = document.getElementById('debug2d-wrap');

@@ -1781,51 +1781,277 @@ function rebuildChunk(c) {
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 
 // ----- pass 3b: the fillet surface -----
-// The same terrain as one smooth skin instead of a field of cubes. It is not a
-// different shape: it traces the actual faces the block mass exposes — a flat
-// top per column, plus a vertical wall wherever a neighbour is a different
-// height — and the only thing it does differently is round the corners where
-// two of those faces meet at 90°.
+// The same terrain as one smooth skin instead of a field of cubes, and the 3D
+// counterpart of the 2D debug view's outline walk. It is not a different shape
+// and it is not an interpolation between column heights: it traces the surface
+// the block mass actually exposes — every face of every block that has air
+// against it, tops, sides, and the undersides of anything jutting out over a
+// gap — and the only thing it does differently is round the 90° joints where
+// two of those faces meet.
 //
-// The rule: a column's own height is exact at its centre, full stop — the skin
-// never leaves the block top there, whatever its neighbours do. Its top face is
-// a flat quad, inset on any side whose neighbour differs in height, by just
-// enough (FILLET_R_MAX, capped by half that height difference) to leave room
-// for a quarter-circle fillet. Where two columns differ, an explicit wall
-// spans the height gap between them: a real vertical quad, not a steep slope
-// standing in for one, with a convex quarter-round where it meets the taller
-// column's top and a concave quarter-round where it meets the shorter column's
-// — two real arcs joined by a straight run for whatever height they can't
-// bridge between them (FILLET_R_MAX apiece). A flat run of columns is flat
-// everywhere; a single block sitting alone gets a flat top and two tight
-// corner curves rather than a dome; a staircase gets a fillet at each step
-// edge rather than a ramp; a cliff gets a true vertical face, capped top and
-// bottom, rather than a smoothstep pretending to be steep. Walls are only
-// built facing east and north from each column — the same boundary looked at
-// from its west/south neighbour — so every boundary is drawn exactly once.
-// Overhangs dug into a column are still invisible to it: this is one face per
-// column per side, not a full voxel trace, and a column with an air gap under
-// its own top (colDug) gets sharp (unfilleted) edges to every neighbour rather
-// than blending smooth ground into a block with visible air beneath it.
-
-// Segments per quarter-circle fillet arc. 4 is enough that the curve reads as
-// a curve rather than a facet, without the vertex count exploding — each
-// filleted boundary costs 2*(FILLET_SUB+1) cross-section points swept across
-// the two ends of the edge.
-const FILLET_SUB = 4;
-// Fillet radius, in metres, capped so two opposite insets on the same column
-// can never cross (half a block per side sums to exactly the column width,
-// so they meet at the centre at worst, never overlap). Matches the 2D debug
-// view's D2D_FILLET_R (BLOCK/2 in grid units). The actual radius used on any
-// one boundary is min(FILLET_R_MAX, half the height difference there), so a
-// one-block step gets a smaller, tighter curve than a multi-block cliff does.
+// The 2D view does that in three steps: collect every exposed unit face as a
+// directed edge (d2dCollectEdges), chain the edges into an outline
+// (d2dChainEdges), then replace every corner of the outline with a
+// quarter-circle arc (d2dFilletPolyline). Here the same three steps are local
+// rather than global, because a 3D surface has no single walkable outline: each
+// exposed face contributes its own tile, inset by the fillet radius on every
+// side that joins another face at 90°, and the arc over each joint is split
+// down the middle — every tile carries the half of the arc that leans its way,
+// out to 45°, so the two tiles either side of a joint meet exactly on it and
+// neither has to know the other one exists.
+//
+// A joint is convex where the cell beyond the face's edge is empty (the outside
+// corner of a step, arc bending away from the solid, taking the corner off) and
+// concave where that cell is filled and the one above it is too (the inside
+// corner at the foot of a wall, arc bending out into the air, filling the
+// corner in) — exactly the two cases the 2D corner walk rounds, and with the
+// same radius. A face whose neighbour simply carries on in the same plane has
+// no joint there at all and no inset, so a flat run of blocks comes out flat,
+// a cliff comes out vertical, and a staircase gets a real arc at each step
+// edge rather than a ramp between the two heights.
+//
+// Segments per half-arc. Four across a full 90° fillet is enough that the curve
+// reads as a curve rather than a facet, and every extra one is paid for on
+// every filleted edge of every block in range.
+const FILLET_SUB = 2;
+// Fillet radius, in metres: half a block, matching the 2D view's D2D_FILLET_R
+// (0.5 of its one-unit-wide columns). Two opposite insets on the same face then
+// sum to exactly the block width, so they meet in the middle at worst and never
+// cross.
 const FILLET_R_MAX = BLOCK * 0.5;
 // How far out from the middle of the field gets a skin, in metres. Past the
-// shoreline and its wash and not much further: at a vertex every 10 cm this
-// costs far more per square metre than the cubes do, and the sea floor beyond
-// here is under enough water and fog that its corners were never legible. Chunks
-// outside it keep their cubes in every view, so there is no hole.
+// shoreline and its wash and not much further: at a vertex every few centimetres
+// this costs far more per square metre than the cubes do, and the sea floor
+// beyond here is under enough water and fog that its corners were never legible.
+// Chunks outside it keep their cubes in every view, so there is no hole.
 const FILLET_R = 64;
+// tan of each sample's angle along a half-arc, which is swept uniformly in
+// angle from 0 to 45°. tan is the form the corner blend below wants: a point on
+// the arc is `normalise(outward + tan(angle) * sideways)`, and that same
+// expression with a second sideways term in it is what rounds the corners where
+// two arcs meet, with no special case for the corner itself.
+const FILLET_TAN = [];
+for (let s = 0; s <= FILLET_SUB; s++) FILLET_TAN.push(Math.tan((Math.PI / 4) * (s / FILLET_SUB)));
+// At exactly half a block the two arcs of a doubly-filleted axis are tangent in
+// the middle, so the flat run between them is zero-width and its second sample
+// is a duplicate of the first.
+const FILLET_NO_FLAT = BLOCK - 2 * FILLET_R_MAX < 1e-9;
+
+// The six directions a face can front, as a step through the block store
+// (di, dj, dl), a world vector, and the index of the opposite one.
+const FDIR = [
+  { di:  1, dj:  0, dl:  0, vx:  1, vy:  0, vz:  0 },   // 0  east
+  { di: -1, dj:  0, dl:  0, vx: -1, vy:  0, vz:  0 },   // 1  west
+  { di:  0, dj:  0, dl:  1, vx:  0, vy:  1, vz:  0 },   // 2  up
+  { di:  0, dj:  0, dl: -1, vx:  0, vy: -1, vz:  0 },   // 3  down
+  { di:  0, dj:  1, dl:  0, vx:  0, vy:  0, vz:  1 },   // 4  north
+  { di:  0, dj: -1, dl:  0, vx:  0, vy:  0, vz: -1 },   // 5  south
+];
+const FOPP = [1, 0, 3, 2, 5, 4];
+// The two in-plane axes of each face, u then v, picked so that u cross v is the
+// face's own direction — which is what makes a quad walked u-then-v wind
+// outward without anything having to check afterwards.
+const FFRAME = [[2, 4], [4, 2], [4, 0], [0, 4], [0, 2], [2, 0]];
+
+// Is there a block at (i, j, l)? Anything under the store's floor reads as
+// bedrock — an infinite solid, so nothing ever grows a face on its underside,
+// the same trick the 2D view's `h < 0` plays — and anything off the side of the
+// field, or above a column's top, reads as air.
+function filletSolid(i, j, l) {
+  if (l < VOX_FLOOR) return true;
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return false;
+  const k = j * GEN_N + i;
+  if (topLvl[k] === NO_COLUMN || l > sTop[k]) return false;
+  return voxMat[voxOff[k] + l - VOX_FLOOR] !== AIR;
+}
+
+// What the face of the block at (i, j, l) pointing in direction `d` does at its
+// `g` edge: -1 where the surface turns away from the solid (the cell across the
+// edge is empty), +1 where it turns into it (that cell is filled and so is the
+// one above it, so the surface climbs a wall there), 0 where the neighbouring
+// face is in the same plane and there is no joint to round at all.
+function filletEdge(i, j, l, g, d) {
+  const gi = i + g.di, gj = j + g.dj, gl = l + g.dl;
+  if (!filletSolid(gi, gj, gl)) return -1;
+  return filletSolid(gi + d.di, gj + d.dj, gl + d.dl) ? 1 : 0;
+}
+
+// The samples along one axis of a face, from its low edge to its high one: an
+// anchor (where the flat part of the tile ends), the arc offset at that sample
+// (signed, so the low half-arc runs -1 -> 0 and the high one 0 -> +1), the
+// joint's sense, and how far along the arc it is for the colour blend. An
+// unjointed side is a single sample at the block's own edge, which is what
+// leaves a flat face flat.
+const filAQ = new Float64Array(2 * (FILLET_SUB + 1)), filAN = new Float64Array(2 * (FILLET_SUB + 1));
+const filAS = new Float64Array(2 * (FILLET_SUB + 1)), filAT = new Float64Array(2 * (FILLET_SUB + 1));
+const filBQ = new Float64Array(2 * (FILLET_SUB + 1)), filBN = new Float64Array(2 * (FILLET_SUB + 1));
+const filBS = new Float64Array(2 * (FILLET_SUB + 1)), filBT = new Float64Array(2 * (FILLET_SUB + 1));
+
+function filletAxis(sLo, sHi, Q, N, S, T) {
+  let m = 0;
+  if (sLo !== 0) {
+    for (let s = FILLET_SUB; s >= 0; s--) {
+      Q[m] = FILLET_R_MAX; N[m] = -FILLET_TAN[s]; S[m] = sLo; T[m] = s / FILLET_SUB; m++;
+    }
+  } else {
+    Q[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; m++;
+  }
+  if (sHi !== 0) {
+    // Skip the second copy of the middle sample when the flat run between the
+    // two arcs has no width.
+    for (let s = (sLo !== 0 && FILLET_NO_FLAT) ? 1 : 0; s <= FILLET_SUB; s++) {
+      Q[m] = BLOCK - FILLET_R_MAX; N[m] = FILLET_TAN[s]; S[m] = sHi; T[m] = s / FILLET_SUB; m++;
+    }
+  } else {
+    Q[m] = BLOCK; N[m] = 0; S[m] = 0; T[m] = 0; m++;
+  }
+  return m;
+}
+
+// The colour of one block, which after a dig is not what the generator left on
+// the column: the material actually there now, times the column's own tint.
+const filColC = [0, 0, 0], filColUL = [0, 0, 0], filColUH = [0, 0, 0];
+const filColVL = [0, 0, 0], filColVH = [0, 0, 0];
+
+function filletCellColor(i, j, l, out) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) { out[0] = out[1] = out[2] = 0.5; return; }
+  const k = j * GEN_N + i;
+  let m = topMat[k];
+  if (topLvl[k] !== NO_COLUMN && l >= VOX_FLOOR && l <= voxCap(k)) {
+    const v = voxMat[voxOff[k] + l - VOX_FLOOR];
+    if (v !== AIR) m = v;
+  }
+  const col = TERRAIN_MATS[m].color, s = tint[k];
+  out[0] = col.r * s; out[1] = col.g * s; out[2] = col.b * s;
+}
+
+// The block on the far side of a joint, whose colour the arc blends towards.
+// Across a convex joint that is this same block seen from another side, so the
+// blend is a no-op and the corner keeps its own colour; across a concave one it
+// is the block whose wall the surface climbs, so the ground takes on the colour
+// of the step above it as it curves into it.
+function filletJointColor(i, j, l, g, d, s, out) {
+  if (s === 1) filletCellColor(i + g.di + d.di, j + g.dj + d.dj, l + g.dl + d.dl, out);
+  else filletCellColor(i, j, l, out);
+}
+
+// Scratch for the chunk currently being built. Plain JS arrays because the
+// vertex count isn't known ahead of time — it depends on how much of the chunk's
+// block surface is actually exposed and how much of that is jointed, not on a
+// fixed subdivision of anything. Copied into typed BufferAttributes at the end.
+const fpPos = [], fpNor = [], fpCol = [], fpIdx = [];
+
+// One exposed face, as a tile: a grid of samples over the block's face, inset
+// by the fillet radius on every jointed side and carrying the near half of each
+// joint's arc. Every sample is
+//
+//     anchor + r * n / |n|   with   n = outward + nu * u + nv * v
+//
+// taken apart into its three components, where nu and nv are the tan offsets
+// along the two axes. With one of them zero that is a plain quarter-circle
+// swept along the edge; with both non-zero the same expression is the sphere
+// that rounds the corner where the two arcs meet, so there is no seam between
+// an edge fillet and a corner one and no separate corner case to get wrong.
+// The outward offset is signed by the joint (into the solid for a convex one,
+// out into the air for a concave one), blended between the two axes' senses
+// where they disagree. Normals come out of the same expression analytically,
+// so the arc is smooth-shaded and meets the flat part of the tile with the
+// flat part's own normal.
+function filletFace(i, j, l, d) {
+  const D = FDIR[d];
+  const iu = FFRAME[d][0], iv = FFRAME[d][1];
+  const U = FDIR[iu], V = FDIR[iv], UL = FDIR[FOPP[iu]], VL = FDIR[FOPP[iv]];
+
+  const sUH = filletEdge(i, j, l, U, D), sUL = filletEdge(i, j, l, UL, D);
+  const sVH = filletEdge(i, j, l, V, D), sVL = filletEdge(i, j, l, VL, D);
+
+  const na = filletAxis(sUL, sUH, filAQ, filAN, filAS, filAT);
+  const nb = filletAxis(sVL, sVH, filBQ, filBN, filBS, filBT);
+
+  filletCellColor(i, j, l, filColC);
+  filletJointColor(i, j, l, U,  D, sUH, filColUH);
+  filletJointColor(i, j, l, UL, D, sUL, filColUL);
+  filletJointColor(i, j, l, V,  D, sVH, filColVH);
+  filletJointColor(i, j, l, VL, D, sVL, filColVL);
+
+  // The corner of the block's face this tile's axes run out from.
+  const ox = -GEN_R + i * BLOCK + (D.vx > 0 ? BLOCK : 0);
+  const oy = l * BLOCK + (D.vy > 0 ? BLOCK : 0);
+  const oz = -GEN_R + j * BLOCK + (D.vz > 0 ? BLOCK : 0);
+
+  const r = FILLET_R_MAX;
+  const base = fpPos.length / 3;
+  for (let b = 0; b < nb; b++) {
+    const qv = filBQ[b], nv = filBN[b], sv = filBS[b], tv = filBT[b];
+    const cv = nv < 0 ? filColVL : filColVH;
+    for (let a = 0; a < na; a++) {
+      const qu = filAQ[a], nu = filAN[a], su = filAS[a], tu = filAT[a];
+      const cu = nu < 0 ? filColUL : filColUH;
+
+      const len = Math.sqrt(nu * nu + nv * nv + 1);
+      const au = nu < 0 ? -nu : nu, av = nv < 0 ? -nv : nv;
+      const sense = au + av > 0 ? (su * au + sv * av) / (au + av) : 0;
+      const pu = qu + r * nu / len, pv = qv + r * nv / len, pw = sense * r * (1 - 1 / len);
+
+      fpPos.push(ox + pu * U.vx + pv * V.vx + pw * D.vx,
+                 oy + pu * U.vy + pv * V.vy + pw * D.vy,
+                 oz + pu * U.vz + pv * V.vz + pw * D.vz);
+
+      const gx = D.vx - su * nu * U.vx - sv * nv * V.vx;
+      const gy = D.vy - su * nu * U.vy - sv * nv * V.vy;
+      const gz = D.vz - su * nu * U.vz - sv * nv * V.vz;
+      const gl = Math.hypot(gx, gy, gz) || 1;
+      fpNor.push(gx / gl, gy / gl, gz / gl);
+
+      let cr = filColC[0], cg = filColC[1], cb = filColC[2];
+      if (nu !== 0) { const t = tu * 0.5; cr += (cu[0] - cr) * t; cg += (cu[1] - cg) * t; cb += (cu[2] - cb) * t; }
+      if (nv !== 0) { const t = tv * 0.5; cr += (cv[0] - cr) * t; cg += (cv[1] - cg) * t; cb += (cv[2] - cb) * t; }
+      fpCol.push(cr, cg, cb);
+    }
+  }
+
+  for (let b = 0; b + 1 < nb; b++) {
+    for (let a = 0; a + 1 < na; a++) {
+      const p = base + b * na + a;
+      fpIdx.push(p, p + 1, p + 1 + na, p, p + 1 + na, p + na);
+    }
+  }
+}
+
+// Every exposed face of every block in one column. The vertical walk is the
+// cube mesher's, for the same reason: everything under the lowest of the four
+// neighbours is walled in on all sides and can have no exposed face, so an
+// untouched column stops there rather than running to bedrock — but once the
+// shovel has been in this column or one beside it there can be air anywhere in
+// it, and the floor and the ceiling of a dug-out pocket are both surfaces the
+// skin has to trace, so then the walk goes all the way down.
+function filletColumn(i, j) {
+  const k = j * GEN_N + i;
+  const top = sTop[k];
+  if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return;
+
+  let low = top, dug = colDug[k] !== 0;
+  for (let e = 0; e < 4; e++) {
+    const g = FDIR[e < 2 ? e : e + 2];               // the four sideways steps
+    const ni = i + g.di, nj = j + g.dj;
+    if (ni < 0 || nj < 0 || ni >= GEN_N || nj >= GEN_N) { low = Math.min(low, top - RIM_DEPTH); continue; }
+    const nk = nj * GEN_N + ni;
+    const v = sTop[nk];
+    low = Math.min(low, v === NO_COLUMN ? top - RIM_DEPTH : v);
+    if (colDug[nk]) dug = true;
+  }
+  const deepest = Math.max(VOX_FLOOR, top - MAX_DEPTH);
+  const floor = dug ? deepest : Math.max(deepest, Math.min(top, low + 1));
+
+  const o = voxOff[k] - VOX_FLOOR;
+  for (let l = top; l >= floor; l--) {
+    if (voxMat[o + l] === AIR) continue;
+    for (let d = 0; d < 6; d++) {
+      const g = FDIR[d];
+      if (!filletSolid(i + g.di, j + g.dj, l + g.dl)) filletFace(i, j, l, d);
+    }
+  }
+}
 
 const filletGroup = new THREE.Group();
 scene.add(filletGroup);
@@ -1841,58 +2067,6 @@ const filletMat = mat(0xffffff, 0.95, 0.0, {
 });
 const filletTris = new Int32Array(CHUNK_N * CHUNK_N);
 
-// A chunk's cache runs one column before its near edge to one column past its
-// far edge, so every owned column can compute an inset toward all four
-// neighbours — including the ones just across a chunk boundary — with no seam.
-const FILLET_STRIDE = CHUNK + 2;
-const filletH   = new Float32Array(FILLET_STRIDE * FILLET_STRIDE);
-const filletRGB = new Float32Array(FILLET_STRIDE * FILLET_STRIDE * 3);
-const filletCont = new Uint8Array(FILLET_STRIDE * FILLET_STRIDE);  // 1 = column continuous (no air gaps), 0 = has gaps
-
-// The top of the highest block still standing in each column of the chunk, and
-// the colour of the face on top of it. Read once into a cache because the face
-// loop below asks for every column several times over (once for its own top,
-// once from each of up to four neighbours computing their inset toward it).
-// Index a=0 is one column *before* i0, not i0 itself: a column's own inset on
-// its west/south side needs its west/south neighbour's height even when that
-// neighbour belongs to the previous chunk, so the cache has to reach one step
-// past the chunk on the low side too, not just the high side.
-function filletCache(i0, j0) {
-  for (let b = 0; b < FILLET_STRIDE; b++) {
-    const jj = Math.min(GEN_N - 1, Math.max(0, j0 - 1 + b));
-    for (let a = 0; a < FILLET_STRIDE; a++) {
-      const ii = Math.min(GEN_N - 1, Math.max(0, i0 - 1 + a));
-      const k = jj * GEN_N + ii, p = b * FILLET_STRIDE + a;
-      const t = sTop[k];
-      // A column dug away to nothing falls back to bedrock rather than leaving
-      // the skin undefined over it.
-      filletH[p] = (t === NO_COLUMN ? VOX_FLOOR : t + 1) * BLOCK;
-      // Check continuity: all blocks from VOX_FLOOR to sTop[k] must be non-AIR.
-      // This prevents the fillet from smoothing from ground up to a floating block.
-      let cont = 0;
-      if (t !== NO_COLUMN && voxOff[k] >= 0) {
-        cont = 1;
-        const o = voxOff[k] - VOX_FLOOR;
-        for (let l = VOX_FLOOR; l <= t; l++) {
-          if (voxMat[o + l] === AIR) { cont = 0; break; }
-        }
-      }
-      filletCont[p] = cont;
-      // Whatever is face-up now, which after a dig is not what the generator
-      // left on top.
-      let m = topMat[k];
-      if (t !== NO_COLUMN && voxOff[k] >= 0) {
-        const v = voxMat[voxOff[k] + t - VOX_FLOOR];
-        if (v !== AIR) m = v;
-      }
-      const col = TERRAIN_MATS[m].color, s = tint[k];
-      filletRGB[p * 3]     = col.r * s;
-      filletRGB[p * 3 + 1] = col.g * s;
-      filletRGB[p * 3 + 2] = col.b * s;
-    }
-  }
-}
-
 // Does the chunk's footprint reach inside FILLET_R? Nearest point of it to the
 // middle of the field, so a chunk the circle only clips still gets a skin.
 function filletCovers(i0, j0, i1, j1) {
@@ -1902,139 +2076,16 @@ function filletCovers(i0, j0, i1, j1) {
   return Math.hypot(nx, nz) <= FILLET_R;
 }
 
-// Scratch arrays for the chunk currently being built. Plain JS arrays (like
-// runBuf above) because the vertex count isn't known ahead of time — it
-// depends on how many boundaries in the chunk actually differ in height, not
-// on a fixed subdivision of the whole chunk. Reset and refilled by every
-// buildFilletChunk call, then copied into typed BufferAttributes at the end.
-const fpPos = [], fpNor = [], fpCol = [], fpIdx = [];
-
-// Append one quad, walked around its boundary as p0->p1->p2->p3 (not
-// necessarily wound face-up), each corner with its own colour. Every quad
-// gets four fresh vertices — everything here is flat shaded per quad, so
-// there's no vertex sharing to get wrong, and no seams between a curved
-// fillet segment and its flat neighbour to paper over. The face normal comes
-// from the quad's own geometry rather than a caller's say-so: every surface
-// this builds (a column top, or a wall profile that only ever rises or falls
-// between two flat tops) is monotonic in height, so its true outward normal
-// always has a non-negative Y — which means "flip until Y is non-negative"
-// is a correct test here, not just a heuristic.
-function filletPushQuad(p0, p1, p2, p3, c0, c1, c2, c3) {
-  let nx = (p1[1] - p0[1]) * (p2[2] - p0[2]) - (p1[2] - p0[2]) * (p2[1] - p0[1]);
-  let ny = (p1[2] - p0[2]) * (p2[0] - p0[0]) - (p1[0] - p0[0]) * (p2[2] - p0[2]);
-  let nz = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0]);
-  const len = Math.hypot(nx, ny, nz) || 1;
-  nx /= len; ny /= len; nz /= len;
-  let q = [p0, p1, p2, p3], qc = [c0, c1, c2, c3];
-  if (ny < 0) { q = [p0, p3, p2, p1]; qc = [c0, c3, c2, c1]; nx = -nx; ny = -ny; nz = -nz; }
-  const base = fpPos.length / 3;
-  for (let k = 0; k < 4; k++) {
-    fpPos.push(q[k][0], q[k][1], q[k][2]);
-    fpNor.push(nx, ny, nz);
-    fpCol.push(qc[k][0], qc[k][1], qc[k][2]);
-  }
-  fpIdx.push(base, base + 1, base + 2, base, base + 2, base + 3);
-}
-
-// The fillet radius to use between two columns of height hA, hB: capped by
-// FILLET_R_MAX, and by half the drop itself (so a one-block step gets a
-// smaller, tighter curve than a multi-block cliff rather than the same one).
-// Zero — a sharp, unfilleted edge — whenever the heights already match, or
-// either column has an air gap under its own top (see filletCache).
-function filletR(hA, hB, contA, contB) {
-  if (hA === hB || !contA || !contB) return 0;
-  return Math.min(FILLET_R_MAX, Math.abs(hB - hA) / 2);
-}
-
-// The cross-section of a filleted step from hA to hB, as a list of [offset,
-// height, colourT] points running from offset -r (still on column A's flat
-// top) to +r (back on column B's). Two quarter circles tangent to the flat
-// top at each end and to each other's vertical run in the middle — a real
-// arc, not an eased blend — with colourT riding along for the wall's vertex
-// colours to interpolate against. r === 0 (see filletR) degenerates to the
-// two endpoints only: a plain sharp corner, still swept into a wall below.
-function filletArcProfile(hA, hB, r) {
-  if (r <= 1e-6) return [[0, hA, 0], [0, hB, 1]];
-  const sign = hB > hA ? 1 : -1;
-  const pts = [];
-  for (let s = 0; s <= FILLET_SUB; s++) {
-    const frac = s / FILLET_SUB, du = frac * r;
-    const drop = r - Math.sqrt(Math.max(0, r * r - du * du));
-    pts.push([-r + du, hA + sign * drop, 0.5 * frac]);
-  }
-  for (let s = 0; s <= FILLET_SUB; s++) {
-    const frac = s / FILLET_SUB, off = frac * r, dv = r - off;
-    const drop = r - Math.sqrt(Math.max(0, r * r - dv * dv));
-    pts.push([off, hB - sign * drop, 0.5 + 0.5 * frac]);
-  }
-  return pts;
-}
-
-const filletLerpColor = (a, b, t) =>
-  [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-
-// Sweep a filleted (or sharp) profile along one edge of a column's footprint
-// and push it as a strip of quads — the wall between two columns of
-// different heights, rounded at both ends. axis 'x' is an east-facing wall
-// (the boundary runs north-south, at world X = boundaryPos, offsets run east);
-// axis 'z' is a north-facing wall (boundary runs east-west, at world Z =
-// boundaryPos, offsets run north).
-function filletBuildWall(axis, boundaryPos, sweepLo, sweepHi, hA, hB, colA, colB, r) {
-  const prof = filletArcProfile(hA, hB, r);
-  for (let k = 0; k < prof.length - 1; k++) {
-    const [off0, h0, t0] = prof[k], [off1, h1, t1] = prof[k + 1];
-    const c0 = filletLerpColor(colA, colB, t0), c1 = filletLerpColor(colA, colB, t1);
-    const p0 = axis === 'x' ? [boundaryPos + off0, h0, sweepLo] : [sweepLo, h0, boundaryPos + off0];
-    const p1 = axis === 'x' ? [boundaryPos + off0, h0, sweepHi] : [sweepHi, h0, boundaryPos + off0];
-    const p2 = axis === 'x' ? [boundaryPos + off1, h1, sweepHi] : [sweepHi, h1, boundaryPos + off1];
-    const p3 = axis === 'x' ? [boundaryPos + off1, h1, sweepLo] : [sweepLo, h1, boundaryPos + off1];
-    filletPushQuad(p0, p1, p2, p3, c0, c0, c1, c1);
-  }
-}
-
 function buildFilletChunk(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
-  const i1 = Math.min(i0 + CHUNK, GEN_N - 1), j1 = Math.min(j0 + CHUNK, GEN_N - 1);
-  if (i1 <= i0 || j1 <= j0 || !filletCovers(i0, j0, i1, j1)) return;
+  const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+  if (i1 <= i0 || j1 <= j0 || !filletCovers(i0, j0, i1 - 1, j1 - 1)) return;
 
-  filletCache(i0, j0);
   fpPos.length = fpNor.length = fpCol.length = fpIdx.length = 0;
-
-  const ni = i1 - i0, nj = j1 - j0, hw = BLOCK * 0.5;
-  // Walk every column this chunk owns. Each one contributes its own top face,
-  // plus a wall to its east and north neighbour if either differs in height —
-  // never west or south, so the boundary between two columns is only ever
-  // built once, by whichever of the pair has the lower index, regardless of
-  // which chunk owns which side of it.
-  for (let b = 1; b <= nj; b++) {
-    for (let a = 1; a <= ni; a++) {
-      const p = b * FILLET_STRIDE + a;
-      const H = filletH[p], cont = filletCont[p];
-      const col = [filletRGB[p * 3], filletRGB[p * 3 + 1], filletRGB[p * 3 + 2]];
-
-      const pE = p + 1, pW = p - 1, pN = p + FILLET_STRIDE, pS = p - FILLET_STRIDE;
-      const rE = filletR(H, filletH[pE], cont, filletCont[pE]);
-      const rW = filletR(H, filletH[pW], cont, filletCont[pW]);
-      const rN = filletR(H, filletH[pN], cont, filletCont[pN]);
-      const rS = filletR(H, filletH[pS], cont, filletCont[pS]);
-
-      const cx = colX(i0 + a - 1), cz = colZ(j0 + b - 1);
-      let x0 = cx - hw + rW, x1 = cx + hw - rE;
-      let z0 = cz - hw + rS, z1 = cz + hw - rN;
-      if (x1 < x0) x0 = x1 = (x0 + x1) * 0.5;
-      if (z1 < z0) z0 = z1 = (z0 + z1) * 0.5;
-      filletPushQuad([x0, H, z0], [x1, H, z0], [x1, H, z1], [x0, H, z1], col, col, col, col);
-
-      if (H !== filletH[pE]) {
-        const colE = [filletRGB[pE * 3], filletRGB[pE * 3 + 1], filletRGB[pE * 3 + 2]];
-        filletBuildWall('x', cx + hw, cz - hw, cz + hw, H, filletH[pE], col, colE, rE);
-      }
-      if (H !== filletH[pN]) {
-        const colN = [filletRGB[pN * 3], filletRGB[pN * 3 + 1], filletRGB[pN * 3 + 2]];
-        filletBuildWall('z', cz + hw, cx - hw, cx + hw, H, filletH[pN], col, colN, rN);
-      }
-    }
-  }
+  // Only this chunk's own columns, but every neighbour lookup above reads the
+  // whole field — so a face on a chunk edge is built from the same blocks
+  // whichever side of the boundary owns it, and there is no seam.
+  for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) filletColumn(i, j);
 
   if (fpIdx.length === 0) return;
 

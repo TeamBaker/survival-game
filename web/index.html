@@ -4490,23 +4490,102 @@ function tick() {
   const D2D_FILLET_R = 0.5;
   const D2D_ARC_STEPS = 8; // line segments used to approximate each quarter-circle
 
-  // Trace the block tops into a sharp-cornered "staircase" polyline: flat
-  // across each column's top, a vertical jump at every column boundary where
-  // the height actually changes (flush runs of equal-height columns collapse
-  // into one flat leg, so every interior vertex below is a genuine 90° corner).
-  function d2dStaircase(colH) {
-    const N = colH.length;
-    const verts = [{ x: 0, y: colH[0] }];
-    let curY = colH[0];
-    for (let x = 1; x < N; x++) {
-      if (colH[x] !== curY) {
-        verts.push({ x, y: curY });     // end of the flat run so far
-        verts.push({ x, y: colH[x] });  // vertical step to the new height
-        curY = colH[x];
+  // Is the unit cell at (x, h) solid? h < 0 reads as bedrock — infinite fill
+  // below the visible grid, so a grounded column's bottom face never counts
+  // as exposed, while an empty column still reads as resting on h=0 (its
+  // "floor" is exposed). h >= D2D_ROWS reads as open sky (always empty); x
+  // outside the grid reads as empty too, which is what lets the boundary
+  // walk stop at the viewport edges instead of drawing a wall there.
+  function d2dFilled(x, h) {
+    if (h < 0) return true;
+    if (h >= D2D_ROWS || x < 0 || x >= D2D_COLS) return false;
+    return d2dGrid[(D2D_ROWS - 1 - h) * D2D_COLS + x] !== D2D_AIR;
+  }
+
+  // Collect every exposed unit-length face of the block mass as a directed
+  // edge, oriented so consecutive exposed faces chain head-to-tail into a
+  // walkable outline: left faces go up, top faces go right, right faces go
+  // down, bottom faces (undersides — including a floating block's own
+  // belly) go left. Empty columns also contribute a synthetic ground-level
+  // edge so the outline reads as a continuous baseline where nothing is
+  // built, instead of just vanishing.
+  function d2dCollectEdges() {
+    const edges = [];
+    for (let x = 0; x < D2D_COLS; x++) {
+      for (let h = 0; h < D2D_ROWS; h++) {
+        if (!d2dFilled(x, h)) continue;
+        if (x > 0 && !d2dFilled(x - 1, h)) edges.push([x, h, x, h + 1]);
+        if (x < D2D_COLS - 1 && !d2dFilled(x + 1, h)) edges.push([x + 1, h + 1, x + 1, h]);
+        if (!d2dFilled(x, h + 1)) edges.push([x, h + 1, x + 1, h + 1]);
+        if (!d2dFilled(x, h - 1)) edges.push([x + 1, h, x, h]);
       }
+      if (!d2dFilled(x, 0)) edges.push([x, 0, x + 1, 0]);
     }
-    verts.push({ x: N, y: curY });
-    return verts;
+    return edges;
+  }
+
+  // Stitch exposed edges into polylines by chaining each edge's end point to
+  // the next edge that starts there. A chain that starts at a point nothing
+  // else ends at is open — it runs off the left/right viewport edge.
+  // Everything left over closes back on itself — a block with no connection
+  // to the ground (floating, or undercut all the way through).
+  function d2dChainEdges(edges) {
+    const byStart = new Map(), byEnd = new Map();
+    edges.forEach((e, i) => {
+      const sk = e[0] + ',' + e[1], ek = e[2] + ',' + e[3];
+      if (!byStart.has(sk)) byStart.set(sk, []);
+      byStart.get(sk).push(i);
+      if (!byEnd.has(ek)) byEnd.set(ek, []);
+      byEnd.get(ek).push(i);
+    });
+    const used = new Array(edges.length).fill(false);
+    function walk(startIdx) {
+      const pts = [];
+      let cur = startIdx;
+      while (cur !== undefined && !used[cur]) {
+        used[cur] = true;
+        const e = edges[cur];
+        if (pts.length === 0) pts.push({ x: e[0], y: e[1] });
+        pts.push({ x: e[2], y: e[3] });
+        const cands = byStart.get(e[2] + ',' + e[3]);
+        cur = cands ? cands.find((idx) => !used[idx]) : undefined;
+      }
+      return pts;
+    }
+    const polylines = [];
+    for (let i = 0; i < edges.length; i++) {
+      if (used[i]) continue;
+      const sk = edges[i][0] + ',' + edges[i][1];
+      if (!byEnd.has(sk)) polylines.push({ pts: walk(i), closed: false });
+    }
+    for (let i = 0; i < edges.length; i++) {
+      if (used[i]) continue;
+      polylines.push({ pts: walk(i), closed: true });
+    }
+    return polylines;
+  }
+
+  // Drop grid-resolution points that just continue in a straight line,
+  // leaving only the real corners so the fillet pass below has genuine 90°
+  // joints to round off (generalises the old flush-run collapsing from a
+  // single top profile to a full outline).
+  function d2dSimplify(pts, closed) {
+    const n = closed ? pts.length - 1 : pts.length;
+    if (n < 3) return pts.slice();
+    const keep = [];
+    const start = closed ? 0 : 1;
+    const end = closed ? n : n - 1;
+    for (let i = start; i < end; i++) {
+      const A = pts[(i - 1 + n) % n], B = pts[i % n], C = pts[(i + 1) % n];
+      const collinear = (A.x === B.x && B.x === C.x) || (A.y === B.y && B.y === C.y);
+      if (!collinear) keep.push(B);
+    }
+    if (closed) {
+      if (keep.length === 0) return [pts[0]];
+      keep.push(keep[0]);
+      return keep;
+    }
+    return [pts[0], ...keep, pts[n - 1]];
   }
 
   // Round the 90° corner A->B->C (one leg horizontal, one vertical) into a
@@ -4534,30 +4613,58 @@ function tick() {
     return pts;
   }
 
-  // Compute the smooth surface as an array of (screenX, screenY) points:
-  // build the sharp block-top staircase, then replace every corner with a
-  // filleted arc, leaving the straight tops and faces between them alone.
-  function d2dSmoothLine() {
-    const colH = new Float32Array(D2D_COLS);
-    for (let x = 0; x < D2D_COLS; x++) colH[x] = d2dColHeight(x);
-    const verts = d2dStaircase(colH);
-
-    const poly = [verts[0]];
-    for (let k = 1; k < verts.length - 1; k++) {
-      const A = verts[k - 1], B = verts[k], C = verts[k + 1];
-      const legAB = Math.hypot(B.x - A.x, B.y - A.y);
-      const legBC = Math.hypot(C.x - B.x, C.y - B.y);
-      // Block-quantised geometry means every leg is >= 1 grid unit long, so
-      // this clamp only ever matters at the boundary (r === 0.5) — it just
-      // guards against two corners on the same short leg ever overlapping.
-      const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
-      for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
+  // Round every corner of a simplified polyline. Open chains leave their two
+  // viewport-edge endpoints sharp (there's no second leg to blend into);
+  // closed loops round every vertex, including the wrap-around seam.
+  function d2dFilletPolyline(verts, closed) {
+    const poly = [];
+    if (closed) {
+      const n = verts.length - 1;
+      for (let i = 0; i < n; i++) {
+        const A = verts[(i - 1 + n) % n], B = verts[i], C = verts[(i + 1) % n];
+        const legAB = Math.hypot(B.x - A.x, B.y - A.y);
+        const legBC = Math.hypot(C.x - B.x, C.y - B.y);
+        const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
+        for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
+      }
+      if (poly.length) poly.push(poly[0]);
+    } else {
+      poly.push(verts[0]);
+      for (let k = 1; k < verts.length - 1; k++) {
+        const A = verts[k - 1], B = verts[k], C = verts[k + 1];
+        const legAB = Math.hypot(B.x - A.x, B.y - A.y);
+        const legBC = Math.hypot(C.x - B.x, C.y - B.y);
+        // Block-quantised geometry means every leg is >= 1 grid unit long, so
+        // this clamp only ever matters at the boundary (r === 0.5) — it just
+        // guards against two corners on the same short leg ever overlapping.
+        const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
+        for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
+      }
+      poly.push(verts[verts.length - 1]);
     }
-    poly.push(verts[verts.length - 1]);
+    return poly;
+  }
 
-    const pts = [];
-    for (const p of poly) pts.push(p.x * CELL_W, (D2D_ROWS - p.y) * CELL_H);
-    return pts;
+  // Compute the smooth surface as a list of polylines, each an array of flat
+  // (screenX, screenY) pairs: walk every exposed block face into a
+  // grid-resolution outline, collapse it to its real corners, then replace
+  // every corner with a filleted arc. Most terrain comes back as one
+  // continuous chain from the left viewport edge to the right, tracing tops,
+  // side faces, and — wherever a block overhangs empty space — its
+  // underside too. A block with no connection to the ground at all (fully
+  // floating, or undercut clean through) comes back as its own closed loop.
+  function d2dSmoothLine() {
+    const polylines = d2dChainEdges(d2dCollectEdges());
+    const out = [];
+    for (const { pts, closed } of polylines) {
+      if (pts.length < 2) continue;
+      const simplified = d2dSimplify(pts, closed);
+      const filleted = d2dFilletPolyline(simplified, closed);
+      const flat = [];
+      for (const p of filleted) flat.push(p.x * CELL_W, (D2D_ROWS - p.y) * CELL_H);
+      out.push(flat);
+    }
+    return out;
   }
 
   // Tap-flash state
@@ -4613,20 +4720,25 @@ function tick() {
       ctx.stroke();
     }
 
-    // Draw the smooth surface line — thick and glowing
-    const pts = d2dSmoothLine();
+    // Draw the smooth surface line(s) — thick and glowing. Most terrain is
+    // one polyline; a floating or fully-undercut block adds its own closed
+    // loop alongside it.
+    const polylines = d2dSmoothLine();
     ctx.strokeStyle = '#2a8ed8';
     ctx.lineWidth = 6;
     ctx.shadowColor = 'rgba(42, 142, 216, 0.65)';
     ctx.shadowBlur = 14;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(pts[0], pts[1]);
-    for (let i = 2; i < pts.length; i += 2) {
-      ctx.lineTo(pts[i], pts[i + 1]);
+    for (const pts of polylines) {
+      if (pts.length < 4) continue;
+      ctx.beginPath();
+      ctx.moveTo(pts[0], pts[1]);
+      for (let i = 2; i < pts.length; i += 2) {
+        ctx.lineTo(pts[i], pts[i + 1]);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
     ctx.shadowBlur = 0;
 
     // Draw column center dots (where the smooth samples are)

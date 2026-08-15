@@ -4672,12 +4672,28 @@ function tick() {
     if (debug2dOpen) d2dDraw();
   }
 
-  closeBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleDebug2d(); });
-  closeBtn.addEventListener('touchend', (e) => { e.stopPropagation(); toggleDebug2d(); }, { passive: false });
+  // Guard against iOS double-fire: a single tap fires both touchend and click.
+  // Once pointerdown is seen, ignore the synthetic click that follows.
+  let _d2dSawPointer = false;
+  function bindDebugTap(el) {
+    el.addEventListener('pointerdown', (e) => {
+      _d2dSawPointer = true;
+      e.preventDefault();
+      e.stopPropagation();
+      toggleDebug2d();
+    });
+    el.addEventListener('click', (e) => {
+      if (_d2dSawPointer) { _d2dSawPointer = false; e.preventDefault(); e.stopPropagation(); return; }
+      e.stopPropagation();
+      toggleDebug2d();
+    });
+    // Stop touch events from bubbling to canvas/overlay handlers
+    el.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+    el.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
+  }
 
-  // Touch-friendly toggle button (primary access on mobile)
-  debugBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleDebug2d(); });
-  debugBtn.addEventListener('touchend', (e) => { e.stopPropagation(); toggleDebug2d(); }, { passive: false });
+  bindDebugTap(closeBtn);
+  bindDebugTap(debugBtn);
 
   // Expose for the keyboard handler
   window._toggleDebug2d = toggleDebug2d;

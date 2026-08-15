@@ -4474,13 +4474,15 @@ function tick() {
   }
   d2dSeedTerrain();
 
-  // Get column height (number of filled blocks), 0 if empty
+  // Get column surface height — the elevation of the topmost filled cell,
+  // not a count of filled cells. A column can have gaps below its top block
+  // (from toggling), so counting would collapse an overhang onto the column
+  // beneath it instead of tracing the actual block face at its real height.
   function d2dColHeight(x) {
-    let h = 0;
     for (let y = 0; y < D2D_ROWS; y++) {
-      if (d2dGrid[y * D2D_COLS + x] !== D2D_AIR) h++;
+      if (d2dGrid[y * D2D_COLS + x] !== D2D_AIR) return D2D_ROWS - y;
     }
-    return h;
+    return 0;
   }
 
   // Fillet radius, in grid units — each column is one block wide (1 grid

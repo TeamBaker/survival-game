@@ -1785,30 +1785,22 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // different shape: it traces the outline the blocks already have, and the only
 // thing it does differently is round the corners.
 //
-// The rule, in cross section. Walk the staircase the blocks make — along the top
-// of a block, up the face of the next one, along its top. Every edge of that
-// walk is one block face, BLOCK long. Leave each face at its midpoint, rejoin
-// the next one at its midpoint, and put a smoothstep arc between those two
-// points; the half of every face on either side of an arc stays exactly where
-// the block put it. So a flat run is flat, the middle of a tall face is still
-// straight up it, and the only thing that ever moves is the last half-block
-// going into a corner.
+// The rule: a column's own height is exact at its centre, full stop — the skin
+// never leaves the block top there, whatever its neighbours do. Between two
+// neighbouring columns the skin stays flat at the nearer column's height right
+// up until a narrow band straddling the boundary between them (FILLET_TIGHT of
+// the cell, centred on the boundary), and only inside that band does a
+// smoothstep arc carry it across to the other column's height. A flat run of
+// columns is flat everywhere; a single block sitting alone gets a flat top and
+// two tight corner curves rather than a dome; a staircase gets a fillet at each
+// step edge rather than a ramp. Once in x and once in z is the 3D version.
 //
-// What makes that cheap here is where the midpoints land. The midpoint of a
-// block top is the centre of a column; the midpoint of a riser is half way
-// between the two column heights either side of it. So sampling the block tops
-// at the column centres and interpolating between neighbours with smoothstep
-// instead of a straight line *is* the rule: on a column centre the skin is on
-// the block top, half way to the next column it is half way up the riser, and
-// where two columns are level the interpolation is flat and the skin lies on the
-// block faces exactly. Once in x and once in z is the 3D version.
-//
-// The one place it cannot follow the rule: a riser more than one block tall
-// wants a straight vertical section between its two arcs, and a heightfield has
-// no vertical in it. Those get the two arcs back to back — an S from one column
-// centre to the next — which is as steep as a height function is allowed to be.
-// On this island that is the odd cliff face and nothing else. Overhangs dug into
-// a column are invisible to it for the same reason.
+// A heightfield still only has one height per column, so it cannot draw an
+// actual vertical face. A riser more than one block tall gets the same tight
+// band, just steeper inside it — flat, curve, a short steep climb, curve, flat
+// — which reads as a cliff rather than a ramp because the climb is confined to
+// a fraction of a block instead of spread across the whole one. Overhangs dug
+// into a column are invisible to it for the same one-height-per-column reason.
 
 // Vertices per block along each axis. 2 puts one on every column centre and one
 // on every boundary between them, which is the fewest that can carry the shape
@@ -1816,6 +1808,15 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // differentiated from the curve rather than averaged off the triangles, it still
 // shades as a curve. Every step up from here costs (sub/2)^2 in memory.
 const FILLET_SUB = 4;
+// Width of the corner-curve band, as a fraction of one cell (column centre to
+// column centre), centred on the boundary between the two columns. Outside the
+// band the skin is flat at the nearer column's own height; only inside it does
+// the smoothstep arc run. 1 would recreate the old edge-to-edge slope; this is
+// as tight as FILLET_SUB can still resolve with a visible curve rather than a
+// kink (half the cell puts a vertex at each end of the band and one in the
+// middle, at FILLET_SUB = 4).
+const FILLET_TIGHT = 0.5;
+const FILLET_FLAT  = (1 - FILLET_TIGHT) / 2;
 // How far out from the middle of the field gets a skin, in metres. Past the
 // shoreline and its wash and not much further: at a vertex every 10 cm this
 // costs far more per square metre than the cubes do, and the sea floor beyond
@@ -1908,35 +1909,34 @@ function buildFilletChunk(c) {
     // Which cell of the grid this row is in, and how far across it — 0 on a
     // column centre, 0.5 on the boundary between two columns.
     const jq = (b / FILLET_SUB) | 0, fz = (b % FILLET_SUB) / FILLET_SUB;
-    const wz = smooth(fz), dwz = 6 * fz * (1 - fz);
+    let wz, dwz;
+    if (fz <= FILLET_FLAT) { wz = 0; dwz = 0; }
+    else if (fz >= 1 - FILLET_FLAT) { wz = 1; dwz = 0; }
+    else { const t = (fz - FILLET_FLAT) / FILLET_TIGHT; wz = smooth(t); dwz = 6 * t * (1 - t) / FILLET_TIGHT; }
     const z = colZ(j0 + jq) + fz * BLOCK;
     for (let a = 0; a < nx; a++) {
       const iq = (a / FILLET_SUB) | 0, fx = (a % FILLET_SUB) / FILLET_SUB;
-      const wx = smooth(fx), dwx = 6 * fx * (1 - fx);
+      let wx, dwx;
+      if (fx <= FILLET_FLAT) { wx = 0; dwx = 0; }
+      else if (fx >= 1 - FILLET_FLAT) { wx = 1; dwx = 0; }
+      else { const t = (fx - FILLET_FLAT) / FILLET_TIGHT; wx = smooth(t); dwx = 6 * t * (1 - t) / FILLET_TIGHT; }
       const x = colX(i0 + iq) + fx * BLOCK;
 
       const p00 = jq * FILLET_STRIDE + iq, p10 = p00 + 1;
       const p01 = p00 + FILLET_STRIDE,     p11 = p01 + 1;
       const h00 = filletH[p00], h10 = filletH[p10];
       const h01 = filletH[p01], h11 = filletH[p11];
-      // The arc, in x and then in z. Straight-line weights here would give the
-      // blocks a chamfer; smoothstep is what rounds the corner, and what puts
-      // the skin exactly on the block top at fx = 0 and exactly half way up the
-      // riser at fx = 0.5.
-      // Only apply smoothstep when ALL four surrounding columns are continuous
-      // (no air gaps from VOX_FLOOR to top) AND every height difference across
-      // the cell is ≤ 1 block (BLOCK = 0.2m). Larger diffs → sharp step, gaps
-      // → no smoothing to/from the floating column.
+      // The arc, in x and then in z, confined to the FILLET_TIGHT band around
+      // the boundary (wx/wz above) — flat at the column's own height outside
+      // it, whatever the height difference. The one exception is a floating
+      // column (a gap in it from VOX_FLOOR to top): smoothing that in would
+      // blend the ground into a block that has visible air under it, so those
+      // fall back to a straight line across the whole cell instead.
       const anyGap = filletCont[p00] === 0 || filletCont[p10] === 0 ||
                      filletCont[p01] === 0 || filletCont[p11] === 0;
       let sx = wx, dsx = dwx;
-      if (anyGap || Math.abs(h10 - h00) > BLOCK || Math.abs(h11 - h01) > BLOCK) {
-        sx = fx; dsx = 1;  // straight-line interpolation (no smoothing)
-      }
       let sz = wz, dsz = dwz;
-      if (anyGap || Math.abs(h01 - h00) > BLOCK || Math.abs(h11 - h10) > BLOCK) {
-        sz = fz; dsz = 1;  // straight-line interpolation (no smoothing)
-      }
+      if (anyGap) { sx = fx; dsx = 1; sz = fz; dsz = 1; }
       const hx0 = h00 + (h10 - h00) * sx, hx1 = h01 + (h11 - h01) * sx;
       const y = hx0 + (hx1 - hx0) * sz;
       // The same curve differentiated. Averaging the facet normals instead would
@@ -4502,17 +4502,20 @@ function tick() {
       // Surface y = (D2D_ROWS - h) * CELL_H
       colH[x] = h;
     }
+    // Same rule as the 3D fillet mesh (FILLET_TIGHT): flat at each column's own
+    // height except in a narrow band straddling the boundary, where a
+    // smoothstep arc carries it across. Not a full-cell slope.
+    const D2D_TIGHT = 0.5, D2D_FLAT = (1 - D2D_TIGHT) / 2;
     for (let i = 0; i <= D2D_COLS * SUB; i++) {
       const col = i / SUB;
       const iq = Math.min(Math.floor(col), D2D_COLS - 1);
-      const fx = (col - iq);
-      const clampedFx = Math.min(fx, 1);
+      const fx = Math.min(col - iq, 1);
       const h0 = colH[iq];
       const h1 = iq < D2D_COLS - 1 ? colH[iq + 1] : h0;
-      // Apply smoothstep between adjacent column heights
-      // The difference threshold: only smoothstep when diff <= 1 block
-      const diff = Math.abs(h1 - h0);
-      const w = diff <= 1 ? d2dSmooth(clampedFx) : clampedFx;
+      let w;
+      if (fx <= D2D_FLAT) w = 0;
+      else if (fx >= 1 - D2D_FLAT) w = 1;
+      else w = d2dSmooth((fx - D2D_FLAT) / D2D_TIGHT);
       const h = h0 + (h1 - h0) * w;
       const screenX = (col / D2D_COLS) * CV_W;
       const screenY = (D2D_ROWS - h) * CELL_H;

@@ -1814,11 +1814,12 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // the two ends of the edge.
 const FILLET_SUB = 4;
 // Fillet radius, in metres, capped so two opposite insets on the same column
-// can never meet (a quarter of a block leaves at least half the column flat
-// even if all four sides differ). The actual radius used on any one boundary
-// is min(FILLET_R_MAX, half the height difference there), so a one-block step
-// gets a smaller, tighter curve than a multi-block cliff does.
-const FILLET_R_MAX = BLOCK * 0.25;
+// can never cross (half a block per side sums to exactly the column width,
+// so they meet at the centre at worst, never overlap). Matches the 2D debug
+// view's D2D_FILLET_R (BLOCK/2 in grid units). The actual radius used on any
+// one boundary is min(FILLET_R_MAX, half the height difference there), so a
+// one-block step gets a smaller, tighter curve than a multi-block cliff does.
+const FILLET_R_MAX = BLOCK * 0.5;
 // How far out from the middle of the field gets a skin, in metres. Past the
 // shoreline and its wash and not much further: at a vertex every 10 cm this
 // costs far more per square metre than the cubes do, and the sea floor beyond

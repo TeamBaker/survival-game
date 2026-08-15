@@ -4494,32 +4494,33 @@ function tick() {
     // Heights at column centers (top of column + 1 block up = surface)
     const colH = new Float32Array(D2D_COLS);
     for (let x = 0; x < D2D_COLS; x++) colH[x] = d2dColHeight(x);
-    // Same rule as the 3D fillet mesh (FILLET_TIGHT): flat at each column's own
-    // height except in a narrow band straddling the boundary, where a
-    // smoothstep arc carries it across. Not a full-cell slope.
+    // A column's own height is exact at its centre, full stop. Between two
+    // neighbouring columns the skin stays flat at a column's own height until
+    // the *half* of its width nearest a taller neighbour — only there does a
+    // smoothstep arc climb to meet it. The climb is confined entirely to the
+    // shorter column's own side of the boundary (never the taller column's),
+    // so at every x the line sits at or above the block top directly beneath
+    // it — never dipping into a block, and matching exactly at centres.
     //
-    // The 3D mesh samples relative to column CENTRES (fz=0 sits on a centre,
-    // fz=0.5 sits on the boundary between two columns), not relative to a
-    // column's left edge. `x` below is screen-space in left-edge units (0 =
-    // left edge of column 0), so it's shifted by half a cell to `s` — centre
-    // of column 0 is s=0 — before finding which two centres bracket it. That
-    // keeps the flat plateau on each column's own centre and the curve
-    // confined to the boundary, instead of putting the curve mid-column.
-    const D2D_TIGHT = 0.5, D2D_FLAT = (1 - D2D_TIGHT) / 2;
+    // (Earlier versions centred the curve band ON the boundary, straddling
+    // into both columns. That let the line fall below the taller neighbour's
+    // block top right at its own left/right edge — a real dip, not a
+    // rendering artifact. Confining the curve to the shorter side removes it.)
     for (let i = 0; i <= D2D_COLS * SUB; i++) {
       const x = i / SUB;
-      const s = Math.max(0, Math.min(D2D_COLS - 1, x - 0.5));
-      const iq = Math.min(Math.floor(s), D2D_COLS - 1);
-      const fz = s - iq;
-      const h0 = colH[iq];
-      const h1 = iq < D2D_COLS - 1 ? colH[iq + 1] : h0;
-      let w;
-      if (fz <= D2D_FLAT) w = 0;
-      else if (fz >= 1 - D2D_FLAT) w = 1;
-      else w = d2dSmooth((fz - D2D_FLAT) / D2D_TIGHT);
-      const h = h0 + (h1 - h0) * w;
+      const col = Math.min(D2D_COLS - 1, Math.floor(x));
+      const fc = x - col;
+      const h = colH[col];
+      const hL = col > 0 ? colH[col - 1] : h;
+      const hR = col < D2D_COLS - 1 ? colH[col + 1] : h;
+      let height;
+      if (fc < 0.5) {
+        height = h < hL ? hL + (h - hL) * d2dSmooth(fc / 0.5) : h;
+      } else {
+        height = h < hR ? h + (hR - h) * d2dSmooth((fc - 0.5) / 0.5) : h;
+      }
       const screenX = x * CELL_W;
-      const screenY = (D2D_ROWS - h) * CELL_H;
+      const screenY = (D2D_ROWS - height) * CELL_H;
       pts.push(screenX, screenY);
     }
     return pts;

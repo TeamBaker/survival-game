@@ -4483,46 +4483,78 @@ function tick() {
     return h;
   }
 
-  // Smoothstep (same as the game's `smooth`)
-  function d2dSmooth(t) { return t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t); }
+  // Fillet radius, in grid units — each column is one block wide (1 grid
+  // unit), so BLOCK/2 (half a block) is 0.5 here.
+  const D2D_FILLET_R = 0.5;
+  const D2D_ARC_STEPS = 8; // line segments used to approximate each quarter-circle
 
-  // Compute the smooth surface as an array of (screenX, screenY) points
-  function d2dSmoothLine() {
+  // Trace the block tops into a sharp-cornered "staircase" polyline: flat
+  // across each column's top, a vertical jump at every column boundary where
+  // the height actually changes (flush runs of equal-height columns collapse
+  // into one flat leg, so every interior vertex below is a genuine 90° corner).
+  function d2dStaircase(colH) {
+    const N = colH.length;
+    const verts = [{ x: 0, y: colH[0] }];
+    let curY = colH[0];
+    for (let x = 1; x < N; x++) {
+      if (colH[x] !== curY) {
+        verts.push({ x, y: curY });     // end of the flat run so far
+        verts.push({ x, y: colH[x] });  // vertical step to the new height
+        curY = colH[x];
+      }
+    }
+    verts.push({ x: N, y: curY });
+    return verts;
+  }
+
+  // Round the 90° corner A->B->C (one leg horizontal, one vertical) into a
+  // circular arc of radius r tangent to both legs, and return its sample
+  // points from the horizontal-leg side through to the vertical-leg side.
+  function d2dFilletCorner(A, B, C, r) {
+    const abHoriz = A.y === B.y;
+    const p1 = abHoriz
+      ? { x: B.x - r * Math.sign(B.x - A.x), y: B.y }
+      : { x: B.x, y: B.y - r * Math.sign(B.y - A.y) };
+    const p2 = abHoriz
+      ? { x: B.x, y: B.y + r * Math.sign(C.y - B.y) }
+      : { x: B.x + r * Math.sign(C.x - B.x), y: B.y };
+    const center = abHoriz ? { x: p1.x, y: p2.y } : { x: p2.x, y: p1.y };
+    const a1 = Math.atan2(p1.y - center.y, p1.x - center.x);
+    let a2 = Math.atan2(p2.y - center.y, p2.x - center.x);
+    let delta = a2 - a1;
+    if (delta > Math.PI) delta -= Math.PI * 2;   // always take the 90° way
+    if (delta < -Math.PI) delta += Math.PI * 2;  // around, never the 270° one
     const pts = [];
-    // Sample at sub-column resolution (4 sub-steps per block, same as FILLET_SUB)
-    const SUB = 4;
-    // Heights at column centers (top of column + 1 block up = surface)
+    for (let i = 0; i <= D2D_ARC_STEPS; i++) {
+      const a = a1 + delta * (i / D2D_ARC_STEPS);
+      pts.push({ x: center.x + r * Math.cos(a), y: center.y + r * Math.sin(a) });
+    }
+    return pts;
+  }
+
+  // Compute the smooth surface as an array of (screenX, screenY) points:
+  // build the sharp block-top staircase, then replace every corner with a
+  // filleted arc, leaving the straight tops and faces between them alone.
+  function d2dSmoothLine() {
     const colH = new Float32Array(D2D_COLS);
     for (let x = 0; x < D2D_COLS; x++) colH[x] = d2dColHeight(x);
-    // A column's own height is exact at its centre, full stop. Between two
-    // neighbouring columns the skin stays flat at a column's own height until
-    // the *half* of its width nearest a taller neighbour — only there does a
-    // smoothstep arc climb to meet it. The climb is confined entirely to the
-    // shorter column's own side of the boundary (never the taller column's),
-    // so at every x the line sits at or above the block top directly beneath
-    // it — never dipping into a block, and matching exactly at centres.
-    //
-    // (Earlier versions centred the curve band ON the boundary, straddling
-    // into both columns. That let the line fall below the taller neighbour's
-    // block top right at its own left/right edge — a real dip, not a
-    // rendering artifact. Confining the curve to the shorter side removes it.)
-    for (let i = 0; i <= D2D_COLS * SUB; i++) {
-      const x = i / SUB;
-      const col = Math.min(D2D_COLS - 1, Math.floor(x));
-      const fc = x - col;
-      const h = colH[col];
-      const hL = col > 0 ? colH[col - 1] : h;
-      const hR = col < D2D_COLS - 1 ? colH[col + 1] : h;
-      let height;
-      if (fc < 0.5) {
-        height = h < hL ? hL + (h - hL) * d2dSmooth(fc / 0.5) : h;
-      } else {
-        height = h < hR ? h + (hR - h) * d2dSmooth((fc - 0.5) / 0.5) : h;
-      }
-      const screenX = x * CELL_W;
-      const screenY = (D2D_ROWS - height) * CELL_H;
-      pts.push(screenX, screenY);
+    const verts = d2dStaircase(colH);
+
+    const poly = [verts[0]];
+    for (let k = 1; k < verts.length - 1; k++) {
+      const A = verts[k - 1], B = verts[k], C = verts[k + 1];
+      const legAB = Math.hypot(B.x - A.x, B.y - A.y);
+      const legBC = Math.hypot(C.x - B.x, C.y - B.y);
+      // Block-quantised geometry means every leg is >= 1 grid unit long, so
+      // this clamp only ever matters at the boundary (r === 0.5) — it just
+      // guards against two corners on the same short leg ever overlapping.
+      const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
+      for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
     }
+    poly.push(verts[verts.length - 1]);
+
+    const pts = [];
+    for (const p of poly) pts.push(p.x * CELL_W, (D2D_ROWS - p.y) * CELL_H);
     return pts;
   }
 

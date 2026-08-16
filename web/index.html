@@ -1876,34 +1876,93 @@ function filletEdge(i, j, l, g, d) {
   return filletSolid(gi + d.di, gj + d.dj, gl + d.dl) ? 1 : 0;
 }
 
-// The samples along one axis of a face, from its low edge to its high one: an
-// anchor (where the flat part of the tile ends), the arc offset at that sample
-// (signed, so the low half-arc runs -1 -> 0 and the high one 0 -> +1), the
-// joint's sense, and how far along the arc it is for the colour blend. An
-// unjointed side is a single sample at the block's own edge, which is what
-// leaves a flat face flat.
-const filAQ = new Float64Array(2 * (FILLET_SUB + 1)), filAN = new Float64Array(2 * (FILLET_SUB + 1));
-const filAS = new Float64Array(2 * (FILLET_SUB + 1)), filAT = new Float64Array(2 * (FILLET_SUB + 1));
-const filBQ = new Float64Array(2 * (FILLET_SUB + 1)), filBN = new Float64Array(2 * (FILLET_SUB + 1));
-const filBS = new Float64Array(2 * (FILLET_SUB + 1)), filBT = new Float64Array(2 * (FILLET_SUB + 1));
+// Whether the joint on this face's `g` edge is still at full depth by the time
+// that edge reaches its `h` end, as a 0/1 weight on the arc there.
+//
+// This is the one thing the 2D outline never has to answer. A fillet there runs
+// along a line and stops at a corner; here it runs along a strip, and the ends
+// of that strip are edges other tiles have to meet flush. A joint keeps its full
+// depth in two cases. It does where the edge simply carries on past that end —
+// the block one step along has the same joint on the same edge, so the two
+// tiles' arcs are two lengths of one continuous fillet. And it does where the
+// end is a true corner: three joints of the same sense meeting at one lattice
+// vertex, which is the case the sample loop below already rounds into an octant
+// of a sphere. Anywhere else the joint stops dead at that end — the tile across
+// it is flat along the shared edge — so the arc has to be back down on the
+// block's own square edge by the time it arrives, or the two tear apart.
+//
+// Both cases come down to one question asked of the cells one step along `h`:
+// does the joint there read the same as this one — and the corner falls out of
+// it for free, because the block that would carry the joint on is missing there
+// exactly when the three faces close into a corner instead. So a convex joint
+// runs on while nothing is in the way of it, and a concave one runs on while the
+// wall it climbs is still there. It matters that this asks its question the same
+// way filletEdge above answers it: the face on the other side of the same edge
+// reads the same cells and gets the same answer, so both halves of an arc fade
+// together and stay joined, and the tiles along a run all agree on where it ends.
+function filletRun(i, j, l, d, g, h, sg) {
+  if (sg === 0) return 1;                            // nothing there to fade
+  const hi = i + h.di, hj = j + h.dj, hl = l + h.dl;
+  if (sg < 0) {
+    // Convex, so the joint is the one corner of a block standing clear, and it
+    // keeps its depth while it is still standing clear one step along — which
+    // covers both cases at once, since the block that would carry it on is
+    // missing exactly when the three faces close into a corner instead. The
+    // fourth cell is the block's own diagonal, and it has to be clear too: two
+    // blocks that meet across nothing but this edge pinch the surface to a line
+    // along it, and there is no arc either of them can cut there that the other
+    // agrees with, so both give it up and leave the edge square.
+    return (!filletSolid(i + d.di + g.di, j + d.dj + g.dj, l + d.dl + g.dl) &&
+            !filletSolid(hi + d.di, hj + d.dj, hl + d.dl) &&
+            !filletSolid(hi + g.di, hj + g.dj, hl + g.dl) &&
+            !filletSolid(hi + d.di + g.di, hj + d.dj + g.dj, hl + d.dl + g.dl)) ? 1 : 0;
+  }
+  // Concave is the same read through the solid the arc climbs rather than the
+  // air it is cut from, and needs no such let-out: three filled cells around an
+  // edge can only ever mean one thing.
+  return (filletSolid(hi, hj, hl) &&
+          filletSolid(hi + g.di, hj + g.dj, hl + g.dl) &&
+          filletSolid(hi + d.di + g.di, hj + d.dj + g.dj, hl + d.dl + g.dl)) ? 1 : 0;
+}
 
-function filletAxis(sLo, sHi, Q, N, S, T) {
+// The samples along one axis of a face, from its low edge to its high one: the
+// block's own square edge the sample hangs off, the inset from it to where the
+// flat part of the tile ends (signed inwards, and the thing a fade scales away),
+// the arc offset at that sample (signed too, so the low half-arc runs -1 -> 0
+// and the high one 0 -> +1), the joint's sense, how far along the arc it is for
+// the colour blend, and which end of the axis it belongs to. An unjointed side
+// is a single sample at the block's own edge with no inset and no offset, which
+// is what leaves a flat face flat — and it is also exactly what a jointed side
+// collapses to when its arc has faded out, so a fading tile meets a flat one on
+// the nose.
+const filAQ = new Float64Array(2 * (FILLET_SUB + 1)), filAD = new Float64Array(2 * (FILLET_SUB + 1));
+const filAN = new Float64Array(2 * (FILLET_SUB + 1)), filAS = new Float64Array(2 * (FILLET_SUB + 1));
+const filAT = new Float64Array(2 * (FILLET_SUB + 1)), filAE = new Float64Array(2 * (FILLET_SUB + 1));
+const filBQ = new Float64Array(2 * (FILLET_SUB + 1)), filBD = new Float64Array(2 * (FILLET_SUB + 1));
+const filBN = new Float64Array(2 * (FILLET_SUB + 1)), filBS = new Float64Array(2 * (FILLET_SUB + 1));
+const filBT = new Float64Array(2 * (FILLET_SUB + 1)), filBE = new Float64Array(2 * (FILLET_SUB + 1));
+
+// `full` says both of this axis's arcs run at full depth along their whole
+// length, which is what lets the two middle samples be shared.
+function filletAxis(sLo, sHi, full, Q, Dq, N, S, T, E) {
   let m = 0;
   if (sLo !== 0) {
     for (let s = FILLET_SUB; s >= 0; s--) {
-      Q[m] = FILLET_R_MAX; N[m] = -FILLET_TAN[s]; S[m] = sLo; T[m] = s / FILLET_SUB; m++;
+      Q[m] = 0; Dq[m] = FILLET_R_MAX; N[m] = -FILLET_TAN[s]; S[m] = sLo; T[m] = s / FILLET_SUB; E[m] = 0; m++;
     }
   } else {
-    Q[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; m++;
+    Q[m] = 0; Dq[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; E[m] = 0; m++;
   }
   if (sHi !== 0) {
     // Skip the second copy of the middle sample when the flat run between the
-    // two arcs has no width.
-    for (let s = (sLo !== 0 && FILLET_NO_FLAT) ? 1 : 0; s <= FILLET_SUB; s++) {
-      Q[m] = BLOCK - FILLET_R_MAX; N[m] = FILLET_TAN[s]; S[m] = sHi; T[m] = s / FILLET_SUB; m++;
+    // two arcs has no width. Only when neither arc fades, though: a fading one
+    // pulls its middle sample back onto the block's edge and the two are no
+    // longer the same point.
+    for (let s = (sLo !== 0 && FILLET_NO_FLAT && full) ? 1 : 0; s <= FILLET_SUB; s++) {
+      Q[m] = BLOCK; Dq[m] = -FILLET_R_MAX; N[m] = FILLET_TAN[s]; S[m] = sHi; T[m] = s / FILLET_SUB; E[m] = 1; m++;
     }
   } else {
-    Q[m] = BLOCK; N[m] = 0; S[m] = 0; T[m] = 0; m++;
+    Q[m] = BLOCK; Dq[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; E[m] = 1; m++;
   }
   return m;
 }
@@ -1965,8 +2024,21 @@ function filletFace(i, j, l, d) {
   const sUH = filletEdge(i, j, l, U, D), sUL = filletEdge(i, j, l, UL, D);
   const sVH = filletEdge(i, j, l, V, D), sVL = filletEdge(i, j, l, VL, D);
 
-  const na = filletAxis(sUL, sUH, filAQ, filAN, filAS, filAT);
-  const nb = filletAxis(sVL, sVH, filBQ, filBN, filBS, filBT);
+  // How much of each of the four arcs is left at each of the two ends it runs
+  // between — 1 where the joint carries on or closes into a corner, 0 where it
+  // stops and the arc has to be back on the block's square edge.
+  const aL0 = filletRun(i, j, l, D, UL, VL, sUL), aL1 = filletRun(i, j, l, D, UL, V, sUL);
+  const aH0 = filletRun(i, j, l, D, U,  VL, sUH), aH1 = filletRun(i, j, l, D, U,  V, sUH);
+  const bL0 = filletRun(i, j, l, D, VL, UL, sVL), bL1 = filletRun(i, j, l, D, VL, U, sVL);
+  const bH0 = filletRun(i, j, l, D, V,  UL, sVH), bH1 = filletRun(i, j, l, D, V,  U, sVH);
+
+  // An arc that has faded at both ends has faded everywhere, and is worth not
+  // having: it would come out as a fan of samples all sitting on the block's own
+  // edge, which is where an unjointed side puts its single sample anyway.
+  const na = filletAxis((aL0 | aL1) && sUL, (aH0 | aH1) && sUH, aL0 & aL1 & aH0 & aH1,
+                        filAQ, filAD, filAN, filAS, filAT, filAE);
+  const nb = filletAxis((bL0 | bL1) && sVL, (bH0 | bH1) && sVH, bL0 & bL1 & bH0 & bH1,
+                        filBQ, filBD, filBN, filBS, filBT, filBE);
 
   filletCellColor(i, j, l, filColC);
   filletJointColor(i, j, l, U,  D, sUH, filColUH);
@@ -1982,10 +2054,19 @@ function filletFace(i, j, l, d) {
   const r = FILLET_R_MAX;
   const base = fpPos.length / 3;
   for (let b = 0; b < nb; b++) {
-    const qv = filBQ[b], nv = filBN[b], sv = filBS[b], tv = filBT[b];
-    const cv = nv < 0 ? filColVL : filColVH;
+    const eb = filBE[b];
+    // The two u-arcs are only as deep as they are at this sample's end of v,
+    // and vice versa — which is what fades an arc out along its own length.
+    const wUlo = eb ? aL1 : aL0, wUhi = eb ? aH1 : aH0;
+    const sv = filBS[b], tv = filBT[b];
+    const cv = filBN[b] < 0 ? filColVL : filColVH;
     for (let a = 0; a < na; a++) {
-      const qu = filAQ[a], nu = filAN[a], su = filAS[a], tu = filAT[a];
+      const ea = filAE[a];
+      const wu = ea ? wUhi : wUlo;
+      const wv = eb ? (ea ? bH1 : bH0) : (ea ? bL1 : bL0);
+      const nu = wu * filAN[a], nv = wv * filBN[b];
+      const qu = filAQ[a] + wu * filAD[a], qv = filBQ[b] + wv * filBD[b];
+      const su = filAS[a], tu = filAT[a];
       const cu = nu < 0 ? filColUL : filColUH;
 
       const len = Math.sqrt(nu * nu + nv * nv + 1);

@@ -1938,9 +1938,13 @@ function filletRun(i, j, l, d, g, h, sg) {
 const filAQ = new Float64Array(2 * (FILLET_SUB + 1)), filAD = new Float64Array(2 * (FILLET_SUB + 1));
 const filAN = new Float64Array(2 * (FILLET_SUB + 1)), filAS = new Float64Array(2 * (FILLET_SUB + 1));
 const filAT = new Float64Array(2 * (FILLET_SUB + 1)), filAE = new Float64Array(2 * (FILLET_SUB + 1));
+// Two per axis: how far along it each sample actually sits, once at each end of
+// the other axis. See filletSpread.
+const filAF0 = new Float64Array(2 * (FILLET_SUB + 1)), filAF1 = new Float64Array(2 * (FILLET_SUB + 1));
 const filBQ = new Float64Array(2 * (FILLET_SUB + 1)), filBD = new Float64Array(2 * (FILLET_SUB + 1));
 const filBN = new Float64Array(2 * (FILLET_SUB + 1)), filBS = new Float64Array(2 * (FILLET_SUB + 1));
 const filBT = new Float64Array(2 * (FILLET_SUB + 1)), filBE = new Float64Array(2 * (FILLET_SUB + 1));
+const filBF0 = new Float64Array(2 * (FILLET_SUB + 1)), filBF1 = new Float64Array(2 * (FILLET_SUB + 1));
 
 // `full` says both of this axis's arcs run at full depth along their whole
 // length, which is what lets the two middle samples be shared.
@@ -1965,6 +1969,27 @@ function filletAxis(sLo, sHi, full, Q, Dq, N, S, T, E) {
     Q[m] = BLOCK; Dq[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; E[m] = 1; m++;
   }
   return m;
+}
+
+// How far along its axis each of those samples actually ends up, given how deep
+// the axis's two arcs are here, rescaled so the first sample is 0 and the last
+// is 1. This is the fraction the *other* axis's arcs fade over — see the sample
+// loop in filletFace.
+//
+// It has to be the realised position and not the full-depth one. An arc that
+// has faded to nothing puts its whole half of the samples on the block's own
+// edge, one on top of another; they are one point, and anything read off them
+// has to come out the same for all of them or they get pulled apart into a
+// little fan. Reading their nominal positions would do exactly that, and the
+// tile on the other side of the joint — which samples its own axes its own way
+// — would not make the same fan, so the two would tear along the seam.
+function filletSpread(Q, Dq, N, E, m, wLo, wHi, F) {
+  for (let k = 0; k < m; k++) {
+    const w = E[k] ? wHi : wLo, n = w * N[k];
+    F[k] = Q[k] + w * Dq[k] + FILLET_R_MAX * n / Math.sqrt(n * n + 1);
+  }
+  const f0 = F[0], span = F[m - 1] - f0;
+  for (let k = 0; k < m; k++) F[k] = span > 1e-12 ? (F[k] - f0) / span : E[k];
 }
 
 // The colour of one block, which after a dig is not what the generator left on
@@ -2040,6 +2065,14 @@ function filletFace(i, j, l, d) {
   const nb = filletAxis((bL0 | bL1) && sVL, (bH0 | bH1) && sVH, bL0 & bL1 & bH0 & bH1,
                         filBQ, filBD, filBN, filBS, filBT, filBE);
 
+  // Each axis measured once at each end of the other, since how far along an
+  // axis a sample sits depends on how deep that axis's arcs are, and that is
+  // what varies from one end of the other axis to the other.
+  filletSpread(filAQ, filAD, filAN, filAE, na, aL0, aH0, filAF0);
+  filletSpread(filAQ, filAD, filAN, filAE, na, aL1, aH1, filAF1);
+  filletSpread(filBQ, filBD, filBN, filBE, nb, bL0, bH0, filBF0);
+  filletSpread(filBQ, filBD, filBN, filBE, nb, bL1, bH1, filBF1);
+
   filletCellColor(i, j, l, filColC);
   filletJointColor(i, j, l, U,  D, sUH, filColUH);
   filletJointColor(i, j, l, UL, D, sUL, filColUL);
@@ -2055,15 +2088,26 @@ function filletFace(i, j, l, d) {
   const base = fpPos.length / 3;
   for (let b = 0; b < nb; b++) {
     const eb = filBE[b];
-    // The two u-arcs are only as deep as they are at this sample's end of v,
-    // and vice versa — which is what fades an arc out along its own length.
-    const wUlo = eb ? aL1 : aL0, wUhi = eb ? aH1 : aH0;
     const sv = filBS[b], tv = filBT[b];
     const cv = filBN[b] < 0 ? filColVL : filColVH;
     for (let a = 0; a < na; a++) {
       const ea = filAE[a];
-      const wu = ea ? wUhi : wUlo;
-      const wv = eb ? (ea ? bH1 : bH0) : (ea ? bL1 : bL0);
+      // The two u-arcs are only as deep as they are at this point along v, and
+      // vice versa — which is what fades an arc out along its own length. The
+      // end weights are what the tiles either side of this one see at the edges
+      // they share with it, so the samples at each end carry their end's weight
+      // exactly and the arc slopes between the two across the tile in between.
+      // Stepping straight from one end weight to the other on the end index —
+      // which is all there is to go on without measuring the tile — would hold
+      // the arc at full depth for the whole first half of the face and then drop
+      // it to nothing across a single row of quads. On a doubly-filleted axis
+      // those two rows are a few millimetres apart in the middle of the face, so
+      // the last block of every run came out as a crease down its middle with a
+      // flat strip of square edge past it. Sloping it instead is what makes a
+      // fillet run out like a fillet rather than stop dead as a straight edge.
+      const fb = ea ? filBF1[b] : filBF0[b], fa = eb ? filAF1[a] : filAF0[a];
+      const wu = ea ? aH0 + (aH1 - aH0) * fb : aL0 + (aL1 - aL0) * fb;
+      const wv = eb ? bH0 + (bH1 - bH0) * fa : bL0 + (bL1 - bL0) * fa;
       const nu = wu * filAN[a], nv = wv * filBN[b];
       const qu = filAQ[a] + wu * filAD[a], qv = filBQ[b] + wv * filBD[b];
       const su = filAS[a], tu = filAT[a];
@@ -2071,8 +2115,27 @@ function filletFace(i, j, l, d) {
 
       const len = Math.sqrt(nu * nu + nv * nv + 1);
       const au = nu < 0 ? -nu : nu, av = nv < 0 ? -nv : nv;
+      // Which way the joint bends, blended between the two axes where they
+      // disagree — and how deep the standoff off the face's own plane is, which
+      // once arcs can fade is no longer just the radius.
+      //
+      // A fading arc insets by w*r and reaches w*r along the face, so it has to
+      // stand off by w*r too or its 45° sample slides off the diagonal of the
+      // joint. That sample is the one the tile across the joint has to meet, and
+      // that tile measures the same joint from the other face — its own 45°
+      // sample is this one with the along-face and standoff parts swapped, so
+      // anything but w*r tears the two apart along the whole seam.
+      //
+      // Which w, where a sample has both arcs under it, is settled by whichever
+      // arc is nearer its own 45° end, because that is the seam this sample is
+      // on; an arc with no depth left has no seam and never takes charge. The
+      // two are only both at 45° at the one sample in the corner of the tile,
+      // where the seams cross and there is no single answer. At full depth all
+      // of this is 1 and the standoff is the plain radius it always was.
+      const du = wu > 0 ? tu : -1, dv = wv > 0 ? tv : -1;
+      const wd = du > dv ? wu : dv > du ? wv : (wu + wv) * 0.5;
       const sense = au + av > 0 ? (su * au + sv * av) / (au + av) : 0;
-      const pu = qu + r * nu / len, pv = qv + r * nv / len, pw = sense * r * (1 - 1 / len);
+      const pu = qu + r * nu / len, pv = qv + r * nv / len, pw = sense * wd * r * (1 - 1 / len);
 
       fpPos.push(ox + pu * U.vx + pv * V.vx + pw * D.vx,
                  oy + pu * U.vy + pv * V.vy + pw * D.vy,

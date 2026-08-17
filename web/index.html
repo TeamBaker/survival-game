@@ -1935,20 +1935,36 @@ function filletRun(i, j, l, d, g, h, sg) {
 // is what leaves a flat face flat — and it is also exactly what a jointed side
 // collapses to when its arc has faded out, so a fading tile meets a flat one on
 // the nose.
-const filAQ = new Float64Array(2 * (FILLET_SUB + 1)), filAD = new Float64Array(2 * (FILLET_SUB + 1));
-const filAN = new Float64Array(2 * (FILLET_SUB + 1)), filAS = new Float64Array(2 * (FILLET_SUB + 1));
-const filAT = new Float64Array(2 * (FILLET_SUB + 1)), filAE = new Float64Array(2 * (FILLET_SUB + 1));
+const FILAX = 2 * (FILLET_SUB + 1) + 1;
+const filAQ = new Float64Array(FILAX), filAD = new Float64Array(FILAX);
+const filAN = new Float64Array(FILAX), filAS = new Float64Array(FILAX);
+const filAT = new Float64Array(FILAX), filAE = new Float64Array(FILAX);
 // Two per axis: how far along it each sample actually sits, once at each end of
 // the other axis. See filletSpread.
-const filAF0 = new Float64Array(2 * (FILLET_SUB + 1)), filAF1 = new Float64Array(2 * (FILLET_SUB + 1));
-const filBQ = new Float64Array(2 * (FILLET_SUB + 1)), filBD = new Float64Array(2 * (FILLET_SUB + 1));
-const filBN = new Float64Array(2 * (FILLET_SUB + 1)), filBS = new Float64Array(2 * (FILLET_SUB + 1));
-const filBT = new Float64Array(2 * (FILLET_SUB + 1)), filBE = new Float64Array(2 * (FILLET_SUB + 1));
-const filBF0 = new Float64Array(2 * (FILLET_SUB + 1)), filBF1 = new Float64Array(2 * (FILLET_SUB + 1));
+const filAF0 = new Float64Array(FILAX), filAF1 = new Float64Array(FILAX);
+const filBQ = new Float64Array(FILAX), filBD = new Float64Array(FILAX);
+const filBN = new Float64Array(FILAX), filBS = new Float64Array(FILAX);
+const filBT = new Float64Array(FILAX), filBE = new Float64Array(FILAX);
+const filBF0 = new Float64Array(FILAX), filBF1 = new Float64Array(FILAX);
 
 // `full` says both of this axis's arcs run at full depth along their whole
 // length, which is what lets the two middle samples be shared.
-function filletAxis(sLo, sHi, full, Q, Dq, N, S, T, E) {
+//
+// `mid` asks for one extra sample across the middle of the block, which is what
+// a tile needs to bend a fade rather than rule it straight: an arc that fades
+// along this axis is only ever read where this axis has a sample, so with just
+// the block's two edges to go on, the only shape a fade can take between them is
+// a straight ramp — the fillet drains away from full depth to nothing in one
+// even slope, which is the straight line at every step corner. One sample in
+// between is enough to hold the fillet near its full depth for the first half of
+// the run and put the whole run-out in the second, which is what the corner
+// actually looks like (see filFade).
+//
+// Half a block is the one place it can go. Both arcs reach exactly that far at
+// full depth and no further, so a sample there is never overtaken by one of them
+// and the samples stay in order; at full depth it lands on top of them and comes
+// out as a seam of zero-area quads, which costs a few vertices and draws nothing.
+function filletAxis(sLo, sHi, full, mid, Q, Dq, N, S, T, E) {
   let m = 0;
   if (sLo !== 0) {
     for (let s = FILLET_SUB; s >= 0; s--) {
@@ -1957,6 +1973,10 @@ function filletAxis(sLo, sHi, full, Q, Dq, N, S, T, E) {
   } else {
     Q[m] = 0; Dq[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; E[m] = 0; m++;
   }
+  // No inset and no offset of its own: it sits on the block's own middle
+  // wherever the arcs either side of it have got to, and carries nothing but the
+  // other axis's fade, read at half a block in.
+  if (mid) { Q[m] = BLOCK * 0.5; Dq[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; E[m] = 0; m++; }
   if (sHi !== 0) {
     // Skip the second copy of the middle sample when the flat run between the
     // two arcs has no width. Only when neither arc fades, though: a fading one
@@ -1969,6 +1989,26 @@ function filletAxis(sLo, sHi, full, Q, Dq, N, S, T, E) {
     Q[m] = BLOCK; Dq[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; E[m] = 1; m++;
   }
   return m;
+}
+
+// How deep a joint's arc is a fraction `f` of the way along the tile, between
+// the depths `w0` and `w1` it has to have at the two ends. Nothing to decide
+// where the two agree — a joint that runs on at both ends is at full depth all
+// the way across, and one with nothing at either end has nothing anywhere.
+//
+// Where they disagree the joint is running out, and the shape of that run-out is
+// the shape of the corner it runs out at. A ball of radius r rolled along the
+// crease keeps its full depth until it is r from the end and only then starts to
+// lift away, so the fillet holds its size along most of the last block and does
+// all of its dying in the last half of one — a quarter circle's worth of
+// run-out, which is what this is: full depth with a flat start, then away
+// sharply at the end. Ramping straight from one to the other instead, which is
+// all two samples can express, drains the fillet evenly across the whole block
+// and leaves the straight taper this replaces.
+function filFade(w0, w1, f) {
+  if (w0 === w1) return w0;
+  const t = w0 ? f : 1 - f;
+  return Math.sqrt(1 - t * t);
 }
 
 // How far along its axis each of those samples actually ends up, given how deep
@@ -1985,8 +2025,8 @@ function filletAxis(sLo, sHi, full, Q, Dq, N, S, T, E) {
 // — would not make the same fan, so the two would tear along the seam.
 function filletSpread(Q, Dq, N, E, m, wLo, wHi, F) {
   for (let k = 0; k < m; k++) {
-    const w = E[k] ? wHi : wLo, n = w * N[k];
-    F[k] = Q[k] + w * Dq[k] + FILLET_R_MAX * n / Math.sqrt(n * n + 1);
+    const w = E[k] ? wHi : wLo, n = w > 0 ? N[k] : 0;
+    F[k] = Q[k] + w * Dq[k] + w * FILLET_R_MAX * n / Math.sqrt(n * n + 1);
   }
   const f0 = F[0], span = F[m - 1] - f0;
   for (let k = 0; k < m; k++) F[k] = span > 1e-12 ? (F[k] - f0) / span : E[k];
@@ -2060,9 +2100,20 @@ function filletFace(i, j, l, d) {
   // An arc that has faded at both ends has faded everywhere, and is worth not
   // having: it would come out as a fan of samples all sitting on the block's own
   // edge, which is where an unjointed side puts its single sample anyway.
-  const na = filletAxis((aL0 | aL1) && sUL, (aH0 | aH1) && sUH, aL0 & aL1 & aH0 & aH1,
+  // An axis needs its middle sample exactly where something bends along it, and
+  // what bends along one axis is the fade of the arcs on the other. A face whose
+  // joints all run straight through — every flat face, and every one in the
+  // middle of a long step — has nothing to bend and stays the four corners it
+  // has always been. Two tiles either side of a joint that fades read that
+  // joint's two ends the same way, so both subdivide it and their samples land
+  // on each other; a tile that subdivides for a joint of its own that the other
+  // one cannot see puts its extra sample on a stretch the other one is holding
+  // straight, so it lands on that straight line and neither tears.
+  const midA = bL0 !== bL1 || bH0 !== bH1, midB = aL0 !== aL1 || aH0 !== aH1;
+
+  const na = filletAxis((aL0 | aL1) && sUL, (aH0 | aH1) && sUH, aL0 & aL1 & aH0 & aH1, midA,
                         filAQ, filAD, filAN, filAS, filAT, filAE);
-  const nb = filletAxis((bL0 | bL1) && sVL, (bH0 | bH1) && sVH, bL0 & bL1 & bH0 & bH1,
+  const nb = filletAxis((bL0 | bL1) && sVL, (bH0 | bH1) && sVH, bL0 & bL1 & bH0 & bH1, midB,
                         filBQ, filBD, filBN, filBS, filBT, filBE);
 
   // Each axis measured once at each end of the other, since how far along an
@@ -2096,25 +2147,41 @@ function filletFace(i, j, l, d) {
       // vice versa — which is what fades an arc out along its own length. The
       // end weights are what the tiles either side of this one see at the edges
       // they share with it, so the samples at each end carry their end's weight
-      // exactly and the arc slopes between the two across the tile in between.
-      // Stepping straight from one end weight to the other on the end index —
-      // which is all there is to go on without measuring the tile — would hold
-      // the arc at full depth for the whole first half of the face and then drop
-      // it to nothing across a single row of quads. On a doubly-filleted axis
+      // exactly and the arc runs out between the two across the tile in between,
+      // to the profile filFade gives it. It has to be read off where the sample
+      // actually sits and not off which end it belongs to: stepping straight
+      // from one end weight to the other on the end index would hold the arc at
+      // full depth for the whole first half of the face and then drop it to
+      // nothing across a single row of quads, and on a doubly-filleted axis
       // those two rows are a few millimetres apart in the middle of the face, so
       // the last block of every run came out as a crease down its middle with a
-      // flat strip of square edge past it. Sloping it instead is what makes a
-      // fillet run out like a fillet rather than stop dead as a straight edge.
+      // flat strip of square edge past it.
       const fb = ea ? filBF1[b] : filBF0[b], fa = eb ? filAF1[a] : filAF0[a];
-      const wu = ea ? aH0 + (aH1 - aH0) * fb : aL0 + (aL1 - aL0) * fb;
-      const wv = eb ? bH0 + (bH1 - bH0) * fa : bL0 + (bL1 - bL0) * fa;
-      const nu = wu * filAN[a], nv = wv * filBN[b];
+      const wu = ea ? filFade(aH0, aH1, fb) : filFade(aL0, aL1, fb);
+      const wv = eb ? filFade(bH0, bH1, fa) : filFade(bL0, bL1, fa);
+      // A fading arc keeps its whole quarter turn and shrinks its radius to
+      // w * r, rather than holding the radius and sweeping through less of the
+      // turn. Both come out the same at full depth, and the difference matters
+      // everywhere else: an arc that only sweeps atan(w) stops short of the 45°
+      // diagonal the tile across the joint meets it on, and the two faces close
+      // on each other at an angle instead of a tangent — a hard crease running
+      // the length of every fading joint, which on this terrain is most of them.
+      // Shrinking the radius instead keeps both halves tangent to their own face
+      // and to each other the whole way out, so a fillet that fades reads as a
+      // fillet getting smaller rather than as a chamfer with a line down it.
+      //
+      // An arc with nothing left has no turn either: zeroing it, rather than
+      // letting a zero radius hide a non-zero one, keeps its samples exactly on
+      // top of each other and out of `len`, which is what a collapsed arc needs.
+      const nu = wu > 0 ? filAN[a] : 0, nv = wv > 0 ? filBN[b] : 0;
       const qu = filAQ[a] + wu * filAD[a], qv = filBQ[b] + wv * filBD[b];
       const su = filAS[a], tu = filAT[a];
       const cu = nu < 0 ? filColUL : filColUH;
 
       const len = Math.sqrt(nu * nu + nv * nv + 1);
-      const au = nu < 0 ? -nu : nu, av = nv < 0 ? -nv : nv;
+      // How much of the corner each arc has a say in, which is still a question
+      // about how deep they are and not just how far round they have turned.
+      const au = wu * (nu < 0 ? -nu : nu), av = wv * (nv < 0 ? -nv : nv);
       // Which way the joint bends, blended between the two axes where they
       // disagree — and how deep the standoff off the face's own plane is, which
       // once arcs can fade is no longer just the radius.
@@ -2135,7 +2202,7 @@ function filletFace(i, j, l, d) {
       const du = wu > 0 ? tu : -1, dv = wv > 0 ? tv : -1;
       const wd = du > dv ? wu : dv > du ? wv : (wu + wv) * 0.5;
       const sense = au + av > 0 ? (su * au + sv * av) / (au + av) : 0;
-      const pu = qu + r * nu / len, pv = qv + r * nv / len, pw = sense * wd * r * (1 - 1 / len);
+      const pu = qu + wu * r * nu / len, pv = qv + wv * r * nv / len, pw = sense * wd * r * (1 - 1 / len);
 
       fpPos.push(ox + pu * U.vx + pv * V.vx + pw * D.vx,
                  oy + pu * U.vy + pv * V.vy + pw * D.vy,

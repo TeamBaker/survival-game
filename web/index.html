@@ -1848,6 +1848,9 @@ const FDIR = [
   { di:  0, dj: -1, dl:  0, vx:  0, vy:  0, vz: -1 },   // 5  south
 ];
 const FOPP = [1, 0, 3, 2, 5, 4];
+// The same opposites reachable straight off a direction, since the walk below
+// carries directions around as these records rather than as indices.
+for (let d = 0; d < 6; d++) FDIR[d].op = FDIR[FOPP[d]];
 // The two in-plane axes of each face, u then v, picked so that u cross v is the
 // face's own direction — which is what makes a quad walked u-then-v wind
 // outward without anything having to check afterwards.
@@ -1876,53 +1879,71 @@ function filletEdge(i, j, l, g, d) {
   return filletSolid(gi + d.di, gj + d.dj, gl + d.dl) ? 1 : 0;
 }
 
+// The same answer, less the one case a convex joint has to give up on: where
+// the cell diagonally across the edge is filled, that block and this one meet
+// across nothing but the edge itself and pinch the surface to a line along it,
+// and there is no arc either of them can cut there that the other agrees with,
+// so both leave it square. A concave joint needs no such let-out — three filled
+// cells around an edge can only ever mean one thing.
+//
+// This is what a joint really is, and everything below asks for it rather than
+// for filletEdge: the tile that owns the joint and every tile that has to meet
+// its arc read it through here, so they cannot disagree about whether it exists.
+function filletJoint(i, j, l, g, d) {
+  const s = filletEdge(i, j, l, g, d);
+  if (s < 0 && filletSolid(i + d.di + g.di, j + d.dj + g.dj, l + d.dl + g.dl)) return 0;
+  return s;
+}
+
 // Whether the joint on this face's `g` edge is still at full depth by the time
 // that edge reaches its `h` end, as a 0/1 weight on the arc there.
 //
 // This is the one thing the 2D outline never has to answer. A fillet there runs
 // along a line and stops at a corner; here it runs along a strip, and the ends
-// of that strip are edges other tiles have to meet flush. A joint keeps its full
-// depth in two cases. It does where the edge simply carries on past that end —
-// the block one step along has the same joint on the same edge, so the two
-// tiles' arcs are two lengths of one continuous fillet. And it does where the
-// end is a true corner: three joints of the same sense meeting at one lattice
-// vertex, which is the case the sample loop below already rounds into an octant
-// of a sphere. Anywhere else the joint stops dead at that end — the tile across
-// it is flat along the shared edge — so the arc has to be back down on the
-// block's own square edge by the time it arrives, or the two tear apart.
+// of that strip are edges other tiles have to meet flush. So the question is
+// really about the tile on the other side of that end: the joint keeps its full
+// depth exactly when that tile carries the same joint, of the same sense, on its
+// own `g` edge, because then the two arcs are two lengths of one fillet and meet
+// each other at full depth. Where that tile is flat along the shared edge the
+// joint stops dead there instead, and the arc has to be back down on the block's
+// own square edge by the time it arrives, or the two tear apart.
 //
-// Both cases come down to one question asked of the cells one step along `h`:
-// does the joint there read the same as this one — and the corner falls out of
-// it for free, because the block that would carry the joint on is missing there
-// exactly when the three faces close into a corner instead. So a convex joint
-// runs on while nothing is in the way of it, and a concave one runs on while the
-// wall it climbs is still there. It matters that this asks its question the same
-// way filletEdge above answers it: the face on the other side of the same edge
-// reads the same cells and gets the same answer, so both halves of an arc fade
-// together and stay joined, and the tiles along a run all agree on where it ends.
+// Which tile that is depends on what the surface does at this end, and it is
+// only ever one of three things. It carries straight on, where the block one
+// step along `h` is there with air above it and its face is in this same plane.
+// It turns a convex corner, where that block is missing — then the surface folds
+// onto this same block's own `h` face. Or it turns a concave one, where that
+// block is there and the cell above it is filled too — then the surface climbs
+// that wall, and the tile across the end is the wall's face looking back down
+// `h`. All three are the same question asked of a different face.
+//
+// Rounding across those two turns rather than stopping dead at them is what
+// carries a fillet around the corner of a step instead of squaring it off. On
+// terrain that steps in both directions at once — which is most of an island,
+// since a contour that is not square to the grid climbs as a staircase of one-
+// block jogs — nearly every joint ends at a turn rather than at a straight run,
+// so stopping at them left the arc dying out on both ends of almost every tile
+// and only the runs that happened to line up with the grid looking rounded. The
+// vertical arc up the outside corner of a tower, the one running down the inside
+// corner where two walls meet, and every step corner in between are all just a
+// joint continuing across a turn.
+//
+// It matters that this asks its question the way filletJoint answers it for the
+// tile itself. The face on the other side of an end works out this same pairing
+// from its own side and lands back on this one, so the two agree about the joint
+// between them: both halves of an arc fade together and stay joined, and the
+// tiles along a run all agree on where it ends.
 function filletRun(i, j, l, d, g, h, sg) {
   if (sg === 0) return 1;                            // nothing there to fade
-  const hi = i + h.di, hj = j + h.dj, hl = l + h.dl;
-  if (sg < 0) {
-    // Convex, so the joint is the one corner of a block standing clear, and it
-    // keeps its depth while it is still standing clear one step along — which
-    // covers both cases at once, since the block that would carry it on is
-    // missing exactly when the three faces close into a corner instead. The
-    // fourth cell is the block's own diagonal, and it has to be clear too: two
-    // blocks that meet across nothing but this edge pinch the surface to a line
-    // along it, and there is no arc either of them can cut there that the other
-    // agrees with, so both give it up and leave the edge square.
-    return (!filletSolid(i + d.di + g.di, j + d.dj + g.dj, l + d.dl + g.dl) &&
-            !filletSolid(hi + d.di, hj + d.dj, hl + d.dl) &&
-            !filletSolid(hi + g.di, hj + g.dj, hl + g.dl) &&
-            !filletSolid(hi + d.di + g.di, hj + d.dj + g.dj, hl + d.dl + g.dl)) ? 1 : 0;
+  let bi = i + h.di, bj = j + h.dj, bl = l + h.dl, nd = h;
+  if (!filletSolid(bi, bj, bl)) {                    // convex turn, onto this block's `h` face
+    bi = i; bj = j; bl = l;
+  } else if (filletSolid(bi + d.di, bj + d.dj, bl + d.dl)) {
+    bi += d.di; bj += d.dj; bl += d.dl; nd = h.op;   // concave turn, up the wall's face
+  } else {
+    nd = d;                                          // same plane, one block along
   }
-  // Concave is the same read through the solid the arc climbs rather than the
-  // air it is cut from, and needs no such let-out: three filled cells around an
-  // edge can only ever mean one thing.
-  return (filletSolid(hi, hj, hl) &&
-          filletSolid(hi + g.di, hj + g.dj, hl + g.dl) &&
-          filletSolid(hi + d.di + g.di, hj + d.dj + g.dj, hl + d.dl + g.dl)) ? 1 : 0;
+  return filletJoint(bi, bj, bl, g, nd) === sg ? 1 : 0;
 }
 
 // The samples along one axis of a face, from its low edge to its high one: the
@@ -2086,8 +2107,8 @@ function filletFace(i, j, l, d) {
   const iu = FFRAME[d][0], iv = FFRAME[d][1];
   const U = FDIR[iu], V = FDIR[iv], UL = FDIR[FOPP[iu]], VL = FDIR[FOPP[iv]];
 
-  const sUH = filletEdge(i, j, l, U, D), sUL = filletEdge(i, j, l, UL, D);
-  const sVH = filletEdge(i, j, l, V, D), sVL = filletEdge(i, j, l, VL, D);
+  const sUH = filletJoint(i, j, l, U, D), sUL = filletJoint(i, j, l, UL, D);
+  const sVH = filletJoint(i, j, l, V, D), sVL = filletJoint(i, j, l, VL, D);
 
   // How much of each of the four arcs is left at each of the two ends it runs
   // between — 1 where the joint carries on or closes into a corner, 0 where it

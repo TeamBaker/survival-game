@@ -1868,31 +1868,46 @@ function filletSolid(i, j, l) {
   return voxMat[voxOff[k] + l - VOX_FLOOR] !== AIR;
 }
 
-// What the face of the block at (i, j, l) pointing in direction `d` does at its
-// `g` edge: -1 where the surface turns away from the solid (the cell across the
-// edge is empty), +1 where it turns into it (that cell is filled and so is the
-// one above it, so the surface climbs a wall there), 0 where the neighbouring
-// face is in the same plane and there is no joint to round at all.
-function filletEdge(i, j, l, g, d) {
-  const gi = i + g.di, gj = j + g.dj, gl = l + g.dl;
-  if (!filletSolid(gi, gj, gl)) return -1;
-  return filletSolid(gi + d.di, gj + d.dj, gl + d.dl) ? 1 : 0;
+// Every joint the skin can round is one edge of the block lattice, and what it
+// does there is settled by the four cells around that edge and nothing else.
+// Naming an edge by the cell it runs out of and the two directions that pick
+// the corner (the edge itself runs along the third axis) is what keeps that
+// true: the same edge named from any of the four cells, or with its two
+// directions the other way round, classifies the same, so no two faces that
+// meet on it can disagree about it.
+//
+//   -1  the surface turns away from the solid: one cell of the four is filled
+//       and this is the outside corner of a step, so the arc bends away from
+//       the solid and takes the corner off.
+//    1  it turns into it: three are filled and this is the inside corner at the
+//       foot of a wall, so the arc bends out into the air and fills it in.
+//    0  the two faces either side are in the same plane, or there is no surface
+//       here at all: nothing to round.
+//   FPINCH  the two filled cells meet across nothing but the edge itself. The
+//       surface is pinched to a line along it and there is no arc either block
+//       can cut that the other agrees with, so the edge stays square — and so
+//       does everything that runs into it (see filletRun).
+const FPINCH = 2;
+function filletSense(i, j, l, b, c) {
+  const s00 = filletSolid(i, j, l);
+  const s10 = filletSolid(i + b.di, j + b.dj, l + b.dl);
+  const s01 = filletSolid(i + c.di, j + c.dj, l + c.dl);
+  const s11 = filletSolid(i + b.di + c.di, j + b.dj + c.dj, l + b.dl + c.dl);
+  const n = s00 + s10 + s01 + s11;
+  if (n === 1) return -1;
+  if (n === 3) return 1;
+  // Two filled and the pair is diagonal, so they touch along the edge alone.
+  if (n === 2 && s00 === s11) return FPINCH;
+  return 0;
 }
 
-// The same answer, less the one case a convex joint has to give up on: where
-// the cell diagonally across the edge is filled, that block and this one meet
-// across nothing but the edge itself and pinch the surface to a line along it,
-// and there is no arc either of them can cut there that the other agrees with,
-// so both leave it square. A concave joint needs no such let-out — three filled
-// cells around an edge can only ever mean one thing.
-//
-// This is what a joint really is, and everything below asks for it rather than
-// for filletEdge: the tile that owns the joint and every tile that has to meet
-// its arc read it through here, so they cannot disagree about whether it exists.
+// The joint on the `g` edge of the face of block (i, j, l) that points `d`,
+// which is that same lattice edge with a pinch read as the square edge it
+// leaves behind. Everything below asks for the joint through here, so the tile
+// that owns it and every tile that has to meet its arc get the same answer.
 function filletJoint(i, j, l, g, d) {
-  const s = filletEdge(i, j, l, g, d);
-  if (s < 0 && filletSolid(i + d.di + g.di, j + d.dj + g.dj, l + d.dl + g.dl)) return 0;
-  return s;
+  const s = filletSense(i, j, l, g, d);
+  return s === FPINCH ? 0 : s;
 }
 
 // Whether the joint on this face's `g` edge is still at full depth by the time
@@ -1928,13 +1943,10 @@ function filletJoint(i, j, l, g, d) {
 // corner where two walls meet, and every step corner in between are all just a
 // joint continuing across a turn.
 //
-// It matters that this asks its question the way filletJoint answers it for the
-// tile itself. The face on the other side of an end works out this same pairing
-// from its own side and lands back on this one, so the two agree about the joint
-// between them: both halves of an arc fade together and stay joined, and the
-// tiles along a run all agree on where it ends.
-function filletRun(i, j, l, d, g, h, sg) {
-  if (sg === 0) return 1;                            // nothing there to fade
+// One face's answer, though. A joint has two faces on it and they run out to the
+// same end over different neighbours, so they can and do answer this
+// differently — see filletRun, which is what everything actually asks.
+function filletRunFace(i, j, l, d, g, h, sg) {
   let bi = i + h.di, bj = j + h.dj, bl = l + h.dl, nd = h;
   if (!filletSolid(bi, bj, bl)) {                    // convex turn, onto this block's `h` face
     bi = i; bj = j; bl = l;
@@ -1944,6 +1956,44 @@ function filletRun(i, j, l, d, g, h, sg) {
     nd = d;                                          // same plane, one block along
   }
   return filletJoint(bi, bj, bl, g, nd) === sg ? 1 : 0;
+}
+
+// The same question asked of both faces on the joint, and answered no if either
+// of them says no.
+//
+// A joint is one edge with a face on either side of it, and each of them carries
+// half the arc. Where the two halves end has to be one answer, or they end in
+// different places and the arc rips down the seam between them — and asking only
+// the face that happens to be building right now is not one answer, because the
+// two faces run out to the end of the joint over quite different neighbours.
+//
+// The one-block tread of a staircase is where they part company, and an island
+// is made of those. Take the convex edge along the top of a step, and follow it
+// to where the next step up crosses it. Its top face turns a concave corner
+// there, up the riser, and finds the same convex edge carrying on as the riser's
+// own outside corner: full depth, and true — a ball rolled along the crease
+// rolls right into the corner and pivots. Its side face is in one flat wall with
+// the block beyond the corner, and that block's face is square along the shared
+// edge, because the block above it fills the corner in. It has to be square
+// there too, so its half of the arc has to be gone by the time it arrives.
+//
+// Both are right about their own side, so neither can be given the casting vote,
+// and the arc has to go where it can still be joined: it fades. Which is what
+// this does, and it is also why it is an AND rather than the other way round —
+// a fillet that stops a little early is a fillet, and a fillet that stops in two
+// places at once is a hole. It costs the very last of the arc into a corner the
+// mesh has no way to cap anyway, and nothing else.
+//
+// Reading the second face means finding it. Across a convex joint the two faces
+// are two faces of this same block, so it is the `g` face with the joint on its
+// `d` edge. Across a concave one this block's neighbour along `g` is solid and
+// has no exposed face there at all: the wall the surface climbs is the block
+// diagonally across the joint, looking back the way it came.
+function filletRun(i, j, l, d, g, h, sg) {
+  if (sg === 0) return 1;                            // nothing there to fade
+  if (!filletRunFace(i, j, l, d, g, h, sg)) return 0;
+  if (sg < 0) return filletRunFace(i, j, l, g, d, h, sg);
+  return filletRunFace(i + d.di + g.di, j + d.dj + g.dj, l + d.dl + g.dl, g.op, d.op, h, sg);
 }
 
 // The samples along one axis of a face, from its low edge to its high one: the

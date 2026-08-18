@@ -2076,9 +2076,19 @@ function filletAxis(sLo, sHi, full, mid, Q, Dq, N, S, T, E) {
 // sharply at the end. Ramping straight from one to the other instead, which is
 // all two samples can express, drains the fillet evenly across the whole block
 // and leaves the straight taper this replaces.
+//
+// Both ends dead is a run-out from each of them rather than nothing at all, and
+// it is the only shape a joint one block long can have. Wherever a feature is a
+// single block wide — a lone rock on the plain, the foot of a one-block step, an
+// inside corner where three walls converge on one point — every joint that meets
+// it is exactly one block of crease with a corner at each end, so both ends fade
+// and the fillet used to be dropped whole and leave the square edge behind. The
+// ball still rolls down that crease; it just never gets to sit at the bottom of
+// it, and what it cuts is the near half of one run-out met by the near half of
+// the other, which is the smaller of the two profiles at every point along it.
 function filFade(w0, w1, f) {
-  if (w0 === w1) return w0;
-  const t = w0 ? f : 1 - f;
+  if (w0 === w1 && w0) return w0;
+  const t = w0 === w1 ? (f > 0.5 ? f : 1 - f) : w0 ? f : 1 - f;
   return Math.sqrt(1 - t * t);
 }
 
@@ -2180,11 +2190,19 @@ function filletFace(i, j, l, d) {
   // on each other; a tile that subdivides for a joint of its own that the other
   // one cannot see puts its extra sample on a stretch the other one is holding
   // straight, so it lands on that straight line and neither tears.
-  const midA = bL0 !== bL1 || bH0 !== bH1, midB = aL0 !== aL1 || aH0 !== aH1;
+  // Anything short of full depth at both ends bends along the joint's own
+  // length, which now includes the arc that is dead at both of them: it bulges
+  // in the middle rather than being flat nothing, and without a sample there it
+  // has nowhere to put the bulge.
+  const midA = (sVL && !(bL0 & bL1)) || (sVH && !(bH0 & bH1));
+  const midB = (sUL && !(aL0 & aL1)) || (sUH && !(aH0 & aH1));
 
-  const na = filletAxis((aL0 | aL1) && sUL, (aH0 | aH1) && sUH, aL0 & aL1 & aH0 & aH1, midA,
+  // The sense alone decides whether a side is jointed. An arc that has run out
+  // at both ends still has the middle of its own run to cut (see filFade), and
+  // dropping it there is what squared off every one-block feature.
+  const na = filletAxis(sUL, sUH, aL0 & aL1 & aH0 & aH1, midA,
                         filAQ, filAD, filAN, filAS, filAT, filAE);
-  const nb = filletAxis((bL0 | bL1) && sVL, (bH0 | bH1) && sVH, bL0 & bL1 & bH0 & bH1, midB,
+  const nb = filletAxis(sVL, sVH, bL0 & bL1 & bH0 & bH1, midB,
                         filBQ, filBD, filBN, filBS, filBT, filBE);
 
   // Each axis measured once at each end of the other, since how far along an

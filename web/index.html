@@ -2522,6 +2522,14 @@ function buildFilletChunk(c) {
   // whichever side of the boundary owns it, and there is no seam.
   for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) filletColumn(i, j);
 
+  // Vertex caps push a flat (non-indexed) triangle list into the same
+  // position/color/normal arrays, so give the new vertices sequential
+  // indices to match — everything above them is already indexed properly.
+  const capBase = fpPos.length / 3;
+  buildVertexCaps(i0, j0, fpPos, fpCol, fpNor);
+  const capEnd = fpPos.length / 3;
+  for (let v = capBase; v < capEnd; v++) fpIdx.push(v);
+
   if (fpIdx.length === 0) return;
 
   const nv = fpPos.length / 3;

@@ -2388,12 +2388,24 @@ function classifyVertexVertexCorner(vx, vz) {
     fcTileHeight(vi - 1, vj),     // NW
     fcTileHeight(vi,     vj),     // NE
   ];
-  const occ = h.map((v) => v > 0);
+  // Occupancy alone (h > 0) never fires on this island: every column gets
+  // blocks at generation, so all four are always "occupied" and a raised
+  // single-tile step — the actual wall-foot notch case — read as count === 4,
+  // i.e. 'flat'. What the two edge fillets meeting at the vertex actually care
+  // about is which tiles reach the *tallest* level here, not whether they
+  // have any height at all, so compare against the vertex's own max instead.
+  const maxH = Math.max(h[0], h[1], h[2], h[3]);
+  const occ = h.map((v) => v === maxH);
   const count = occ[0] + occ[1] + occ[2] + occ[3];
 
-  if (count === 0 || count === 4) return { type: 'flat', heights: h };
+  if (maxH === 0 || count === 4) return { type: 'flat', heights: h };
   if (count === 3) return { type: 'outside', diagonal: occ.indexOf(false), heights: h };
-  if (count === 1) return { type: 'inside', pillar: occ.indexOf(true), heights: h };
+  // One tile alone at the vertex's max height, the other three lower: the
+  // corner being rounded is that tile's own, so the cap has to open away from
+  // it — toward the diagonally opposite tile, not toward the tall one itself
+  // (the mirror image of the count === 3 case, where the odd one out already
+  // *is* the low side to open toward).
+  if (count === 1) return { type: 'outside', diagonal: 3 - occ.indexOf(true), heights: h };
   const diagonalPair = (occ[0] && occ[3]) || (occ[1] && occ[2]); // SW+NE or SE+NW
   return { type: diagonalPair ? 'L' : 'edge', heights: h };
 }

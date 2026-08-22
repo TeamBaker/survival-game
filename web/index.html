@@ -2086,10 +2086,19 @@ function filletAxis(sLo, sHi, full, mid, Q, Dq, N, S, T, E) {
 // ball still rolls down that crease; it just never gets to sit at the bottom of
 // it, and what it cuts is the near half of one run-out met by the near half of
 // the other, which is the smaller of the two profiles at every point along it.
+//
+// r is half a block, so the whole of that run-out belongs in the last half of
+// the last block and the first half of it is still full depth: `u` is how far
+// into the run-out the sample is, and everything before it stays at 1. Measuring
+// the quarter circle from the far end instead spent it over a whole block, which
+// held nothing at full depth and left every fading joint shallower than the ball
+// that cuts it — a one-block crease, which most of the island is made of, peaked
+// at 0.87 of its radius in the middle instead of touching bottom there.
 function filFade(w0, w1, f) {
   if (w0 === w1 && w0) return w0;
   const t = w0 === w1 ? (f > 0.5 ? f : 1 - f) : w0 ? f : 1 - f;
-  return Math.sqrt(1 - t * t);
+  const u = 2 * t - 1;
+  return u > 0 ? Math.sqrt(1 - u * u) : 1;
 }
 
 // How far along its axis each of those samples actually ends up, given how deep

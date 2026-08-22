@@ -582,6 +582,116 @@
     white-space: pre-wrap;
     text-align: left;
   }
+
+  /* ---------- 2D Debug View ---------- */
+  #debug2d-wrap {
+    position: fixed;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    background: rgba(4, 8, 16, 0.94);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 100;
+    touch-action: none;
+  }
+  #debug2d-wrap.on { display: flex; }
+  #debug2d-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: calc(14px + env(safe-area-inset-top)) 14px 14px 14px;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #debug2d-panel canvas {
+    display: block;
+    border-radius: 8px;
+    cursor: crosshair;
+    /* Allow the panel's native scroll to pan the canvas (it's wider than an
+       iPhone viewport); pointer handlers distinguish a tap from a drag. */
+    touch-action: manipulation;
+  }
+  #debug2d-panel .title {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #9ecbff;
+    margin-bottom: 2px;
+    flex-shrink: 0;
+  }
+  #debug2d-panel .instructions {
+    font-size: 13px;
+    color: #7fa8d8;
+    margin-bottom: 10px;
+    flex-shrink: 0;
+  }
+  #debug2d-close {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    background: rgba(220, 70, 70, 0.7);
+    border: 1.5px solid rgba(255, 130, 130, 0.6);
+    color: #fff;
+    font-size: 28px;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 8px 18px;
+    border-radius: 12px;
+    font-family: inherit;
+    touch-action: manipulation;
+    z-index: 110;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  }
+  #debug2d-close:active { background: rgba(255, 80, 80, 0.85); transform: scale(0.95); }
+
+  /* ---------- Debug 2D toggle button ---------- */
+  #btn-debug2d {
+    position: fixed;
+    top: calc(52px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-debug2d.on {
+    color: #06101f;
+    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
+    border-color: transparent;
+  }
+  #btn-debug2d:active { transform: translateY(1px); }
+  @media (max-width: 620px) {
+    #btn-debug2d { font-size: 10px; padding: 7px 12px; }
+  }
+  #debug2d-panel .legend {
+    font-size: 12px;
+    color: #8aa0bc;
+    margin-top: 10px;
+    line-height: 1.8;
+    flex-shrink: 0;
+  }
+  #debug2d-panel .legend span {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-right: 5px;
+  }
 </style>
 </head>
 <body>
@@ -596,6 +706,7 @@
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
 <button id="mode-btn" class="ui-el">Game Mode</button>
+<button id="btn-debug2d">2D Map</button>
 
 <div id="cloud-ui" class="ui-el">
   <span class="title">Weather</span>
@@ -636,6 +747,22 @@
 </div>
 
 <div id="loading">Loading&hellip;</div>
+
+<!-- 2D Debug: terrain smoothing cross-section -->
+<div id="debug2d-wrap">
+  <div id="debug2d-panel">
+    <div class="title">2D Terrain Debug</div>
+    <div class="instructions">Tap blocks to add/remove · Scroll to pan</div>
+    <canvas id="debug2d-cv"></canvas>
+    <div class="legend">
+      <span style="background:#5a8a3c"></span>grass
+      <span style="background:#8b6b3d"></span>dirt
+      <span style="background:#6a6e78"></span>rock
+      <span style="background:#2a8ed8"></span>smoothstep line
+    </div>
+  </div>
+  <button id="debug2d-close">&times;</button>
+</div>
 
 <script src="lib/three.js?v=2"></script>
 <script src="lib/cannon-global.js?v=2"></script>
@@ -1501,6 +1628,24 @@ const chunkBlocks = new Int32Array(CHUNK_N * CHUNK_N);
 const chunkInsts  = new Int32Array(CHUNK_N * CHUNK_N);
 let blockCount = 0, instanceCount = 0;
 
+// Which of the two surfaces you are looking at. Pass 3b below builds a smooth
+// mesh over the same blocks; where it covers a chunk the cubes underneath it are
+// hidden, since the two occupy the same half-block of space and would otherwise
+// poke through one another. Declared up here because rebuildChunk() has to know
+// the answer for a chunk it has just rebuilt.
+const VIEW = { SMOOTH: 0, BLOCKS: 1, BOTH: 2 };
+const VIEW_NAMES = ['smooth', 'blocks', 'both'];
+let terrainView = VIEW.SMOOTH;
+// Filled in by pass 3b; null for a chunk too far out to have a smooth mesh, and
+// those keep their cubes in every view so the far sea floor is never a hole.
+const filletMesh = new Array(CHUNK_N * CHUNK_N).fill(null);
+
+function applyChunkView(c) {
+  const show = terrainView !== VIEW.SMOOTH || !filletMesh[c];
+  const ms = chunkMesh[c];
+  if (ms) for (const im of ms) if (im) im.visible = show;
+}
+
 // Scratch, reused by every rebuild: per material, a flat list of runs —
 // x, y-centre, z, height in blocks, tint.
 const runBuf = [[], [], []];
@@ -1626,6 +1771,7 @@ function rebuildChunk(c) {
   }
 
   chunkMesh[c] = meshes;
+  applyChunkView(c);
   blockCount    += blocks - chunkBlocks[c];
   instanceCount += insts  - chunkInsts[c];
   chunkBlocks[c] = blocks;
@@ -1633,6 +1779,829 @@ function rebuildChunk(c) {
 }
 
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
+
+// ----- pass 3b: the fillet surface -----
+// The same terrain as one smooth skin instead of a field of cubes, and the 3D
+// counterpart of the 2D debug view's outline walk. It is not a different shape
+// and it is not an interpolation between column heights: it traces the surface
+// the block mass actually exposes — every face of every block that has air
+// against it, tops, sides, and the undersides of anything jutting out over a
+// gap — and the only thing it does differently is round the 90° joints where
+// two of those faces meet.
+//
+// The 2D view does that in three steps: collect every exposed unit face as a
+// directed edge (d2dCollectEdges), chain the edges into an outline
+// (d2dChainEdges), then replace every corner of the outline with a
+// quarter-circle arc (d2dFilletPolyline). Here the same three steps are local
+// rather than global, because a 3D surface has no single walkable outline: each
+// exposed face contributes its own tile, inset by the fillet radius on every
+// side that joins another face at 90°, and the arc over each joint is split
+// down the middle — every tile carries the half of the arc that leans its way,
+// out to 45°, so the two tiles either side of a joint meet exactly on it and
+// neither has to know the other one exists.
+//
+// A joint is convex where the cell beyond the face's edge is empty (the outside
+// corner of a step, arc bending away from the solid, taking the corner off) and
+// concave where that cell is filled and the one above it is too (the inside
+// corner at the foot of a wall, arc bending out into the air, filling the
+// corner in) — exactly the two cases the 2D corner walk rounds, and with the
+// same radius. A face whose neighbour simply carries on in the same plane has
+// no joint there at all and no inset, so a flat run of blocks comes out flat,
+// a cliff comes out vertical, and a staircase gets a real arc at each step
+// edge rather than a ramp between the two heights.
+//
+// Segments per half-arc. Four across a full 90° fillet is enough that the curve
+// reads as a curve rather than a facet, and every extra one is paid for on
+// every filleted edge of every block in range.
+const FILLET_SUB = 2;
+// Fillet radius, in metres: half a block, matching the 2D view's D2D_FILLET_R
+// (0.5 of its one-unit-wide columns). Two opposite insets on the same face then
+// sum to exactly the block width, so they meet in the middle at worst and never
+// cross.
+const FILLET_R_MAX = BLOCK * 0.5;
+// How far out from the middle of the field gets a skin, in metres. Past the
+// shoreline and its wash and not much further: at a vertex every few centimetres
+// this costs far more per square metre than the cubes do, and the sea floor
+// beyond here is under enough water and fog that its corners were never legible.
+// Chunks outside it keep their cubes in every view, so there is no hole.
+const FILLET_R = 64;
+// tan of each sample's angle along a half-arc, which is swept uniformly in
+// angle from 0 to 45°. tan is the form the corner blend below wants: a point on
+// the arc is `normalise(outward + tan(angle) * sideways)`, and that same
+// expression with a second sideways term in it is what rounds the corners where
+// two arcs meet, with no special case for the corner itself.
+const FILLET_TAN = [];
+for (let s = 0; s <= FILLET_SUB; s++) FILLET_TAN.push(Math.tan((Math.PI / 4) * (s / FILLET_SUB)));
+// At exactly half a block the two arcs of a doubly-filleted axis are tangent in
+// the middle, so the flat run between them is zero-width and its second sample
+// is a duplicate of the first.
+const FILLET_NO_FLAT = BLOCK - 2 * FILLET_R_MAX < 1e-9;
+
+// The six directions a face can front, as a step through the block store
+// (di, dj, dl), a world vector, and the index of the opposite one.
+const FDIR = [
+  { di:  1, dj:  0, dl:  0, vx:  1, vy:  0, vz:  0 },   // 0  east
+  { di: -1, dj:  0, dl:  0, vx: -1, vy:  0, vz:  0 },   // 1  west
+  { di:  0, dj:  0, dl:  1, vx:  0, vy:  1, vz:  0 },   // 2  up
+  { di:  0, dj:  0, dl: -1, vx:  0, vy: -1, vz:  0 },   // 3  down
+  { di:  0, dj:  1, dl:  0, vx:  0, vy:  0, vz:  1 },   // 4  north
+  { di:  0, dj: -1, dl:  0, vx:  0, vy:  0, vz: -1 },   // 5  south
+];
+const FOPP = [1, 0, 3, 2, 5, 4];
+// The same opposites reachable straight off a direction, since the walk below
+// carries directions around as these records rather than as indices.
+for (let d = 0; d < 6; d++) FDIR[d].op = FDIR[FOPP[d]];
+// The two in-plane axes of each face, u then v, picked so that u cross v is the
+// face's own direction — which is what makes a quad walked u-then-v wind
+// outward without anything having to check afterwards.
+const FFRAME = [[2, 4], [4, 2], [4, 0], [0, 4], [0, 2], [2, 0]];
+
+// Is there a block at (i, j, l)? Anything under the store's floor reads as
+// bedrock — an infinite solid, so nothing ever grows a face on its underside,
+// the same trick the 2D view's `h < 0` plays — and anything off the side of the
+// field, or above a column's top, reads as air.
+function filletSolid(i, j, l) {
+  if (l < VOX_FLOOR) return true;
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return false;
+  const k = j * GEN_N + i;
+  if (topLvl[k] === NO_COLUMN || l > sTop[k]) return false;
+  return voxMat[voxOff[k] + l - VOX_FLOOR] !== AIR;
+}
+
+// Every joint the skin can round is one edge of the block lattice, and what it
+// does there is settled by the four cells around that edge and nothing else.
+// Naming an edge by the cell it runs out of and the two directions that pick
+// the corner (the edge itself runs along the third axis) is what keeps that
+// true: the same edge named from any of the four cells, or with its two
+// directions the other way round, classifies the same, so no two faces that
+// meet on it can disagree about it.
+//
+//   -1  the surface turns away from the solid: one cell of the four is filled
+//       and this is the outside corner of a step, so the arc bends away from
+//       the solid and takes the corner off.
+//    1  it turns into it: three are filled and this is the inside corner at the
+//       foot of a wall, so the arc bends out into the air and fills it in.
+//    0  the two faces either side are in the same plane, or there is no surface
+//       here at all: nothing to round.
+//   FPINCH  the two filled cells meet across nothing but the edge itself. The
+//       surface is pinched to a line along it and there is no arc either block
+//       can cut that the other agrees with, so the edge stays square — and so
+//       does everything that runs into it (see filletRun).
+const FPINCH = 2;
+function filletSense(i, j, l, b, c) {
+  const s00 = filletSolid(i, j, l);
+  const s10 = filletSolid(i + b.di, j + b.dj, l + b.dl);
+  const s01 = filletSolid(i + c.di, j + c.dj, l + c.dl);
+  const s11 = filletSolid(i + b.di + c.di, j + b.dj + c.dj, l + b.dl + c.dl);
+  const n = s00 + s10 + s01 + s11;
+  if (n === 1) return -1;
+  if (n === 3) return 1;
+  // Two filled and the pair is diagonal, so they touch along the edge alone.
+  if (n === 2 && s00 === s11) return FPINCH;
+  return 0;
+}
+
+// The joint on the `g` edge of the face of block (i, j, l) that points `d`,
+// which is that same lattice edge with a pinch read as the square edge it
+// leaves behind. Everything below asks for the joint through here, so the tile
+// that owns it and every tile that has to meet its arc get the same answer.
+function filletJoint(i, j, l, g, d) {
+  const s = filletSense(i, j, l, g, d);
+  return s === FPINCH ? 0 : s;
+}
+
+// Whether the joint on this face's `g` edge is still at full depth by the time
+// that edge reaches its `h` end, as a 0/1 weight on the arc there.
+//
+// This is the one thing the 2D outline never has to answer. A fillet there runs
+// along a line and stops at a corner; here it runs along a strip, and the ends
+// of that strip are edges other tiles have to meet flush. So the question is
+// really about the tile on the other side of that end: the joint keeps its full
+// depth exactly when that tile carries the same joint, of the same sense, on its
+// own `g` edge, because then the two arcs are two lengths of one fillet and meet
+// each other at full depth. Where that tile is flat along the shared edge the
+// joint stops dead there instead, and the arc has to be back down on the block's
+// own square edge by the time it arrives, or the two tear apart.
+//
+// Which tile that is depends on what the surface does at this end, and it is
+// only ever one of three things. It carries straight on, where the block one
+// step along `h` is there with air above it and its face is in this same plane.
+// It turns a convex corner, where that block is missing — then the surface folds
+// onto this same block's own `h` face. Or it turns a concave one, where that
+// block is there and the cell above it is filled too — then the surface climbs
+// that wall, and the tile across the end is the wall's face looking back down
+// `h`. All three are the same question asked of a different face.
+//
+// Rounding across those two turns rather than stopping dead at them is what
+// carries a fillet around the corner of a step instead of squaring it off. On
+// terrain that steps in both directions at once — which is most of an island,
+// since a contour that is not square to the grid climbs as a staircase of one-
+// block jogs — nearly every joint ends at a turn rather than at a straight run,
+// so stopping at them left the arc dying out on both ends of almost every tile
+// and only the runs that happened to line up with the grid looking rounded. The
+// vertical arc up the outside corner of a tower, the one running down the inside
+// corner where two walls meet, and every step corner in between are all just a
+// joint continuing across a turn.
+//
+// One face's answer, though. A joint has two faces on it and they run out to the
+// same end over different neighbours, so they can and do answer this
+// differently — see filletRun, which is what everything actually asks.
+function filletRunFace(i, j, l, d, g, h, sg) {
+  let bi = i + h.di, bj = j + h.dj, bl = l + h.dl, nd = h;
+  if (!filletSolid(bi, bj, bl)) {                    // convex turn, onto this block's `h` face
+    bi = i; bj = j; bl = l;
+  } else if (filletSolid(bi + d.di, bj + d.dj, bl + d.dl)) {
+    bi += d.di; bj += d.dj; bl += d.dl; nd = h.op;   // concave turn, up the wall's face
+  } else {
+    nd = d;                                          // same plane, one block along
+  }
+  return filletJoint(bi, bj, bl, g, nd) === sg ? 1 : 0;
+}
+
+// The same question asked of both faces on the joint, and answered no if either
+// of them says no.
+//
+// A joint is one edge with a face on either side of it, and each of them carries
+// half the arc. Where the two halves end has to be one answer, or they end in
+// different places and the arc rips down the seam between them — and asking only
+// the face that happens to be building right now is not one answer, because the
+// two faces run out to the end of the joint over quite different neighbours.
+//
+// The one-block tread of a staircase is where they part company, and an island
+// is made of those. Take the convex edge along the top of a step, and follow it
+// to where the next step up crosses it. Its top face turns a concave corner
+// there, up the riser, and finds the same convex edge carrying on as the riser's
+// own outside corner: full depth, and true — a ball rolled along the crease
+// rolls right into the corner and pivots. Its side face is in one flat wall with
+// the block beyond the corner, and that block's face is square along the shared
+// edge, because the block above it fills the corner in. It has to be square
+// there too, so its half of the arc has to be gone by the time it arrives.
+//
+// Both are right about their own side, so neither can be given the casting vote,
+// and the arc has to go where it can still be joined: it fades. Which is what
+// this does, and it is also why it is an AND rather than the other way round —
+// a fillet that stops a little early is a fillet, and a fillet that stops in two
+// places at once is a hole. It costs the very last of the arc into a corner the
+// mesh has no way to cap anyway, and nothing else.
+//
+// Reading the second face means finding it. Across a convex joint the two faces
+// are two faces of this same block, so it is the `g` face with the joint on its
+// `d` edge. Across a concave one this block's neighbour along `g` is solid and
+// has no exposed face there at all: the wall the surface climbs is the block
+// diagonally across the joint, looking back the way it came.
+function filletRun(i, j, l, d, g, h, sg) {
+  if (sg === 0) return 1;                            // nothing there to fade
+  if (!filletRunFace(i, j, l, d, g, h, sg)) return 0;
+  if (sg < 0) return filletRunFace(i, j, l, g, d, h, sg);
+  return filletRunFace(i + d.di + g.di, j + d.dj + g.dj, l + d.dl + g.dl, g.op, d.op, h, sg);
+}
+
+// The samples along one axis of a face, from its low edge to its high one: the
+// block's own square edge the sample hangs off, the inset from it to where the
+// flat part of the tile ends (signed inwards, and the thing a fade scales away),
+// the arc offset at that sample (signed too, so the low half-arc runs -1 -> 0
+// and the high one 0 -> +1), the joint's sense, how far along the arc it is for
+// the colour blend, and which end of the axis it belongs to. An unjointed side
+// is a single sample at the block's own edge with no inset and no offset, which
+// is what leaves a flat face flat — and it is also exactly what a jointed side
+// collapses to when its arc has faded out, so a fading tile meets a flat one on
+// the nose.
+const FILAX = 2 * (FILLET_SUB + 1) + 1;
+const filAQ = new Float64Array(FILAX), filAD = new Float64Array(FILAX);
+const filAN = new Float64Array(FILAX), filAS = new Float64Array(FILAX);
+const filAT = new Float64Array(FILAX), filAE = new Float64Array(FILAX);
+// Two per axis: how far along it each sample actually sits, once at each end of
+// the other axis. See filletSpread.
+const filAF0 = new Float64Array(FILAX), filAF1 = new Float64Array(FILAX);
+const filBQ = new Float64Array(FILAX), filBD = new Float64Array(FILAX);
+const filBN = new Float64Array(FILAX), filBS = new Float64Array(FILAX);
+const filBT = new Float64Array(FILAX), filBE = new Float64Array(FILAX);
+const filBF0 = new Float64Array(FILAX), filBF1 = new Float64Array(FILAX);
+
+// `full` says both of this axis's arcs run at full depth along their whole
+// length, which is what lets the two middle samples be shared.
+//
+// `mid` asks for one extra sample across the middle of the block, which is what
+// a tile needs to bend a fade rather than rule it straight: an arc that fades
+// along this axis is only ever read where this axis has a sample, so with just
+// the block's two edges to go on, the only shape a fade can take between them is
+// a straight ramp — the fillet drains away from full depth to nothing in one
+// even slope, which is the straight line at every step corner. One sample in
+// between is enough to hold the fillet near its full depth for the first half of
+// the run and put the whole run-out in the second, which is what the corner
+// actually looks like (see filFade).
+//
+// Half a block is the one place it can go. Both arcs reach exactly that far at
+// full depth and no further, so a sample there is never overtaken by one of them
+// and the samples stay in order; at full depth it lands on top of them and comes
+// out as a seam of zero-area quads, which costs a few vertices and draws nothing.
+function filletAxis(sLo, sHi, full, mid, Q, Dq, N, S, T, E) {
+  let m = 0;
+  if (sLo !== 0) {
+    for (let s = FILLET_SUB; s >= 0; s--) {
+      Q[m] = 0; Dq[m] = FILLET_R_MAX; N[m] = -FILLET_TAN[s]; S[m] = sLo; T[m] = s / FILLET_SUB; E[m] = 0; m++;
+    }
+  } else {
+    Q[m] = 0; Dq[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; E[m] = 0; m++;
+  }
+  // No inset and no offset of its own: it sits on the block's own middle
+  // wherever the arcs either side of it have got to, and carries nothing but the
+  // other axis's fade, read at half a block in.
+  if (mid) { Q[m] = BLOCK * 0.5; Dq[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; E[m] = 0; m++; }
+  if (sHi !== 0) {
+    // Skip the second copy of the middle sample when the flat run between the
+    // two arcs has no width. Only when neither arc fades, though: a fading one
+    // pulls its middle sample back onto the block's edge and the two are no
+    // longer the same point.
+    for (let s = (sLo !== 0 && FILLET_NO_FLAT && full) ? 1 : 0; s <= FILLET_SUB; s++) {
+      Q[m] = BLOCK; Dq[m] = -FILLET_R_MAX; N[m] = FILLET_TAN[s]; S[m] = sHi; T[m] = s / FILLET_SUB; E[m] = 1; m++;
+    }
+  } else {
+    Q[m] = BLOCK; Dq[m] = 0; N[m] = 0; S[m] = 0; T[m] = 0; E[m] = 1; m++;
+  }
+  return m;
+}
+
+// How deep a joint's arc is a fraction `f` of the way along the tile, between
+// the depths `w0` and `w1` it has to have at the two ends. Nothing to decide
+// where the two agree — a joint that runs on at both ends is at full depth all
+// the way across, and one with nothing at either end has nothing anywhere.
+//
+// Where they disagree the joint is running out, and the shape of that run-out is
+// the shape of the corner it runs out at. A ball of radius r rolled along the
+// crease keeps its full depth until it is r from the end and only then starts to
+// lift away, so the fillet holds its size along most of the last block and does
+// all of its dying in the last half of one — a quarter circle's worth of
+// run-out, which is what this is: full depth with a flat start, then away
+// sharply at the end. Ramping straight from one to the other instead, which is
+// all two samples can express, drains the fillet evenly across the whole block
+// and leaves the straight taper this replaces.
+//
+// Both ends dead is a run-out from each of them rather than nothing at all, and
+// it is the only shape a joint one block long can have. Wherever a feature is a
+// single block wide — a lone rock on the plain, the foot of a one-block step, an
+// inside corner where three walls converge on one point — every joint that meets
+// it is exactly one block of crease with a corner at each end, so both ends fade
+// and the fillet used to be dropped whole and leave the square edge behind. The
+// ball still rolls down that crease; it just never gets to sit at the bottom of
+// it, and what it cuts is the near half of one run-out met by the near half of
+// the other, which is the smaller of the two profiles at every point along it.
+//
+// r is half a block, so the whole of that run-out belongs in the last half of
+// the last block and the first half of it is still full depth: `u` is how far
+// into the run-out the sample is, and everything before it stays at 1. Measuring
+// the quarter circle from the far end instead spent it over a whole block, which
+// held nothing at full depth and left every fading joint shallower than the ball
+// that cuts it — a one-block crease, which most of the island is made of, peaked
+// at 0.87 of its radius in the middle instead of touching bottom there.
+function filFade(w0, w1, f) {
+  if (w0 === w1 && w0) return w0;
+  const t = w0 === w1 ? (f > 0.5 ? f : 1 - f) : w0 ? f : 1 - f;
+  const u = 2 * t - 1;
+  return u > 0 ? Math.sqrt(1 - u * u) : 1;
+}
+
+// How far along its axis each of those samples actually ends up, given how deep
+// the axis's two arcs are here, rescaled so the first sample is 0 and the last
+// is 1. This is the fraction the *other* axis's arcs fade over — see the sample
+// loop in filletFace.
+//
+// It has to be the realised position and not the full-depth one. An arc that
+// has faded to nothing puts its whole half of the samples on the block's own
+// edge, one on top of another; they are one point, and anything read off them
+// has to come out the same for all of them or they get pulled apart into a
+// little fan. Reading their nominal positions would do exactly that, and the
+// tile on the other side of the joint — which samples its own axes its own way
+// — would not make the same fan, so the two would tear along the seam.
+function filletSpread(Q, Dq, N, E, m, wLo, wHi, F) {
+  for (let k = 0; k < m; k++) {
+    const w = E[k] ? wHi : wLo, n = w > 0 ? N[k] : 0;
+    F[k] = Q[k] + w * Dq[k] + w * FILLET_R_MAX * n / Math.sqrt(n * n + 1);
+  }
+  const f0 = F[0], span = F[m - 1] - f0;
+  for (let k = 0; k < m; k++) F[k] = span > 1e-12 ? (F[k] - f0) / span : E[k];
+}
+
+// The colour of one block, which after a dig is not what the generator left on
+// the column: the material actually there now, times the column's own tint.
+const filColC = [0, 0, 0], filColUL = [0, 0, 0], filColUH = [0, 0, 0];
+const filColVL = [0, 0, 0], filColVH = [0, 0, 0];
+
+function filletCellColor(i, j, l, out) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) { out[0] = out[1] = out[2] = 0.5; return; }
+  const k = j * GEN_N + i;
+  let m = topMat[k];
+  if (topLvl[k] !== NO_COLUMN && l >= VOX_FLOOR && l <= voxCap(k)) {
+    const v = voxMat[voxOff[k] + l - VOX_FLOOR];
+    if (v !== AIR) m = v;
+  }
+  const col = TERRAIN_MATS[m].color, s = tint[k];
+  out[0] = col.r * s; out[1] = col.g * s; out[2] = col.b * s;
+}
+
+// The block on the far side of a joint, whose colour the arc blends towards.
+// Across a convex joint that is this same block seen from another side, so the
+// blend is a no-op and the corner keeps its own colour; across a concave one it
+// is the block whose wall the surface climbs, so the ground takes on the colour
+// of the step above it as it curves into it.
+function filletJointColor(i, j, l, g, d, s, out) {
+  if (s === 1) filletCellColor(i + g.di + d.di, j + g.dj + d.dj, l + g.dl + d.dl, out);
+  else filletCellColor(i, j, l, out);
+}
+
+// Scratch for the chunk currently being built. Plain JS arrays because the
+// vertex count isn't known ahead of time — it depends on how much of the chunk's
+// block surface is actually exposed and how much of that is jointed, not on a
+// fixed subdivision of anything. Copied into typed BufferAttributes at the end.
+const fpPos = [], fpNor = [], fpCol = [], fpIdx = [];
+
+// One exposed face, as a tile: a grid of samples over the block's face, inset
+// by the fillet radius on every jointed side and carrying the near half of each
+// joint's arc. Every sample is
+//
+//     anchor + r * n / |n|   with   n = outward + nu * u + nv * v
+//
+// taken apart into its three components, where nu and nv are the tan offsets
+// along the two axes. With one of them zero that is a plain quarter-circle
+// swept along the edge; with both non-zero the same expression is the sphere
+// that rounds the corner where the two arcs meet, so there is no seam between
+// an edge fillet and a corner one and no separate corner case to get wrong.
+// The outward offset is signed by the joint (into the solid for a convex one,
+// out into the air for a concave one), blended between the two axes' senses
+// where they disagree. Normals come out of the same expression analytically,
+// so the arc is smooth-shaded and meets the flat part of the tile with the
+// flat part's own normal.
+function filletFace(i, j, l, d) {
+  const D = FDIR[d];
+  const iu = FFRAME[d][0], iv = FFRAME[d][1];
+  const U = FDIR[iu], V = FDIR[iv], UL = FDIR[FOPP[iu]], VL = FDIR[FOPP[iv]];
+
+  const sUH = filletJoint(i, j, l, U, D), sUL = filletJoint(i, j, l, UL, D);
+  const sVH = filletJoint(i, j, l, V, D), sVL = filletJoint(i, j, l, VL, D);
+
+  // How much of each of the four arcs is left at each of the two ends it runs
+  // between — 1 where the joint carries on or closes into a corner, 0 where it
+  // stops and the arc has to be back on the block's square edge.
+  const aL0 = filletRun(i, j, l, D, UL, VL, sUL), aL1 = filletRun(i, j, l, D, UL, V, sUL);
+  const aH0 = filletRun(i, j, l, D, U,  VL, sUH), aH1 = filletRun(i, j, l, D, U,  V, sUH);
+  const bL0 = filletRun(i, j, l, D, VL, UL, sVL), bL1 = filletRun(i, j, l, D, VL, U, sVL);
+  const bH0 = filletRun(i, j, l, D, V,  UL, sVH), bH1 = filletRun(i, j, l, D, V,  U, sVH);
+
+  // An arc that has faded at both ends has faded everywhere, and is worth not
+  // having: it would come out as a fan of samples all sitting on the block's own
+  // edge, which is where an unjointed side puts its single sample anyway.
+  // An axis needs its middle sample exactly where something bends along it, and
+  // what bends along one axis is the fade of the arcs on the other. A face whose
+  // joints all run straight through — every flat face, and every one in the
+  // middle of a long step — has nothing to bend and stays the four corners it
+  // has always been. Two tiles either side of a joint that fades read that
+  // joint's two ends the same way, so both subdivide it and their samples land
+  // on each other; a tile that subdivides for a joint of its own that the other
+  // one cannot see puts its extra sample on a stretch the other one is holding
+  // straight, so it lands on that straight line and neither tears.
+  // Anything short of full depth at both ends bends along the joint's own
+  // length, which now includes the arc that is dead at both of them: it bulges
+  // in the middle rather than being flat nothing, and without a sample there it
+  // has nowhere to put the bulge.
+  const midA = (sVL && !(bL0 & bL1)) || (sVH && !(bH0 & bH1));
+  const midB = (sUL && !(aL0 & aL1)) || (sUH && !(aH0 & aH1));
+
+  // The sense alone decides whether a side is jointed. An arc that has run out
+  // at both ends still has the middle of its own run to cut (see filFade), and
+  // dropping it there is what squared off every one-block feature.
+  const na = filletAxis(sUL, sUH, aL0 & aL1 & aH0 & aH1, midA,
+                        filAQ, filAD, filAN, filAS, filAT, filAE);
+  const nb = filletAxis(sVL, sVH, bL0 & bL1 & bH0 & bH1, midB,
+                        filBQ, filBD, filBN, filBS, filBT, filBE);
+
+  // Each axis measured once at each end of the other, since how far along an
+  // axis a sample sits depends on how deep that axis's arcs are, and that is
+  // what varies from one end of the other axis to the other.
+  filletSpread(filAQ, filAD, filAN, filAE, na, aL0, aH0, filAF0);
+  filletSpread(filAQ, filAD, filAN, filAE, na, aL1, aH1, filAF1);
+  filletSpread(filBQ, filBD, filBN, filBE, nb, bL0, bH0, filBF0);
+  filletSpread(filBQ, filBD, filBN, filBE, nb, bL1, bH1, filBF1);
+
+  filletCellColor(i, j, l, filColC);
+  filletJointColor(i, j, l, U,  D, sUH, filColUH);
+  filletJointColor(i, j, l, UL, D, sUL, filColUL);
+  filletJointColor(i, j, l, V,  D, sVH, filColVH);
+  filletJointColor(i, j, l, VL, D, sVL, filColVL);
+
+  // The corner of the block's face this tile's axes run out from.
+  const ox = -GEN_R + i * BLOCK + (D.vx > 0 ? BLOCK : 0);
+  const oy = l * BLOCK + (D.vy > 0 ? BLOCK : 0);
+  const oz = -GEN_R + j * BLOCK + (D.vz > 0 ? BLOCK : 0);
+
+  const r = FILLET_R_MAX;
+  const base = fpPos.length / 3;
+  for (let b = 0; b < nb; b++) {
+    const eb = filBE[b];
+    const sv = filBS[b], tv = filBT[b];
+    const cv = filBN[b] < 0 ? filColVL : filColVH;
+    for (let a = 0; a < na; a++) {
+      const ea = filAE[a];
+      // The two u-arcs are only as deep as they are at this point along v, and
+      // vice versa — which is what fades an arc out along its own length. The
+      // end weights are what the tiles either side of this one see at the edges
+      // they share with it, so the samples at each end carry their end's weight
+      // exactly and the arc runs out between the two across the tile in between,
+      // to the profile filFade gives it. It has to be read off where the sample
+      // actually sits and not off which end it belongs to: stepping straight
+      // from one end weight to the other on the end index would hold the arc at
+      // full depth for the whole first half of the face and then drop it to
+      // nothing across a single row of quads, and on a doubly-filleted axis
+      // those two rows are a few millimetres apart in the middle of the face, so
+      // the last block of every run came out as a crease down its middle with a
+      // flat strip of square edge past it.
+      const fb = ea ? filBF1[b] : filBF0[b], fa = eb ? filAF1[a] : filAF0[a];
+      const wu = ea ? filFade(aH0, aH1, fb) : filFade(aL0, aL1, fb);
+      const wv = eb ? filFade(bH0, bH1, fa) : filFade(bL0, bL1, fa);
+      // A fading arc keeps its whole quarter turn and shrinks its radius to
+      // w * r, rather than holding the radius and sweeping through less of the
+      // turn. Both come out the same at full depth, and the difference matters
+      // everywhere else: an arc that only sweeps atan(w) stops short of the 45°
+      // diagonal the tile across the joint meets it on, and the two faces close
+      // on each other at an angle instead of a tangent — a hard crease running
+      // the length of every fading joint, which on this terrain is most of them.
+      // Shrinking the radius instead keeps both halves tangent to their own face
+      // and to each other the whole way out, so a fillet that fades reads as a
+      // fillet getting smaller rather than as a chamfer with a line down it.
+      //
+      // An arc with nothing left has no turn either: zeroing it, rather than
+      // letting a zero radius hide a non-zero one, keeps its samples exactly on
+      // top of each other and out of `len`, which is what a collapsed arc needs.
+      const nu = wu > 0 ? filAN[a] : 0, nv = wv > 0 ? filBN[b] : 0;
+      const qu = filAQ[a] + wu * filAD[a], qv = filBQ[b] + wv * filBD[b];
+      const su = filAS[a], tu = filAT[a];
+      const cu = nu < 0 ? filColUL : filColUH;
+
+      const len = Math.sqrt(nu * nu + nv * nv + 1);
+      // How much of the corner each arc has a say in, which is still a question
+      // about how deep they are and not just how far round they have turned.
+      const au = wu * (nu < 0 ? -nu : nu), av = wv * (nv < 0 ? -nv : nv);
+      // Which way the joint bends, blended between the two axes where they
+      // disagree — and how deep the standoff off the face's own plane is, which
+      // once arcs can fade is no longer just the radius.
+      //
+      // A fading arc insets by w*r and reaches w*r along the face, so it has to
+      // stand off by w*r too or its 45° sample slides off the diagonal of the
+      // joint. That sample is the one the tile across the joint has to meet, and
+      // that tile measures the same joint from the other face — its own 45°
+      // sample is this one with the along-face and standoff parts swapped, so
+      // anything but w*r tears the two apart along the whole seam.
+      //
+      // Which w, where a sample has both arcs under it, is settled by whichever
+      // arc is nearer its own 45° end, because that is the seam this sample is
+      // on; an arc with no depth left has no seam and never takes charge. The
+      // two are only both at 45° at the one sample in the corner of the tile,
+      // where the seams cross and there is no single answer. At full depth all
+      // of this is 1 and the standoff is the plain radius it always was.
+      const du = wu > 0 ? tu : -1, dv = wv > 0 ? tv : -1;
+      const wd = du > dv ? wu : dv > du ? wv : (wu + wv) * 0.5;
+      const sense = au + av > 0 ? (su * au + sv * av) / (au + av) : 0;
+      const pu = qu + wu * r * nu / len, pv = qv + wv * r * nv / len, pw = sense * wd * r * (1 - 1 / len);
+
+      fpPos.push(ox + pu * U.vx + pv * V.vx + pw * D.vx,
+                 oy + pu * U.vy + pv * V.vy + pw * D.vy,
+                 oz + pu * U.vz + pv * V.vz + pw * D.vz);
+
+      const gx = D.vx - su * nu * U.vx - sv * nv * V.vx;
+      const gy = D.vy - su * nu * U.vy - sv * nv * V.vy;
+      const gz = D.vz - su * nu * U.vz - sv * nv * V.vz;
+      const gl = Math.hypot(gx, gy, gz) || 1;
+      fpNor.push(gx / gl, gy / gl, gz / gl);
+
+      let cr = filColC[0], cg = filColC[1], cb = filColC[2];
+      if (nu !== 0) { const t = tu * 0.5; cr += (cu[0] - cr) * t; cg += (cu[1] - cg) * t; cb += (cu[2] - cb) * t; }
+      if (nv !== 0) { const t = tv * 0.5; cr += (cv[0] - cr) * t; cg += (cv[1] - cg) * t; cb += (cv[2] - cb) * t; }
+      fpCol.push(cr, cg, cb);
+    }
+  }
+
+  for (let b = 0; b + 1 < nb; b++) {
+    for (let a = 0; a + 1 < na; a++) {
+      const p = base + b * na + a;
+      fpIdx.push(p, p + 1, p + 1 + na, p, p + 1 + na, p + na);
+    }
+  }
+}
+
+// Every exposed face of every block in one column. The vertical walk is the
+// cube mesher's, for the same reason: everything under the lowest of the four
+// neighbours is walled in on all sides and can have no exposed face, so an
+// untouched column stops there rather than running to bedrock — but once the
+// shovel has been in this column or one beside it there can be air anywhere in
+// it, and the floor and the ceiling of a dug-out pocket are both surfaces the
+// skin has to trace, so then the walk goes all the way down.
+function filletColumn(i, j) {
+  const k = j * GEN_N + i;
+  const top = sTop[k];
+  if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return;
+
+  let low = top, dug = colDug[k] !== 0;
+  for (let e = 0; e < 4; e++) {
+    const g = FDIR[e < 2 ? e : e + 2];               // the four sideways steps
+    const ni = i + g.di, nj = j + g.dj;
+    if (ni < 0 || nj < 0 || ni >= GEN_N || nj >= GEN_N) { low = Math.min(low, top - RIM_DEPTH); continue; }
+    const nk = nj * GEN_N + ni;
+    const v = sTop[nk];
+    low = Math.min(low, v === NO_COLUMN ? top - RIM_DEPTH : v);
+    if (colDug[nk]) dug = true;
+  }
+  const deepest = Math.max(VOX_FLOOR, top - MAX_DEPTH);
+  const floor = dug ? deepest : Math.max(deepest, Math.min(top, low + 1));
+
+  const o = voxOff[k] - VOX_FLOOR;
+  for (let l = top; l >= floor; l--) {
+    if (voxMat[o + l] === AIR) continue;
+    for (let d = 0; d < 6; d++) {
+      const g = FDIR[d];
+      if (!filletSolid(i + g.di, j + g.dj, l + g.dl)) filletFace(i, j, l, d);
+    }
+  }
+}
+
+// ----- Phase 1: vertex-corner classification -----
+// A lattice vertex is where 4 tiles (columns) meet. buildFilletChunk's fillets
+// are computed per edge, i.e. two tiles at a time, so an outside corner — 3 of
+// the 4 tiles built, 1 empty diagonal — gets no fillet across that diagonal
+// and the smooth skin leaves a V-notch there. This classifies what's
+// happening at a vertex so a later pass can round that notch off too.
+
+// Column height at tile (i, j) as a block count (0 = empty), not a level
+// index — matches the height > 0 occupancy check below.
+function fcTileHeight(i, j) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return 0;
+  const top = sTop[j * GEN_N + i];
+  return top === NO_COLUMN ? 0 : top + 1;
+}
+
+// Classify the 2x2 block of tiles around lattice vertex (vx, vz) — world
+// coordinates, i.e. grid indices already multiplied by BLOCK.
+function classifyVertexVertexCorner(vx, vz) {
+  const vi = Math.round((vx + GEN_R) / BLOCK);
+  const vj = Math.round((vz + GEN_R) / BLOCK);
+  const h = [
+    fcTileHeight(vi - 1, vj - 1), // SW
+    fcTileHeight(vi,     vj - 1), // SE
+    fcTileHeight(vi - 1, vj),     // NW
+    fcTileHeight(vi,     vj),     // NE
+  ];
+  // Occupancy alone (h > 0) never fires on this island: every column gets
+  // blocks at generation, so all four are always "occupied" and a raised
+  // single-tile step — the actual wall-foot notch case — read as count === 4,
+  // i.e. 'flat'. What the two edge fillets meeting at the vertex actually care
+  // about is which tiles reach the *tallest* level here, not whether they
+  // have any height at all, so compare against the vertex's own max instead.
+  const maxH = Math.max(h[0], h[1], h[2], h[3]);
+  const occ = h.map((v) => v === maxH);
+  const count = occ[0] + occ[1] + occ[2] + occ[3];
+
+  if (maxH === 0 || count === 4) return { type: 'flat', heights: h };
+  if (count === 3) return { type: 'outside', diagonal: occ.indexOf(false), heights: h };
+  // One tile alone at the vertex's max height, the other three lower: the
+  // corner being rounded is that tile's own, so the cap has to open away from
+  // it — toward the diagonally opposite tile, not toward the tall one itself
+  // (the mirror image of the count === 3 case, where the odd one out already
+  // *is* the low side to open toward).
+  if (count === 1) return { type: 'outside', diagonal: 3 - occ.indexOf(true), heights: h };
+  const diagonalPair = (occ[0] && occ[3]) || (occ[1] && occ[2]); // SW+NE or SE+NW
+  return { type: diagonalPair ? 'L' : 'edge', heights: h };
+}
+
+// ----- Phase 2: vertex-cap geometry -----
+// buildFilletChunk fillets are per-edge, so an 'outside' or 'L' vertex (see
+// classifyVertexVertexCorner) is left with a V-notch where two of those edge
+// fillets meet but don't blend into each other. This patches it with a
+// quarter-torus: the same inset-by-FILLET_R_MAX, quarter-circle profile every
+// edge fillet already uses (touch the flat top at radius R in from the true
+// corner, touch the wall at the true corner, R below the top), just swept
+// round the vertex's vertical axis between the two walls instead of run
+// straight along one edge. Column index of the tile in quadrant `empty`,
+// relative to lattice vertex (vi, vj) — SW, SE, NW, NE, matching the order
+// classifyVertexVertexCorner reads them in.
+function vcTileCol(idx, vi, vj) {
+  return idx === 0 ? [vi - 1, vj - 1] : idx === 1 ? [vi, vj - 1]
+       : idx === 2 ? [vi - 1, vj] : [vi, vj];
+}
+
+const VC_ARCS = 8;   // steps around the corner
+const VC_RING = 4;   // steps from the flat top down to the wall
+// Sweep start angle (atan2(z, x) convention), one per empty quadrant index —
+// the arc always opens toward the empty tile, since that's where the notch is.
+const VC_QUAD = [Math.PI, -Math.PI / 2, Math.PI / 2, 0];
+
+// One cap's mesh, pushed as a plain triangle list (no index buffer) straight
+// into the caller's position/color/normal arrays.
+function vcEmitCap(vi, vj, empty, sweep, radius, vyTop, offset, vao, vcx, vcz) {
+  const vx = -GEN_R + vi * BLOCK, vz = -GEN_R + vj * BLOCK;
+  const start = VC_QUAD[empty] + offset;
+  const stride = VC_RING + 1;
+  const gp = [], gn = [];
+  for (let a = 0; a <= VC_ARCS; a++) {
+    const theta = start + (a / VC_ARCS) * sweep;
+    const ct = Math.cos(theta), st = Math.sin(theta);
+    for (let r = 0; r <= VC_RING; r++) {
+      const phi = (r / VC_RING) * (Math.PI / 2);
+      const sp = Math.sin(phi), cp = Math.cos(phi);
+      // sp is 0 at the top (phi = 0) and 1 at the wall (phi = pi/2), so the
+      // horizontal offset collapses onto the vertex's own vertical edge right
+      // at the flat top — matching the edge fillets either side of it, whose
+      // own corner blend runs out to nothing at exactly that height — and
+      // spreads out to the R-inset, into the two tiles' own footprints, as it
+      // drops toward the wall, matching where those same edge fillets are
+      // still their full rounded selves.
+      gp.push(vx + radius * ct * sp, vyTop - radius + radius * cp, vz + radius * st * sp);
+      gn.push(sp * ct, cp, sp * st);
+    }
+  }
+  const push = (p) => {
+    vao.push(gp[p * 3], gp[p * 3 + 1], gp[p * 3 + 2]);
+    vcz.push(gn[p * 3], gn[p * 3 + 1], gn[p * 3 + 2]);
+    vcx.push(filColC[0], filColC[1], filColC[2]);
+  };
+  for (let a = 0; a < VC_ARCS; a++) {
+    for (let r = 0; r < VC_RING; r++) {
+      const p00 = a * stride + r, p10 = p00 + stride, p01 = p00 + 1, p11 = p10 + 1;
+      push(p00); push(p01); push(p11);
+      push(p00); push(p11); push(p10);
+    }
+  }
+}
+
+// Scan every lattice vertex in chunk (cx, cz)'s column-index range — same
+// origin buildFilletChunk derives from its chunk index — and cap the ones
+// classifyVertexVertexCorner calls 'outside' (one quarter-torus, full
+// FILLET_R_MAX, 90 degree sweep) or 'L' (two smaller ones, since an 'L'
+// vertex has two empty quadrants pinched to the one point, 0.7 * FILLET_R_MAX,
+// 60 degree sweep centred in each quadrant). Colour and cap height both come
+// from the tallest of the tiles that meet at the vertex, the same tile
+// filletCellColor would read for the block actually standing there.
+function buildVertexCaps(cx, cz, vao, vcx, vcz) {
+  const i1 = Math.min(cx + CHUNK, GEN_N), j1 = Math.min(cz + CHUNK, GEN_N);
+  for (let vj = Math.max(0, cz); vj <= j1; vj++) {
+    for (let vi = Math.max(0, cx); vi <= i1; vi++) {
+      const info = classifyVertexVertexCorner(-GEN_R + vi * BLOCK, -GEN_R + vj * BLOCK);
+      if (info.type !== 'outside' && info.type !== 'L') continue;
+
+      const maxH = Math.max(info.heights[0], info.heights[1], info.heights[2], info.heights[3]);
+      if (maxH <= 0) continue;
+      const [mi, mj] = vcTileCol(info.heights.indexOf(maxH), vi, vj);
+      filletCellColor(mi, mj, maxH - 1, filColC);
+      const vyTop = maxH * BLOCK;
+
+      if (info.type === 'outside') {
+        // Two different shapes share the 'outside' label: three tiles at
+        // maxH with one diagonal gap (the genuine cross-tile notch this pass
+        // exists for), and one lone tile at maxH with three empty diagonals
+        // (an ordinary box corner, already a single block's own two faces
+        // meeting — filletFace's per-face corner blend already rounds that
+        // by itself). A cap on top of the second case duplicates and fights
+        // that existing rounding instead of filling a gap, so only the
+        // three-tile case gets one.
+        const highCount = info.heights.reduce((n, hh) => n + (hh === maxH ? 1 : 0), 0);
+        if (highCount === 3) vcEmitCap(vi, vj, info.diagonal, Math.PI / 2, FILLET_R_MAX, vyTop, 0, vao, vcx, vcz);
+      } else {
+        for (let k = 0; k < 4; k++) {
+          if (info.heights[k] > 0) continue;
+          vcEmitCap(vi, vj, k, Math.PI / 3, FILLET_R_MAX * 0.7, vyTop, Math.PI / 12, vao, vcx, vcz);
+        }
+      }
+    }
+  }
+}
+
+const filletGroup = new THREE.Group();
+scene.add(filletGroup);
+// One material for all three terrain colours. The skin blends across a material
+// boundary rather than stepping over it, so the colour has to ride on the
+// vertices — which is also where the per-column tint goes. Roughness is split
+// between the three the cubes use.
+// shadowSide overrides the back-face default mat() uses for the cubes: that one
+// works because a cube is a closed solid, and this is an open sheet with nothing
+// behind it to cast from.
+const filletMat = mat(0xffffff, 0.95, 0.0, {
+  envMapIntensity: 0.45, vertexColors: true, shadowSide: THREE.DoubleSide,
+});
+const filletTris = new Int32Array(CHUNK_N * CHUNK_N);
+
+// Does the chunk's footprint reach inside FILLET_R? Nearest point of it to the
+// middle of the field, so a chunk the circle only clips still gets a skin.
+function filletCovers(i0, j0, i1, j1) {
+  const x0 = colX(i0) - BLOCK * 0.5, x1 = colX(i1) + BLOCK * 0.5;
+  const z0 = colZ(j0) - BLOCK * 0.5, z1 = colZ(j1) + BLOCK * 0.5;
+  const nx = Math.min(Math.max(0, x0), x1), nz = Math.min(Math.max(0, z0), z1);
+  return Math.hypot(nx, nz) <= FILLET_R;
+}
+
+function buildFilletChunk(c) {
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+  if (i1 <= i0 || j1 <= j0 || !filletCovers(i0, j0, i1 - 1, j1 - 1)) return;
+
+  fpPos.length = fpNor.length = fpCol.length = fpIdx.length = 0;
+  // Only this chunk's own columns, but every neighbour lookup above reads the
+  // whole field — so a face on a chunk edge is built from the same blocks
+  // whichever side of the boundary owns it, and there is no seam.
+  for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) filletColumn(i, j);
+
+  // Vertex caps push a flat (non-indexed) triangle list into the same
+  // position/color/normal arrays, so give the new vertices sequential
+  // indices to match — everything above them is already indexed properly.
+  const capBase = fpPos.length / 3;
+  buildVertexCaps(i0, j0, fpPos, fpCol, fpNor);
+  const capEnd = fpPos.length / 3;
+  for (let v = capBase; v < capEnd; v++) fpIdx.push(v);
+
+  if (fpIdx.length === 0) return;
+
+  const nv = fpPos.length / 3;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(fpPos), 3));
+  geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(fpNor), 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(fpCol), 3));
+  geo.setIndex(new THREE.BufferAttribute(nv > 65535 ? new Uint32Array(fpIdx) : new Uint16Array(fpIdx), 1));
+  geo.computeBoundingSphere();      // per chunk, for the same culling the cubes get
+
+  const m = new THREE.Mesh(geo, filletMat);
+  m.receiveShadow = true;
+  m.castShadow = !isTouchDevice;
+  filletGroup.add(m);
+  filletMesh[c] = m;
+  filletTris[c] = fpIdx.length / 3;
+}
+
+// (Re)build one chunk's skin. Same unit and same trigger as the cubes: the
+// shovel dirties a chunk and both surfaces over it come back.
+function rebuildFilletChunk(c) {
+  const old = filletMesh[c];
+  if (old) {
+    filletGroup.remove(old);
+    old.geometry.dispose();         // the material is shared, so it stays
+    filletMesh[c] = null;
+    filletTris[c] = 0;
+  }
+  buildFilletChunk(c);
+  applyChunkView(c);                // the cubes under it hide or come back
+}
+
+// Which surface is on screen. Cycles smooth → blocks → both; `both` is a debug
+// view and the two do interpenetrate in it, since the skin cuts the corner off
+// every cube it runs over, which is the entire point of it.
+function setTerrainView(v) {
+  terrainView = ((v % 3) + 3) % 3;
+  filletGroup.visible = terrainView !== VIEW.BLOCKS;
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) applyChunkView(c);
+  return VIEW_NAMES[terrainView];
+}
+
+{
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+    rebuildFilletChunk(c);
+  }
+}
+setTerrainView(terrainView);
 
 // ----- pass 4a: the land texture the sea reads -----
 // One texel per column, aligned on the column centres, so the water's idea of
@@ -2088,7 +3057,7 @@ const keys = new Set();
 // ----- keyboard -----
 const TRACKED = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
-  'KeyF', 'KeyZ', 'KeyX',
+  'KeyF', 'KeyZ', 'KeyX', 'KeyM',
   'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 // A key that lands in a text field is the field's business and nothing else's —
@@ -2105,6 +3074,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyF') setShovel(!shovel.on);
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
+  else if (e.code === 'KeyM') setTerrainView(terrainView + 1);
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
   // Weather controls — free camera only, where the panel showing what they do
   // is on screen.
@@ -3713,7 +4683,7 @@ function editBlock(i, j, lvl, m) {
 
 function flushDirtyChunks() {
   if (!dirtyChunks.size) return;
-  for (const c of dirtyChunks) rebuildChunk(c);
+  for (const c of dirtyChunks) { rebuildChunk(c); rebuildFilletChunk(c); }
   dirtyChunks.clear();
   blocksHudEl.textContent = worldBlocks.toLocaleString();
 }
@@ -3814,18 +4784,18 @@ const modeBtn   = document.getElementById('mode-btn');
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['Space / C', 'Swim up / down'],
-                ['F', 'Shovel on / off'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['Space / C', 'Swim up / down'],
-                ['F', 'Shovel on / off'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'],
+                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
                 ['Mouse', 'Look'], ['1 2', 'Weather'], ['4 / 0', 'Add / clear cloud'],
-                ['F', 'Shovel on / off'], ['V', 'Next camera'], ['G', 'Enter game'],
+                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
@@ -4064,6 +5034,440 @@ function tick() {
   cloudDepthGroup.visible = true;
 }
 
+// ---------------------------------------------------------------------------
+// 2D Debug View — terrain smoothing cross-section
+// ---------------------------------------------------------------------------
+(function() {
+  const D2D_COLS = 40, D2D_ROWS = 16;
+  const CELL_PX = 40; // logical CSS pixels per block — large enough to tap on iPhone
+  const CV_W = D2D_COLS * CELL_PX, CV_H = D2D_ROWS * CELL_PX;
+  const CELL_W = CV_W / D2D_COLS, CELL_H = CV_H / D2D_ROWS;
+  // Block materials: 0=air, 1=rock, 2=dirt, 3=grass (top)
+  const D2D_AIR = 0, D2D_ROCK = 1, D2D_DIRT = 2, D2D_GRASS = 3;
+  const D2D_COLORS = ['', '#6a6e78', '#8b6b3d', '#5a8a3c'];
+
+  // 1D grid — each cell is a material (0 = empty)
+  const d2dGrid = new Uint8Array(D2D_COLS * D2D_ROWS);
+
+  // Seed some initial terrain
+  function d2dSeedTerrain() {
+    d2dGrid.fill(0);
+    const profile = [2, 4, 6, 7, 9, 11, 12, 13, 14, 14, 14, 13, 12, 10, 9, 8,
+                     7, 7, 8, 9, 10, 11, 12, 13, 13, 12, 11, 10, 8, 6, 5, 4,
+                     3, 3, 4, 5, 6, 7, 8, 9];
+    for (let x = 0; x < D2D_COLS; x++) {
+      const h = Math.min(profile[x] || 0, D2D_ROWS);
+      for (let y = 0; y < h; y++) {
+        const row = D2D_ROWS - 1 - y;
+        if (y === h - 1) d2dGrid[row * D2D_COLS + x] = D2D_GRASS;
+        else if (y < 3) d2dGrid[row * D2D_COLS + x] = D2D_DIRT;
+        else d2dGrid[row * D2D_COLS + x] = D2D_ROCK;
+      }
+    }
+  }
+  d2dSeedTerrain();
+
+  // Get column surface height — the elevation of the topmost filled cell,
+  // not a count of filled cells. A column can have gaps below its top block
+  // (from toggling), so counting would collapse an overhang onto the column
+  // beneath it instead of tracing the actual block face at its real height.
+  function d2dColHeight(x) {
+    for (let y = 0; y < D2D_ROWS; y++) {
+      if (d2dGrid[y * D2D_COLS + x] !== D2D_AIR) return D2D_ROWS - y;
+    }
+    return 0;
+  }
+
+  // Fillet radius, in grid units — each column is one block wide (1 grid
+  // unit), so BLOCK/2 (half a block) is 0.5 here.
+  const D2D_FILLET_R = 0.5;
+  const D2D_ARC_STEPS = 8; // line segments used to approximate each quarter-circle
+
+  // Is the unit cell at (x, h) solid? h < 0 reads as bedrock — infinite fill
+  // below the visible grid, so a grounded column's bottom face never counts
+  // as exposed, while an empty column still reads as resting on h=0 (its
+  // "floor" is exposed). h >= D2D_ROWS reads as open sky (always empty); x
+  // outside the grid reads as empty too, which is what lets the boundary
+  // walk stop at the viewport edges instead of drawing a wall there.
+  function d2dFilled(x, h) {
+    if (h < 0) return true;
+    if (h >= D2D_ROWS || x < 0 || x >= D2D_COLS) return false;
+    return d2dGrid[(D2D_ROWS - 1 - h) * D2D_COLS + x] !== D2D_AIR;
+  }
+
+  // Collect every exposed unit-length face of the block mass as a directed
+  // edge, oriented so consecutive exposed faces chain head-to-tail into a
+  // walkable outline: left faces go up, top faces go right, right faces go
+  // down, bottom faces (undersides — including a floating block's own
+  // belly) go left. Empty columns also contribute a synthetic ground-level
+  // edge so the outline reads as a continuous baseline where nothing is
+  // built, instead of just vanishing.
+  function d2dCollectEdges() {
+    const edges = [];
+    for (let x = 0; x < D2D_COLS; x++) {
+      for (let h = 0; h < D2D_ROWS; h++) {
+        if (!d2dFilled(x, h)) continue;
+        if (x > 0 && !d2dFilled(x - 1, h)) edges.push([x, h, x, h + 1]);
+        if (x < D2D_COLS - 1 && !d2dFilled(x + 1, h)) edges.push([x + 1, h + 1, x + 1, h]);
+        if (!d2dFilled(x, h + 1)) edges.push([x, h + 1, x + 1, h + 1]);
+        if (!d2dFilled(x, h - 1)) edges.push([x + 1, h, x, h]);
+      }
+      if (!d2dFilled(x, 0)) edges.push([x, 0, x + 1, 0]);
+    }
+    return edges;
+  }
+
+  // Stitch exposed edges into polylines by chaining each edge's end point to
+  // the next edge that starts there. A chain that starts at a point nothing
+  // else ends at is open — it runs off the left/right viewport edge.
+  // Everything left over closes back on itself — a block with no connection
+  // to the ground (floating, or undercut all the way through).
+  function d2dChainEdges(edges) {
+    const byStart = new Map(), byEnd = new Map();
+    edges.forEach((e, i) => {
+      const sk = e[0] + ',' + e[1], ek = e[2] + ',' + e[3];
+      if (!byStart.has(sk)) byStart.set(sk, []);
+      byStart.get(sk).push(i);
+      if (!byEnd.has(ek)) byEnd.set(ek, []);
+      byEnd.get(ek).push(i);
+    });
+    const used = new Array(edges.length).fill(false);
+    function walk(startIdx) {
+      const pts = [];
+      let cur = startIdx;
+      while (cur !== undefined && !used[cur]) {
+        used[cur] = true;
+        const e = edges[cur];
+        if (pts.length === 0) pts.push({ x: e[0], y: e[1] });
+        pts.push({ x: e[2], y: e[3] });
+        const cands = byStart.get(e[2] + ',' + e[3]);
+        cur = cands ? cands.find((idx) => !used[idx]) : undefined;
+      }
+      return pts;
+    }
+    const polylines = [];
+    for (let i = 0; i < edges.length; i++) {
+      if (used[i]) continue;
+      const sk = edges[i][0] + ',' + edges[i][1];
+      if (!byEnd.has(sk)) polylines.push({ pts: walk(i), closed: false });
+    }
+    for (let i = 0; i < edges.length; i++) {
+      if (used[i]) continue;
+      polylines.push({ pts: walk(i), closed: true });
+    }
+    return polylines;
+  }
+
+  // Drop grid-resolution points that just continue in a straight line,
+  // leaving only the real corners so the fillet pass below has genuine 90°
+  // joints to round off (generalises the old flush-run collapsing from a
+  // single top profile to a full outline).
+  function d2dSimplify(pts, closed) {
+    const n = closed ? pts.length - 1 : pts.length;
+    if (n < 3) return pts.slice();
+    const keep = [];
+    const start = closed ? 0 : 1;
+    const end = closed ? n : n - 1;
+    for (let i = start; i < end; i++) {
+      const A = pts[(i - 1 + n) % n], B = pts[i % n], C = pts[(i + 1) % n];
+      const collinear = (A.x === B.x && B.x === C.x) || (A.y === B.y && B.y === C.y);
+      if (!collinear) keep.push(B);
+    }
+    if (closed) {
+      if (keep.length === 0) return [pts[0]];
+      keep.push(keep[0]);
+      return keep;
+    }
+    return [pts[0], ...keep, pts[n - 1]];
+  }
+
+  // Round the 90° corner A->B->C (one leg horizontal, one vertical) into a
+  // circular arc of radius r tangent to both legs, and return its sample
+  // points from the horizontal-leg side through to the vertical-leg side.
+  function d2dFilletCorner(A, B, C, r) {
+    const abHoriz = A.y === B.y;
+    const p1 = abHoriz
+      ? { x: B.x - r * Math.sign(B.x - A.x), y: B.y }
+      : { x: B.x, y: B.y - r * Math.sign(B.y - A.y) };
+    const p2 = abHoriz
+      ? { x: B.x, y: B.y + r * Math.sign(C.y - B.y) }
+      : { x: B.x + r * Math.sign(C.x - B.x), y: B.y };
+    const center = abHoriz ? { x: p1.x, y: p2.y } : { x: p2.x, y: p1.y };
+    const a1 = Math.atan2(p1.y - center.y, p1.x - center.x);
+    let a2 = Math.atan2(p2.y - center.y, p2.x - center.x);
+    let delta = a2 - a1;
+    if (delta > Math.PI) delta -= Math.PI * 2;   // always take the 90° way
+    if (delta < -Math.PI) delta += Math.PI * 2;  // around, never the 270° one
+    const pts = [];
+    for (let i = 0; i <= D2D_ARC_STEPS; i++) {
+      const a = a1 + delta * (i / D2D_ARC_STEPS);
+      pts.push({ x: center.x + r * Math.cos(a), y: center.y + r * Math.sin(a) });
+    }
+    return pts;
+  }
+
+  // Round every corner of a simplified polyline. Open chains leave their two
+  // viewport-edge endpoints sharp (there's no second leg to blend into);
+  // closed loops round every vertex, including the wrap-around seam.
+  function d2dFilletPolyline(verts, closed) {
+    const poly = [];
+    if (closed) {
+      const n = verts.length - 1;
+      for (let i = 0; i < n; i++) {
+        const A = verts[(i - 1 + n) % n], B = verts[i], C = verts[(i + 1) % n];
+        const legAB = Math.hypot(B.x - A.x, B.y - A.y);
+        const legBC = Math.hypot(C.x - B.x, C.y - B.y);
+        const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
+        for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
+      }
+      if (poly.length) poly.push(poly[0]);
+    } else {
+      poly.push(verts[0]);
+      for (let k = 1; k < verts.length - 1; k++) {
+        const A = verts[k - 1], B = verts[k], C = verts[k + 1];
+        const legAB = Math.hypot(B.x - A.x, B.y - A.y);
+        const legBC = Math.hypot(C.x - B.x, C.y - B.y);
+        // Block-quantised geometry means every leg is >= 1 grid unit long, so
+        // this clamp only ever matters at the boundary (r === 0.5) — it just
+        // guards against two corners on the same short leg ever overlapping.
+        const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
+        for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
+      }
+      poly.push(verts[verts.length - 1]);
+    }
+    return poly;
+  }
+
+  // Compute the smooth surface as a list of polylines, each an array of flat
+  // (screenX, screenY) pairs: walk every exposed block face into a
+  // grid-resolution outline, collapse it to its real corners, then replace
+  // every corner with a filleted arc. Most terrain comes back as one
+  // continuous chain from the left viewport edge to the right, tracing tops,
+  // side faces, and — wherever a block overhangs empty space — its
+  // underside too. A block with no connection to the ground at all (fully
+  // floating, or undercut clean through) comes back as its own closed loop.
+  function d2dSmoothLine() {
+    const polylines = d2dChainEdges(d2dCollectEdges());
+    const out = [];
+    for (const { pts, closed } of polylines) {
+      if (pts.length < 2) continue;
+      const simplified = d2dSimplify(pts, closed);
+      const filleted = d2dFilletPolyline(simplified, closed);
+      const flat = [];
+      for (const p of filleted) flat.push(p.x * CELL_W, (D2D_ROWS - p.y) * CELL_H);
+      out.push(flat);
+    }
+    return out;
+  }
+
+  // Tap-flash state
+  let d2dFlashX = -1, d2dFlashY = -1, d2dFlashT = 0;
+  const D2D_FLASH_MS = 350;
+
+  // Drawing — retina-sharp canvas
+  const cv = document.getElementById('debug2d-cv');
+  const ctx = cv.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  cv.width  = CV_W * dpr;
+  cv.height = CV_H * dpr;
+  cv.style.width  = CV_W + 'px';
+  cv.style.height = CV_H + 'px';
+  ctx.scale(dpr, dpr);
+
+  function d2dDraw() {
+    ctx.clearRect(0, 0, CV_W, CV_H);
+    // Background
+    ctx.fillStyle = '#0d1522';
+    ctx.fillRect(0, 0, CV_W, CV_H);
+
+    // Draw blocks
+    for (let x = 0; x < D2D_COLS; x++) {
+      for (let y = 0; y < D2D_ROWS; y++) {
+        const mat = d2dGrid[y * D2D_COLS + x];
+        if (mat === D2D_AIR) continue;
+        const px = x * CELL_W, py = y * CELL_H;
+        // Slight gap between blocks for clarity
+        ctx.fillStyle = D2D_COLORS[mat];
+        ctx.fillRect(px + 0.5, py + 0.5, CELL_W - 1, CELL_H - 1);
+        // Highlight top edge of grass
+        if (mat === D2D_GRASS) {
+          ctx.fillStyle = '#7cb342';
+          ctx.fillRect(px + 0.5, py + 0.5, CELL_W - 1, 3);
+        }
+      }
+    }
+
+    // Draw grid lines (subtle)
+    ctx.strokeStyle = 'rgba(100, 140, 190, 0.08)';
+    ctx.lineWidth = 0.5;
+    for (let x = 0; x <= D2D_COLS; x++) {
+      ctx.beginPath();
+      ctx.moveTo(x * CELL_W, 0);
+      ctx.lineTo(x * CELL_W, CV_H);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= D2D_ROWS; y++) {
+      ctx.beginPath();
+      ctx.moveTo(0, y * CELL_H);
+      ctx.lineTo(CV_W, y * CELL_H);
+      ctx.stroke();
+    }
+
+    // Draw the smooth surface line(s) — thick and glowing. Most terrain is
+    // one polyline; a floating or fully-undercut block adds its own closed
+    // loop alongside it.
+    const polylines = d2dSmoothLine();
+    ctx.strokeStyle = '#2a8ed8';
+    ctx.lineWidth = 6;
+    ctx.shadowColor = 'rgba(42, 142, 216, 0.65)';
+    ctx.shadowBlur = 14;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    for (const pts of polylines) {
+      if (pts.length < 4) continue;
+      ctx.beginPath();
+      ctx.moveTo(pts[0], pts[1]);
+      for (let i = 2; i < pts.length; i += 2) {
+        ctx.lineTo(pts[i], pts[i + 1]);
+      }
+      ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+
+    // Draw column center dots (where the smooth samples are)
+    ctx.fillStyle = 'rgba(42, 142, 216, 0.6)';
+    for (let x = 0; x < D2D_COLS; x++) {
+      const h = d2dColHeight(x);
+      const cx = (x + 0.5) * CELL_W;
+      const cy = (D2D_ROWS - h) * CELL_H;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Tap-flash highlight
+    if (d2dFlashX >= 0 && performance.now() - d2dFlashT < D2D_FLASH_MS) {
+      const alpha = 1 - (performance.now() - d2dFlashT) / D2D_FLASH_MS;
+      ctx.fillStyle = 'rgba(255, 255, 120, ' + (0.55 * alpha).toFixed(3) + ')';
+      ctx.fillRect(d2dFlashX * CELL_W, d2dFlashY * CELL_H, CELL_W, CELL_H);
+      ctx.strokeStyle = 'rgba(255, 255, 200, ' + (0.8 * alpha).toFixed(3) + ')';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(d2dFlashX * CELL_W + 1, d2dFlashY * CELL_H + 1, CELL_W - 2, CELL_H - 2);
+      requestAnimationFrame(d2dDraw);
+    }
+  }
+
+  // Click/tap to toggle blocks
+  function d2dToggle(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = cv.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const scale = CV_W / rect.width;
+    const gx = Math.floor((mx * scale) / CELL_W);
+    const gy = Math.floor((my * scale) / CELL_H);
+    if (gx < 0 || gx >= D2D_COLS || gy < 0 || gy >= D2D_ROWS) return;
+    const idx = gy * D2D_COLS + gx;
+    if (d2dGrid[idx] !== D2D_AIR) {
+      d2dGrid[idx] = D2D_AIR;
+    } else {
+      // Place the appropriate material: grass if top of column, dirt if near top, rock below
+      let topY = D2D_ROWS;
+      for (let y = 0; y < D2D_ROWS; y++) {
+        if (d2dGrid[y * D2D_COLS + gx] !== D2D_AIR) { topY = y; break; }
+      }
+      const distFromTop = topY - gy;
+      if (topY === D2D_ROWS) {
+        // Empty column — place rock
+        d2dGrid[idx] = D2D_ROCK;
+      } else if (gy === topY) {
+        // Just above existing blocks — place grass
+        d2dGrid[idx] = D2D_GRASS;
+      } else if (distFromTop <= 2) {
+        d2dGrid[idx] = D2D_DIRT;
+      } else {
+        d2dGrid[idx] = D2D_ROCK;
+      }
+    }
+    d2dFlashX = gx;
+    d2dFlashY = gy;
+    d2dFlashT = performance.now();
+    d2dDraw();
+  }
+
+  // A tap toggles a block; a drag pans the (wider-than-viewport) canvas via the
+  // panel's native scroll. iOS fires a synthetic click after touchend, so — as
+  // with bindTap below — pointer events are the single source of truth and
+  // click is never wired up on the canvas at all. Movement past a few pixels
+  // means the finger was panning, not tapping, so only a still pointerup fires
+  // d2dToggle.
+  const D2D_TAP_MOVE_PX = 10;
+  let d2dPtrStart = null;
+  let d2dPtrMoved = false;
+  cv.addEventListener('pointerdown', (e) => {
+    d2dPtrStart = { x: e.clientX, y: e.clientY };
+    d2dPtrMoved = false;
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!d2dPtrStart) return;
+    const dx = e.clientX - d2dPtrStart.x, dy = e.clientY - d2dPtrStart.y;
+    if (Math.hypot(dx, dy) > D2D_TAP_MOVE_PX) d2dPtrMoved = true;
+  });
+  cv.addEventListener('pointerup', (e) => {
+    if (d2dPtrStart && !d2dPtrMoved) d2dToggle(e);
+    d2dPtrStart = null;
+  });
+  cv.addEventListener('pointercancel', () => { d2dPtrStart = null; });
+
+  // Toggle the debug view
+  const wrap = document.getElementById('debug2d-wrap');
+  const closeBtn = document.getElementById('debug2d-close');
+  const debugBtn = document.getElementById('btn-debug2d');
+  let debug2dOpen = false;
+
+  function toggleDebug2d() {
+    debug2dOpen = !debug2dOpen;
+    wrap.classList.toggle('on', debug2dOpen);
+    debugBtn.classList.toggle('on', debug2dOpen);
+    if (debug2dOpen) d2dDraw();
+  }
+
+  // Guard against iOS double-fire: a single tap fires both touchend and click.
+  // Once pointerdown is seen, ignore the synthetic click that follows.
+  let _d2dSawPointer = false;
+  function bindDebugTap(el) {
+    el.addEventListener('pointerdown', (e) => {
+      _d2dSawPointer = true;
+      e.preventDefault();
+      e.stopPropagation();
+      toggleDebug2d();
+    });
+    el.addEventListener('click', (e) => {
+      if (_d2dSawPointer) { _d2dSawPointer = false; e.preventDefault(); e.stopPropagation(); return; }
+      e.stopPropagation();
+      toggleDebug2d();
+    });
+    // Stop touch events from bubbling to canvas/overlay handlers
+    el.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+    el.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
+  }
+
+  bindDebugTap(closeBtn);
+  bindDebugTap(debugBtn);
+
+  // Expose for the keyboard handler
+  window._toggleDebug2d = toggleDebug2d;
+  window._debug2dIsOpen = () => debug2dOpen;
+
+  // Also allow 'P' key to toggle
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyP' && !typing(e)) {
+      toggleDebug2d();
+    }
+  }, { passive: true });
+})();
+
 // Debug handle — handy from the console / remote inspector on a phone.
 window.hermes = {
   THREE, CANNON, scene, camera, renderer, state, keys, world, playerBody,
@@ -4073,6 +5477,15 @@ window.hermes = {
   // behind it, and the meshes it was built into.
   BLOCK, islandHeight, terrain, SPAWN,
   stats: () => ({ worldBlocks, held: shovel.held.length, drawn: blockCount, instances: instanceCount }),
+  // The fillet surface — the block outline with every corner rounded off over
+  // the last half block into it. setTerrainView(0|1|2) picks smooth / cubes /
+  // both, and FILLET_SUB is how many vertices a block gets across an arc.
+  VIEW, setTerrainView, filletGroup, filletMat, rebuildFilletChunk, FILLET_SUB, FILLET_R,
+  fillet: () => ({
+    view: VIEW_NAMES[terrainView],
+    chunks: filletMesh.reduce((n, m) => n + (m ? 1 : 0), 0),
+    tris: filletTris.reduce((n, t) => n + t, 0),
+  }),
   // The shovel. `shovel.held` is the stack of materials in your hands; moving a
   // block through it is the only way anything ever changes.
   shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,

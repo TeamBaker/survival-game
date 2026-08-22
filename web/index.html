@@ -2445,11 +2445,14 @@ function vcEmitCap(vi, vj, empty, sweep, radius, vyTop, offset, vao, vcx, vcz) {
     for (let r = 0; r <= VC_RING; r++) {
       const phi = (r / VC_RING) * (Math.PI / 2);
       const sp = Math.sin(phi), cp = Math.cos(phi);
-      // sp - 1 is 0 at the wall (phi = pi/2) and -1 at the top (phi = 0), so
-      // the horizontal offset runs from the true corner in to R-inset, and
-      // every theta's wall point collapses onto the vertex's own vertical
-      // edge below the cap, same as two perpendicular edge fillets would.
-      gp.push(vx + radius * ct * (sp - 1), vyTop - radius + radius * cp, vz + radius * st * (sp - 1));
+      // sp is 0 at the top (phi = 0) and 1 at the wall (phi = pi/2), so the
+      // horizontal offset collapses onto the vertex's own vertical edge right
+      // at the flat top — matching the edge fillets either side of it, whose
+      // own corner blend runs out to nothing at exactly that height — and
+      // spreads out to the R-inset, into the two tiles' own footprints, as it
+      // drops toward the wall, matching where those same edge fillets are
+      // still their full rounded selves.
+      gp.push(vx + radius * ct * sp, vyTop - radius + radius * cp, vz + radius * st * sp);
       gn.push(sp * ct, cp, sp * st);
     }
   }
@@ -2489,7 +2492,16 @@ function buildVertexCaps(cx, cz, vao, vcx, vcz) {
       const vyTop = maxH * BLOCK;
 
       if (info.type === 'outside') {
-        vcEmitCap(vi, vj, info.diagonal, Math.PI / 2, FILLET_R_MAX, vyTop, 0, vao, vcx, vcz);
+        // Two different shapes share the 'outside' label: three tiles at
+        // maxH with one diagonal gap (the genuine cross-tile notch this pass
+        // exists for), and one lone tile at maxH with three empty diagonals
+        // (an ordinary box corner, already a single block's own two faces
+        // meeting — filletFace's per-face corner blend already rounds that
+        // by itself). A cap on top of the second case duplicates and fights
+        // that existing rounding instead of filling a gap, so only the
+        // three-tile case gets one.
+        const highCount = info.heights.reduce((n, hh) => n + (hh === maxH ? 1 : 0), 0);
+        if (highCount === 3) vcEmitCap(vi, vj, info.diagonal, Math.PI / 2, FILLET_R_MAX, vyTop, 0, vao, vcx, vcz);
       } else {
         for (let k = 0; k < 4; k++) {
           if (info.heights[k] > 0) continue;

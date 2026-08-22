@@ -2398,6 +2398,96 @@ function classifyVertexVertexCorner(vx, vz) {
   return { type: diagonalPair ? 'L' : 'edge', heights: h };
 }
 
+// ----- Phase 2: vertex-cap geometry -----
+// buildFilletChunk fillets are per-edge, so an 'outside' or 'L' vertex (see
+// classifyVertexVertexCorner) is left with a V-notch where two of those edge
+// fillets meet but don't blend into each other. This patches it with a
+// quarter-torus: the same inset-by-FILLET_R_MAX, quarter-circle profile every
+// edge fillet already uses (touch the flat top at radius R in from the true
+// corner, touch the wall at the true corner, R below the top), just swept
+// round the vertex's vertical axis between the two walls instead of run
+// straight along one edge. Column index of the tile in quadrant `empty`,
+// relative to lattice vertex (vi, vj) — SW, SE, NW, NE, matching the order
+// classifyVertexVertexCorner reads them in.
+function vcTileCol(idx, vi, vj) {
+  return idx === 0 ? [vi - 1, vj - 1] : idx === 1 ? [vi, vj - 1]
+       : idx === 2 ? [vi - 1, vj] : [vi, vj];
+}
+
+const VC_ARCS = 8;   // steps around the corner
+const VC_RING = 4;   // steps from the flat top down to the wall
+// Sweep start angle (atan2(z, x) convention), one per empty quadrant index —
+// the arc always opens toward the empty tile, since that's where the notch is.
+const VC_QUAD = [Math.PI, -Math.PI / 2, Math.PI / 2, 0];
+
+// One cap's mesh, pushed as a plain triangle list (no index buffer) straight
+// into the caller's position/color/normal arrays.
+function vcEmitCap(vi, vj, empty, sweep, radius, vyTop, offset, vao, vcx, vcz) {
+  const vx = -GEN_R + vi * BLOCK, vz = -GEN_R + vj * BLOCK;
+  const start = VC_QUAD[empty] + offset;
+  const stride = VC_RING + 1;
+  const gp = [], gn = [];
+  for (let a = 0; a <= VC_ARCS; a++) {
+    const theta = start + (a / VC_ARCS) * sweep;
+    const ct = Math.cos(theta), st = Math.sin(theta);
+    for (let r = 0; r <= VC_RING; r++) {
+      const phi = (r / VC_RING) * (Math.PI / 2);
+      const sp = Math.sin(phi), cp = Math.cos(phi);
+      // sp - 1 is 0 at the wall (phi = pi/2) and -1 at the top (phi = 0), so
+      // the horizontal offset runs from the true corner in to R-inset, and
+      // every theta's wall point collapses onto the vertex's own vertical
+      // edge below the cap, same as two perpendicular edge fillets would.
+      gp.push(vx + radius * ct * (sp - 1), vyTop - radius + radius * cp, vz + radius * st * (sp - 1));
+      gn.push(sp * ct, cp, sp * st);
+    }
+  }
+  const push = (p) => {
+    vao.push(gp[p * 3], gp[p * 3 + 1], gp[p * 3 + 2]);
+    vcz.push(gn[p * 3], gn[p * 3 + 1], gn[p * 3 + 2]);
+    vcx.push(filColC[0], filColC[1], filColC[2]);
+  };
+  for (let a = 0; a < VC_ARCS; a++) {
+    for (let r = 0; r < VC_RING; r++) {
+      const p00 = a * stride + r, p10 = p00 + stride, p01 = p00 + 1, p11 = p10 + 1;
+      push(p00); push(p01); push(p11);
+      push(p00); push(p11); push(p10);
+    }
+  }
+}
+
+// Scan every lattice vertex in chunk (cx, cz)'s column-index range — same
+// origin buildFilletChunk derives from its chunk index — and cap the ones
+// classifyVertexVertexCorner calls 'outside' (one quarter-torus, full
+// FILLET_R_MAX, 90 degree sweep) or 'L' (two smaller ones, since an 'L'
+// vertex has two empty quadrants pinched to the one point, 0.7 * FILLET_R_MAX,
+// 60 degree sweep centred in each quadrant). Colour and cap height both come
+// from the tallest of the tiles that meet at the vertex, the same tile
+// filletCellColor would read for the block actually standing there.
+function buildVertexCaps(cx, cz, vao, vcx, vcz) {
+  const i1 = Math.min(cx + CHUNK, GEN_N), j1 = Math.min(cz + CHUNK, GEN_N);
+  for (let vj = Math.max(0, cz); vj <= j1; vj++) {
+    for (let vi = Math.max(0, cx); vi <= i1; vi++) {
+      const info = classifyVertexVertexCorner(-GEN_R + vi * BLOCK, -GEN_R + vj * BLOCK);
+      if (info.type !== 'outside' && info.type !== 'L') continue;
+
+      const maxH = Math.max(info.heights[0], info.heights[1], info.heights[2], info.heights[3]);
+      if (maxH <= 0) continue;
+      const [mi, mj] = vcTileCol(info.heights.indexOf(maxH), vi, vj);
+      filletCellColor(mi, mj, maxH - 1, filColC);
+      const vyTop = maxH * BLOCK;
+
+      if (info.type === 'outside') {
+        vcEmitCap(vi, vj, info.diagonal, Math.PI / 2, FILLET_R_MAX, vyTop, 0, vao, vcx, vcz);
+      } else {
+        for (let k = 0; k < 4; k++) {
+          if (info.heights[k] > 0) continue;
+          vcEmitCap(vi, vj, k, Math.PI / 3, FILLET_R_MAX * 0.7, vyTop, Math.PI / 12, vao, vcx, vcz);
+        }
+      }
+    }
+  }
+}
+
 const filletGroup = new THREE.Group();
 scene.add(filletGroup);
 // One material for all three terrain colours. The skin blends across a material

@@ -2362,6 +2362,42 @@ function filletColumn(i, j) {
   }
 }
 
+// ----- Phase 1: vertex-corner classification -----
+// A lattice vertex is where 4 tiles (columns) meet. buildFilletChunk's fillets
+// are computed per edge, i.e. two tiles at a time, so an outside corner — 3 of
+// the 4 tiles built, 1 empty diagonal — gets no fillet across that diagonal
+// and the smooth skin leaves a V-notch there. This classifies what's
+// happening at a vertex so a later pass can round that notch off too.
+
+// Column height at tile (i, j) as a block count (0 = empty), not a level
+// index — matches the height > 0 occupancy check below.
+function fcTileHeight(i, j) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return 0;
+  const top = sTop[j * GEN_N + i];
+  return top === NO_COLUMN ? 0 : top + 1;
+}
+
+// Classify the 2x2 block of tiles around lattice vertex (vx, vz) — world
+// coordinates, i.e. grid indices already multiplied by BLOCK.
+function classifyVertexVertexCorner(vx, vz) {
+  const vi = Math.round((vx + GEN_R) / BLOCK);
+  const vj = Math.round((vz + GEN_R) / BLOCK);
+  const h = [
+    fcTileHeight(vi - 1, vj - 1), // SW
+    fcTileHeight(vi,     vj - 1), // SE
+    fcTileHeight(vi - 1, vj),     // NW
+    fcTileHeight(vi,     vj),     // NE
+  ];
+  const occ = h.map((v) => v > 0);
+  const count = occ[0] + occ[1] + occ[2] + occ[3];
+
+  if (count === 0 || count === 4) return { type: 'flat', heights: h };
+  if (count === 3) return { type: 'outside', diagonal: occ.indexOf(false), heights: h };
+  if (count === 1) return { type: 'inside', pillar: occ.indexOf(true), heights: h };
+  const diagonalPair = (occ[0] && occ[3]) || (occ[1] && occ[2]); // SW+NE or SE+NW
+  return { type: diagonalPair ? 'L' : 'edge', heights: h };
+}
+
 const filletGroup = new THREE.Group();
 scene.add(filletGroup);
 // One material for all three terrain colours. The skin blends across a material

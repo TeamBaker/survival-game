@@ -1453,6 +1453,14 @@ sTop.set(topLvl);
 // generated is solid from its surface down to bedrock, which is what lets the
 // mesh builder stop looking as soon as it is out of sight of the neighbours.
 const colDug = new Uint8Array(GEN_N * GEN_N);
+// And the lowest level it left air at, or NO_DIG while nothing has. MAX_DEPTH
+// below a column's top is as far as the mesher draws off its own bat, which is a
+// budget and not a bound: sink a shaft deeper than that and the columns beside
+// it stop walling at the budget, so from there on down you are looking through
+// the hillside at the sky with a few deep-drawn columns left standing in it.
+// This is how much further than the budget the ground beside a dig has to reach.
+const NO_DIG = 32767;
+const colDugLo = new Int16Array(GEN_N * GEN_N).fill(NO_DIG);
 
 // ----- reading and writing the store -----
 // Levels are the ones topLvl is in: level k is the block filling y from k*BLOCK
@@ -1618,7 +1626,7 @@ function collectColumn(i, j) {
   // see straight through the hill. Once the shovel has been in this column or
   // any of the four beside it, the bound is off and the walk runs to `deepest`,
   // the same rule the fillet mesher uses.
-  let low = top, dug = colDug[k] !== 0;
+  let low = top, dug = colDug[k] !== 0, digLo = colDugLo[k];
   for (const nk of [
     i > 0         ? k - 1     : -1,
     i < GEN_N - 1 ? k + 1     : -1,
@@ -1628,9 +1636,12 @@ function collectColumn(i, j) {
     if (nk < 0) { low = Math.min(low, top - RIM_DEPTH); continue; }
     const v = sTop[nk];
     low = Math.min(low, v === NO_COLUMN ? top - RIM_DEPTH : v);
-    if (colDug[nk]) dug = true;
+    if (colDug[nk]) { dug = true; if (colDugLo[nk] < digLo) digLo = colDugLo[nk]; }
   }
-  const deepest = Math.max(VOX_FLOOR, top - MAX_DEPTH);
+  // One block under the deepest air the shovel has left in this column or any
+  // beside it, however far past the budget that is — a wall has to reach the
+  // floor of the hole it is the wall of.
+  const deepest = Math.max(VOX_FLOOR, Math.min(top - MAX_DEPTH, digLo - 1));
   const bottom  = dug ? deepest : Math.max(deepest, Math.min(top, low + 1));
 
   const t = tint[k], o = voxOff[k] - VOX_FLOOR;
@@ -2606,6 +2617,33 @@ function groundHeightAt(x, z) {
 }
 const onLand = (x, z) => groundHeightAt(x, z) > SEA_Y;
 
+// Stepping up onto a taller block. The collider is a staircase 20 cm at a time
+// and the solver climbs a stair by shoving the body up off the edge of it: a
+// flick of upward velocity, then the fall back onto the new level. Damping the
+// flick (FOOT_CHATTER) is not enough here, because the shove is also the only
+// thing carrying the player up. So on the ground the ride is driven from the
+// store instead — the top of the ground under their feet is where the body
+// belongs, and it is eased towards rather than jumped to.
+const STEP_FOOT = 0.3;   // metres of footprint the ground is read over
+const STEP_MAX  = 0.5;   // height difference this smooths; past it, a real fall
+const STEP_RATE = 16;    // 1/s of easing towards the surface
+
+// The highest ground under the player's feet. Read over a footprint rather than
+// straight down, so that a body already resting on the edge of a taller block is
+// not dragged back off it — but a narrower footprint than the 0.346 m a 0.4 m
+// foot has to keep from the face of a one-block step, so standing against a wall
+// never lifts anyone onto it.
+function footGroundAt(x, z) {
+  let y = -Infinity;
+  for (let dz = -STEP_FOOT; dz <= STEP_FOOT; dz += STEP_FOOT) {
+    for (let dx = -STEP_FOOT; dx <= STEP_FOOT; dx += STEP_FOOT) {
+      const g = groundHeightAt(x + dx, z + dz);
+      if (g > y) y = g;
+    }
+  }
+  return y;
+}
+
 // The origin is well inland whatever the seed does with the relief, so the
 // player starts on the column there with their feet a couple of centimetres
 // clear of whichever block happens to be on top of it.
@@ -3357,6 +3395,7 @@ function editBlock(i, j, lvl, m) {
   const was = setVoxel(i, j, lvl, m);
   const k = j * GEN_N + i;
   colDug[k] = 1;
+  if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
   patchCollider(i, j);
   // A column's faces are drawn against its neighbours' tops, so an edit on a
   // chunk border changes what the chunk next door has to draw as well.
@@ -3702,6 +3741,14 @@ function tick() {
     const vy = playerBody.velocity.y;
     if (vy > 0 && vy < FOOT_CHATTER) playerBody.velocity.y = vy * 0.2;
     else if (vy < 0 && vy > -FOOT_CHATTER) playerBody.velocity.y = vy * 0.6;
+    // And walk the height difference off rather than being bounced over it.
+    const pp = playerBody.position;
+    const dy = footGroundAt(pp.x, pp.z) + centerOffset() - pp.y;
+    if (Math.abs(dy) < STEP_MAX) {
+      pp.y += dy * Math.min(1, STEP_RATE * dt);
+      // The shove that would have done the climbing is no longer wanted.
+      if (dy > 0 && playerBody.velocity.y > 0) playerBody.velocity.y = 0;
+    }
   }
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];

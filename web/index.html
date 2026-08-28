@@ -118,20 +118,6 @@
   }
   #sprint.on { opacity: 1; transform: translateX(-50%) scale(1); }
 
-  /* Tint that fades in while the camera is under the water surface. */
-  #underwater {
-    position: fixed;
-    inset: 0;
-    z-index: 5;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.28s ease;
-    background:
-      radial-gradient(ellipse at 50% 45%, rgba(60, 170, 220, 0.10), rgba(6, 52, 84, 0.50) 76%),
-      linear-gradient(180deg, rgba(70, 180, 230, 0.16), rgba(4, 34, 60, 0.40));
-  }
-  #underwater.on { opacity: 1; }
-
   /* On a narrow phone the centred pill would collide with the HUD panel. */
   @media (max-width: 620px) {
     #hud { font-size: 11px; padding: 6px 9px; }
@@ -324,34 +310,38 @@
     #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
   }
 
-  /* ---------- Weather controls (free camera only) ---------- */
-  #cloud-ui {
+  /* ---------- Materials panel ---------- */
+  #materials-ui {
     position: fixed;
     left: calc(10px + env(safe-area-inset-left));
     bottom: calc(22px + env(safe-area-inset-bottom));
-    width: 236px;
+    width: 214px;
     max-width: 62vw;
     padding: 9px 11px 10px;
     font-size: 11px;
     line-height: 1.4;
-    background: rgba(8, 14, 24, 0.58);
+    background: rgba(8, 14, 24, 0.62);
     border: 1px solid rgba(160, 200, 255, 0.16);
     border-radius: 8px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
     display: none;
     z-index: 60;
+    /* Taller than a phone screen once the list grows — scroll it rather than
+       letting it run off the edge under the home indicator. */
+    max-height: calc(100vh - 220px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
-  body.free-cam #cloud-ui { display: block; }
+  #materials-ui.on { display: block; }
   /* On touch the whole left half of the screen is the fly joystick — it is placed
      wherever the thumb lands — so a panel down there eats input. Move it up under
-     the camera-mode chip, well clear of where a thumb naturally rests. */
-  body.touch #cloud-ui {
-    top: calc(134px + env(safe-area-inset-top));
+     the MATS button, well clear of where a thumb naturally rests. */
+  body.touch #materials-ui {
+    top: calc(178px + env(safe-area-inset-top));
     bottom: auto;
   }
-
-  #cloud-ui .title {
+  #materials-ui .title {
     display: block;
     margin-bottom: 6px;
     font-size: 10px;
@@ -359,41 +349,56 @@
     color: #6f92bd;
     text-transform: uppercase;
   }
-  .wx-row {
+  .mat-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
-    margin-top: 5px;
+    padding: 5px 0;
+    border-top: 1px solid rgba(160, 200, 255, 0.10);
   }
-  .wx-row .lbl { color: #7fa8d8; white-space: nowrap; }
-  .wx-row .lbl b { color: #eaf2ff; font-weight: 700; }
-  .wx-btn {
+  .mat-row:first-of-type { border-top: 0; }
+  .mat-sw {
     flex: 0 0 auto;
-    min-width: 82px;
-    padding: 5px 10px;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+  }
+  .mat-txt { min-width: 0; }
+  .mat-txt b { display: block; color: #eaf2ff; font-weight: 700; }
+  .mat-txt span { display: block; color: #7fa8d8; font-size: 10px; }
+  #mat-foot { margin-top: 7px; color: #62819f; font-size: 10px; }
+  #mat-foot b { color: #9ecbff; }
+  /* A phone has no number row — the MATS button is the whole interface there. */
+  body.touch #mat-foot .key { display: none; }
+
+  #btn-materials {
+    position: fixed;
+    top: calc(136px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #eaf2ff;
-    background: rgba(70, 120, 190, 0.34);
-    border: 1px solid rgba(150, 195, 245, 0.42);
-    border-radius: 6px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
+    z-index: 14;
   }
-  .wx-btn:active { background: rgba(110, 170, 240, 0.6); }
-  .wx-btn.off { color: #93a4b8; background: rgba(60, 72, 90, 0.32); }
-  #wx-foot { margin-top: 7px; color: #62819f; font-size: 10px; }
-  #wx-foot b { color: #9ecbff; }
-  /* A phone has no number row — on touch the buttons are the whole interface. */
-  body.touch #cloud-ui .key { display: none; }
+  #btn-materials.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-materials:active { transform: translateY(1px); }
 
   @media (max-width: 620px) {
-    /* Narrow enough to sit beside #instructions on a 390-wide phone. */
-    #cloud-ui { width: 190px; font-size: 10px; padding: 7px 9px 8px; }
-    .wx-btn { min-width: 66px; font-size: 10px; padding: 5px 7px; }
+    #materials-ui { width: 178px; font-size: 10px; padding: 7px 9px 8px; }
+    #btn-materials { font-size: 10px; padding: 7px 12px; }
   }
 
   /* ---------- Shovel (temporary block-moving tool) ---------- */
@@ -707,15 +712,15 @@
 <div id="instructions"></div>
 <button id="mode-btn" class="ui-el">Game Mode</button>
 <button id="btn-debug2d">2D Map</button>
+<button id="btn-materials">Mats</button>
 
-<div id="cloud-ui" class="ui-el">
-  <span class="title">Weather</span>
-  <div class="wx-row"><span class="lbl"><b class="key">1</b> Spawn rate</span><button class="wx-btn" id="wx-rate">Medium</button></div>
-  <div class="wx-row"><span class="lbl"><b class="key">2</b> Wind speed</span><button class="wx-btn" id="wx-speed">Medium</button></div>
-  <div id="wx-foot"><span class="key"><b>4</b> spawn now &middot; <b>0</b> clear &mdash; </span>sky: <span id="wx-count">0</span><br><span id="wx-cloud-info">nearest: &mdash;</span></div>
+<!-- Filled in from TERRAIN_MATS so the swatches are the colours actually used. -->
+<div id="materials-ui" class="ui-el">
+  <span class="title">Materials</span>
+  <div id="mat-list"></div>
+  <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>stats are placeholders</div>
 </div>
 
-<div id="underwater"></div>
 <div id="crosshair"></div>
 <div id="sprint">SPRINT</div>
 
@@ -806,21 +811,10 @@ const PLAYER = {
 const GROUND_DOT = Math.cos((PLAYER.maxSlope + 1) * Math.PI / 180);
 const THIRD_DIST = 5.0;           // third-person boom length
 
-// ----- the sea -----
-// The ocean is everywhere and the platform sits in the middle of it, so the swim
-// tests only ever care about how deep you are, never about whether you are
-// inside some footprint.
-const WATER = {
-  floorY: -60,          // only bounds the underwater tint; the bed is well above it
-  surfaceY: 0.0,        // sea level, and the datum every height below is measured from
-  gravityScale: 0.20,   // buoyancy — only a fifth of gravity reaches you in here
-  speedMult: 0.60,      // swimming is slower than walking
-  accel: 6.0,           // how fast you reach swim speed; doubles as water drag
-  swimIn:  0.55,        // submerged fraction where walking becomes swimming ...
-  swimOut: 0.42,        // ... and where swimming hands back to walking
-};
-const WATER_FOG = 0x11506f;
-const inWaterColumn = () => true;
+// ----- sea level -----
+// The datum every height in the world is measured from. The sea is blocks now,
+// so this is only the level the generator floods a column up to — nothing swims.
+const SEA_Y = 0.0;
 
 // ----- the island -----
 // Every solid thing in the world is a cube this many metres on a side. It is the
@@ -850,36 +844,18 @@ const ISLAND_PEAK = 12.0;
 const GEN_R      = 96;
 const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (960)
 const SEABED_DEPTH = 16;     // how far the sea floor drops away offshore
-// How far a swell has to travel from the island before it is at full open-water
-// size, so the water inshore of that stays readable. Scaled with the island, so
-// the calm belt still starts just outside the surf rather than halfway inland.
-const CALM_R     = 88;
-
 const SUN = new THREE.Vector3(0.45, 0.72, 0.52).normalize();
 const SKY_ZENITH  = new THREE.Color(0x1a56b8);
 const SKY_HORIZON = new THREE.Color(0xbdd6ec);
 const SKY_GROUND  = new THREE.Color(0x64798a);
 const FOG_COLOR   = 0xb8d1e8;
-// Thin enough that the platform is legible from well offshore, thick enough to
-// swallow the ocean before its edge reaches the far plane. ~97% opaque by 700
-// units, and it barely touches anything inside 150.
+// Thin enough that the island is legible from well offshore, thick enough to
+// close over the rim of the field before it reaches the far plane. ~97% opaque
+// by 700 units, and it barely touches anything inside 150.
 const FOG_DENSITY = 0.0028;
 
 const DEG = Math.PI / 180;
 const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-
-// ----- the visible sea -----
-// The surface is a disc that rides with the camera, so there is always ocean out
-// to the horizon whichever way you look and however far you swim. Its rings are
-// spaced geometrically: dense enough under your feet to carry the surf, coarse
-// far out where the fog has already swallowed everything anyway.
-const OCEAN_R      = 1180;   // radius of the surface disc — 2360 across
-const OCEAN_R0     = 0.9;    // radius of the innermost ring
-const OCEAN_RINGS  = isTouchDevice ? 96 : 148;
-const OCEAN_SPOKES = isTouchDevice ? 128 : 192;
-// Kept comfortably inside the disc so the surface is always the thing that
-// draws the horizon; the bed only has to cover the gap the heightfield leaves.
-const DEEP_SIZE    = 1400;   // the flat bed under the lot
 
 // ---------------------------------------------------------------------------
 // Renderer / scene / camera
@@ -901,9 +877,8 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
 
-// The far plane has to swallow the weather: clouds spawn up to 1500 units out and
-// are meant to be readable from there, so 1000 would have clipped them away before
-// they ever appeared. Pushing near out to 0.25 at the same time leaves the depth
+// The far plane sits well past anything the fog leaves visible, so nothing ever
+// clips out at the horizon. Pushing near out to 0.25 at the same time leaves the depth
 // range *better* conditioned than the old 0.1/1000 pair, and nothing in the scene
 // ever gets within a quarter unit of the eye.
 const camera = new THREE.PerspectiveCamera(75, 1, 0.25, 3200);
@@ -917,8 +892,6 @@ const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
   uniforms: {
-    // Cloned: the weather lerps these towards an overcast palette every frame,
-    // and the constants have to survive as the fair-weather end of that mix.
     uZenith:  { value: SKY_ZENITH.clone() },
     uHorizon: { value: SKY_HORIZON.clone() },
     uGround:  { value: SKY_GROUND.clone() },
@@ -1035,8 +1008,8 @@ sun.target.position.copy(SHADOW_CENTER);
 scene.add(sun);
 scene.add(sun.target);
 
-// Named, because the weather drives them: heavy cloud overhead pulls the sun and
-// the sky fill down, and a lightning strike briefly slams the ambient up.
+// Named so the three stay together and a change to the key light is obvious
+// against the fill it is meant to sit above.
 const SUN_BASE = 2.9, HEMI_BASE = 0.55, AMB_BASE = 0.18;
 const hemiLight = new THREE.HemisphereLight(0xbcd8f5, 0x4a5a3c, HEMI_BASE);
 const ambLight  = new THREE.AmbientLight(0xffffff, AMB_BASE);
@@ -1161,82 +1134,8 @@ function mulberry32(a) {
   };
 }
 
-// Hermite smoothstep on a raw ratio — used by the cloud shaping below.
+// Hermite smoothstep on a raw ratio.
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
-
-// ---------------------------------------------------------------------------
-// Shader library — value noise, the shore wave, and a palette helper. The sea
-// pulls from this, and so does anything else that needs to agree with where the
-// water actually is at a given instant.
-// ---------------------------------------------------------------------------
-
-// Hex literals are authored in sRGB; the shaders work in the linear space three
-// converts them to, so bake the conversion in rather than doing it per pixel.
-function glslColor(hex) {
-  const c = new THREE.Color(hex);
-  return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
-}
-
-const NOISE_GLSL = /* glsl */`
-  float hash21(vec2 p) {
-    p = fract(p * vec2(127.31, 311.7));
-    p += dot(p, p + 34.23);
-    return fract(p.x * p.y);
-  }
-  // Smoothed value noise — one lattice cell per unit, so callers scale by the
-  // feature size they want.
-  float vnoise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    float a = hash21(i);
-    float b = hash21(i + vec2(1.0, 0.0));
-    float c = hash21(i + vec2(0.0, 1.0));
-    float d = hash21(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-  }
-  // Four octaves is the point where another one stops being visible under the
-  // lighting. Output sits in 0..1 with a mean near 0.5.
-  float fbm(vec2 p) {
-    float s = 0.0, a = 0.5;
-    for (int i = 0; i < 4; i++) { s += a * vnoise(p); p = p * 2.07 + 13.1; a *= 0.5; }
-    return s;
-  }
-  // Octaves with independent phases rarely agree, so fbm huddles inside about
-  // 0.35..0.6 and mixing on it raw comes out flat. Everything that picks a
-  // colour uses this instead: same field, stretched to actually reach 0 and 1.
-  float fbmC(vec2 p) { return clamp((fbm(p) - 0.47) * 2.7 + 0.5, 0.0, 1.0); }
-  // One travelling sine: (height, dH/dx, dH/dz). Displacing by .x and building a
-  // normal from .yz keeps the highlights riding the waves instead of sitting
-  // still on a flat sheet.
-  vec3 waveOct(vec2 p, vec2 k, float a, float speed, float t) {
-    float ph = dot(p, k) + t * speed;
-    float c = a * cos(ph);
-    return vec3(a * sin(ph), c * k.x, c * k.y);
-  }
-  // Rollers running in at the platform, unit amplitude. Crests are rings around
-  // the origin, warped by a slow noise so they arrive at an angle rather than as
-  // a perfect bullseye. The gradient ignores the warp — the error is a few
-  // degrees of tilt and nothing reads it.
-  vec3 shoreRoller(vec2 p, float t) {
-    float r = max(length(p), 1.0);
-    // ~39 units between crests: long enough that the mesh still resolves them
-    // from a couple of hundred units offshore.
-    float ph = -(r + fbm(p * 0.012) * 26.0) * 0.16 + t * 0.62;
-    float c = cos(ph);
-    vec2 g = -0.16 * (p / r) * c;
-    return vec3(sin(ph), g.x, g.y);
-  }
-  // Height the wash reaches on the sand, in metres above sea level. The sea
-  // displaces its edge by exactly this, so foam on the sand lines up with foam
-  // on the water.
-  const float SHORE_RUN = 0.50;
-`;
-
-const SEA_PALETTE = /* glsl */`
-  const vec3 SEA_SHALLOW = ${glslColor(0x37b0ae)};  // in the shallows
-  const vec3 SEA_DEEP    = ${glslColor(0x0c4a76)};
-  const vec3 SEA_FOAM    = ${glslColor(0xeff7fa)};
-`;
 
 // ---------------------------------------------------------------------------
 // The island — a procedural heightmap, quantised into BLOCK-sized cubes.
@@ -1395,15 +1294,26 @@ function fieldAt(i, j) {
 }
 
 // ----- pass 2: block levels and materials -----
-const SAND = 0, DIRT = 1, ROCK = 2;
+const SAND = 0, DIRT = 1, ROCK = 2, WATER = 3;
+const N_MATS = 4;
 // Not a terrain material: the value the voxel store below uses for a block that
-// is not there. It sorts after the three real ones so `m < AIR` means solid.
-const AIR = 3;
+// is not there. It sorts after the real ones so `m < AIR` means solid.
+const AIR = N_MATS;
+// The block level whose top is sea level, and the level every flooded column is
+// filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
+// one wholly under SEA_Y.
+const SEA_LVL = Math.round(SEA_Y / BLOCK) - 1;
 const NO_COLUMN = -32768;
 // Level k is the block filling y from k*BLOCK to (k+1)*BLOCK, so level -1 is the
 // first one under water.
 const topLvl = new Int16Array(GEN_N * GEN_N).fill(NO_COLUMN);
 const topMat = new Uint8Array(GEN_N * GEN_N);
+// The top level of the *solid* ground, which is topLvl everywhere the column is
+// dry and the bed under the water plane everywhere it is not, plus what that bed
+// is made of. Water is a block like any other, so the store has to know where
+// the ground it sits on stops.
+const bedLvl = new Int16Array(GEN_N * GEN_N).fill(NO_COLUMN);
+const bedMat = new Uint8Array(GEN_N * GEN_N);
 const tint   = new Float32Array(GEN_N * GEN_N);
 // Blocks either side of a column that its slope is read over — 1.2 m, wide
 // enough that the stencil reads the hillside rather than the one-block jitter
@@ -1423,7 +1333,7 @@ function pickMaterial(h, slope, x, z) {
   // boundaries the same broad scale as everything else on the island — at 3 m
   // they were a per-block speckle along every edge.
   const n = vnoise2(x * 0.12, z * 0.12);           // -1 .. 1
-  if (h < -0.2) return SAND;                       // the sea floor and the wash
+  if (h <= SEA_Y) return WATER;                    // sea level and below: the water plane
   if (slope > 1.05 + n * 0.30) return ROCK;        // anything you could not stand on
   if (h < 1.2 + n * 0.5) return SAND;              // the beach, up to knee height
   return DIRT;                                     // all the gentle ground above it
@@ -1442,11 +1352,25 @@ function pickMaterial(h, slope, x, z) {
       // the water over it is. The sea floor is the same cubes as the island and
       // falls away to the deep on the same field, so there is nowhere the world
       // hands off from voxels to a smooth surface.
-      topLvl[k] = Math.floor(h / BLOCK);
+      const gl = Math.floor(h / BLOCK);
       // |grad h| is the tangent of the slope.
       const dx = (fieldAt(i + SLOPE_STEP, j) - fieldAt(i - SLOPE_STEP, j)) / (2 * SLOPE_STEP * BLOCK);
       const dz = (fieldAt(i, j + SLOPE_STEP) - fieldAt(i, j - SLOPE_STEP)) / (2 * SLOPE_STEP * BLOCK);
-      topMat[k] = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j));
+      const m = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j));
+      topMat[k] = m;
+      if (m === WATER) {
+        // Flooded: the column's own ground carries on down where it was, and
+        // water blocks stack on top of it to a dead-flat plane at sea level.
+        // Sand under all of it, which is what the old shoreline rule laid down
+        // before the water was blocks.
+        bedLvl[k] = Math.min(gl, SEA_LVL);
+        bedMat[k] = SAND;
+        topLvl[k] = SEA_LVL;
+      } else {
+        bedLvl[k] = gl;
+        bedMat[k] = m;
+        topLvl[k] = gl;
+      }
     }
   }
 }
@@ -1498,13 +1422,16 @@ let worldBlocks = 0;
 for (let k = 0; k < GEN_N * GEN_N; k++) {
   const top = topLvl[k];
   if (top === NO_COLUMN) continue;
-  const o = voxOff[k] - VOX_FLOOR, surf = topMat[k];
+  const o = voxOff[k] - VOX_FLOOR, bed = bedLvl[k], surf = bedMat[k];
   // Sand or dirt in a band under the surface, and bedrock under that whatever is
   // on top — which is what gives a sand-capped headland its grey base.
-  const soilLo = Math.max(VOX_FLOOR, top - SOIL_DEPTH);
+  const soilLo = Math.max(VOX_FLOOR, bed - SOIL_DEPTH);
   voxMat.fill(ROCK, voxOff[k], o + soilLo);
-  voxMat.fill(surf, o + soilLo, o + top + 1);
-  // The headroom is empty — and AIR is 3, not the 0 a fresh Uint8Array is full
+  voxMat.fill(surf, o + soilLo, o + bed + 1);
+  // Everything the bed leaves between itself and sea level is water — solid
+  // blocks, so the sea is a flat plane of them and not a shader.
+  if (bed < top) voxMat.fill(WATER, o + bed + 1, o + top + 1);
+  // The headroom is empty — and AIR is not the 0 a fresh Uint8Array is full
   // of, so it has to be written rather than left alone.
   voxMat.fill(AIR, o + top + 1, o + voxCap(k) + 1);
   worldBlocks += top - VOX_FLOOR + 1;
@@ -1610,12 +1537,15 @@ const CHUNK   = 120;                        // columns per chunk side (24 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 
-// Sand light and dry, dirt brown, rock grey. Nothing green anywhere — no grass
-// on this island yet.
+// Sand light and dry, dirt brown, rock grey, water blue. Nothing green anywhere
+// — no grass on this island yet. Indexed by the material ids above.
 const TERRAIN_MATS = [
   mat(0xd8c69c, 0.97, 0.00, { envMapIntensity: 0.45 }),   // SAND
   mat(0x8a6a46, 0.98, 0.00, { envMapIntensity: 0.32 }),   // DIRT
   mat(0x8c9198, 0.90, 0.02, { envMapIntensity: 0.55 }),   // ROCK
+  // Smoother and glossier than the ground: it is still a cube, but it should
+  // catch the sun and the sky the way none of the dry materials do.
+  mat(0x3399cc, 0.22, 0.00, { envMapIntensity: 1.35 }),   // WATER
 ];
 const blockGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 const terrain = new THREE.Group();
@@ -1639,9 +1569,25 @@ function applyChunkView(c) {
   if (ms) for (const im of ms) if (im) im.visible = true;
 }
 
+// How much darker a block is for sitting below the top of its own column. The
+// per-column tint alone gives the field its speckle but says nothing about
+// depth, so a cliff came out as one flat slab of whatever it is made of; this
+// is the other axis, and it is what makes a face read as a face.
+//
+// Quantised into steps rather than applied per block, because a run of blocks is
+// one box with one colour: the step index joins the material and the soil band
+// as something a run cannot merge across, so a cliff comes back as a handful of
+// banded runs instead of one. SHADE_STEPS of them and no more — past that the
+// gradient has done its work and every extra split is an extra instance.
+const SHADE_SPAN  = 4;      // blocks per step (0.8 m)
+const SHADE_STEPS = 6;      // steps before the shading bottoms out
+const SHADE_FLOOR = 0.62;   // how dark the deepest step is, as a factor on the tint
+const shadeStep = (d) => (d <= 0 ? 0 : Math.min(SHADE_STEPS, (d / SHADE_SPAN) | 0));
+const shadeOf = (step) => 1 - (1 - SHADE_FLOOR) * (step / SHADE_STEPS);
+
 // Scratch, reused by every rebuild: per material, a flat list of runs —
 // x, y-centre, z, height in blocks, tint.
-const runBuf = [[], [], []];
+const runBuf = Array.from({ length: N_MATS }, () => []);
 function pushRun(m, cx, cz, lo, hi, t) {
   const n = hi - lo + 1;
   if (n <= 0) return;
@@ -1691,7 +1637,7 @@ function collectColumn(i, j) {
     // above while the run under it reads as the face of the column.
     const capped = lvl === top || voxMat[o + lvl + 1] === AIR;
     if (capped) {
-      pushRun(m, cx, cz, lvl, lvl, t);
+      pushRun(m, cx, cz, lvl, lvl, t * shadeOf(shadeStep(top - lvl)));
       drawn++;
       lvl--;
       continue;
@@ -1703,10 +1649,12 @@ function collectColumn(i, j) {
     // under it even where both are rock, so a cliff still reads as a cliff.
     if (lvl < bottom) { lvl--; continue; }
     const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
+    const step = shadeStep(top - lvl);
     let lo = lvl;
     while (lo > bottom && voxMat[o + lo - 1] === m
-           && (top - lo + 1 <= SOIL_DEPTH ? 1 : 0) === band) lo--;
-    pushRun(m, cx, cz, lo, lvl, t * (band ? 0.94 : 0.86));
+           && (top - lo + 1 <= SOIL_DEPTH ? 1 : 0) === band
+           && shadeStep(top - lo + 1) === step) lo--;
+    pushRun(m, cx, cz, lo, lvl, t * (band ? 0.94 : 0.86) * shadeOf(step));
     drawn += lvl - lo + 1;
     lvl = lo - 1;
   }
@@ -1727,16 +1675,16 @@ function rebuildChunk(c) {
       im.dispose();              // frees the instance buffers, not the shared geo
     }
   }
-  runBuf[0].length = runBuf[1].length = runBuf[2].length = 0;
+  for (let m = 0; m < N_MATS; m++) runBuf[m].length = 0;
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   let blocks = 0;
   for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) blocks += collectColumn(i, j);
 
-  const meshes = [null, null, null];
+  const meshes = new Array(N_MATS).fill(null);
   let insts = 0;
-  for (let m = 0; m < 3; m++) {
+  for (let m = 0; m < N_MATS; m++) {
     const a = runBuf[m];
     const n = a.length / 5;
     if (n === 0) continue;                       // plenty of chunks are all sand
@@ -2584,51 +2532,6 @@ function rebuildFilletChunk(c) {
 // the terrain. rebuildFilletChunk() above is left in place for debug use from the
 // console; nothing in the game calls it.
 
-// ----- pass 4a: the land texture the sea reads -----
-// One texel per column, aligned on the column centres, so the water's idea of
-// where the ground is agrees with the blocks it can see. Height is packed into a
-// byte over LAND_MIN .. LAND_MIN + LAND_SPAN: eight centimetres of quantisation
-// near the shore, which is the only place the precision matters. Both ends of
-// the range clip, and neither end minds: nine metres down is already "deep" to
-// any swell, and the island's summits are ten metres clear of the water, which
-// the sea reads as "dry" whether it thinks they are ten metres up or twelve.
-const LAND_MIN = -10, LAND_SPAN = 20;
-const landData = new Uint8Array(GEN_N * GEN_N * 4);
-// The block *top*: the sea has to stop at the surface it can see, not at the
-// smooth curve underneath it.
-function landTexel(k) {
-  const top = sTop[k];
-  const h = top === NO_COLUMN ? LAND_MIN : (top + 1) * BLOCK;
-  const e = Math.round(THREE.MathUtils.clamp((h - LAND_MIN) / LAND_SPAN, 0, 1) * 255);
-  landData[k * 4] = landData[k * 4 + 1] = landData[k * 4 + 2] = e;
-  landData[k * 4 + 3] = 255;
-}
-const landTex = (() => {
-  for (let k = 0; k < GEN_N * GEN_N; k++) landTexel(k);
-  const tex = new THREE.DataTexture(landData, GEN_N, GEN_N, THREE.RGBAFormat);
-  tex.minFilter = tex.magFilter = THREE.LinearFilter;
-  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.generateMipmaps = false;
-  tex.needsUpdate = true;
-  return tex;
-})();
-
-// What the sea reads instead of a heightmap of its own. Inside the generated
-// field it is the bake above; outside it the island's mask is already zero, so
-// the same analytic sea floor the bake ends on simply carries on and the two
-// meet without a seam.
-const LAND_GLSL = /* glsl */`
-  uniform sampler2D uLandTex;
-  float landAt(vec2 p) {
-    float deep = ${(-(SHORE_DROP + SHELF_DROP)).toFixed(2)}
-      - ${SEABED_DEPTH.toFixed(1)} * smoothstep(
-          ${ISLAND_R.toFixed(1)}, ${(ISLAND_R * 1.95).toFixed(1)}, length(p));
-    vec2 uv = p * ${(1 / (2 * GEN_R)).toFixed(8)} + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return deep;
-    return texture2D(uLandTex, uv).r * ${LAND_SPAN.toFixed(1)} + ${LAND_MIN.toFixed(1)};
-  }
-`;
-
 // ----- pass 4b: the collider -----
 // A cannon heightfield on the same grid, its vertices sitting on the centres of
 // the block tops. Between two columns one level apart it ramps rather than
@@ -2687,331 +2590,40 @@ function groundHeightAt(x, z) {
   const top = sTop[j * GEN_N + i];
   return top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
 }
-const onLand = (x, z) => groundHeightAt(x, z) > WATER.surfaceY;
+const onLand = (x, z) => groundHeightAt(x, z) > SEA_Y;
 
 // The origin is well inland whatever the seed does with the relief, so the
 // player starts on the column there with their feet a couple of centimetres
 // clear of whichever block happens to be on top of it.
 SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
 
-
 // ---------------------------------------------------------------------------
-// Cloud shadows — the ground half of the weather system.
+// The open sea past the rim of the field.
 //
-// Shadow-mapping the clouds is not an option: they sit 150-250 units up, which is
-// *above* the directional light's own position, so they fall outside its frustum
-// entirely. Instead the biggest clouds near the camera hand their footprint to
-// the ground shaders as a short list of discs, already projected down the sun
-// direction onto sea level, and the sea darkens inside them.
-// Four floats each: centre x, centre z, radius, strength.
+// The blocks stop at GEN_R, and the fog is only a few per cent opaque that close
+// in, so without something under the horizon the world would visibly end at a
+// square edge ninety-six metres out. This is the flat bed that used to sit under
+// the animated ocean, kept and lifted to sea level so it carries on flush with
+// the water blocks instead of showing a ledge where they run out.
+//
+// Not the old sea: no shader, no waves, no time uniform — one plane in the same
+// colour as a WATER cube, so the block plane simply reaches the horizon. It
+// rides with the camera, which is what keeps there from being an edge to reach.
 // ---------------------------------------------------------------------------
-const MAX_CLOUD_SHADOWS = 8;
-const cloudShadowArr = new Float32Array(MAX_CLOUD_SHADOWS * 4);
-const uCloudShadows = { value: cloudShadowArr };
-// How far the shadow slides from the cloud that casts it, per unit of altitude.
-const CLOUD_SHADOW_SLANT = new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y);
+const seaPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(2800, 2800),
+  mat(TERRAIN_MATS[WATER].color.getHex(), 0.22, 0.0, { envMapIntensity: 1.35 })
+);
+seaPlane.rotation.x = -Math.PI / 2;
+seaPlane.receiveShadow = true;
+seaPlane.castShadow = false;
+// Half a millimetre under the top of the water blocks: coplanar with them would
+// z-fight across the whole plane, and this is far too small a step to read.
+seaPlane.position.y = SEA_Y - 0.0005;
+// Centred on the camera and 1400 in radius, so it is never out of view.
+seaPlane.frustumCulled = false;
+scene.add(seaPlane);
 
-const CLOUD_SHADOW_GLSL = /* glsl */`
-  uniform float uCloudShadows[${MAX_CLOUD_SHADOWS * 4}];
-  // 0 in full sun .. 1 under the thickest part of a storm cell. The disc holds
-  // full strength out to 55% of its radius before it starts to fall away: a
-  // shadow with a wide solid core and a soft rim is what actually reads as a
-  // cloud passing overhead, where one that fades from the centre outward just
-  // reads as a smudge.
-  float cloudShade(vec2 p) {
-    float s = 0.0;
-    for (int i = 0; i < ${MAX_CLOUD_SHADOWS}; i++) {
-      float r = uCloudShadows[i * 4 + 2];
-      if (r <= 0.0) continue;
-      float d = distance(p, vec2(uCloudShadows[i * 4], uCloudShadows[i * 4 + 1]));
-      float v = uCloudShadows[i * 4 + 3] * (1.0 - smoothstep(r * 0.55, r, d));
-      // Stacked rather than max()'d: two cells drifting across each other put
-      // more mass between the ground and the sun than either does alone.
-      s = s + v - s * v;
-    }
-    return clamp(s, 0.0, 1.0);
-  }
-`;
-
-// ---------------------------------------------------------------------------
-// Ocean — an animated surface at sea level plus a flat deep bed under it, so
-// the water still has something below it out past the edge of the heightfield.
-// The pair rides with the camera on `ocean`, which is what makes the sea read
-// as endless: there is never an edge to reach, and the fog closes long before
-// the disc's rim. Both live directly in the scene rather than in `objects`, so
-// the third-person boom raycast does not pull the camera in when you swim.
-// ---------------------------------------------------------------------------
-const waterTime = { value: 0 };
-const ocean = new THREE.Group();
-scene.add(ocean);
-{
-  const deep = new THREE.Mesh(
-    new THREE.PlaneGeometry(DEEP_SIZE, DEEP_SIZE),
-    new THREE.MeshStandardMaterial({ color: 0x2b4550, roughness: 1.0, metalness: 0.0 })
-  );
-  deep.rotation.x = -Math.PI / 2;
-  // The one flat surface left in the world, and it is only ever seen edge-on from
-  // twenty metres under water more than ninety metres offshore, where the fog and
-  // the depth tint have long since closed over it. It exists so the ocean has
-  // something under it past the rim of the voxel field; everything inside that
-  // rim, sea floor included, is cubes. It sits low enough that the skirt on the
-  // rim columns reaches past it and no gap ever opens between the two.
-  deep.position.y = -SEABED_DEPTH - 6.0;
-  ocean.add(deep);
-
-  // A radial grid instead of a uniform one. Rings grow geometrically outwards,
-  // so the surface under the camera is tessellated finely enough to carry the
-  // surf while the horizon still costs almost nothing: at 200 units out the
-  // cells are ~10 units, at 1000 they are ~50, and the swells are long enough
-  // out there to survive it. Object-space Y is up, so the shader can displace
-  // `transformed.y` directly.
-  function buildOceanGeo() {
-    const growth = Math.pow(OCEAN_R / OCEAN_R0, 1 / OCEAN_RINGS);
-    const pos = [0, 0, 0];                  // the vertex directly under the camera
-    for (let i = 0, r = OCEAN_R0; i <= OCEAN_RINGS; i++, r *= growth) {
-      for (let s = 0; s < OCEAN_SPOKES; s++) {
-        const a = (s / OCEAN_SPOKES) * Math.PI * 2;
-        pos.push(Math.cos(a) * r, 0, Math.sin(a) * r);
-      }
-    }
-    const idx = [];
-    for (let s = 0; s < OCEAN_SPOKES; s++) {              // fan over the middle
-      idx.push(0, 1 + ((s + 1) % OCEAN_SPOKES), 1 + s);
-    }
-    for (let i = 0; i < OCEAN_RINGS; i++) {               // quads between rings
-      const a0 = 1 + i * OCEAN_SPOKES, b0 = a0 + OCEAN_SPOKES;
-      for (let s = 0; s < OCEAN_SPOKES; s++) {
-        const s1 = (s + 1) % OCEAN_SPOKES;
-        idx.push(a0 + s, b0 + s1, b0 + s);
-        idx.push(a0 + s, a0 + s1, b0 + s1);
-      }
-    }
-    const nrm = new Float32Array(pos.length);
-    for (let i = 1; i < nrm.length; i += 3) nrm[i] = 1;   // the shader replaces these
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
-    geo.setIndex(idx);
-    return geo;
-  }
-
-  const surfMat = new THREE.MeshPhysicalMaterial({
-    color: 0xffffff,          // the shader paints it — colour and alpha both
-    transparent: true,
-    // No transmission out here: at this size it would cost a second full render
-    // of the scene every frame. Plain alpha over the deck reads the same anyway.
-    // Glossy but not a mirror: a perfect reflection of a smooth gradient sky is
-    // a smooth gradient, which is exactly what flat-looking water is.
-    roughness: 0.16,
-    metalness: 0.0,
-    clearcoat: 0.35,
-    clearcoatRoughness: 0.12,
-    side: THREE.DoubleSide,
-    envMapIntensity: 1.6,
-  });
-
-  // How the sea is built up, from the horizon in:
-  //
-  //   * four crossing swells, whose amplitude ramps from a hand's height near
-  //     the platform to a metre of open-water swell offshore, which is why the
-  //     sea gets visibly heavier the further out you swim;
-  //   * shoaling, which pins all of that back to nothing as the bed rises, so a
-  //     two-metre swell cannot stand up in half a metre of water;
-  //   * the shore rollers, which survive right up to the deck and are what
-  //     actually breaks against it.
-  //
-  // Everything is evaluated in world space (via modelMatrix) so the waves stay
-  // put while the mesh slides along under the camera.
-  const WAVE_GLSL = /* glsl */`
-    // (height, dH/dx, dH/dz) of the sea surface, plus how big the local swell is
-    // and how far offshore we are — the fragment shader wants both for foam.
-    vec3 seaSurface(vec2 p, float t, float depth, out float ampOut, out float openOut) {
-      float open  = smoothstep(${CALM_R.toFixed(1)}, ${(CALM_R + 380).toFixed(1)}, length(p));
-      float shoal = smoothstep(0.0, 6.5, depth);
-      float amp   = mix(0.13, 1.05, open) * shoal;
-
-      // The rings of the mesh get coarser the further they are from the camera,
-      // so the short waves have to bow out before there are too few vertices to
-      // carry them — otherwise they beat against the tessellation and the sea
-      // fills with a crawling diamond moire. Each octave fades at the range
-      // where its own wavelength runs out of samples.
-      float dc  = distance(p, cameraPosition.xz);
-      float lod1 = 1.0 - smoothstep(50.0, 165.0, dc);
-      float lod2 = 1.0 - smoothstep(20.0,  80.0, dc);
-
-      vec3 w = vec3(0.0);
-      w += waveOct(p, vec2( 0.0890,  0.0550), 1.00, 0.85, t);          // ~60u swell
-      w += waveOct(p, vec2(-0.0420,  0.0715), 0.72, 0.72, t);          // ~76u, crossing
-      w += waveOct(p, vec2( 0.2160, -0.1640), 0.34, 1.60, t) * lod1;   // ~23u chop
-      w += waveOct(p, vec2( 0.3900,  0.2600), 0.16, 2.30, t) * lod2;   // ~13u ripple
-      w *= amp;
-
-      // The surf. Full height at the waterline and gone by the time the bed
-      // drops past waist depth — the band where it lives is the breaker line.
-      float surfA = SHORE_RUN * (1.0 - smoothstep(2.5, 9.0, depth));
-      w += shoreRoller(p, t) * surfA;
-
-      // The octave amplitudes actually in play here, so that "how close is this
-      // pixel to the top of the local swing" means the same thing at every
-      // range — otherwise the whitecaps thin out wherever the chop has faded.
-      ampOut  = amp * (1.72 + 0.34 * lod1 + 0.16 * lod2) + surfA;
-      openOut = open;
-      return w;
-    }
-  `;
-
-  surfMat.onBeforeCompile = (shader) => {
-    shader.uniforms.uTime = waterTime;
-    shader.uniforms.uCloudShadows = uCloudShadows;
-    shader.uniforms.uLandTex = { value: landTex };
-
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', /* glsl */`
-        #include <common>
-        uniform float uTime;
-        varying vec3 vWPos;
-        varying float vWaveH, vCover, vAmp, vOpen;
-        ${NOISE_GLSL}
-        ${LAND_GLSL}
-        ${WAVE_GLSL}
-      `)
-      .replace('#include <beginnormal_vertex>', /* glsl */`
-        #include <beginnormal_vertex>
-        vec3 wpos = (modelMatrix * vec4(position, 1.0)).xyz;
-        // Signed, not clamped: on dry land this goes negative, and the fragment
-        // shader needs that to know where to stop drawing water.
-        float depth = ${WATER.surfaceY.toFixed(2)} - landAt(wpos.xz);
-        float amp, open;
-        vec3 wave = seaSurface(wpos.xz, uTime, max(depth, 0.0), amp, open);
-        objectNormal = normalize(vec3(-wave.y, 1.0, -wave.z));
-        vWPos  = wpos + vec3(0.0, wave.x, 0.0);
-        vWaveH = wave.x;
-        vCover = depth + wave.x;         // metres of water over the bed, right now
-        vAmp   = max(amp, 0.001);
-        vOpen  = open;
-      `)
-      .replace('#include <begin_vertex>', /* glsl */`
-        #include <begin_vertex>
-        transformed.y += wave.x;
-      `);
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', /* glsl */`
-        #include <common>
-        uniform float uTime;
-        varying vec3 vWPos;
-        varying float vWaveH, vCover, vAmp, vOpen;
-        ${NOISE_GLSL}
-        ${SEA_PALETTE}
-        ${CLOUD_SHADOW_GLSL}
-      `)
-      .replace('#include <map_fragment>', /* glsl */`
-        #include <map_fragment>
-        float foam = 0.0;
-        {
-          vec2 q = vWPos.xz;
-
-          // --- foam where the wave meets the land ---
-          // vCover crosses zero exactly at the edge of the deck, and it carries
-          // the wave displacement with it, so this edge washes in and out with
-          // every roller. The band just inside it is the broken water.
-          float lace = fbmC(q * 0.85 + vec2(uTime * 0.5, uTime * 0.2));
-          float edge = 1.0 - smoothstep(0.0, 0.75, vCover);
-          float shoreFoam = edge * edge * smoothstep(0.15, 0.55, lace);
-          // The leading centimetres are solid white however the noise falls.
-          shoreFoam = max(shoreFoam, 1.0 - smoothstep(0.0, 0.18, vCover));
-
-          // --- the break ---
-          // In the surf zone the roller runs out of water under it, tips over
-          // and goes white along its leading face. Gating on depth is what makes
-          // that a line running parallel to the deck edge, and it marches in
-          // with the wave because vWaveH does.
-          float zone = smoothstep(0.25, 0.9, vCover) * (1.0 - smoothstep(1.3, 3.2, vCover));
-          // Only the top of the swing: a wider gate than this stops being a
-          // breaker and becomes a bay full of milk.
-          float breaker = smoothstep(0.62, 0.97, vWaveH / vAmp) * zone
-                        * (0.45 + 0.55 * fbmC(q * 0.5 + vec2(uTime * 0.3, 0.0)));
-
-          // --- whitecaps on the open-water swell ---
-          // Only crests, only once the swell is big enough to break: near the
-          // platform the water is glassy, offshore it is speckled white.
-          float crest = smoothstep(0.45, 0.88, vWaveH / vAmp);
-          float caps = crest * smoothstep(0.3, 0.85, vOpen)
-                     * smoothstep(0.30, 0.75, fbmC(q * 0.14 + vec2(0.0, uTime * 0.15)));
-
-          foam = clamp(max(max(shoreFoam, breaker), caps * 0.9), 0.0, 1.0);
-
-          float d = max(vCover, 0.0);
-          vec3 water = mix(SEA_SHALLOW, SEA_DEEP, smoothstep(0.3, 9.0, d));
-          diffuseColor.rgb = mix(water, SEA_FOAM, foam);
-          // Cloud shadow. Water reads a squall harder than the land does — a
-          // shaded patch of sea goes flat and slate-coloured.
-          diffuseColor.rgb *= mix(1.0, 0.01, cloudShade(vWPos.xz));
-
-          // Thin water fades out completely at the very edge, which is what
-          // keeps the wash from ending in a hard line against the deck.
-          diffuseColor.a = mix(mix(0.40, 0.93, smoothstep(0.25, 5.0, d)), 1.0, foam)
-                         * smoothstep(0.0, 0.30, vCover);
-        }
-      `)
-      .replace('#include <roughnessmap_fragment>', /* glsl */`
-        #include <roughnessmap_fragment>
-        roughnessFactor = mix(roughnessFactor, 0.86, foam);   // foam is not a mirror
-      `)
-      // Ripples finer than the mesh could ever carry, added straight to the
-      // shading normal. This is most of what the sea looks like up close: a
-      // gently sloped swell with a perfect mirror finish reads as a sheet of
-      // glass, and it is the small stuff that scatters the sun into glitter.
-      // Faded out with distance, where the ripples fall below a pixel and would
-      // only crawl.
-      .replace('#include <normal_fragment_begin>', /* glsl */`
-        #include <normal_fragment_begin>
-        {
-          // The finest octaves fade out first: they are the ones that turn into
-          // a crawling moire once a ripple no longer covers a pixel.
-          float d = length(vWPos - cameraPosition);
-          float closeness = 1.0 - smoothstep(25.0, 130.0, d);
-          float fineness  = 1.0 - smoothstep(10.0,  45.0, d);
-          if (closeness > 0.004) {
-            vec2 q = vWPos.xz;
-            // Amplitudes chosen for the slope they give (a * |k|), which is what
-            // the shading actually reads — roughly a tenth each.
-            vec3 r = waveOct(q, vec2( 0.62,  0.38), 0.150, 1.7, uTime)
-                   + waveOct(q, vec2(-0.47,  0.79), 0.110, 2.1, uTime)
-                   + waveOct(q, vec2( 1.35, -1.02), 0.045, 3.0, uTime) * fineness
-                   + waveOct(q, vec2(-2.60,  1.90), 0.016, 4.4, uTime) * fineness;
-            normal = normalize(normal + vec3(-r.y, 0.0, -r.z) * closeness * (1.0 - foam));
-          }
-        }
-      `);
-  };
-
-  const surf = new THREE.Mesh(buildOceanGeo(), surfMat);
-  surf.position.y = WATER.surfaceY;
-  surf.receiveShadow = true;
-  surf.castShadow = false;
-  // The bounding sphere is centred on the camera and 1180 in radius, so it is
-  // never out of view — culling it would only cost a test.
-  surf.frustumCulled = false;
-  ocean.add(surf);
-}
-
-// Submerging the camera swaps the sky and the distance fog for a dense blue one
-// (the sky dome is a custom shader and ignores scene.fog, so it is hidden and a
-// flat background colour takes over).
-const UNDER_BG = new THREE.Color(WATER_FOG);
-let underwater = false;
-function updateWaterVisuals() {
-  const c = camera.position;
-  const wet = c.y < WATER.surfaceY && c.y > WATER.floorY - 2 && inWaterColumn(c.x, c.z);
-  if (wet === underwater) return;
-  underwater = wet;
-  scene.fog.color.setHex(wet ? WATER_FOG : FOG_COLOR);
-  scene.fog.density = wet ? 0.11 : FOG_DENSITY;
-  scene.background = wet ? UNDER_BG : null;
-  sky.visible = !wet;
-  document.getElementById('underwater').classList.toggle('on', wet);
-}
 
 // ---------------------------------------------------------------------------
 // Camera state + input
@@ -3056,14 +2668,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
-  // Weather controls — free camera only, where the panel showing what they do
-  // is on screen.
-  else if (camMode === CAM.FREE) {
-    if (e.code === 'Digit1' || e.code === 'Numpad1') cycleRate();
-    else if (e.code === 'Digit2' || e.code === 'Numpad2') cycleSpeed();
-    else if (e.code === 'Digit4' || e.code === 'Numpad4') { spawnCloud(true); refreshWxUI(); }
-    else if (e.code === 'Digit0' || e.code === 'Numpad0') clearClouds();
-  }
+  else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (typing(e)) return;
@@ -3318,848 +2923,6 @@ const isSprinting = () =>
   state.sprint || state.sprintBtn || keys.has('ShiftLeft') || keys.has('ShiftRight');
 
 // ---------------------------------------------------------------------------
-// Weather — clouds, rain, lightning
-//
-// Each cloud is a solid cluster of 8-20 overlapping lumpy ellipsoids baked into
-// one indexed geometry, so a whole cell is a single draw call. Their surfaces
-// come out merged rather than beaded because the normals are taken from the
-// gradient of a metaball field over *all* the blobs in the cluster, not from the
-// sphere each vertex happens to belong to — neighbouring blobs therefore shade
-// continuously across the seam where they intersect. Triangles buried inside
-// another blob are dropped at build time.
-//
-// Shading is baked, not lit: a directional light cannot give a cloud its
-// characteristic bright top and shadowed underside, because that gradient comes
-// from light scattering *through* the mass, which a surface material knows
-// nothing about. So the material is unlit and mixes a top and a base colour by
-// height-within-the-cloud plus normal, and the pair of colours is what encodes
-// the storm scale.
-// ---------------------------------------------------------------------------
-
-// The four bands the 1-10 scale falls into: fair, building, storm, severe.
-const CLOUD_BAND = (s) => (s <= 3 ? 0 : s <= 5 ? 1 : s <= 7 ? 2 : 3);
-const BAND_SPEC = [
-  { width: [200, 320], height: [ 48,  96], puffs: [ 5,  9], base: [110, 60] },
-  { width: [320, 480], height: [160, 240], puffs: [ 7, 11], base: [140, 70] },
-  { width: [480, 640], height: [320, 432], puffs: [ 9, 13], base: [160, 80] },
-  { width: [560, 720], height: [392, 504], puffs: [11, 15], base: [175, 90] },
-];
-
-// How wide the cluster is at height fraction t: a flat sheet, a heap, a tower
-// that flares at the top, and a tower with a pinched waist under a full anvil.
-function cloudProfile(band, t) {
-  if (band === 0) return 1.00 - 0.30 * t * t;
-  if (band === 1) return 1.00 - 0.44 * Math.pow(t, 1.35);
-  if (band === 2) return 1.00 - 0.46 * Math.pow(t, 0.85) + 0.34 * smooth((t - 0.70) / 0.30);
-  return 1.00 - 0.60 * Math.pow(t, 0.80) + 0.78 * smooth((t - 0.58) / 0.42);
-}
-
-// PolyhedronGeometry hands back a non-indexed soup — every face carries its own
-// three vertices. Welding it first means a blob costs 162 vertices rather than
-// 960, and it is the welded form the merge below assumes.
-function indexedUnitSphere(detail) {
-  const src = new THREE.IcosahedronGeometry(1, detail);
-  const sp = src.attributes.position.array;
-  const seen = new Map();
-  const pos = [], idx = [];
-  for (let i = 0; i < sp.length; i += 3) {
-    const key = sp[i].toFixed(4) + ',' + sp[i + 1].toFixed(4) + ',' + sp[i + 2].toFixed(4);
-    let v = seen.get(key);
-    if (v === undefined) {
-      v = pos.length / 3;
-      seen.set(key, v);
-      pos.push(sp[i], sp[i + 1], sp[i + 2]);
-    }
-    idx.push(v);
-  }
-  src.dispose();
-  return { pos: new Float32Array(pos), idx: new Uint16Array(idx), count: pos.length / 3 };
-}
-// three's `detail` counts subdivision cuts, not recursions: 2 gives 180 faces per
-// blob and 3 gives 320. Three is smooth enough that the lumps read as lumps
-// rather than as facets, and a whole cloud still lands around 5k triangles.
-const CLOUD_PUFF = indexedUnitSphere(isTouchDevice ? 2 : 3);
-const lerpRange = (r, t) => r[0] + (r[1] - r[0]) * t;
-
-function buildCloudGeo(band, rnd) {
-  const spec   = BAND_SPEC[band];
-  const width  = lerpRange(spec.width, rnd());
-  const height = lerpRange(spec.height, rnd());
-  const count  = Math.round(lerpRange(spec.puffs, rnd()));
-  const R = width * 0.5;
-
-  const puffs = [];
-  for (let k = 0; k < count; k++) {
-    const t = count > 1 ? Math.min(1, (k + rnd() * 0.8) / count) : 0;
-    const prof  = Math.max(0.18, cloudProfile(band, t));
-    const anvil = band >= 2 && t > 0.72;      // the flat spreading cap up top
-    const a = rnd() * Math.PI * 2;
-    // sqrt() keeps the blobs spread evenly over the disc instead of crowding
-    // into the middle of it. The spread is deliberately tighter than the blob
-    // radius: neighbours have to interpenetrate by a good margin or the cluster
-    // reads as a bag of balls rather than as one mass.
-    const rad = R * prof * Math.sqrt(rnd()) * 0.72;
-    const pr  = R * (0.24 + 0.28 * rnd()) * Math.max(0.55, prof);
-    puffs.push({
-      x: Math.cos(a) * rad,
-      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.22,
-      z: Math.sin(a) * rad,
-      // A narrower spread on the axis jitter than before: one blob at half the
-      // radius of its neighbour pokes out of the mass as a recognisable ball
-      // however well the seam around it is handled.
-      rx: pr * (0.80 + rnd() * 0.50),
-      ry: pr * (anvil ? 0.40 : band === 0 ? 0.55 : 0.80) * (0.90 + rnd() * 0.25),
-      rz: pr * (0.80 + rnd() * 0.50),
-      seed: rnd() * 40,
-    });
-  }
-
-  const sp = CLOUD_PUFF.pos;
-  const si = CLOUD_PUFF.idx;
-  const vc = CLOUD_PUFF.count;
-  const total = vc * puffs.length;
-
-  // Lumps baked into the surface — a perfectly round ball never reads as cloud
-  // however it is shaded. This displaces the surface by up to a third of the
-  // radius either way, so it is not a detail anything downstream can ignore:
-  // both the seam fillet and the buried-face cull have to ask this where a puff
-  // actually ends rather than assume its ellipsoid.
-  const LUMP = 0.20;
-  const lumpAt = (pf, dx, dy, dz) =>
-    1 + LUMP * (Math.sin(dx * 3.1 + pf.seed) * Math.sin(dy * 2.7 + pf.seed * 1.9)
-        + 0.55 * Math.sin(dz * 5.3 + pf.seed * 2.7) * Math.sin(dx * 4.3 - pf.seed));
-
-  // Where a point sits relative to a puff's lumpy surface: below 1 is inside it,
-  // 1 is on it, above 1 is clear of it.
-  const surfDepth = (px, py, pz, pf) => {
-    const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
-    const q = Math.hypot(ex, ey, ez);
-    if (q < 1e-6) return 0;
-    return q / lumpAt(pf, ex / q, ey / q, ez / q);
-  };
-
-  // --- vertices ---
-  // Built and kept in raw space: the flat base is a non-uniform squash, and
-  // every field query below — normals, fillet, cull — compares points against
-  // plain ellipsoids, so it has to happen before that squash distorts them.
-  // Testing squashed points against unsquashed puffs is what put the worst of
-  // the seam junk down in the skirt, which is exactly where a cumulus is most
-  // obviously a heap of balls.
-  const pos = new Float32Array(total * 3);
-  for (let k = 0; k < puffs.length; k++) {
-    const pf = puffs[k];
-    for (let v = 0; v < vc; v++) {
-      const dx = sp[v * 3], dy = sp[v * 3 + 1], dz = sp[v * 3 + 2];
-      const l = lumpAt(pf, dx, dy, dz);
-      const o = (k * vc + v) * 3;
-      pos[o]     = pf.x + dx * pf.rx * l;
-      pos[o + 1] = pf.y + dy * pf.ry * l;
-      pos[o + 2] = pf.z + dz * pf.rz * l;
-    }
-  }
-
-  // --- normals from the metaball field, so the blobs shade as one mass ---
-  const nrm = new Float32Array(total * 3);
-  const fieldNormals = () => {
-    for (let i = 0; i < total; i++) {
-      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
-      let gx = 0, gy = 0, gz = 0;
-      for (let k = 0; k < puffs.length; k++) {
-        const pf = puffs[k];
-        const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
-        const q2 = ex * ex + ey * ey + ez * ez + 1e-4;
-        const w = 1 / (q2 * q2);            // d/dp of the 1/q^2 falloff, outward
-        gx += w * ex / pf.rx;
-        gy += w * ey / pf.ry;
-        gz += w * ez / pf.rz;
-      }
-      const len = Math.hypot(gx, gy, gz) || 1;
-      nrm[i * 3] = gx / len; nrm[i * 3 + 1] = gy / len; nrm[i * 3 + 2] = gz / len;
-    }
-  };
-  fieldNormals();
-
-  // --- fillet the seams ---
-  // Two spheres pushed into each other cross in a hard V, and no amount of
-  // smoothed normals hides a crease that sharp: it catches the light as a line
-  // and the eye reads the two balls straight off it. Nudging the vertices that
-  // sit near a neighbour's surface outward along the field gradient fills that V
-  // in with a fillet, so the pair meets at a waist the way real cloud does.
-  // Vertices already well inside a neighbour are culled below and do not matter.
-  for (let k = 0; k < puffs.length; k++) {
-    const A = puffs[k];
-    const reach = (A.rx + A.ry + A.rz) / 3;
-    for (let v = 0; v < vc; v++) {
-      const i = k * vc + v;
-      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
-      let near = 0;
-      for (let m = 0; m < puffs.length; m++) {
-        if (m === k) continue;
-        // 1 on the neighbour's surface, tapering to 0 half a radius clear of it.
-        const f = 1.5 - surfDepth(px, py, pz, puffs[m]);
-        if (f > near) near = f;
-      }
-      if (near <= 0) continue;
-      const t2 = Math.min(1, near / 0.5);
-      const push = reach * 0.22 * t2 * t2 * (3 - 2 * t2);
-      pos[i * 3]     = px + nrm[i * 3] * push;
-      pos[i * 3 + 1] = py + nrm[i * 3 + 1] * push;
-      pos[i * 3 + 2] = pz + nrm[i * 3 + 2] * push;
-    }
-  }
-  fieldNormals();   // the surface moved, so the gradient has to be read again
-
-  // --- faces, minus the ones sealed inside a neighbouring blob ---
-  // The material is alpha-blended with no depth write, so a face left inside a
-  // neighbour is not hidden by it — it blends on top, and every one of those
-  // stacked interior shells darkens the overlap into a visible ball-shaped
-  // outline. Culling against the true lumpy surface lets the threshold sit right
-  // at it: anything below 1 is genuinely inside and has to go. The old 0.94
-  // against a plain ellipsoid both kept a shell of interior faces around every
-  // intersection and cut holes wherever a lump dented the surface inward.
-  const buriedIn = (i, pf) => surfDepth(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], pf) < 1.0;
-  const idx = [];
-  for (let k = 0; k < puffs.length; k++) {
-    const base = k * vc;
-    const A = puffs[k];
-    // Only the blobs that actually reach this one can swallow any of its faces —
-    // testing the rest of the cluster per triangle is most of the build cost.
-    // The 1.35 is the widest the lumps plus the fillet push a surface out.
-    const near = [];
-    const rA = Math.max(A.rx, A.ry, A.rz) * 1.35;
-    for (let m = 0; m < puffs.length; m++) {
-      if (m === k) continue;
-      const B = puffs[m];
-      if (Math.hypot(A.x - B.x, A.y - B.y, A.z - B.z) < rA + Math.max(B.rx, B.ry, B.rz) * 1.35) near.push(B);
-    }
-    for (let f = 0; f < si.length; f += 3) {
-      const a = base + si[f], b = base + si[f + 1], c = base + si[f + 2];
-      let buried = false;
-      for (let m = 0; m < near.length && !buried; m++) {
-        const pf = near[m];
-        buried = buriedIn(a, pf) && buriedIn(b, pf) && buriedIn(c, pf);
-      }
-      if (!buried) idx.push(a, b, c);
-    }
-  }
-
-  // --- flatten the base ---
-  // Everything below the cluster datum is squashed into a shallow skirt, which
-  // is what gives cumulus their flat, level bases. Normals take the inverse of
-  // that scale, so faces that were pointing gently downward end up pointing
-  // straight down — a flat base that shades like one.
-  const BASE_SQUASH = 0.22;
-  for (let i = 0; i < total; i++) {
-    if (pos[i * 3 + 1] >= 0) continue;
-    pos[i * 3 + 1] *= BASE_SQUASH;
-    const nx = nrm[i * 3], ny = nrm[i * 3 + 1] / BASE_SQUASH, nz = nrm[i * 3 + 2];
-    const len = Math.hypot(nx, ny, nz) || 1;
-    nrm[i * 3] = nx / len; nrm[i * 3 + 1] = ny / len; nrm[i * 3 + 2] = nz / len;
-  }
-
-  // --- normalise the vertical: local y = 0 is the cloud base, aH is 0..1 ---
-  let minY = Infinity, maxY = -Infinity;
-  for (let i = 1; i < pos.length; i += 3) {
-    if (pos[i] < minY) minY = pos[i];
-    if (pos[i] > maxY) maxY = pos[i];
-  }
-  const span = Math.max(1e-3, maxY - minY);
-  const aH = new Float32Array(total);
-  for (let i = 0; i < total; i++) {
-    pos[i * 3 + 1] -= minY;
-    aH[i] = pos[i * 3 + 1] / span;
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
-  geo.setAttribute('aH', new THREE.BufferAttribute(aH, 1));
-  geo.setIndex(idx);
-  geo.computeBoundingSphere();
-  geo.userData.width = width;
-  geo.userData.height = span;
-  return geo;
-}
-
-// A pool built once at load and shared: a cloud picks a shell, spins it and
-// scales it a little, and gets its own colours from its own weather scale.
-const cloudRand = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
-const CLOUD_GEOS = BAND_SPEC.map((_, band) => {
-  const n = isTouchDevice ? 2 : 3;
-  const out = [];
-  for (let i = 0; i < n; i++) out.push(buildCloudGeo(band, cloudRand));
-  return out;
-});
-
-const CLOUD_VERT = /* glsl */`
-  attribute float aH;
-  varying float vH;
-  varying vec3 vN;
-  varying vec3 vW;
-  void main() {
-    vH = aH;
-    vN = normalize(mat3(modelMatrix) * normal);
-    vec4 wp = modelMatrix * vec4(position, 1.0);
-    vW = wp.xyz;
-    gl_Position = projectionMatrix * viewMatrix * wp;
-  }
-`;
-
-const CLOUD_FRAG = /* glsl */`
-  varying float vH;
-  varying vec3 vN;
-  varying vec3 vW;
-  uniform vec3  uTop, uBot, uTint, uSunDir, uHaze, uSunCol;
-  uniform float uTintAmt, uFlash, uHazeMax, uThickness;
-
-  // Henyey-Greenstein: fraction of light scattered toward the eye for a given
-  // sun/view angle. g > 0 throws most of it forward, through the mass, which
-  // is what makes a cloud glow when the sun sits behind it.
-  float henyeyGreenstein(float cosTheta, float g) {
-    float g2 = g * g;
-    return (1.0 - g2) / (12.566371 * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5));
-  }
-
-  void main() {
-    vec3 n = normalize(vN);
-    vec3 v = normalize(cameraPosition - vW);
-    // Two things decide how much light reaches a patch of cloud: how far up the
-    // mass it is (light comes down through the whole depth of it) and which way
-    // it faces. Downward faces are what the rain falls out of, and they are the
-    // darkest part of any cloud that is worth looking at.
-    float up  = n.y * 0.5 + 0.5;
-    float sun = dot(n, uSunDir) * 0.5 + 0.5;
-
-    // Stand-in for the mass of cloud behind this point: thicker toward the
-    // base of the shell, scaled by the cell's own storminess (uThickness).
-    float density = uThickness * (0.35 + 0.65 * (1.0 - vH));
-    // Beer-Lambert extinction: how much direct light survives that mass.
-    // A steeper falloff than a flatter mass would use — it's what makes the
-    // difference between "thin here, thick there" actually read as depth.
-    float transmit = exp(-density * 2.3);
-
-    // Punchier spread between the two terms that drive the top/bottom
-    // gradient (facing + height) is what reads as real depth rather than a
-    // flat wash — a cloud lit only by a soft blend looks like a painted
-    // sphere, not a mass with a lit crown and a heavy, shadowed belly.
-    float lit = clamp(0.06 + 0.56 * up + 0.30 * pow(sun, 1.4) + 0.42 * vH, 0.0, 1.0);
-    vec3 col = mix(uBot, uTop, lit) * mix(0.7, 1.0, transmit);
-
-    // Extra luminosity on the crown: strongly upward-facing, thin (well-lit)
-    // patches push past the flat top colour into a proper glow, which is what
-    // gives fluffy tops their sunlit puffiness instead of a flat matte white.
-    col += uTop * pow(max(up, 0.0), 5.0) * 0.36 * mix(0.5, 1.0, transmit);
-    // Undersides read as darker, heavier mass by contrast — cheap but the
-    // single biggest lever for the "fluffy top, moody bottom" silhouette.
-    // Widened from the original spread so the gradient carries real
-    // top-to-bottom contrast instead of a gentle fade.
-    col *= mix(0.38, 1.18, up);
-
-    // Forward scatter through the cloud body, brightest looking through thin,
-    // backlit mass toward the sun.
-    float cosTheta = dot(v, -uSunDir);
-    float phase = henyeyGreenstein(cosTheta, 0.45);
-    col += uSunCol * phase * (1.0 - transmit) * 1.4;
-
-    // Subsurface scattering approximation: thin, sunlit-from-behind patches
-    // glow with transmitted light rather than reading as flat silhouette.
-    float backlit = pow(clamp(dot(-v, uSunDir), 0.0, 1.0), 2.0) * (1.0 - transmit);
-    col += uSunCol * backlit * 0.55;
-
-    // Fresnel silver lining: grazing, sun-facing rims catch the most light.
-    // Wider and hotter than a physically-tight rim so it reads clearly at a
-    // distance rather than as a single blown-out pixel.
-    float fresnel = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
-    col += uSunCol * fresnel * pow(max(sun, 0.0), 1.7) * 1.15;
-    // Tight hot rim, kept for the sharp highlight right at the sun.
-    col += vec3(0.34, 0.30, 0.22) * pow(max(sun, 0.0), 7.0);
-    // Golden-hour warmth: a soft amber cast where that rim catches raking
-    // sunlight, so lit edges skew warm rather than the same cool white as the
-    // rest of the mass.
-    vec3 warm = vec3(1.0, 0.66, 0.32);
-    col += warm * fresnel * pow(max(sun, 0.0), 1.6) * 0.56;
-
-    // Severe cells go sickly green-yellow underneath. It is a cast over the
-    // charcoal, not a coat of paint — enough to read as "that one is dangerous"
-    // from across the water and no more, and only across the lowest fifth.
-    col = mix(col, uTint, uTintAmt * (1.0 - smoothstep(0.0, 0.22, vH)));
-    // Lightning lights the cell from the inside, brightest low down.
-    col += vec3(0.80, 0.84, 1.0) * uFlash * (1.15 - vH * 0.55);
-    // The scene's own fog would swallow these at a third of the range they are
-    // meant to be legible from, so they carry their own much thinner haze.
-    float haze = uHazeMax * smoothstep(420.0, 2500.0, distance(vW, cameraPosition));
-    col = mix(col, uHaze, haze);
-
-    // Soft alpha: thin, grazing edges fade toward transparent instead of
-    // hard-clipping at the mesh boundary.
-    float alpha = clamp((1.0 - transmit) * mix(1.0, 0.35, fresnel) + 0.25, 0.0, 1.0);
-
-    gl_FragColor = vec4(col, alpha);
-    #include <tonemapping_fragment>
-    #include <colorspace_fragment>
-  }
-`;
-
-// Colour by weather scale: white and bright at 1, charcoal with almost no light
-// left in the base by 10.
-const CLOUD_KEYS = [
-  { s: 1,  top: 0xffffff, bot: 0xd2e0f0 },
-  { s: 3,  top: 0xfefeff, bot: 0xb3c2d4 },
-  { s: 5,  top: 0xf4f7fb, bot: 0x7c8998 },
-  { s: 7,  top: 0xd2d7de, bot: 0x3c434f },
-  { s: 9,  top: 0xacb2bc, bot: 0x21252c },
-  { s: 10, top: 0x969ba6, bot: 0x14171c },
-];
-function cloudColors(s) {
-  let i = 0;
-  while (i < CLOUD_KEYS.length - 2 && s > CLOUD_KEYS[i + 1].s) i++;
-  const a = CLOUD_KEYS[i], b = CLOUD_KEYS[i + 1];
-  const t = THREE.MathUtils.clamp((s - a.s) / (b.s - a.s), 0, 1);
-  return {
-    top: new THREE.Color(a.top).lerp(new THREE.Color(b.top), t),
-    bot: new THREE.Color(a.bot).lerp(new THREE.Color(b.bot), t),
-  };
-}
-
-const CLOUD_HAZE = new THREE.Color(0xc4d8ea);
-const SEVERE_TINT = new THREE.Color(0x7d7f4e);
-
-const CLOUD_SUN_COLOR = new THREE.Color(0xfff0cf);
-
-function cloudMaterial(scale) {
-  const { top, bot } = cloudColors(scale);
-  return new THREE.ShaderMaterial({
-    vertexShader: CLOUD_VERT,
-    fragmentShader: CLOUD_FRAG,
-    transparent: true,
-    depthWrite: false,
-    uniforms: {
-      uTop:       { value: top },
-      uBot:       { value: bot },
-      uTint:      { value: SEVERE_TINT.clone() },
-      uTintAmt:   { value: smooth((scale - 7.4) / 2.2) * 0.22 },
-      uSunDir:    { value: SUN.clone() },
-      uSunCol:    { value: CLOUD_SUN_COLOR.clone() },
-      uHaze:      { value: CLOUD_HAZE.clone() },
-      uHazeMax:   { value: 0.66 },
-      uFlash:     { value: 0 },
-      // Storm cells thicken faster than fair-weather puffs, which is what
-      // makes the high end of the scale read as distinctly darker and more
-      // ominous rather than just a tinted version of a bright cloud.
-      uThickness: { value: 0.75 + scale * 0.16 },
-    },
-  });
-}
-
-// ----- the controls the free camera exposes -----
-const WX = {
-  rateIdx: 2,
-  speedIdx: 1,
-  // label, seconds between spawns (0 = off)
-  RATES:  [['Off', 0], ['Slow', 16], ['Medium', 7.5], ['Fast', 3]],
-  // label, drift speed in units / second
-  SPEEDS: [['Slow', 5], ['Medium', 13], ['Fast', 27]],
-};
-
-// Storminess is rolled per cloud rather than picked from a shared range: most
-// cells land mild, with severe ones getting rarer the higher the scale climbs.
-function rollStorminess(min, max) {
-  return min + Math.pow(Math.random(), 2.2) * (max - min);
-}
-
-const MAX_CLOUDS    = isTouchDevice ? 14 : 24;
-const CLOUD_DESPAWN = 2100;      // they are gone once they are this far behind you
-
-const clouds = [];
-const cloudGroup = new THREE.Group();
-scene.add(cloudGroup);
-// Depth prepass: render clouds with a depth-only material first so interior
-// faces are hidden by the depth buffer when the volumetric pass runs.
-const depthMat = new THREE.MeshBasicMaterial({ colorWrite: false });
-const cloudDepthGroup = new THREE.Group();
-scene.add(cloudDepthGroup);
-
-const wxFocus = new THREE.Vector3();
-let spawnTimer = 0;
-let gloom = 0;                   // 0 clear sky .. 1 overcast right overhead
-let rainAmt = 0;
-let wxTime = 0;
-
-// A single slowly-drifting wind direction shared by the whole sky, so every
-// cloud heads the same way instead of converging on the player from all sides.
-const WIND_BASE_DIR = Math.random() * Math.PI * 2;
-function liveWindDir() {
-  return WIND_BASE_DIR + Math.sin(wxTime * 0.015) * 0.4;
-}
-
-function spawnCloud(initial) {
-  if (clouds.length >= MAX_CLOUDS) return null;
-  const scale = rollStorminess(1, 10);
-  const band  = CLOUD_BAND(scale);
-  const pool  = CLOUD_GEOS[band];
-  const geo   = pool[(Math.random() * pool.length) | 0];
-
-  // Far out and in a random direction. A fresh cloud is 800-1500 away, which at
-  // the medium drift speed is a couple of minutes of warning; the initial batch
-  // is scattered across the whole range so the sky is never empty at load.
-  const wind = liveWindDir();
-  const bearing = wind + Math.PI + (Math.random() - 0.5) * Math.PI * 0.6;
-  const dist = initial ? 140 + Math.random() * 1360 : 800 + Math.random() * 700;
-  const alt  = BAND_SPEC[band].base[0] + Math.random() * BAND_SPEC[band].base[1];
-  const sc   = 0.65 + Math.random() * 0.9;
-
-  const material = cloudMaterial(scale);
-  const mesh = new THREE.Mesh(geo, material);
-  mesh.position.set(wxFocus.x + Math.cos(bearing) * dist, alt, wxFocus.z + Math.sin(bearing) * dist);
-  mesh.rotation.y = Math.random() * Math.PI * 2;
-  mesh.scale.setScalar(sc);
-  cloudGroup.add(mesh);
-  // Matching depth-only mesh for the prepass.
-  const depthMesh = new THREE.Mesh(geo, depthMat);
-  depthMesh.position.copy(mesh.position);
-  depthMesh.rotation.copy(mesh.rotation);
-  depthMesh.scale.copy(mesh.scale);
-  cloudDepthGroup.add(depthMesh);
-
-  // Heading: the shared wind direction, with a little per-cloud scatter for
-  // gusting, so the whole sky drifts together instead of converging on the
-  // player from every side.
-  const head = liveWindDir() + (Math.random() - 0.5) * 0.3;
-  const c = {
-    mesh,
-    depthMesh,
-    mat: material,
-    scale,
-    band,
-    dirX: Math.cos(head),
-    dirZ: Math.sin(head),
-    spdMul: 1.0,
-    radius: geo.userData.width * 0.5 * sc,
-    baseY: alt,
-    boltT: -1,
-    boltIn: boltInterval(scale) * Math.random(),
-  };
-  clouds.push(c);
-  return c;
-}
-
-function clearClouds() {
-  for (const c of clouds) {
-    cloudGroup.remove(c.mesh); c.mat.dispose();
-    cloudDepthGroup.remove(c.depthMesh);
-  }
-  clouds.length = 0;
-  refreshWxUI();
-}
-
-// ----- lightning -----
-const boltInterval = (scale) => (scale >= 8 ? 2.5 + Math.random() * 6 : 7 + Math.random() * 15);
-
-// The strike envelope: a fast leader, a dip, a brighter return stroke, then the
-// glow rolling away. Real lightning is never a single clean flash.
-function boltEnv(t) {
-  if (t < 0.06) return t / 0.06;
-  if (t < 0.14) return 1.0 - (t - 0.06) / 0.08 * 0.85;
-  if (t < 0.20) return 0.15 + (t - 0.14) / 0.06 * 0.75;
-  if (t < 0.50) return 0.90 * (1 - (t - 0.20) / 0.30);
-  return 0;
-}
-
-let audioCtx = null;
-function initAudio() {
-  if (audioCtx) return audioCtx;
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return null;
-  try { audioCtx = new AC(); } catch (e) { audioCtx = null; }
-  return audioCtx;
-}
-
-// Thunder, synthesised: brown noise (a random walk, which is what gives it the
-// low rumble) shaped by an envelope and rolled off harder the further away the
-// strike was. Close strikes get a crack on the front; distant ones are all roll.
-function playThunder(vol, dist) {
-  const ctx = audioCtx;
-  if (!ctx || vol <= 0.02) return;
-  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-  try {
-    const near = 1 - Math.min(1, dist / 1800);
-    const sr = ctx.sampleRate;
-    const n = Math.floor(sr * (1.5 + (1 - near) * 2.6));
-    const buf = ctx.createBuffer(1, n, sr);
-    const d = buf.getChannelData(0);
-    let b = 0;
-    for (let i = 0; i < n; i++) {
-      b = b * 0.965 + (Math.random() * 2 - 1) * 0.035;
-      const t = i / sr;
-      const crack = near * Math.exp(-t * 26) * (Math.random() * 2 - 1) * 0.5;
-      const roll  = Math.exp(-t * (1.0 + (1 - near) * 0.7)) * (0.6 + 0.4 * Math.sin(t * 3.1));
-      d[i] = THREE.MathUtils.clamp(b * 7.5 * roll + crack, -1, 1);
-    }
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.value = 180 + near * 900;
-    const g = ctx.createGain();
-    g.gain.value = vol * 0.5;
-    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
-    src.start();
-  } catch (e) { /* audio is a nicety; never let it take the frame down */ }
-}
-
-function strike(c, dist) {
-  c.boltT = 0;
-  c.boltIn = boltInterval(c.scale);
-  const vol = THREE.MathUtils.clamp(1 - dist / 2000, 0, 1) * (0.35 + 0.065 * c.scale);
-  if (audioCtx && vol > 0.02) {
-    // Sound lags the flash by the distance over the speed of sound — the reason
-    // you count the seconds between them.
-    setTimeout(() => playThunder(vol, dist), Math.min(dist, 2400) / 340 * 1000);
-  }
-}
-
-// ----- rain -----
-// Drops fill a column that rides with the camera in world space: their fall
-// (straight down, in world Y, wrapped modulo RAIN_H as they pass the player)
-// never depends on which way the camera is looking, so a drop is exactly as
-// present when you look straight down as when you look at the horizon.
-//
-// Each drop is a screen-aligned quad — stretched along the camera's own up
-// vector rather than a fixed world-space "streak" direction — so it is never
-// foreshortened away. A quad built from a fixed world-space length axis goes
-// edge-on and all but disappears the moment the view direction lines up with
-// that axis, which is exactly what happened looking straight down at rain
-// falling straight down. Billboarding fully off the camera (right *and* up)
-// keeps the streak's full width and length on screen from every angle.
-const RAIN_N     = isTouchDevice ? 3000 : 7000;
-const RAIN_R     = 50;
-const RAIN_H     = 50;
-const RAIN_LEN   = 4.2;
-const RAIN_WIDTH = 0.09;
-
-const rainMat = new THREE.ShaderMaterial({
-  transparent: true,
-  depthWrite: false,
-  uniforms: {
-    uTime:      { value: 0 },
-    uCam:       { value: new THREE.Vector3() },
-    uCamRight:  { value: new THREE.Vector3(1, 0, 0) },
-    uCamUp:     { value: new THREE.Vector3(0, 1, 0) },
-    uIntensity: { value: 0 },
-    uCol:       { value: new THREE.Color(0xf0f6fb) },
-  },
-  vertexShader: /* glsl */`
-    attribute vec2 aCorner;   // x: -1/+1 across the streak's width, y: 0 at the head, 1 at the wind-drawn tail
-    uniform float uTime;
-    uniform vec3 uCam;
-    uniform vec3 uCamRight;
-    uniform vec3 uCamUp;
-    varying float vA;
-    void main() {
-      vec3 p = position;
-      // Per-drop fall speed, hashed off its own position so it stays put.
-      float j = fract(sin(p.x * 12.9898 + p.z * 78.233) * 43758.5453);
-      // Straight-down fall in world space, entirely independent of the camera.
-      float y = mod(p.y - uTime * 26.0 * (0.8 + 0.5 * j), ${RAIN_H.toFixed(1)});
-      vec3 w = uCam + vec3(p.x, y - ${(RAIN_H * 0.55).toFixed(2)}, p.z);
-      w += aCorner.y * vec3(1.6, 0.0, 0.9) * 0.5;                 // gentle wind slant on the tail
-      w += uCamUp * -aCorner.y * ${RAIN_LEN.toFixed(2)};          // billboarded length: never edge-on
-      w += uCamRight * aCorner.x * ${RAIN_WIDTH.toFixed(3)};      // billboarded width
-      vA = 1.0 - aCorner.y * 0.5;
-      gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
-    }
-  `,
-  fragmentShader: /* glsl */`
-    uniform float uIntensity;
-    uniform vec3 uCol;
-    varying float vA;
-    void main() { gl_FragColor = vec4(uCol, vA * 0.72 * uIntensity); }
-  `,
-});
-
-const rainObj = (() => {
-  const pos = new Float32Array(RAIN_N * 4 * 3);
-  const corner = new Float32Array(RAIN_N * 4 * 2);
-  const idx = new Uint32Array(RAIN_N * 6);
-  for (let i = 0; i < RAIN_N; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random()) * RAIN_R;
-    const x = Math.cos(a) * r, z = Math.sin(a) * r, y = Math.random() * RAIN_H;
-    const corners = [[-1, 0], [1, 0], [-1, 1], [1, 1]];
-    for (let v = 0; v < 4; v++) {
-      const o = (i * 4 + v) * 3;
-      pos[o] = x; pos[o + 1] = y; pos[o + 2] = z;
-      corner[(i * 4 + v) * 2] = corners[v][0];
-      corner[(i * 4 + v) * 2 + 1] = corners[v][1];
-    }
-    const base = i * 4, o6 = i * 6;
-    idx[o6] = base; idx[o6 + 1] = base + 1; idx[o6 + 2] = base + 2;
-    idx[o6 + 3] = base + 2; idx[o6 + 4] = base + 1; idx[o6 + 5] = base + 3;
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('aCorner', new THREE.BufferAttribute(corner, 2));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1));
-  const o = new THREE.Mesh(geo, rainMat);
-  o.frustumCulled = false;      // it is always around the camera by construction
-  o.visible = false;
-  scene.add(o);
-  return o;
-})();
-
-// ----- overcast palettes -----
-const FOG_BASE  = new THREE.Color(FOG_COLOR);
-const GLOOM_FOG = new THREE.Color(0x8a97a6);
-const GLOOM_Z   = new THREE.Color(0x2c3a4c);
-const GLOOM_H   = new THREE.Color(0x8b98a6);
-const clamp01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
-const shadowList = [];      // scratch, refilled every frame
-
-function updateWeather(dt) {
-  wxTime += dt;
-  wxFocus.copy(camera.position);
-
-  // --- spawn ---
-  const interval = WX.RATES[WX.rateIdx][1];
-  if (interval > 0) {
-    spawnTimer += dt;
-    while (spawnTimer >= interval && clouds.length < MAX_CLOUDS) {
-      spawnTimer -= interval;
-      spawnCloud(false);
-    }
-    if (clouds.length >= MAX_CLOUDS) spawnTimer = Math.min(spawnTimer, interval);
-  } else {
-    spawnTimer = 0;
-  }
-
-  // --- drift, cull, and collect what the rest of the scene needs to know ---
-  const speed = WX.SPEEDS[WX.speedIdx][1];
-  let cover = 0, rainWant = 0, flashGlobal = 0;
-  shadowList.length = 0;
-
-  for (let i = clouds.length - 1; i >= 0; i--) {
-    const c = clouds[i];
-    const p = c.mesh.position;
-    p.x += c.dirX * speed * c.spdMul * dt;
-    p.z += c.dirZ * speed * c.spdMul * dt;
-
-    const dx = p.x - wxFocus.x, dz = p.z - wxFocus.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist > CLOUD_DESPAWN) {
-      cloudGroup.remove(c.mesh);
-      cloudDepthGroup.remove(c.depthMesh);
-      c.mat.dispose();
-      clouds.splice(i, 1);
-      continue;
-    }
-
-    // How much of this cloud is directly over the camera: 1 well inside it,
-    // tapering to 0 a little past its edge.
-    const over = 1 - clamp01((dist - c.radius * 0.35) / (c.radius * 0.8));
-    cover = Math.max(cover, over * clamp01(0.30 + 0.075 * c.scale));
-    // Scale 4-5 spits, 6-7 is heavy, 8-10 is a downpour. Only if we are actually
-    // underneath it rather than flying above the cloud deck.
-    if (c.scale >= 4 && wxFocus.y < c.baseY - 6) {
-      rainWant = Math.max(rainWant, over * Math.min(1, (c.scale - 3) / 5));
-    }
-
-    // --- lightning ---
-    if (c.scale >= 6) {
-      if (c.boltT >= 0) {
-        c.boltT += dt;
-        if (c.boltT > 0.5) c.boltT = -1;
-      } else {
-        c.boltIn -= dt;
-        if (c.boltIn <= 0) strike(c, dist);
-      }
-    }
-    const flash = c.boltT >= 0 ? boltEnv(c.boltT) : 0;
-    c.mat.uniforms.uFlash.value = flash;
-    flashGlobal = Math.max(flashGlobal, flash * (1 - clamp01((dist - 250) / 1300)));
-
-    shadowList.push(c);
-  }
-
-  // --- hand the ground shaders the biggest, nearest footprints ---
-  // The shadow lands well downwind of the cloud that casts it: two hundred
-  // metres of altitude times the tangent of the sun's angle from vertical.
-  for (const c of shadowList) {
-    c.shX = c.mesh.position.x - CLOUD_SHADOW_SLANT.x * c.baseY;
-    c.shZ = c.mesh.position.z - CLOUD_SHADOW_SLANT.y * c.baseY;
-    c.shKey = Math.hypot(c.shX - wxFocus.x, c.shZ - wxFocus.z) - c.radius;
-  }
-  shadowList.sort((a, b) => a.shKey - b.shKey);
-  cloudShadowArr.fill(0);
-  const nSh = Math.min(MAX_CLOUD_SHADOWS, shadowList.length);
-  for (let i = 0; i < nSh; i++) {
-    const c = shadowList[i];
-    const o = i * 4;
-    cloudShadowArr[o]     = c.shX;
-    cloudShadowArr[o + 1] = c.shZ;
-    cloudShadowArr[o + 2] = c.radius * 1.10;
-    // Quadratic in scale rather than linear: a wisp at scale 1 still lays down
-    // a shadow you can watch cross the deck, but a scale-10 storm cell has to
-    // black the ground out under it, so the top of the range needs to pull away
-    // from the bottom much faster than a straight line does. Saturates around
-    // scale 8 — past that the cell is simply opaque.
-    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.45 + 0.12 * c.scale + 0.04 * c.scale * c.scale, 0, 1);
-  }
-
-  // --- the sky reacting to what is in it ---
-  gloom += (cover - gloom) * (1 - Math.exp(-1.2 * dt));
-  sun.intensity        = SUN_BASE  * (1 - 0.60 * gloom);
-  hemiLight.intensity  = HEMI_BASE * (1 - 0.30 * gloom) + 0.55 * flashGlobal;
-  ambLight.intensity   = AMB_BASE  * (1 - 0.25 * gloom) + 1.9 * flashGlobal;
-
-  const g = gloom * 0.8;
-  skyMat.uniforms.uZenith.value.copy(SKY_ZENITH).lerp(GLOOM_Z, g);
-  skyMat.uniforms.uHorizon.value.copy(SKY_HORIZON).lerp(GLOOM_H, g);
-  if (!underwater) {
-    scene.fog.color.copy(FOG_BASE).lerp(GLOOM_FOG, gloom * 0.75);
-  }
-
-  // --- rain ---
-  rainAmt += (rainWant - rainAmt) * (1 - Math.exp(-0.9 * dt));
-  rainObj.visible = rainAmt > 0.02 && !underwater;
-  if (rainObj.visible) {
-    rainMat.uniforms.uTime.value = wxTime;
-    rainMat.uniforms.uCam.value.copy(camera.position);
-    // Columns 0 and 1 of the camera's world matrix are its right and up
-    // vectors — billboarding the streak quads off both keeps them fully
-    // screen-facing (and therefore visible) from any camera angle.
-    rainMat.uniforms.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
-    rainMat.uniforms.uCamUp.value.setFromMatrixColumn(camera.matrixWorld, 1);
-    // A gentle floor keeps even a light drizzle legible instead of fading to a
-    // near-invisible haze, while heavier cells still read as visibly heavier.
-    rainMat.uniforms.uIntensity.value = 0.35 + 0.65 * rainAmt;
-  }
-}
-
-// ----- weather HUD -----
-const wxRateBtn      = document.getElementById('wx-rate');
-const wxSpeedBtn     = document.getElementById('wx-speed');
-const wxCountEl      = document.getElementById('wx-count');
-const wxCloudInfoEl  = document.getElementById('wx-cloud-info');
-
-function refreshWxUI() {
-  wxRateBtn.textContent  = WX.RATES[WX.rateIdx][0];
-  wxRateBtn.classList.toggle('off', WX.rateIdx === 0);
-  wxSpeedBtn.textContent = WX.SPEEDS[WX.speedIdx][0];
-  wxCountEl.textContent  = String(clouds.length);
-}
-const cycleRate  = () => { WX.rateIdx  = (WX.rateIdx  + 1) % WX.RATES.length;  refreshWxUI(); };
-const cycleSpeed = () => { WX.speedIdx = (WX.speedIdx + 1) % WX.SPEEDS.length; refreshWxUI(); };
-
-bindTap(wxRateBtn,  cycleRate);
-bindTap(wxSpeedBtn, cycleSpeed);
-refreshWxUI();
-
-// Seed the sky before the first frame so there is weather to look at on arrival.
-wxFocus.copy(camera.position);
-for (let i = 0; i < (isTouchDevice ? 7 : 11); i++) spawnCloud(true);
-refreshWxUI();
-
-// ---------------------------------------------------------------------------
 // Character controller — a cannon-es body whose velocity is driven by input
 // rather than by forces, so the movement stays crisp and predictable.
 // ---------------------------------------------------------------------------
@@ -4176,7 +2939,6 @@ const playerBody = new CANNON.Body({
   allowSleep: false,
 });
 let crouched = false;
-let swimming = false;
 
 function setPlayerShape(crouch) {
   while (playerBody.shapes.length) playerBody.removeShape(playerBody.shapes[0]);
@@ -4260,17 +3022,8 @@ function respawn() {
 function updatePlayer(dt) {
   const p = playerBody.position, v = playerBody.velocity;
 
-  // --- how much of the body is under the pool surface (0 = dry, 1 = under) ---
-  const bodyH = crouched ? PLAYER.crouchEye : PLAYER.standEye;
-  const submerged = inWaterColumn(p.x, p.z)
-    ? THREE.MathUtils.clamp((WATER.surfaceY - (p.y - centerOffset())) / bodyH, 0, 1)
-    : 0;
-  // Hysteresis: bobbing across a single threshold would flip between swimming and
-  // walking once a frame, and every walking frame would drop the player.
-  swimming = submerged > (swimming ? WATER.swimOut : WATER.swimIn);
-
-  // --- crouch: held on desktop, latched on touch (in water C swims down) ---
-  const wantCrouch = (keys.has('KeyC') || state.crouchBtn) && !swimming;
+  // --- crouch: held on desktop, latched on touch ---
+  const wantCrouch = keys.has('KeyC') || state.crouchBtn;
   if (wantCrouch && !crouched) {
     setPlayerShape(true);
     p.y -= PLAYER.standCenter - PLAYER.crouchCenter;   // keep the feet planted
@@ -4288,7 +3041,6 @@ function updatePlayer(dt) {
 
   // --- wish direction ---
   const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
-  let wishY = 0;
   wishDir.set(0, 0, 0);
   if (camMode === CAM.TOP) {
     // Top-down drives the world axes directly — the camera has no heading to be
@@ -4307,24 +3059,14 @@ function updatePlayer(dt) {
     if (keys.has('KeyA') || keys.has('ArrowLeft'))  str -= 1;
     fwd -= state.joyY;                                          // stick up = forward
     str += state.joyX;
-    // Swimming steers with the camera pitch as well, so you dive where you look.
-    const cp = swimming ? Math.cos(state.pitch) : 1;
-    wishDir.set(-sy * fwd * cp + cy * str, 0, -cy * fwd * cp - sy * str);
-    if (swimming) {
-      if (keys.has('Space') || state.jumpHeld)     wishY += 1;
-      if (keys.has('KeyC')  || state.crouchBtn)    wishY -= 1;
-      wishDir.y = Math.sin(state.pitch) * fwd + wishY;
-    }
+    wishDir.set(-sy * fwd + cy * str, 0, -cy * fwd - sy * str);
   }
   const wl = wishDir.length();
   if (wl > 1) wishDir.divideScalar(wl);
 
-  // Wading drags on you, and past the swim threshold it hands over to the (much
-  // slower) swim speed at roughly the same value, so the change of gait is smooth.
-  const wade = 1 - 0.42 * Math.min(1, submerged / WATER.swimIn);
-  const speed = swimming
-    ? PLAYER.walk * WATER.speedMult
-    : (crouched ? PLAYER.crouchSpeed : PLAYER.walk * (isSprinting() ? PLAYER.sprintMult : 1)) * wade;
+  const speed = crouched
+    ? PLAYER.crouchSpeed
+    : PLAYER.walk * (isSprinting() ? PLAYER.sprintMult : 1);
 
   // Sprint drives forward and strafe only: whatever part of the target velocity
   // points behind the camera is trimmed back to the walk speed, so you can back
@@ -4332,7 +3074,7 @@ function updatePlayer(dt) {
   // behind, so it keeps driving the world axes as before.
   let tx = wishDir.x * speed, tz = wishDir.z * speed;
   if (camMode !== CAM.TOP) {
-    const backCap = Math.min(speed, PLAYER.walk * (swimming ? 1 : wade));
+    const backCap = Math.min(speed, PLAYER.walk);
     const along = tx * -sy + tz * -cy;      // + ahead of the camera, - behind it
     if (along < -backCap) {
       const over = along + backCap;         // negative — the excess to take out
@@ -4341,28 +3083,7 @@ function updatePlayer(dt) {
     }
   }
 
-  if (swimming) {
-    // No ground to push off, so all three axes are driven the same way and the
-    // lerp itself provides the drag.
-    const k = 1 - Math.exp(-WATER.accel * dt);
-    v.x += (tx - v.x) * k;
-    v.z += (tz - v.z) * k;
-    v.y += (wishDir.y * speed - v.y) * k;
-    // Buoyancy: hand back most of the gravity the solver is about to apply.
-    v.y += 9.82 * (1 - WATER.gravityScale) * dt;
-    // Left alone near the top you settle at the surface and ride the swell. A
-    // deliberate dive gives way — but a couple of degrees of look-down does not,
-    // or you would sink every time you swam along the surface off the level.
-    if (Math.abs(wishDir.y) < 0.25) {
-      const bob = Math.sin(elapsed * 1.9) * 0.055 + Math.sin(elapsed * 1.07 + 2.1) * 0.035;
-      const rest = WATER.surfaceY + bob - bodyH * 0.85 + centerOffset();
-      const d = rest - p.y;
-      if (Math.abs(d) < 1.4) {
-        v.y += (THREE.MathUtils.clamp(d * 3.2, -1.2, 1.2) - v.y) * (1 - Math.exp(-6 * dt));
-      }
-    }
-    playerBody.wakeUp();
-  } else if (grounded) {
+  if (grounded) {
     const k = 1 - Math.exp(-PLAYER.groundAccel * dt);
     v.x += (tx - v.x) * k;
     v.z += (tz - v.z) * k;
@@ -4379,8 +3100,8 @@ function updatePlayer(dt) {
   // Steeper than maxSlope: no input authority at all. Player/level friction is
   // zero, so gravity simply slides you back down — that is the red 55-degree lane.
 
-  // --- jump (in water Space is the swim-up key instead) ---
-  if ((state.jumpQueued || keys.has('Space')) && coyote > 0 && !crouched && !swimming) {
+  // --- jump ---
+  if ((state.jumpQueued || keys.has('Space')) && coyote > 0 && !crouched) {
     v.y = PLAYER.jumpSpeed;
     coyote = 0;
     groundNy = 0;
@@ -4483,8 +3204,7 @@ function updateCamera(dt) {
     }
     // The boom ray only knows about the props, so the ground is handled
     // separately: never let the boom drop the camera through the deck. Off the
-    // platform the floor is the sea bed, which lets the boom dip underwater when
-    // you swim away from it. (Top-down needs no such guard — it sits straight
+    // platform the floor is the sea bed. (Top-down needs no such guard — it sits straight
     // above the player, and flat ground has nothing overhead.)
     const floorY = groundHeightAt(desiredPos.x, desiredPos.z) + 0.6;
     if (desiredPos.y < floorY) desiredPos.y = floorY;
@@ -4535,7 +3255,7 @@ window.addEventListener('wheel', (e) => {
 // ---------------------------------------------------------------------------
 const SHOVEL_REACH = 6.0;      // metres of reach from the eye
 const SHOVEL_CAP   = 64;       // blocks your hands hold
-const MAT_NAMES = ['sand', 'dirt', 'rock'];
+const MAT_NAMES = ['sand', 'dirt', 'rock', 'water'];
 
 const shovel = {
   on: false,
@@ -4646,8 +3366,6 @@ function editBlock(i, j, lvl, m) {
   const was = setVoxel(i, j, lvl, m);
   const k = j * GEN_N + i;
   colDug[k] = 1;
-  landTexel(k);
-  landTex.needsUpdate = true;
   patchCollider(i, j);
   // A column's faces are drawn against its neighbours' tops, so an edit on a
   // chunk border changes what the chunk next door has to draw as well.
@@ -4717,10 +3435,10 @@ const blocksHudEl = document.getElementById('blocks-hud');
 
 function refreshShovelUI() {
   const n = shovel.held.length;
-  const by = [0, 0, 0];
+  const by = new Array(N_MATS).fill(0);
   for (const m of shovel.held) by[m]++;
   const parts = [];
-  for (let m = 0; m < 3; m++) if (by[m]) parts.push(by[m] + ' ' + MAT_NAMES[m]);
+  for (let m = 0; m < N_MATS; m++) if (by[m]) parts.push(by[m] + ' ' + MAT_NAMES[m]);
   heldPanel.textContent = 'Blocks held: ' + n + (parts.length ? '  —  ' + parts.join(', ') : '');
   heldHudEl.textContent = String(n);
   shovelBtn.innerHTML = 'Shovel &mdash; ' + (shovel.on ? 'On' : 'Off');
@@ -4763,31 +3481,31 @@ const modeBtn   = document.getElementById('mode-btn');
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['Space / C', 'Swim up / down'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'],
                 ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['Space / C', 'Swim up / down'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'],
                 ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['1 2', 'Weather'], ['4 / 0', 'Add / clear cloud'],
+                ['Mouse', 'Look'], ['5', 'Materials'],
                 ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
-  [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump / swim up'],
-                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
-  [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump / swim up'],
-                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+  [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump'],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+  [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump'],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in'],
                 ['Shovel', 'Button, top left']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
-                ['Weather', 'Panel, top left']],
+                ['MATS', 'Panel, top left']],
 };
 // Appended while the shovel is out, in whichever camera you are in.
 const HELP_SHOVEL_DESKTOP = [['LMB / Z', 'Pick up block'], ['RMB / X', 'Place block']];
@@ -4804,8 +3522,6 @@ function refreshModeUI() {
   instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
 
-  // The weather controls only make sense while you are flying around watching
-  // the sky, so they ride with the free camera.
   document.body.classList.toggle('free-cam', camMode === CAM.FREE);
 
   // Fly pad doubles as the top-down zoom pad; action pad is for on-foot modes.
@@ -4823,11 +3539,50 @@ function refreshModeUI() {
 // makes itself unclickable the moment it succeeds, which is exactly why this one
 // "didn't always work". Esc frees the cursor (and pops the overlay, which this
 // button now sits above); a click in the world captures it again.
-bindTap(modeBtn, () => {
-  initAudio();                          // first gesture — unlock thunder
-  toggleGameMode();
-});
+bindTap(modeBtn, () => toggleGameMode());
 refreshModeUI();
+
+// ---------------------------------------------------------------------------
+// Materials panel
+//
+// A read-out of what the world is made of, one row per entry in TERRAIN_MATS.
+// The swatches are read straight off those materials rather than repeated as
+// literals here, so a colour only ever has to change in one place. The stats are
+// placeholders: nothing in the game has hardness or durability yet, and the
+// panel exists so there is somewhere for them to land when it does.
+// ---------------------------------------------------------------------------
+const MAT_LABELS = ['Sand', 'Dirt', 'Rock', 'Water'];
+// Per material, the placeholder rows under its name. The same shape the real
+// stats will have, so filling them in later is a data change and not a layout one.
+const MAT_STATS = [
+  ['Hardness: --', 'Durability: --'],
+  ['Hardness: --', 'Durability: --'],
+  ['Hardness: --', 'Durability: --'],
+  ['Hardness: --', 'Durability: --'],
+];
+
+const materialsEl  = document.getElementById('materials-ui');
+const materialsBtn = document.getElementById('btn-materials');
+
+document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
+  // getHexString() converts the linear-space colour back to the sRGB the browser
+  // wants, so the swatch matches what the cubes actually render as.
+  const hex = '#' + m.color.getHexString();
+  const stats = (MAT_STATS[i] || []).map((t) => `<span>${t}</span>`).join('');
+  return '<div class="mat-row">'
+       + `<div class="mat-sw" style="background:${hex}"></div>`
+       + `<div class="mat-txt"><b>${MAT_LABELS[i] || MAT_NAMES[i]}</b>${stats}</div>`
+       + '</div>';
+}).join('');
+
+let materialsOpen = false;
+function setMaterialsUI(on) {
+  materialsOpen = on;
+  materialsEl.classList.toggle('on', on);
+  materialsBtn.classList.toggle('on', on);
+}
+function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
+bindTap(materialsBtn, toggleMaterialsUI);
 
 // ---------------------------------------------------------------------------
 // Overlay
@@ -4858,7 +3613,6 @@ document.getElementById('start-btn').textContent = isTouchDevice ? 'Tap to fly' 
 
 function hideOverlay() {
   overlay.classList.add('hidden');
-  initAudio();                  // the gesture the browser wants before any sound
   if (!isTouchDevice) requestLock();
 }
 function showOverlay() { overlay.classList.remove('hidden'); }
@@ -4959,16 +3713,11 @@ function tick() {
   // the render so the highlight boxes are in the right place this frame.
   if (shovel.on) updateShovel();
   flushDirtyChunks();
-  waterTime.value = elapsed;
-  updateWaterVisuals();
-  // After the water swap, which owns the fog when the camera is submerged — the
-  // weather only repaints it while we are above the surface.
-  updateWeather(dt);
   sky.position.copy(camera.position);
-  // Slide the sea under the camera. The waves themselves are a function of world
-  // position, so nothing moves with it — the tessellation just follows the eye,
-  // and the horizon is always another 1180 units away.
-  ocean.position.set(camera.position.x, 0, camera.position.z);
+  // Slide the open sea under the camera, so the horizon is always another 1400
+  // units away however far out you fly. Only x/z — it stays at sea level.
+  seaPlane.position.x = camera.position.x;
+  seaPlane.position.z = camera.position.z;
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
 
   // --- HUD ---
@@ -4990,28 +3739,9 @@ function tick() {
       p.x.toFixed(1).padStart(6, ' ') + ',' +
       p.y.toFixed(1).padStart(6, ' ') + ',' +
       p.z.toFixed(1).padStart(6, ' ');
-    if (camMode === CAM.FREE) {
-      wxCountEl.textContent = String(clouds.length);
-      let nearest = null, nearestDist = Infinity;
-      for (const c of clouds) {
-        const d = c.mesh.position.distanceTo(p);
-        if (d < nearestDist) { nearestDist = d; nearest = c; }
-      }
-      wxCloudInfoEl.textContent = nearest
-        ? `nearest: storm ${nearest.scale.toFixed(1)} @ ${nearestDist.toFixed(0)}m`
-        : 'nearest: —';
-    }
   }
 
-  // Depth prepass: render cloud silhouettes into the depth buffer first,
-  // then the full scene with volumetric shading reads that depth to cull
-  // interior faces that would otherwise bleed through.
-  cloudGroup.visible = false;
   renderer.render(scene, camera);
-  cloudGroup.visible = true;
-  cloudDepthGroup.visible = false;
-  renderer.render(scene, camera);
-  cloudDepthGroup.visible = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -5470,30 +4200,19 @@ window.hermes = {
   shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,
   // The voxel store — the material of every block in the volume, not just the
   // surface, which is what a digging system would work against. voxelAtWorld
-  // takes metres; the rest take column indices and levels. SAND/DIRT/ROCK/AIR
-  // are the material values. Editing through setVoxel changes what the world
-  // *is* but not what is drawn: the meshes and the collider are baked.
-  SAND, DIRT, ROCK, AIR, VOX_FLOOR, SOIL_DEPTH, voxCount,
+  // takes metres; the rest take column indices and levels. SAND/DIRT/ROCK/WATER
+  // and AIR are the material values. Editing through setVoxel changes what the
+  // world *is* but not what is drawn: the meshes and the collider are baked.
+  SAND, DIRT, ROCK, WATER, AIR, SEA_LVL, VOX_FLOOR, SOIL_DEPTH, voxCount,
   voxelAt, voxelAtWorld, voxelColumn, setVoxel, solidTopAt,
   colI, colJ, colX, colZ, lvlOfY,
   // The island is bare by design — these are how you put something on it from
   // the console, collider included.
   addBox, addSphere, mat, objects,
-  // Weather: WX holds the live settings, spawnCloud(true) drops one in near you.
-  WX, clouds, spawnCloud, clearClouds, refreshWxUI,
-  weather: () => ({
-    count: clouds.length,
-    rate: WX.RATES[WX.rateIdx][0],
-    speed: WX.SPEEDS[WX.speedIdx][0],
-    gloom, rain: rainAmt,
-    scales: clouds.map((c) => c.scale).sort((a, b) => a - b),
-  }),
   // live read-outs of the controller internals (module-scoped `let`s)
   status: () => ({
     cam: CAM_NAMES[camMode],
     crouched,
-    swimming,
-    underwater,
     groundNy,
     eyeH,
     grounded: groundNy > GROUND_DOT,

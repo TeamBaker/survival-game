@@ -1415,6 +1415,12 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
 }
 // voxMat[voxOff[k] + lvl - VOX_FLOOR] is the material of block `lvl` in column k.
 const voxMat = new Uint8Array(voxCount);
+// Whether that block has anything to draw: 1 where at least one of its six
+// faces touches air, 0 where all six touch another block and nothing that drew
+// it could ever be seen. Same indexing as voxMat, and the only thing the mesh
+// builder consults about visibility — which is what keeps the question per
+// block instead of per column, so a dig leaves a wall and not a pillar.
+const blockVisible = new Uint8Array(voxCount);
 // Solid blocks in the world. The shovel moves blocks between here and the
 // player's hands and never anywhere else, so this plus what is held is an
 // invariant of the whole session.
@@ -1481,6 +1487,43 @@ function inVoxelRange(i, j, lvl) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return false;
   const k = j * GEN_N + i;
   return topLvl[k] !== NO_COLUMN && lvl >= VOX_FLOOR && lvl <= voxCap(k);
+}
+
+// How many of the six faces of (i, j, lvl) are open — a neighbour that is air,
+// or no neighbour at all because the block sits on the edge of the world. This
+// is the whole of the visibility rule: one open face and the block is drawn,
+// none and it is not there as far as the mesher is concerned.
+function countExposedFaces(i, j, lvl) {
+  let n = 0;
+  if (voxelAt(i - 1, j, lvl) === AIR) n++;
+  if (voxelAt(i + 1, j, lvl) === AIR) n++;
+  if (voxelAt(i, j - 1, lvl) === AIR) n++;
+  if (voxelAt(i, j + 1, lvl) === AIR) n++;
+  if (voxelAt(i, j, lvl - 1) === AIR) n++;
+  if (voxelAt(i, j, lvl + 1) === AIR) n++;
+  return n;
+}
+
+// Ask the question again for one block and write the answer back. Air is never
+// visible; anything off the store has nowhere to write and is left alone.
+function refreshVisible(i, j, lvl) {
+  if (!inVoxelRange(i, j, lvl)) return;
+  const p = voxOff[j * GEN_N + i] + lvl - VOX_FLOOR;
+  blockVisible[p] = voxMat[p] !== AIR && countExposedFaces(i, j, lvl) > 0 ? 1 : 0;
+}
+
+// The generated world, answered once. After this only editBlock() moves it, and
+// only for the seven blocks an edit can change.
+for (let j = 0; j < GEN_N; j++) {
+  for (let i = 0; i < GEN_N; i++) {
+    const k = j * GEN_N + i;
+    if (topLvl[k] === NO_COLUMN) continue;
+    const o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
+    for (let lvl = VOX_FLOOR; lvl <= cap; lvl++) {
+      if (voxMat[o + lvl] === AIR) continue;
+      blockVisible[o + lvl] = countExposedFaces(i, j, lvl) > 0 ? 1 : 0;
+    }
+  }
 }
 
 // Writing one back. This is the whole of what the shovel needs from the data

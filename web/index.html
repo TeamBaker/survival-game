@@ -2640,7 +2640,6 @@ const state = {
   touchActive: false,
   // character controller — touch buttons latch, keyboard equivalents are held
   jumpQueued: false,
-  jumpHeld: false,          // held state too, so JUMP can drive a swim upwards
   crouchBtn: false,
   sprintBtn: false,
 };
@@ -2903,9 +2902,7 @@ const btnJump   = document.getElementById('btn-jump');
 const btnCrouch = document.getElementById('btn-crouch');
 const btnSprint = document.getElementById('btn-sprint');
 
-bindHold(btnJump,
-  () => { state.jumpQueued = true; state.jumpHeld = true; },
-  () => { state.jumpHeld = false; });
+bindHold(btnJump, () => { state.jumpQueued = true; }, () => {});
 function bindToggle(el, get, set) {
   const press = (e) => {
     e.preventDefault();

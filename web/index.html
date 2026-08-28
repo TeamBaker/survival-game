@@ -1645,93 +1645,34 @@ function pushRun(m, cx, cz, lo, hi, t) {
   runBuf[m].push(cx, (lo + n * 0.5) * BLOCK, cz, n, t);
 }
 
-// Is any of the four blocks beside (i, j, lvl) air — does this block have a side
-// face for anything to see? Off the edge of the field reads as air, so a column
-// on the rim still shows the skirt it always did.
-const sideOpen = (i, j, lvl) =>
-  voxelAt(i - 1, j, lvl) === AIR || voxelAt(i + 1, j, lvl) === AIR ||
-  voxelAt(i, j - 1, lvl) === AIR || voxelAt(i, j + 1, lvl) === AIR;
 
-// Everything of column (i, j) that could be seen from outside it, appended to
-// runBuf. Returns the number of blocks it accounted for.
+// Every visible block in column (i, j), collapsed into runs by material and
+// shade.  A block is visible when blockVisible says it has at least one face
+// touching air — the array is the sole authority on visibility, so digging
+// never leaves a pillar and placing never leaves a ghost.
 function collectColumn(i, j) {
   const k = j * GEN_N + i;
   const top = sTop[k];
   if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return 0;
-
-  // How far down the exposed face has to reach: to the top of the lowest of the
-  // four neighbours, since everything under that is walled in on all sides and
-  // could never be seen. A missing neighbour is the rim of the field, and a
-  // column there shows a lip of its own instead of a hole.
-  //
-  // That bound only holds while the neighbours are solid from their tops down.
-  // Cutting into the side of a hill puts air in the middle of a column without
-  // moving its sTop, so the column behind it is suddenly exposed at a level the
-  // neighbour's top says is buried — the wall of the cut goes undrawn and you
-  // see straight through the hill. Once the shovel has been in this column or
-  // any of the four beside it, the bound is off and the walk runs to `deepest`,
-  // the same rule the fillet mesher uses.
-  let low = top, dug = colDug[k] !== 0, digLo = colDugLo[k];
-  for (const nk of [
-    i > 0         ? k - 1     : -1,
-    i < GEN_N - 1 ? k + 1     : -1,
-    j > 0         ? k - GEN_N : -1,
-    j < GEN_N - 1 ? k + GEN_N : -1,
-  ]) {
-    if (nk < 0) { low = Math.min(low, top - RIM_DEPTH); continue; }
-    const v = sTop[nk];
-    low = Math.min(low, v === NO_COLUMN ? top - RIM_DEPTH : v);
-    if (colDug[nk]) { dug = true; if (colDugLo[nk] < digLo) digLo = colDugLo[nk]; }
-  }
-  // One block under the deepest air the shovel has left in this column or any
-  // beside it, however far past the budget that is — a wall has to reach the
-  // floor of the hole it is the wall of.
-  const deepest = Math.max(VOX_FLOOR, Math.min(top - MAX_DEPTH, digLo - 1));
-  const bottom  = dug ? deepest : Math.max(deepest, Math.min(top, low + 1));
-
   const t = tint[k], o = voxOff[k] - VOX_FLOOR;
   const cx = colX(i), cz = colZ(j);
   let drawn = 0;
-
-  // A dug column can have air in the middle of it — a hole, or a block stacked
-  // over a gap — and the floor of that hole is as visible from above as the
-  // surface is, so the walk looks for exposed tops all the way to `bottom`,
-  // which `dug` has already pushed down to bedrock's reach.
-  const scanFloor = bottom;
-
   let lvl = top;
-  while (lvl >= scanFloor) {
+  while (lvl >= VOX_FLOOR) {
     const m = voxMat[o + lvl];
-    if (m === AIR) { lvl--; continue; }
-    // The exposed top block on its own, so its tint reads as one block from
-    // above while the run under it reads as the face of the column.
-    const capped = lvl === top || voxMat[o + lvl + 1] === AIR;
-    if (capped) {
-      pushRun(m, cx, cz, lvl, lvl, t * shadeOf(shadeStep(top - lvl)));
-      drawn++;
-      lvl--;
-      continue;
-    }
-    // Under it, the store's own column collapsed into runs: a vertical run of
-    // one material is one box rather than a stack of them — the cubes share
-    // their faces and their colour, so there is nothing on the outside of the
-    // run to tell the two apart. The soil band is shaded a shade off the rock
-    // under it even where both are rock, so a cliff still reads as a cliff.
-    // A block is worth drawing for its top face (`capped`, above) or for a side
-    // face; one with neither is walled in on all six and nothing that draws it
-    // could ever be seen. `bottom` settles that for a column solid from its top
-    // down — everything above it has air beside it, everything below is buried —
-    // but a dug column has holes in the middle, so there the sides are asked
-    // about block by block. Without it the walk runs from the hole to `bottom`
-    // and the column comes back as a pillar of everything under the dig.
-    if (lvl < bottom || (dug && !sideOpen(i, j, lvl))) { lvl--; continue; }
+    if (m === AIR || !blockVisible[o + lvl]) { lvl--; continue; }
+    // Visible block found — push it and try to extend the run downward.
     const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
     const step = shadeStep(top - lvl);
     let lo = lvl;
-    while (lo > bottom && voxMat[o + lo - 1] === m
-           && (!dug || sideOpen(i, j, lo - 1))
-           && (top - lo + 1 <= SOIL_DEPTH ? 1 : 0) === band
-           && shadeStep(top - lo + 1) === step) lo--;
+    while (lo > VOX_FLOOR) {
+      const m2 = voxMat[o + lo - 1];
+      if (m2 !== m || !blockVisible[o + lo - 1]) break;
+      const b2 = top - (lo - 1) <= SOIL_DEPTH ? 1 : 0;
+      if (b2 !== band) break;
+      if (shadeStep(top - lo + 1) !== step) break;
+      lo--;
+    }
     pushRun(m, cx, cz, lo, lvl, t * (band ? 0.94 : 0.86) * shadeOf(step));
     drawn += lvl - lo + 1;
     lvl = lo - 1;
@@ -3423,8 +3364,15 @@ function editBlock(i, j, lvl, m) {
   colDug[k] = 1;
   if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
   patchCollider(i, j);
-  // A column's faces are drawn against its neighbours' tops, so an edit on a
-  // chunk border changes what the chunk next door has to draw as well.
+  // Refresh visibility of the edited block and all six neighbours.
+  refreshVisible(i, j, lvl);
+  refreshVisible(i - 1, j, lvl);
+  refreshVisible(i + 1, j, lvl);
+  refreshVisible(i, j - 1, lvl);
+  refreshVisible(i, j + 1, lvl);
+  refreshVisible(i, j, lvl - 1);
+  refreshVisible(i, j, lvl + 1);
+  // Mark affected chunks dirty so meshes rebuild.
   for (let dj = -1; dj <= 1; dj++) {
     for (let di = -1; di <= 1; di++) {
       const ii = i + di, jj = j + dj;

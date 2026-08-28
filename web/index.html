@@ -790,7 +790,12 @@ const START_PITCH       = -14;    // degrees
 // which is the summit region, plus enough clearance to settle onto it.
 const SPAWN      = new THREE.Vector3(0, 12, 0);
 const SPAWN_YAW  = 0;             // degrees
-const PHYS_STEP  = 1 / 60;        // fixed physics timestep
+const PHYS_STEP  = 1 / 120;       // fixed physics timestep
+// Walking over cubes is walking up a staircase of 0.2 m lips, and the rounded
+// feet come off each one with a flick of upward velocity. Too small to be a
+// jump, big enough to read as a bounce — so while the player is standing on
+// ground and has not jumped, vertical velocity under this is bled off.
+const FOOT_CHATTER = 1.6;         // m/s
 const PLAYER = {
   radius:       0.4,
   standCenter:  0.8,              // body origin above the feet, standing
@@ -1605,29 +1610,38 @@ function collectColumn(i, j) {
   // four neighbours, since everything under that is walled in on all sides and
   // could never be seen. A missing neighbour is the rim of the field, and a
   // column there shows a lip of its own instead of a hole.
-  let low = top;
-  for (const v of [
-    i > 0         ? sTop[k - 1]     : NO_COLUMN,
-    i < GEN_N - 1 ? sTop[k + 1]     : NO_COLUMN,
-    j > 0         ? sTop[k - GEN_N] : NO_COLUMN,
-    j < GEN_N - 1 ? sTop[k + GEN_N] : NO_COLUMN,
+  //
+  // That bound only holds while the neighbours are solid from their tops down.
+  // Cutting into the side of a hill puts air in the middle of a column without
+  // moving its sTop, so the column behind it is suddenly exposed at a level the
+  // neighbour's top says is buried — the wall of the cut goes undrawn and you
+  // see straight through the hill. Once the shovel has been in this column or
+  // any of the four beside it, the bound is off and the walk runs to `deepest`,
+  // the same rule the fillet mesher uses.
+  let low = top, dug = colDug[k] !== 0;
+  for (const nk of [
+    i > 0         ? k - 1     : -1,
+    i < GEN_N - 1 ? k + 1     : -1,
+    j > 0         ? k - GEN_N : -1,
+    j < GEN_N - 1 ? k + GEN_N : -1,
   ]) {
-    const vv = v === NO_COLUMN ? top - RIM_DEPTH : v;
-    if (vv < low) low = vv;
+    if (nk < 0) { low = Math.min(low, top - RIM_DEPTH); continue; }
+    const v = sTop[nk];
+    low = Math.min(low, v === NO_COLUMN ? top - RIM_DEPTH : v);
+    if (colDug[nk]) dug = true;
   }
   const deepest = Math.max(VOX_FLOOR, top - MAX_DEPTH);
-  const bottom  = Math.max(deepest, Math.min(top, low + 1));
+  const bottom  = dug ? deepest : Math.max(deepest, Math.min(top, low + 1));
 
   const t = tint[k], o = voxOff[k] - VOX_FLOOR;
   const cx = colX(i), cz = colZ(j);
   let drawn = 0;
 
-  // Once the shovel has been in a column it can have air in the middle of it — a
-  // dug hole, or a block stacked over a gap — and the floor of that hole is as
-  // visible from above as the surface is, so the walk has to go all the way down
-  // looking for exposed tops. A column nobody has touched is solid from its
-  // surface to bedrock and there is provably nothing to find under `bottom`.
-  const scanFloor = colDug[k] ? deepest : bottom;
+  // A dug column can have air in the middle of it — a hole, or a block stacked
+  // over a gap — and the floor of that hole is as visible from above as the
+  // surface is, so the walk looks for exposed tops all the way to `bottom`,
+  // which `dug` has already pushed down to bedrock's reach.
+  const scanFloor = bottom;
 
   let lvl = top;
   while (lvl >= scanFloor) {
@@ -2598,31 +2612,11 @@ const onLand = (x, z) => groundHeightAt(x, z) > SEA_Y;
 SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
 
 // ---------------------------------------------------------------------------
-// The open sea past the rim of the field.
-//
-// The blocks stop at GEN_R, and the fog is only a few per cent opaque that close
-// in, so without something under the horizon the world would visibly end at a
-// square edge ninety-six metres out. This is the flat bed that used to sit under
-// the animated ocean, kept and lifted to sea level so it carries on flush with
-// the water blocks instead of showing a ledge where they run out.
-//
-// Not the old sea: no shader, no waves, no time uniform — one plane in the same
-// colour as a WATER cube, so the block plane simply reaches the horizon. It
-// rides with the camera, which is what keeps there from being an edge to reach.
+// There is no sea mesh. The WATER blocks in the voxel store are the whole of the
+// water: the field generates them from the bed up to sea level, so the sea is
+// made of the same cubes as the land and stops where they stop. Past the rim of
+// the field the fog closes in before the edge is legible.
 // ---------------------------------------------------------------------------
-const seaPlane = new THREE.Mesh(
-  new THREE.PlaneGeometry(2800, 2800),
-  mat(TERRAIN_MATS[WATER].color.getHex(), 0.22, 0.0, { envMapIntensity: 1.35 })
-);
-seaPlane.rotation.x = -Math.PI / 2;
-seaPlane.receiveShadow = true;
-seaPlane.castShadow = false;
-// Half a millimetre under the top of the water blocks: coplanar with them would
-// z-fight across the whole plane, and this is far too small a step to read.
-seaPlane.position.y = SEA_Y - 0.0005;
-// Centred on the camera and 1400 in radius, so it is never out of view.
-seaPlane.frustumCulled = false;
-scene.add(seaPlane);
 
 
 // ---------------------------------------------------------------------------
@@ -3697,8 +3691,18 @@ function tick() {
     updatePlayer(dt);
   }
 
-  // --- physics: fixed 60 Hz steps, sub-stepped to catch up with the frame ---
-  world.step(PHYS_STEP, dt, 4);
+  // --- physics: fixed 120 Hz steps, sub-stepped to catch up with the frame ---
+  // Twice the old rate: a shorter step resolves the block-edge contacts before
+  // they build into a shove, which is half of what made the walk stutter.
+  world.step(PHYS_STEP, dt, 8);
+  // The other half — damp the micro-bounce off block edges. Only on the ground,
+  // only outside the post-jump lock, and only under FOOT_CHATTER, so a real jump
+  // and a real fall are both left exactly as they were.
+  if (camMode !== CAM.FREE && groundNy > GROUND_DOT && jumpLock === 0) {
+    const vy = playerBody.velocity.y;
+    if (vy > 0 && vy < FOOT_CHATTER) playerBody.velocity.y = vy * 0.2;
+    else if (vy < 0 && vy > -FOOT_CHATTER) playerBody.velocity.y = vy * 0.6;
+  }
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);
@@ -3711,10 +3715,6 @@ function tick() {
   if (shovel.on) updateShovel();
   flushDirtyChunks();
   sky.position.copy(camera.position);
-  // Slide the open sea under the camera, so the horizon is always another 1400
-  // units away however far out you fly. Only x/z — it stays at sea level.
-  seaPlane.position.x = camera.position.x;
-  seaPlane.position.z = camera.position.z;
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
 
   // --- HUD ---

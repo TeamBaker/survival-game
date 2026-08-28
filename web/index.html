@@ -791,11 +791,6 @@ const START_PITCH       = -14;    // degrees
 const SPAWN      = new THREE.Vector3(0, 12, 0);
 const SPAWN_YAW  = 0;             // degrees
 const PHYS_STEP  = 1 / 120;       // fixed physics timestep
-// Walking over cubes is walking up a staircase of 0.2 m lips, and the rounded
-// feet come off each one with a flick of upward velocity. Too small to be a
-// jump, big enough to read as a bounce — so while the player is standing on
-// ground and has not jumped, vertical velocity under this is bled off.
-const FOOT_CHATTER = 1.6;         // m/s
 const PLAYER = {
   radius:       0.4,
   standCenter:  0.8,              // body origin above the feet, standing
@@ -1607,6 +1602,13 @@ function pushRun(m, cx, cz, lo, hi, t) {
   runBuf[m].push(cx, (lo + n * 0.5) * BLOCK, cz, n, t);
 }
 
+// Is any of the four blocks beside (i, j, lvl) air — does this block have a side
+// face for anything to see? Off the edge of the field reads as air, so a column
+// on the rim still shows the skirt it always did.
+const sideOpen = (i, j, lvl) =>
+  voxelAt(i - 1, j, lvl) === AIR || voxelAt(i + 1, j, lvl) === AIR ||
+  voxelAt(i, j - 1, lvl) === AIR || voxelAt(i, j + 1, lvl) === AIR;
+
 // Everything of column (i, j) that could be seen from outside it, appended to
 // runBuf. Returns the number of blocks it accounted for.
 function collectColumn(i, j) {
@@ -1672,11 +1674,19 @@ function collectColumn(i, j) {
     // their faces and their colour, so there is nothing on the outside of the
     // run to tell the two apart. The soil band is shaded a shade off the rock
     // under it even where both are rock, so a cliff still reads as a cliff.
-    if (lvl < bottom) { lvl--; continue; }
+    // A block is worth drawing for its top face (`capped`, above) or for a side
+    // face; one with neither is walled in on all six and nothing that draws it
+    // could ever be seen. `bottom` settles that for a column solid from its top
+    // down — everything above it has air beside it, everything below is buried —
+    // but a dug column has holes in the middle, so there the sides are asked
+    // about block by block. Without it the walk runs from the hole to `bottom`
+    // and the column comes back as a pillar of everything under the dig.
+    if (lvl < bottom || (dug && !sideOpen(i, j, lvl))) { lvl--; continue; }
     const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
     const step = shadeStep(top - lvl);
     let lo = lvl;
     while (lo > bottom && voxMat[o + lo - 1] === m
+           && (!dug || sideOpen(i, j, lo - 1))
            && (top - lo + 1 <= SOIL_DEPTH ? 1 : 0) === band
            && shadeStep(top - lo + 1) === step) lo--;
     pushRun(m, cx, cz, lo, lvl, t * (band ? 0.94 : 0.86) * shadeOf(step));
@@ -2616,33 +2626,6 @@ function groundHeightAt(x, z) {
   return top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
 }
 const onLand = (x, z) => groundHeightAt(x, z) > SEA_Y;
-
-// Stepping up onto a taller block. The collider is a staircase 20 cm at a time
-// and the solver climbs a stair by shoving the body up off the edge of it: a
-// flick of upward velocity, then the fall back onto the new level. Damping the
-// flick (FOOT_CHATTER) is not enough here, because the shove is also the only
-// thing carrying the player up. So on the ground the ride is driven from the
-// store instead — the top of the ground under their feet is where the body
-// belongs, and it is eased towards rather than jumped to.
-const STEP_FOOT = 0.3;   // metres of footprint the ground is read over
-const STEP_MAX  = 0.5;   // height difference this smooths; past it, a real fall
-const STEP_RATE = 16;    // 1/s of easing towards the surface
-
-// The highest ground under the player's feet. Read over a footprint rather than
-// straight down, so that a body already resting on the edge of a taller block is
-// not dragged back off it — but a narrower footprint than the 0.346 m a 0.4 m
-// foot has to keep from the face of a one-block step, so standing against a wall
-// never lifts anyone onto it.
-function footGroundAt(x, z) {
-  let y = -Infinity;
-  for (let dz = -STEP_FOOT; dz <= STEP_FOOT; dz += STEP_FOOT) {
-    for (let dx = -STEP_FOOT; dx <= STEP_FOOT; dx += STEP_FOOT) {
-      const g = groundHeightAt(x + dx, z + dz);
-      if (g > y) y = g;
-    }
-  }
-  return y;
-}
 
 // The origin is well inland whatever the seed does with the relief, so the
 // player starts on the column there with their feet a couple of centimetres
@@ -3732,24 +3715,9 @@ function tick() {
 
   // --- physics: fixed 120 Hz steps, sub-stepped to catch up with the frame ---
   // Twice the old rate: a shorter step resolves the block-edge contacts before
-  // they build into a shove, which is half of what made the walk stutter.
+  // they build into a shove, which is the one thing here that helps the walk.
+  // Nothing touches the body afterwards — the solver's answer is the answer.
   world.step(PHYS_STEP, dt, 8);
-  // The other half — damp the micro-bounce off block edges. Only on the ground,
-  // only outside the post-jump lock, and only under FOOT_CHATTER, so a real jump
-  // and a real fall are both left exactly as they were.
-  if (camMode !== CAM.FREE && groundNy > GROUND_DOT && jumpLock === 0) {
-    const vy = playerBody.velocity.y;
-    if (vy > 0 && vy < FOOT_CHATTER) playerBody.velocity.y = vy * 0.2;
-    else if (vy < 0 && vy > -FOOT_CHATTER) playerBody.velocity.y = vy * 0.6;
-    // And walk the height difference off rather than being bounced over it.
-    const pp = playerBody.position;
-    const dy = footGroundAt(pp.x, pp.z) + centerOffset() - pp.y;
-    if (Math.abs(dy) < STEP_MAX) {
-      pp.y += dy * Math.min(1, STEP_RATE * dt);
-      // The shove that would have done the climbing is no longer wanted.
-      if (dy > 0 && playerBody.velocity.y > 0) playerBody.velocity.y = 0;
-    }
-  }
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);

@@ -118,20 +118,6 @@
   }
   #sprint.on { opacity: 1; transform: translateX(-50%) scale(1); }
 
-  /* Tint that fades in while the camera is under the water surface. */
-  #underwater {
-    position: fixed;
-    inset: 0;
-    z-index: 5;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.28s ease;
-    background:
-      radial-gradient(ellipse at 50% 45%, rgba(60, 170, 220, 0.10), rgba(6, 52, 84, 0.50) 76%),
-      linear-gradient(180deg, rgba(70, 180, 230, 0.16), rgba(4, 34, 60, 0.40));
-  }
-  #underwater.on { opacity: 1; }
-
   /* On a narrow phone the centred pill would collide with the HUD panel. */
   @media (max-width: 620px) {
     #hud { font-size: 11px; padding: 6px 9px; }
@@ -324,76 +310,98 @@
     #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
   }
 
-  /* ---------- Weather controls (free camera only) ---------- */
-  #cloud-ui {
+  /* ---------- Materials panel ---------- */
+  /* Full-screen: fourteen materials with three numbers each is a table, not a
+     tooltip, and at panel size it was a column of ellipses on a phone. */
+  #materials-ui {
     position: fixed;
-    left: calc(10px + env(safe-area-inset-left));
-    bottom: calc(22px + env(safe-area-inset-bottom));
-    width: 236px;
-    max-width: 62vw;
-    padding: 9px 11px 10px;
-    font-size: 11px;
+    inset: 0;
+    padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
+             calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
+    font-size: 13px;
     line-height: 1.4;
-    background: rgba(8, 14, 24, 0.58);
-    border: 1px solid rgba(160, 200, 255, 0.16);
-    border-radius: 8px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    background: rgba(8, 14, 24, 0.95);
     display: none;
-    z-index: 60;
+    z-index: 100;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
-  body.free-cam #cloud-ui { display: block; }
-  /* On touch the whole left half of the screen is the fly joystick — it is placed
-     wherever the thumb lands — so a panel down there eats input. Move it up under
-     the camera-mode chip, well clear of where a thumb naturally rests. */
-  body.touch #cloud-ui {
-    top: calc(134px + env(safe-area-inset-top));
-    bottom: auto;
-  }
-
-  #cloud-ui .title {
+  #materials-ui.on { display: block; }
+  #materials-ui .title {
     display: block;
-    margin-bottom: 6px;
-    font-size: 10px;
+    margin-bottom: 14px;
+    font-size: 12px;
     letter-spacing: 0.16em;
     color: #6f92bd;
     text-transform: uppercase;
   }
-  .wx-row {
+  .mat-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-top: 5px;
+    gap: 12px;
+    margin-bottom: 12px;
   }
-  .wx-row .lbl { color: #7fa8d8; white-space: nowrap; }
-  .wx-row .lbl b { color: #eaf2ff; font-weight: 700; }
-  .wx-btn {
+  .mat-sw {
     flex: 0 0 auto;
-    min-width: 82px;
-    padding: 5px 10px;
+    width: 30px;
+    height: 30px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+  }
+  .mat-txt { min-width: 0; }
+  .mat-txt b { display: block; color: #eaf2ff; font-weight: 700; }
+  .mat-txt span { display: block; color: #7fa8d8; font-size: 11px; }
+  /* Same pill as the MATS button that opens it, parked in the top corner. */
+  #mat-close {
+    position: absolute;
+    top: calc(16px + env(safe-area-inset-top));
+    right: calc(16px + env(safe-area-inset-right));
+    width: 34px;
+    height: 34px;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 15px;
     font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #eaf2ff;
-    background: rgba(70, 120, 190, 0.34);
-    border: 1px solid rgba(150, 195, 245, 0.42);
-    border-radius: 6px;
+    line-height: 1;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
     cursor: pointer;
     touch-action: manipulation;
   }
-  .wx-btn:active { background: rgba(110, 170, 240, 0.6); }
-  .wx-btn.off { color: #93a4b8; background: rgba(60, 72, 90, 0.32); }
-  #wx-foot { margin-top: 7px; color: #62819f; font-size: 10px; }
-  #wx-foot b { color: #9ecbff; }
-  /* A phone has no number row — on touch the buttons are the whole interface. */
-  body.touch #cloud-ui .key { display: none; }
+  #mat-close:active { transform: translateY(1px); }
+  #mat-foot { margin-top: 14px; color: #62819f; font-size: 11px; }
+  #mat-foot b { color: #9ecbff; }
+  /* A phone has no number row — the MATS button is the whole interface there. */
+  body.touch #mat-foot .key { display: none; }
+
+  #btn-materials {
+    position: fixed;
+    top: calc(136px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-materials.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-materials:active { transform: translateY(1px); }
 
   @media (max-width: 620px) {
-    /* Narrow enough to sit beside #instructions on a 390-wide phone. */
-    #cloud-ui { width: 190px; font-size: 10px; padding: 7px 9px 8px; }
-    .wx-btn { min-width: 66px; font-size: 10px; padding: 5px 7px; }
+    #materials-ui { font-size: 12px; }
+    #btn-materials { font-size: 10px; padding: 7px 12px; }
   }
 
   /* ---------- Shovel (temporary block-moving tool) ---------- */
@@ -582,116 +590,6 @@
     white-space: pre-wrap;
     text-align: left;
   }
-
-  /* ---------- 2D Debug View ---------- */
-  #debug2d-wrap {
-    position: fixed;
-    inset: 0;
-    display: none;
-    flex-direction: column;
-    background: rgba(4, 8, 16, 0.94);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    z-index: 100;
-    touch-action: none;
-  }
-  #debug2d-wrap.on { display: flex; }
-  #debug2d-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    padding: calc(14px + env(safe-area-inset-top)) 14px 14px 14px;
-    overflow: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  #debug2d-panel canvas {
-    display: block;
-    border-radius: 8px;
-    cursor: crosshair;
-    /* Allow the panel's native scroll to pan the canvas (it's wider than an
-       iPhone viewport); pointer handlers distinguish a tap from a drag. */
-    touch-action: manipulation;
-  }
-  #debug2d-panel .title {
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: #9ecbff;
-    margin-bottom: 2px;
-    flex-shrink: 0;
-  }
-  #debug2d-panel .instructions {
-    font-size: 13px;
-    color: #7fa8d8;
-    margin-bottom: 10px;
-    flex-shrink: 0;
-  }
-  #debug2d-close {
-    position: fixed;
-    top: calc(10px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
-    background: rgba(220, 70, 70, 0.7);
-    border: 1.5px solid rgba(255, 130, 130, 0.6);
-    color: #fff;
-    font-size: 28px;
-    font-weight: 700;
-    cursor: pointer;
-    padding: 8px 18px;
-    border-radius: 12px;
-    font-family: inherit;
-    touch-action: manipulation;
-    z-index: 110;
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  }
-  #debug2d-close:active { background: rgba(255, 80, 80, 0.85); transform: scale(0.95); }
-
-  /* ---------- Debug 2D toggle button ---------- */
-  #btn-debug2d {
-    position: fixed;
-    top: calc(52px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
-    padding: 8px 14px;
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #cfe6ff;
-    background: rgba(20, 34, 54, 0.62);
-    border: 1px solid rgba(150, 195, 245, 0.4);
-    border-radius: 999px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    cursor: pointer;
-    touch-action: manipulation;
-    z-index: 14;
-  }
-  #btn-debug2d.on {
-    color: #06101f;
-    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
-    border-color: transparent;
-  }
-  #btn-debug2d:active { transform: translateY(1px); }
-  @media (max-width: 620px) {
-    #btn-debug2d { font-size: 10px; padding: 7px 12px; }
-  }
-  #debug2d-panel .legend {
-    font-size: 12px;
-    color: #8aa0bc;
-    margin-top: 10px;
-    line-height: 1.8;
-    flex-shrink: 0;
-  }
-  #debug2d-panel .legend span {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border-radius: 3px;
-    vertical-align: middle;
-    margin-right: 5px;
-  }
 </style>
 </head>
 <body>
@@ -706,16 +604,16 @@
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
 <button id="mode-btn" class="ui-el">Game Mode</button>
-<button id="btn-debug2d">2D Map</button>
+<button id="btn-materials">Mats</button>
 
-<div id="cloud-ui" class="ui-el">
-  <span class="title">Weather</span>
-  <div class="wx-row"><span class="lbl"><b class="key">1</b> Spawn rate</span><button class="wx-btn" id="wx-rate">Medium</button></div>
-  <div class="wx-row"><span class="lbl"><b class="key">2</b> Wind speed</span><button class="wx-btn" id="wx-speed">Medium</button></div>
-  <div id="wx-foot"><span class="key"><b>4</b> spawn now &middot; <b>0</b> clear &mdash; </span>sky: <span id="wx-count">0</span><br><span id="wx-cloud-info">nearest: &mdash;</span></div>
+<!-- Filled in from TERRAIN_MATS so the swatches are the colours actually used. -->
+<div id="materials-ui" class="ui-el">
+  <button id="mat-close" aria-label="Close">&times;</button>
+  <span class="title">Materials</span>
+  <div id="mat-list"></div>
+  <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / buoy / str</div>
 </div>
 
-<div id="underwater"></div>
 <div id="crosshair"></div>
 <div id="sprint">SPRINT</div>
 
@@ -748,22 +646,6 @@
 
 <div id="loading">Loading&hellip;</div>
 
-<!-- 2D Debug: terrain smoothing cross-section -->
-<div id="debug2d-wrap">
-  <div id="debug2d-panel">
-    <div class="title">2D Terrain Debug</div>
-    <div class="instructions">Tap blocks to add/remove · Scroll to pan</div>
-    <canvas id="debug2d-cv"></canvas>
-    <div class="legend">
-      <span style="background:#5a8a3c"></span>grass
-      <span style="background:#8b6b3d"></span>dirt
-      <span style="background:#6a6e78"></span>rock
-      <span style="background:#2a8ed8"></span>smoothstep line
-    </div>
-  </div>
-  <button id="debug2d-close">&times;</button>
-</div>
-
 <script src="lib/three.js?v=2"></script>
 <script src="lib/cannon-global.js?v=2"></script>
 <script type="module">
@@ -785,7 +667,7 @@ const START_PITCH       = -14;    // degrees
 // which is the summit region, plus enough clearance to settle onto it.
 const SPAWN      = new THREE.Vector3(0, 12, 0);
 const SPAWN_YAW  = 0;             // degrees
-const PHYS_STEP  = 1 / 60;        // fixed physics timestep
+const PHYS_STEP  = 1 / 120;       // fixed physics timestep
 const PLAYER = {
   radius:       0.4,
   standCenter:  0.8,              // body origin above the feet, standing
@@ -806,21 +688,10 @@ const PLAYER = {
 const GROUND_DOT = Math.cos((PLAYER.maxSlope + 1) * Math.PI / 180);
 const THIRD_DIST = 5.0;           // third-person boom length
 
-// ----- the sea -----
-// The ocean is everywhere and the platform sits in the middle of it, so the swim
-// tests only ever care about how deep you are, never about whether you are
-// inside some footprint.
-const WATER = {
-  floorY: -60,          // only bounds the underwater tint; the bed is well above it
-  surfaceY: 0.0,        // sea level, and the datum every height below is measured from
-  gravityScale: 0.20,   // buoyancy — only a fifth of gravity reaches you in here
-  speedMult: 0.60,      // swimming is slower than walking
-  accel: 6.0,           // how fast you reach swim speed; doubles as water drag
-  swimIn:  0.55,        // submerged fraction where walking becomes swimming ...
-  swimOut: 0.42,        // ... and where swimming hands back to walking
-};
-const WATER_FOG = 0x11506f;
-const inWaterColumn = () => true;
+// ----- sea level -----
+// The datum every height in the world is measured from. The sea is blocks now,
+// so this is only the level the generator floods a column up to — nothing swims.
+const SEA_Y = 0.0;
 
 // ----- the island -----
 // Every solid thing in the world is a cube this many metres on a side. It is the
@@ -850,36 +721,18 @@ const ISLAND_PEAK = 12.0;
 const GEN_R      = 96;
 const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (960)
 const SEABED_DEPTH = 16;     // how far the sea floor drops away offshore
-// How far a swell has to travel from the island before it is at full open-water
-// size, so the water inshore of that stays readable. Scaled with the island, so
-// the calm belt still starts just outside the surf rather than halfway inland.
-const CALM_R     = 88;
-
 const SUN = new THREE.Vector3(0.45, 0.72, 0.52).normalize();
 const SKY_ZENITH  = new THREE.Color(0x1a56b8);
 const SKY_HORIZON = new THREE.Color(0xbdd6ec);
 const SKY_GROUND  = new THREE.Color(0x64798a);
 const FOG_COLOR   = 0xb8d1e8;
-// Thin enough that the platform is legible from well offshore, thick enough to
-// swallow the ocean before its edge reaches the far plane. ~97% opaque by 700
-// units, and it barely touches anything inside 150.
+// Thin enough that the island is legible from well offshore, thick enough to
+// close over the rim of the field before it reaches the far plane. ~97% opaque
+// by 700 units, and it barely touches anything inside 150.
 const FOG_DENSITY = 0.0028;
 
 const DEG = Math.PI / 180;
 const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-
-// ----- the visible sea -----
-// The surface is a disc that rides with the camera, so there is always ocean out
-// to the horizon whichever way you look and however far you swim. Its rings are
-// spaced geometrically: dense enough under your feet to carry the surf, coarse
-// far out where the fog has already swallowed everything anyway.
-const OCEAN_R      = 1180;   // radius of the surface disc — 2360 across
-const OCEAN_R0     = 0.9;    // radius of the innermost ring
-const OCEAN_RINGS  = isTouchDevice ? 96 : 148;
-const OCEAN_SPOKES = isTouchDevice ? 128 : 192;
-// Kept comfortably inside the disc so the surface is always the thing that
-// draws the horizon; the bed only has to cover the gap the heightfield leaves.
-const DEEP_SIZE    = 1400;   // the flat bed under the lot
 
 // ---------------------------------------------------------------------------
 // Renderer / scene / camera
@@ -901,9 +754,8 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
 
-// The far plane has to swallow the weather: clouds spawn up to 1500 units out and
-// are meant to be readable from there, so 1000 would have clipped them away before
-// they ever appeared. Pushing near out to 0.25 at the same time leaves the depth
+// The far plane sits well past anything the fog leaves visible, so nothing ever
+// clips out at the horizon. Pushing near out to 0.25 at the same time leaves the depth
 // range *better* conditioned than the old 0.1/1000 pair, and nothing in the scene
 // ever gets within a quarter unit of the eye.
 const camera = new THREE.PerspectiveCamera(75, 1, 0.25, 3200);
@@ -917,8 +769,6 @@ const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
   uniforms: {
-    // Cloned: the weather lerps these towards an overcast palette every frame,
-    // and the constants have to survive as the fair-weather end of that mix.
     uZenith:  { value: SKY_ZENITH.clone() },
     uHorizon: { value: SKY_HORIZON.clone() },
     uGround:  { value: SKY_GROUND.clone() },
@@ -1035,8 +885,8 @@ sun.target.position.copy(SHADOW_CENTER);
 scene.add(sun);
 scene.add(sun.target);
 
-// Named, because the weather drives them: heavy cloud overhead pulls the sun and
-// the sky fill down, and a lightning strike briefly slams the ambient up.
+// Named so the three stay together and a change to the key light is obvious
+// against the fill it is meant to sit above.
 const SUN_BASE = 2.9, HEMI_BASE = 0.55, AMB_BASE = 0.18;
 const hemiLight = new THREE.HemisphereLight(0xbcd8f5, 0x4a5a3c, HEMI_BASE);
 const ambLight  = new THREE.AmbientLight(0xffffff, AMB_BASE);
@@ -1056,6 +906,7 @@ world.defaultContactMaterial.restitution = 0.0;
 const physWorld  = new CANNON.Material('world');
 const physProp   = new CANNON.Material('prop');
 const physPlayer = new CANNON.Material('player');
+const physDebris = new CANNON.Material('debris');
 
 // The character drives its own horizontal velocity, so friction against the
 // level would only fight the controller — zero it and let the code decide when
@@ -1064,6 +915,12 @@ world.addContactMaterial(new CANNON.ContactMaterial(physPlayer, physWorld, { fri
 world.addContactMaterial(new CANNON.ContactMaterial(physPlayer, physProp,  { friction: 0.0, restitution: 0.0 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physWorld, { friction: 0.45, restitution: 0.06 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physProp,  { friction: 0.4,  restitution: 0.06 }));
+// Rubble that has broken off the terrain: grabbier than a prop so a chunk does
+// not skate off down a slope, but with enough bounce left to read as rock
+// hitting rock rather than as a box being set down.
+world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physWorld, { friction: 0.6, restitution: 0.22 }));
+world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physProp,  { friction: 0.5, restitution: 0.18 }));
+world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physDebris,{ friction: 0.6, restitution: 0.15 }));
 
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
@@ -1161,82 +1018,8 @@ function mulberry32(a) {
   };
 }
 
-// Hermite smoothstep on a raw ratio — used by the cloud shaping below.
+// Hermite smoothstep on a raw ratio.
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
-
-// ---------------------------------------------------------------------------
-// Shader library — value noise, the shore wave, and a palette helper. The sea
-// pulls from this, and so does anything else that needs to agree with where the
-// water actually is at a given instant.
-// ---------------------------------------------------------------------------
-
-// Hex literals are authored in sRGB; the shaders work in the linear space three
-// converts them to, so bake the conversion in rather than doing it per pixel.
-function glslColor(hex) {
-  const c = new THREE.Color(hex);
-  return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
-}
-
-const NOISE_GLSL = /* glsl */`
-  float hash21(vec2 p) {
-    p = fract(p * vec2(127.31, 311.7));
-    p += dot(p, p + 34.23);
-    return fract(p.x * p.y);
-  }
-  // Smoothed value noise — one lattice cell per unit, so callers scale by the
-  // feature size they want.
-  float vnoise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    float a = hash21(i);
-    float b = hash21(i + vec2(1.0, 0.0));
-    float c = hash21(i + vec2(0.0, 1.0));
-    float d = hash21(i + vec2(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-  }
-  // Four octaves is the point where another one stops being visible under the
-  // lighting. Output sits in 0..1 with a mean near 0.5.
-  float fbm(vec2 p) {
-    float s = 0.0, a = 0.5;
-    for (int i = 0; i < 4; i++) { s += a * vnoise(p); p = p * 2.07 + 13.1; a *= 0.5; }
-    return s;
-  }
-  // Octaves with independent phases rarely agree, so fbm huddles inside about
-  // 0.35..0.6 and mixing on it raw comes out flat. Everything that picks a
-  // colour uses this instead: same field, stretched to actually reach 0 and 1.
-  float fbmC(vec2 p) { return clamp((fbm(p) - 0.47) * 2.7 + 0.5, 0.0, 1.0); }
-  // One travelling sine: (height, dH/dx, dH/dz). Displacing by .x and building a
-  // normal from .yz keeps the highlights riding the waves instead of sitting
-  // still on a flat sheet.
-  vec3 waveOct(vec2 p, vec2 k, float a, float speed, float t) {
-    float ph = dot(p, k) + t * speed;
-    float c = a * cos(ph);
-    return vec3(a * sin(ph), c * k.x, c * k.y);
-  }
-  // Rollers running in at the platform, unit amplitude. Crests are rings around
-  // the origin, warped by a slow noise so they arrive at an angle rather than as
-  // a perfect bullseye. The gradient ignores the warp — the error is a few
-  // degrees of tilt and nothing reads it.
-  vec3 shoreRoller(vec2 p, float t) {
-    float r = max(length(p), 1.0);
-    // ~39 units between crests: long enough that the mesh still resolves them
-    // from a couple of hundred units offshore.
-    float ph = -(r + fbm(p * 0.012) * 26.0) * 0.16 + t * 0.62;
-    float c = cos(ph);
-    vec2 g = -0.16 * (p / r) * c;
-    return vec3(sin(ph), g.x, g.y);
-  }
-  // Height the wash reaches on the sand, in metres above sea level. The sea
-  // displaces its edge by exactly this, so foam on the sand lines up with foam
-  // on the water.
-  const float SHORE_RUN = 0.50;
-`;
-
-const SEA_PALETTE = /* glsl */`
-  const vec3 SEA_SHALLOW = ${glslColor(0x37b0ae)};  // in the shallows
-  const vec3 SEA_DEEP    = ${glslColor(0x0c4a76)};
-  const vec3 SEA_FOAM    = ${glslColor(0xeff7fa)};
-`;
 
 // ---------------------------------------------------------------------------
 // The island — a procedural heightmap, quantised into BLOCK-sized cubes.
@@ -1249,7 +1032,7 @@ const SEA_PALETTE = /* glsl */`
 //  2b. fill the voxel store — the material of every block in the volume, not
 //      just the one on top, which is what anything digging into the island will
 //      read and write;
-//   3. build the THREE.InstancedMeshes, per chunk and per material;
+//   3. build the meshes of the exposed faces, per chunk and per material;
 //   4. hand the same numbers to the sea (as a texture, so the water knows where
 //      to shoal and break) and to cannon (as a heightfield, so you can walk).
 //
@@ -1395,15 +1178,34 @@ function fieldAt(i, j) {
 }
 
 // ----- pass 2: block levels and materials -----
-const SAND = 0, DIRT = 1, ROCK = 2;
+// The four the island was first built out of keep their ids, so nothing that
+// already reads a voxel has to change; the variants added after them extend the
+// list rather than reorder it. Each is a real material with weight, buoyancy and
+// strength (MAT_STATS below) — the same rock in three states of decay, the same
+// earth wet, fine or packed hard.
+const SAND = 0, DIRT = 1, ROCK = 2, WATER = 3;
+const FINE_DIRT = 4, MUD = 5, HARD_DIRT = 6, FINE_MUD = 7;
+const STONE_DUST = 8, STONE_MUD = 9, BRITTLE_STONE = 10;
+const CLAY = 11, CLAY_MUD = 12, HARD_CLAY = 13;
+const N_MATS = 14;
 // Not a terrain material: the value the voxel store below uses for a block that
-// is not there. It sorts after the three real ones so `m < AIR` means solid.
-const AIR = 3;
+// is not there. It sorts after the real ones so `m < AIR` means solid.
+const AIR = N_MATS;
+// The block level whose top is sea level, and the level every flooded column is
+// filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
+// one wholly under SEA_Y.
+const SEA_LVL = Math.round(SEA_Y / BLOCK) - 1;
 const NO_COLUMN = -32768;
 // Level k is the block filling y from k*BLOCK to (k+1)*BLOCK, so level -1 is the
 // first one under water.
 const topLvl = new Int16Array(GEN_N * GEN_N).fill(NO_COLUMN);
 const topMat = new Uint8Array(GEN_N * GEN_N);
+// The top level of the *solid* ground, which is topLvl everywhere the column is
+// dry and the bed under the water plane everywhere it is not, plus what that bed
+// is made of. Water is a block like any other, so the store has to know where
+// the ground it sits on stops.
+const bedLvl = new Int16Array(GEN_N * GEN_N).fill(NO_COLUMN);
+const bedMat = new Uint8Array(GEN_N * GEN_N);
 const tint   = new Float32Array(GEN_N * GEN_N);
 // Blocks either side of a column that its slope is read over — 1.2 m, wide
 // enough that the stencil reads the hillside rather than the one-block jitter
@@ -1423,11 +1225,46 @@ function pickMaterial(h, slope, x, z) {
   // boundaries the same broad scale as everything else on the island — at 3 m
   // they were a per-block speckle along every edge.
   const n = vnoise2(x * 0.12, z * 0.12);           // -1 .. 1
-  if (h < -0.2) return SAND;                       // the sea floor and the wash
-  if (slope > 1.05 + n * 0.30) return ROCK;        // anything you could not stand on
+  // A second field, independent of the first and on the same broad scale, which
+  // only ever chooses *which variant* of a band a patch is made of. Where the
+  // bands themselves fall is still `n` alone, so the island's shape and its
+  // beach line are exactly what they were.
+  const v = vnoise2(x * 0.09 + 41.7, z * 0.09 - 17.3);
+  if (h <= SEA_Y) return WATER;                    // sea level and below: the water plane
+  // Anything you could not stand on. Most of it is sound rock; the rest is the
+  // crumbling face of it, which is softer to dig and lighter to carry.
+  if (slope > 1.05 + n * 0.30) {
+    return v > 0.45 ? BRITTLE_STONE : (v < -0.55 ? STONE_DUST : ROCK);
+  }
   if (h < 1.2 + n * 0.5) return SAND;              // the beach, up to knee height
-  return DIRT;                                     // all the gentle ground above it
+  // Just above the tide line the ground never dries out, so the damp variants
+  // sit in a band there rather than anywhere on the island.
+  if (h < 3.0 + n) return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
+  // All the gentle ground above it: earth, with clay banks and loose topsoil
+  // through it.
+  return v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
 }
+
+// What each surface material becomes further down its own band. Digging is meant
+// to get harder the deeper it goes, so the lower half of the soil under any
+// column is the packed or waterlogged version of whatever caps it. Indexed by
+// material id; WATER's entry is never read (a flooded column's bed is sand).
+const DEEP_MAT = [
+  MUD,            // SAND — wet sand under the beach
+  HARD_DIRT,      // DIRT
+  ROCK,           // ROCK
+  WATER,          // WATER
+  DIRT,           // FINE_DIRT
+  FINE_MUD,       // MUD
+  BRITTLE_STONE,  // HARD_DIRT
+  HARD_DIRT,      // FINE_MUD
+  BRITTLE_STONE,  // STONE_DUST
+  ROCK,           // STONE_MUD
+  ROCK,           // BRITTLE_STONE
+  HARD_CLAY,      // CLAY
+  HARD_CLAY,      // CLAY_MUD
+  BRITTLE_STONE,  // HARD_CLAY
+];
 
 {
   const rnd = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
@@ -1442,11 +1279,25 @@ function pickMaterial(h, slope, x, z) {
       // the water over it is. The sea floor is the same cubes as the island and
       // falls away to the deep on the same field, so there is nowhere the world
       // hands off from voxels to a smooth surface.
-      topLvl[k] = Math.floor(h / BLOCK);
+      const gl = Math.floor(h / BLOCK);
       // |grad h| is the tangent of the slope.
       const dx = (fieldAt(i + SLOPE_STEP, j) - fieldAt(i - SLOPE_STEP, j)) / (2 * SLOPE_STEP * BLOCK);
       const dz = (fieldAt(i, j + SLOPE_STEP) - fieldAt(i, j - SLOPE_STEP)) / (2 * SLOPE_STEP * BLOCK);
-      topMat[k] = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j));
+      const m = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j));
+      topMat[k] = m;
+      if (m === WATER) {
+        // Flooded: the column's own ground carries on down where it was, and
+        // water blocks stack on top of it to a dead-flat plane at sea level.
+        // Sand under all of it, which is what the old shoreline rule laid down
+        // before the water was blocks.
+        bedLvl[k] = Math.min(gl, SEA_LVL);
+        bedMat[k] = SAND;
+        topLvl[k] = SEA_LVL;
+      } else {
+        bedLvl[k] = gl;
+        bedMat[k] = m;
+        topLvl[k] = gl;
+      }
     }
   }
 }
@@ -1491,6 +1342,12 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
 }
 // voxMat[voxOff[k] + lvl - VOX_FLOOR] is the material of block `lvl` in column k.
 const voxMat = new Uint8Array(voxCount);
+// Whether that block has anything to draw: 1 where at least one of its six
+// faces touches air, 0 where all six touch another block and nothing that drew
+// it could ever be seen. Same indexing as voxMat, and the only thing the mesh
+// builder consults about visibility — which is what keeps the question per
+// block instead of per column, so a dig leaves a wall and not a pillar.
+const blockVisible = new Uint8Array(voxCount);
 // Solid blocks in the world. The shovel moves blocks between here and the
 // player's hands and never anywhere else, so this plus what is held is an
 // invariant of the whole session.
@@ -1498,13 +1355,21 @@ let worldBlocks = 0;
 for (let k = 0; k < GEN_N * GEN_N; k++) {
   const top = topLvl[k];
   if (top === NO_COLUMN) continue;
-  const o = voxOff[k] - VOX_FLOOR, surf = topMat[k];
+  const o = voxOff[k] - VOX_FLOOR, bed = bedLvl[k], surf = bedMat[k];
   // Sand or dirt in a band under the surface, and bedrock under that whatever is
   // on top — which is what gives a sand-capped headland its grey base.
-  const soilLo = Math.max(VOX_FLOOR, top - SOIL_DEPTH);
+  const soilLo = Math.max(VOX_FLOOR, bed - SOIL_DEPTH);
+  // The soil band in two halves rather than one: the surface material on top,
+  // its DEEP_MAT variant under it, so a metre down the same hillside is packed
+  // earth or wet clay instead of more of the same.
+  const soilMid = Math.max(soilLo, bed - (SOIL_DEPTH >> 1));
   voxMat.fill(ROCK, voxOff[k], o + soilLo);
-  voxMat.fill(surf, o + soilLo, o + top + 1);
-  // The headroom is empty — and AIR is 3, not the 0 a fresh Uint8Array is full
+  voxMat.fill(DEEP_MAT[surf], o + soilLo, o + soilMid);
+  voxMat.fill(surf, o + soilMid, o + bed + 1);
+  // Everything the bed leaves between itself and sea level is water — solid
+  // blocks, so the sea is a flat plane of them and not a shader.
+  if (bed < top) voxMat.fill(WATER, o + bed + 1, o + top + 1);
+  // The headroom is empty — and AIR is not the 0 a fresh Uint8Array is full
   // of, so it has to be written rather than left alone.
   voxMat.fill(AIR, o + top + 1, o + voxCap(k) + 1);
   worldBlocks += top - VOX_FLOOR + 1;
@@ -1521,6 +1386,14 @@ sTop.set(topLvl);
 // generated is solid from its surface down to bedrock, which is what lets the
 // mesh builder stop looking as soon as it is out of sight of the neighbours.
 const colDug = new Uint8Array(GEN_N * GEN_N);
+// And the lowest level it left air at, or NO_DIG while nothing has. MAX_DEPTH
+// below a column's top is as far as the mesher draws off its own bat, which is a
+// budget and not a bound: sink a shaft deeper than that and the columns beside
+// it stop walling at the budget, so from there on down you are looking through
+// the hillside at the sky with a few deep-drawn columns left standing in it.
+// This is how much further than the budget the ground beside a dig has to reach.
+const NO_DIG = 32767;
+const colDugLo = new Int16Array(GEN_N * GEN_N).fill(NO_DIG);
 
 // ----- reading and writing the store -----
 // Levels are the ones topLvl is in: level k is the block filling y from k*BLOCK
@@ -1546,6 +1419,43 @@ function inVoxelRange(i, j, lvl) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return false;
   const k = j * GEN_N + i;
   return topLvl[k] !== NO_COLUMN && lvl >= VOX_FLOOR && lvl <= voxCap(k);
+}
+
+// How many of the six faces of (i, j, lvl) are open — a neighbour that is air,
+// or no neighbour at all because the block sits on the edge of the world. This
+// is the whole of the visibility rule: one open face and the block is drawn,
+// none and it is not there as far as the mesher is concerned.
+function countExposedFaces(i, j, lvl) {
+  let n = 0;
+  if (voxelAt(i - 1, j, lvl) === AIR) n++;
+  if (voxelAt(i + 1, j, lvl) === AIR) n++;
+  if (voxelAt(i, j - 1, lvl) === AIR) n++;
+  if (voxelAt(i, j + 1, lvl) === AIR) n++;
+  if (voxelAt(i, j, lvl - 1) === AIR) n++;
+  if (voxelAt(i, j, lvl + 1) === AIR) n++;
+  return n;
+}
+
+// Ask the question again for one block and write the answer back. Air is never
+// visible; anything off the store has nowhere to write and is left alone.
+function refreshVisible(i, j, lvl) {
+  if (!inVoxelRange(i, j, lvl)) return;
+  const p = voxOff[j * GEN_N + i] + lvl - VOX_FLOOR;
+  blockVisible[p] = voxMat[p] !== AIR && countExposedFaces(i, j, lvl) > 0 ? 1 : 0;
+}
+
+// The generated world, answered once. After this only editBlock() moves it, and
+// only for the seven blocks an edit can change.
+for (let j = 0; j < GEN_N; j++) {
+  for (let i = 0; i < GEN_N; i++) {
+    const k = j * GEN_N + i;
+    if (topLvl[k] === NO_COLUMN) continue;
+    const o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
+    for (let lvl = VOX_FLOOR; lvl <= cap; lvl++) {
+      if (voxMat[o + lvl] === AIR) continue;
+      blockVisible[o + lvl] = countExposedFaces(i, j, lvl) > 0 ? 1 : 0;
+    }
+  }
 }
 
 // Writing one back. This is the whole of what the shovel needs from the data
@@ -1594,11 +1504,11 @@ function voxelColumn(i, j) {
   return { base: VOX_FLOOR, top: cap, materials: voxMat.subarray(voxOff[k], voxOff[k] + cap - VOX_FLOOR + 1) };
 }
 
-// ----- pass 3: the instanced meshes -----
+// ----- pass 3: the terrain meshes -----
 const RIM_DEPTH  = 25;   // blocks of skirt on a column with nothing beside it (5 m)
 const MAX_DEPTH  = 80;   // and the most any column will ever draw (16 m)
 
-// The island is far too wide to be one mesh per material: a single instanced
+// The island is far too wide to be one mesh per material: a single terrain
 // mesh has a single bounding sphere, so every block in it is submitted on every
 // frame and on every shadow pass whether or not it is behind you. Splitting it
 // into a grid of chunks costs a few dozen draw calls and buys back real frustum
@@ -1610,189 +1520,227 @@ const CHUNK   = 120;                        // columns per chunk side (24 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 
-// Sand light and dry, dirt brown, rock grey. Nothing green anywhere — no grass
-// on this island yet.
+// Sand light and dry, dirt brown, rock grey, water blue. Nothing green anywhere
+// — no grass on this island yet. Indexed by the material ids above.
+//
+// The variants are the same three families shifted along one axis each: wetter
+// is darker, finer is lighter, harder is darker and less saturated. That is the
+// only thing keeping a fourteen-colour palette legible in a wall of cubes — the
+// band you are looking at is a family, and the shade tells you how deep in it
+// you have dug.
 const TERRAIN_MATS = [
   mat(0xd8c69c, 0.97, 0.00, { envMapIntensity: 0.45 }),   // SAND
   mat(0x8a6a46, 0.98, 0.00, { envMapIntensity: 0.32 }),   // DIRT
   mat(0x8c9198, 0.90, 0.02, { envMapIntensity: 0.55 }),   // ROCK
+  // Smoother and glossier than the ground: it is still a cube, but it should
+  // catch the sun and the sky the way none of the dry materials do.
+  mat(0x3399cc, 0.22, 0.00, { envMapIntensity: 1.35 }),   // WATER
+  // The earth family. Wet ones are a touch smoother — damp ground catches a
+  // little more light than dust does.
+  mat(0x9b7a52, 0.99, 0.00, { envMapIntensity: 0.30 }),   // FINE_DIRT
+  mat(0x6b5a3e, 0.88, 0.00, { envMapIntensity: 0.42 }),   // MUD
+  mat(0x7a5c38, 0.96, 0.00, { envMapIntensity: 0.34 }),   // HARD_DIRT
+  mat(0x5c4a32, 0.86, 0.00, { envMapIntensity: 0.44 }),   // FINE_MUD
+  // The stone family, all of it a shade of the same grey as ROCK.
+  mat(0xa0a8b0, 0.98, 0.00, { envMapIntensity: 0.40 }),   // STONE_DUST
+  mat(0x6a7078, 0.85, 0.02, { envMapIntensity: 0.50 }),   // STONE_MUD
+  mat(0x909898, 0.94, 0.01, { envMapIntensity: 0.50 }),   // BRITTLE_STONE
+  // The clay family — tan, and the least rough of the dry materials.
+  mat(0xc4a882, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
+  mat(0x8a7a60, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
+  mat(0xb09070, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
 ];
-const blockGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+// The same materials again, white and vertex-coloured. Every block's colour
+// — the material, the column's tint and the depth shading, all of it — is baked
+// into the mesh now that the terrain is one buffer per chunk rather than a pile
+// of instances with a colour each, so what the shader multiplies that by has to
+// be plain white.
+const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
+  const f = src.clone();
+  f.color.setRGB(1, 1, 1);
+  f.vertexColors = true;
+  return f;
+});
 const terrain = new THREE.Group();
 scene.add(terrain);
 
-// Per chunk: the three instanced meshes (any of them null where the chunk has no
-// block of that material), and what it contributes to the two HUD totals.
+// Per chunk: one mesh per material (null where the chunk has no block of that
+// material), and what it contributes to the two HUD totals.
 const chunkMesh   = new Array(CHUNK_N * CHUNK_N).fill(null);
 const chunkBlocks = new Int32Array(CHUNK_N * CHUNK_N);
-const chunkInsts  = new Int32Array(CHUNK_N * CHUNK_N);
-let blockCount = 0, instanceCount = 0;
+const chunkFaces  = new Int32Array(CHUNK_N * CHUNK_N);
+let blockCount = 0, faceCount = 0;
 
-// Which of the two surfaces you are looking at. Pass 3b below builds a smooth
-// mesh over the same blocks; where it covers a chunk the cubes underneath it are
-// hidden, since the two occupy the same half-block of space and would otherwise
-// poke through one another. Declared up here because rebuildChunk() has to know
-// the answer for a chunk it has just rebuilt.
-const VIEW = { SMOOTH: 0, BLOCKS: 1, BOTH: 2 };
-const VIEW_NAMES = ['smooth', 'blocks', 'both'];
-let terrainView = VIEW.SMOOTH;
-// Filled in by pass 3b; null for a chunk too far out to have a smooth mesh, and
-// those keep their cubes in every view so the far sea floor is never a hole.
+// Cubes are the only terrain surface. The smooth fillet skin of pass 3b still
+// exists in this file but is never built, so nothing ever covers the blocks and
+// every chunk's cubes stay visible. Declared up here because rebuildChunk() calls
+// applyChunkView() on a chunk it has just rebuilt.
 const filletMesh = new Array(CHUNK_N * CHUNK_N).fill(null);
 
 function applyChunkView(c) {
-  const show = terrainView !== VIEW.SMOOTH || !filletMesh[c];
   const ms = chunkMesh[c];
-  if (ms) for (const im of ms) if (im) im.visible = show;
+  if (ms) for (const im of ms) if (im) im.visible = true;
 }
 
-// Scratch, reused by every rebuild: per material, a flat list of runs —
-// x, y-centre, z, height in blocks, tint.
-const runBuf = [[], [], []];
-function pushRun(m, cx, cz, lo, hi, t) {
-  const n = hi - lo + 1;
-  if (n <= 0) return;
-  runBuf[m].push(cx, (lo + n * 0.5) * BLOCK, cz, n, t);
+// How much darker a block is for sitting below the top of its own column. The
+// per-column tint alone gives the field its speckle but says nothing about
+// depth, so a cliff came out as one flat slab of whatever it is made of; this
+// is the other axis, and it is what makes a face read as a face.
+//
+// Quantised into steps rather than applied per block, so that a cliff comes back
+// as a handful of bands rather than a smooth ramp — the banding is the point,
+// and it is what makes the depth read as blocks. SHADE_STEPS of them and no
+// more: past that the gradient has done its work.
+const SHADE_SPAN  = 4;      // blocks per step (0.8 m)
+const SHADE_STEPS = 6;      // steps before the shading bottoms out
+const SHADE_FLOOR = 0.62;   // how dark the deepest step is, as a factor on the tint
+const shadeStep = (d) => (d <= 0 ? 0 : Math.min(SHADE_STEPS, (d / SHADE_SPAN) | 0));
+const shadeOf = (step) => 1 - (1 - SHADE_FLOOR) * (step / SHADE_STEPS);
+
+// Scratch, reused by every rebuild: per material, the loose vertices of one
+// chunk's exposed faces — position, normal and colour, four vertices a quad and
+// nothing shared between quads. Two faces meeting at an edge disagree about both
+// the normal and the colour there, so a shared corner would round the block off.
+const faceBuf = Array.from({ length: N_MATS }, () => ({ pos: [], nor: [], col: [] }));
+
+// The six faces of a block: the neighbour that has to be air for the face to be
+// worth drawing at all, the direction the face looks in, and its four corners as
+// offsets in half-blocks from the centre of the block. The corners are wound
+// counter-clockwise seen from outside, so the quad faces out and its back is the
+// side buried in the solid.
+const HALF_BLOCK = BLOCK * 0.5;
+const FACES = [
+  { di:  1, dj:  0, dl:  0, n: [ 1,  0,  0], v: [ 1, -1,  1,   1, -1, -1,   1,  1, -1,   1,  1,  1] },
+  { di: -1, dj:  0, dl:  0, n: [-1,  0,  0], v: [-1, -1, -1,  -1, -1,  1,  -1,  1,  1,  -1,  1, -1] },
+  { di:  0, dj:  0, dl:  1, n: [ 0,  1,  0], v: [-1,  1,  1,   1,  1,  1,   1,  1, -1,  -1,  1, -1] },
+  { di:  0, dj:  0, dl: -1, n: [ 0, -1,  0], v: [-1, -1, -1,   1, -1, -1,   1, -1,  1,  -1, -1,  1] },
+  { di:  0, dj:  1, dl:  0, n: [ 0,  0,  1], v: [-1, -1,  1,   1, -1,  1,   1,  1,  1,  -1,  1,  1] },
+  { di:  0, dj: -1, dl:  0, n: [ 0,  0, -1], v: [ 1, -1, -1,  -1, -1, -1,  -1,  1, -1,   1,  1, -1] },
+];
+
+// One face of the block centred on (cx, cy, cz), in the one colour that block is.
+function pushFace(m, f, cx, cy, cz, r, g, b) {
+  const B = faceBuf[m], v = f.v, n = f.n;
+  for (let q = 0; q < 4; q++) {
+    const o = q * 3;
+    B.pos.push(cx + v[o] * HALF_BLOCK, cy + v[o + 1] * HALF_BLOCK, cz + v[o + 2] * HALF_BLOCK);
+    B.nor.push(n[0], n[1], n[2]);
+    B.col.push(r, g, b);
+  }
 }
 
-// Everything of column (i, j) that could be seen from outside it, appended to
-// runBuf. Returns the number of blocks it accounted for.
+
+// Every exposed face of every visible block in column (i, j), pushed into the
+// scratch buffers. A block is visible when blockVisible says it has at least one
+// face touching air — the array is the sole authority on visibility, so digging
+// never leaves a pillar and placing never leaves a ghost — and of a visible
+// block only the faces that touch air themselves are drawn, so the six-sided box
+// that used to stand in for every block is down to the one or two sides of it
+// anything could ever see. Returns the blocks it drew something for.
 function collectColumn(i, j) {
   const k = j * GEN_N + i;
   const top = sTop[k];
   if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return 0;
-
-  // How far down the exposed face has to reach: to the top of the lowest of the
-  // four neighbours, since everything under that is walled in on all sides and
-  // could never be seen. A missing neighbour is the rim of the field, and a
-  // column there shows a lip of its own instead of a hole.
-  let low = top;
-  for (const v of [
-    i > 0         ? sTop[k - 1]     : NO_COLUMN,
-    i < GEN_N - 1 ? sTop[k + 1]     : NO_COLUMN,
-    j > 0         ? sTop[k - GEN_N] : NO_COLUMN,
-    j < GEN_N - 1 ? sTop[k + GEN_N] : NO_COLUMN,
-  ]) {
-    const vv = v === NO_COLUMN ? top - RIM_DEPTH : v;
-    if (vv < low) low = vv;
-  }
-  const deepest = Math.max(VOX_FLOOR, top - MAX_DEPTH);
-  const bottom  = Math.max(deepest, Math.min(top, low + 1));
-
   const t = tint[k], o = voxOff[k] - VOX_FLOOR;
   const cx = colX(i), cz = colZ(j);
   let drawn = 0;
-
-  // Once the shovel has been in a column it can have air in the middle of it — a
-  // dug hole, or a block stacked over a gap — and the floor of that hole is as
-  // visible from above as the surface is, so the walk has to go all the way down
-  // looking for exposed tops. A column nobody has touched is solid from its
-  // surface to bedrock and there is provably nothing to find under `bottom`.
-  const scanFloor = colDug[k] ? deepest : bottom;
-
-  let lvl = top;
-  while (lvl >= scanFloor) {
+  for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
     const m = voxMat[o + lvl];
-    if (m === AIR) { lvl--; continue; }
-    // The exposed top block on its own, so its tint reads as one block from
-    // above while the run under it reads as the face of the column.
-    const capped = lvl === top || voxMat[o + lvl + 1] === AIR;
-    if (capped) {
-      pushRun(m, cx, cz, lvl, lvl, t);
-      drawn++;
-      lvl--;
-      continue;
-    }
-    // Under it, the store's own column collapsed into runs: a vertical run of
-    // one material is one box rather than a stack of them — the cubes share
-    // their faces and their colour, so there is nothing on the outside of the
-    // run to tell the two apart. The soil band is shaded a shade off the rock
-    // under it even where both are rock, so a cliff still reads as a cliff.
-    if (lvl < bottom) { lvl--; continue; }
+    if (m === AIR || !blockVisible[o + lvl]) continue;
+    // The one colour the whole block is drawn in — its material, the column's
+    // own tint, whether it is still in the soil band, and how far below the top
+    // of the column it sits — baked in here because the mesh carries a colour
+    // per vertex and the material itself is plain white.
     const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
-    let lo = lvl;
-    while (lo > bottom && voxMat[o + lo - 1] === m
-           && (top - lo + 1 <= SOIL_DEPTH ? 1 : 0) === band) lo--;
-    pushRun(m, cx, cz, lo, lvl, t * (band ? 0.94 : 0.86));
-    drawn += lvl - lo + 1;
-    lvl = lo - 1;
+    const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl));
+    const c = TERRAIN_MATS[m].color;
+    const r = c.r * s, g = c.g * s, b = c.b * s;
+    const cy = (lvl + 0.5) * BLOCK;
+    for (let f = 0; f < 6; f++) {
+      const F = FACES[f];
+      if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
+      pushFace(m, F, cx, cy, cz, r, g, b);
+    }
+    drawn++;
   }
   return drawn;
 }
 
-const runMtx = new THREE.Matrix4();
-const runCol = new THREE.Color();
-
 // (Re)build one chunk's meshes from the store. Cheap enough to call from a tap:
-// the whole cost is one pass over the chunk's columns plus three buffer uploads.
+// the whole cost is one pass over the chunk's columns plus a buffer upload per
+// material.
 function rebuildChunk(c) {
   const old = chunkMesh[c];
   if (old) {
-    for (const im of old) {
-      if (!im) continue;
-      terrain.remove(im);
-      im.dispose();              // frees the instance buffers, not the shared geo
+    for (const me of old) {
+      if (!me) continue;
+      terrain.remove(me);
+      me.geometry.dispose();     // frees the vertex buffers, not the shared material
     }
   }
-  runBuf[0].length = runBuf[1].length = runBuf[2].length = 0;
+  for (let m = 0; m < N_MATS; m++) {
+    const B = faceBuf[m];
+    B.pos.length = 0; B.nor.length = 0; B.col.length = 0;
+  }
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   let blocks = 0;
   for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) blocks += collectColumn(i, j);
 
-  const meshes = [null, null, null];
-  let insts = 0;
-  for (let m = 0; m < 3; m++) {
-    const a = runBuf[m];
-    const n = a.length / 5;
-    if (n === 0) continue;                       // plenty of chunks are all sand
-    const im = new THREE.InstancedMesh(blockGeo, TERRAIN_MATS[m], n);
-    for (let q = 0; q < n; q++) {
-      const o = q * 5;
-      runMtx.makeScale(1, a[o + 3], 1);          // one run, however many blocks tall
-      runMtx.setPosition(a[o], a[o + 1], a[o + 2]);
-      im.setMatrixAt(q, runMtx);
-      runCol.setScalar(a[o + 4]);
-      im.setColorAt(q, runCol);
+  const meshes = new Array(N_MATS).fill(null);
+  let faces = 0;
+  for (let m = 0; m < N_MATS; m++) {
+    const B = faceBuf[m];
+    const nv = B.pos.length / 3, nq = nv / 4;
+    if (nq === 0) continue;                      // plenty of chunks are all sand
+    // Two triangles a quad, over the four corners the quad already pushed.
+    const idx = nv > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
+    for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
+      idx[p]     = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
+      idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
     }
-    insts += n;
-    im.instanceMatrix.needsUpdate = true;
-    if (im.instanceColor) im.instanceColor.needsUpdate = true;
-    im.receiveShadow = true;
-    // Casting is a second full pass over every block. A phone gets the sun's
-    // shading and the player's shadow, but not the island shadowing itself.
-    im.castShadow = !isTouchDevice;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(B.pos), 3));
+    geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(B.nor), 3));
+    geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(B.col), 3));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
     // The per-chunk bound is the whole reason for the split — without it three
     // quarters of the island would be drawn from behind the camera.
-    if (im.computeBoundingSphere) im.computeBoundingSphere();
-    terrain.add(im);
-    meshes[m] = im;
+    geo.computeBoundingSphere();
+
+    const me = new THREE.Mesh(geo, TERRAIN_FACE_MATS[m]);
+    me.receiveShadow = true;
+    // Casting is a second full pass over every face. A phone gets the sun's
+    // shading and the player's shadow, but not the island shadowing itself.
+    me.castShadow = !isTouchDevice;
+    terrain.add(me);
+    meshes[m] = me;
+    faces += nq;
   }
 
   chunkMesh[c] = meshes;
   applyChunkView(c);
   blockCount    += blocks - chunkBlocks[c];
-  instanceCount += insts  - chunkInsts[c];
+  faceCount     += faces  - chunkFaces[c];
   chunkBlocks[c] = blocks;
-  chunkInsts[c]  = insts;
+  chunkFaces[c]  = faces;
 }
 
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 
 // ----- pass 3b: the fillet surface -----
-// The same terrain as one smooth skin instead of a field of cubes, and the 3D
-// counterpart of the 2D debug view's outline walk. It is not a different shape
+// The same terrain as one smooth skin instead of a field of cubes. It is not a
+// different shape
 // and it is not an interpolation between column heights: it traces the surface
 // the block mass actually exposes — every face of every block that has air
 // against it, tops, sides, and the undersides of anything jutting out over a
 // gap — and the only thing it does differently is round the 90° joints where
 // two of those faces meet.
 //
-// The 2D view does that in three steps: collect every exposed unit face as a
-// directed edge (d2dCollectEdges), chain the edges into an outline
-// (d2dChainEdges), then replace every corner of the outline with a
-// quarter-circle arc (d2dFilletPolyline). Here the same three steps are local
+// In cross-section it is three steps: collect every exposed unit face as a
+// directed edge, chain the edges into an outline, then replace every corner of
+// the outline with a quarter-circle arc. Here the same three steps are local
 // rather than global, because a 3D surface has no single walkable outline: each
 // exposed face contributes its own tile, inset by the fillet radius on every
 // side that joins another face at 90°, and the arc over each joint is split
@@ -1804,7 +1752,7 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // corner of a step, arc bending away from the solid, taking the corner off) and
 // concave where that cell is filled and the one above it is too (the inside
 // corner at the foot of a wall, arc bending out into the air, filling the
-// corner in) — exactly the two cases the 2D corner walk rounds, and with the
+// corner in) — exactly the two cases that corner walk rounds, and with the
 // same radius. A face whose neighbour simply carries on in the same plane has
 // no joint there at all and no inset, so a flat run of blocks comes out flat,
 // a cliff comes out vertical, and a staircase gets a real arc at each step
@@ -1814,10 +1762,9 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // reads as a curve rather than a facet, and every extra one is paid for on
 // every filleted edge of every block in range.
 const FILLET_SUB = 2;
-// Fillet radius, in metres: half a block, matching the 2D view's D2D_FILLET_R
-// (0.5 of its one-unit-wide columns). Two opposite insets on the same face then
-// sum to exactly the block width, so they meet in the middle at worst and never
-// cross.
+// Fillet radius, in metres: half a block. Two opposite insets on the same face
+// then sum to exactly the block width, so they meet in the middle at worst and
+// never cross.
 const FILLET_R_MAX = BLOCK * 0.5;
 // How far out from the middle of the field gets a skin, in metres. Past the
 // shoreline and its wash and not much further: at a vertex every few centimetres
@@ -1857,8 +1804,8 @@ for (let d = 0; d < 6; d++) FDIR[d].op = FDIR[FOPP[d]];
 const FFRAME = [[2, 4], [4, 2], [4, 0], [0, 4], [0, 2], [2, 0]];
 
 // Is there a block at (i, j, l)? Anything under the store's floor reads as
-// bedrock — an infinite solid, so nothing ever grows a face on its underside,
-// the same trick the 2D view's `h < 0` plays — and anything off the side of the
+// bedrock — an infinite solid, so nothing ever grows a face on its underside —
+// and anything off the side of the
 // field, or above a column's top, reads as air.
 function filletSolid(i, j, l) {
   if (l < VOX_FLOOR) return true;
@@ -1913,7 +1860,7 @@ function filletJoint(i, j, l, g, d) {
 // Whether the joint on this face's `g` edge is still at full depth by the time
 // that edge reaches its `h` end, as a 0/1 weight on the arc there.
 //
-// This is the one thing the 2D outline never has to answer. A fillet there runs
+// This is the one thing a cross-section never has to answer. A fillet there runs
 // along a line and stops at a corner; here it runs along a strip, and the ends
 // of that strip are edges other tiles have to meet flush. So the question is
 // really about the tile on the other side of that end: the joint keeps its full
@@ -2513,6 +2460,7 @@ function buildVertexCaps(cx, cz, vao, vcx, vcz) {
 }
 
 const filletGroup = new THREE.Group();
+filletGroup.visible = false;      // blocks-only terrain: the skin is never shown
 scene.add(filletGroup);
 // One material for all three terrain colours. The skin blends across a material
 // boundary rather than stepping over it, so the colour has to ride on the
@@ -2586,67 +2534,9 @@ function rebuildFilletChunk(c) {
   applyChunkView(c);                // the cubes under it hide or come back
 }
 
-// Which surface is on screen. Cycles smooth → blocks → both; `both` is a debug
-// view and the two do interpenetrate in it, since the skin cuts the corner off
-// every cube it runs over, which is the entire point of it.
-function setTerrainView(v) {
-  terrainView = ((v % 3) + 3) % 3;
-  filletGroup.visible = terrainView !== VIEW.BLOCKS;
-  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) applyChunkView(c);
-  return VIEW_NAMES[terrainView];
-}
-
-{
-  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
-    rebuildFilletChunk(c);
-  }
-}
-setTerrainView(terrainView);
-
-// ----- pass 4a: the land texture the sea reads -----
-// One texel per column, aligned on the column centres, so the water's idea of
-// where the ground is agrees with the blocks it can see. Height is packed into a
-// byte over LAND_MIN .. LAND_MIN + LAND_SPAN: eight centimetres of quantisation
-// near the shore, which is the only place the precision matters. Both ends of
-// the range clip, and neither end minds: nine metres down is already "deep" to
-// any swell, and the island's summits are ten metres clear of the water, which
-// the sea reads as "dry" whether it thinks they are ten metres up or twelve.
-const LAND_MIN = -10, LAND_SPAN = 20;
-const landData = new Uint8Array(GEN_N * GEN_N * 4);
-// The block *top*: the sea has to stop at the surface it can see, not at the
-// smooth curve underneath it.
-function landTexel(k) {
-  const top = sTop[k];
-  const h = top === NO_COLUMN ? LAND_MIN : (top + 1) * BLOCK;
-  const e = Math.round(THREE.MathUtils.clamp((h - LAND_MIN) / LAND_SPAN, 0, 1) * 255);
-  landData[k * 4] = landData[k * 4 + 1] = landData[k * 4 + 2] = e;
-  landData[k * 4 + 3] = 255;
-}
-const landTex = (() => {
-  for (let k = 0; k < GEN_N * GEN_N; k++) landTexel(k);
-  const tex = new THREE.DataTexture(landData, GEN_N, GEN_N, THREE.RGBAFormat);
-  tex.minFilter = tex.magFilter = THREE.LinearFilter;
-  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.generateMipmaps = false;
-  tex.needsUpdate = true;
-  return tex;
-})();
-
-// What the sea reads instead of a heightmap of its own. Inside the generated
-// field it is the bake above; outside it the island's mask is already zero, so
-// the same analytic sea floor the bake ends on simply carries on and the two
-// meet without a seam.
-const LAND_GLSL = /* glsl */`
-  uniform sampler2D uLandTex;
-  float landAt(vec2 p) {
-    float deep = ${(-(SHORE_DROP + SHELF_DROP)).toFixed(2)}
-      - ${SEABED_DEPTH.toFixed(1)} * smoothstep(
-          ${ISLAND_R.toFixed(1)}, ${(ISLAND_R * 1.95).toFixed(1)}, length(p));
-    vec2 uv = p * ${(1 / (2 * GEN_R)).toFixed(8)} + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return deep;
-    return texture2D(uLandTex, uv).r * ${LAND_SPAN.toFixed(1)} + ${LAND_MIN.toFixed(1)};
-  }
-`;
+// The skin is not built at startup and not rebuilt by the shovel — the cubes are
+// the terrain. rebuildFilletChunk() above is left in place for debug use from the
+// console; nothing in the game calls it.
 
 // ----- pass 4b: the collider -----
 // A cannon heightfield on the same grid, its vertices sitting on the centres of
@@ -2706,331 +2596,20 @@ function groundHeightAt(x, z) {
   const top = sTop[j * GEN_N + i];
   return top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
 }
-const onLand = (x, z) => groundHeightAt(x, z) > WATER.surfaceY;
+const onLand = (x, z) => groundHeightAt(x, z) > SEA_Y;
 
 // The origin is well inland whatever the seed does with the relief, so the
 // player starts on the column there with their feet a couple of centimetres
 // clear of whichever block happens to be on top of it.
 SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
 
-
 // ---------------------------------------------------------------------------
-// Cloud shadows — the ground half of the weather system.
-//
-// Shadow-mapping the clouds is not an option: they sit 150-250 units up, which is
-// *above* the directional light's own position, so they fall outside its frustum
-// entirely. Instead the biggest clouds near the camera hand their footprint to
-// the ground shaders as a short list of discs, already projected down the sun
-// direction onto sea level, and the sea darkens inside them.
-// Four floats each: centre x, centre z, radius, strength.
+// There is no sea mesh. The WATER blocks in the voxel store are the whole of the
+// water: the field generates them from the bed up to sea level, so the sea is
+// made of the same cubes as the land and stops where they stop. Past the rim of
+// the field the fog closes in before the edge is legible.
 // ---------------------------------------------------------------------------
-const MAX_CLOUD_SHADOWS = 8;
-const cloudShadowArr = new Float32Array(MAX_CLOUD_SHADOWS * 4);
-const uCloudShadows = { value: cloudShadowArr };
-// How far the shadow slides from the cloud that casts it, per unit of altitude.
-const CLOUD_SHADOW_SLANT = new THREE.Vector2(SUN.x / SUN.y, SUN.z / SUN.y);
 
-const CLOUD_SHADOW_GLSL = /* glsl */`
-  uniform float uCloudShadows[${MAX_CLOUD_SHADOWS * 4}];
-  // 0 in full sun .. 1 under the thickest part of a storm cell. The disc holds
-  // full strength out to 55% of its radius before it starts to fall away: a
-  // shadow with a wide solid core and a soft rim is what actually reads as a
-  // cloud passing overhead, where one that fades from the centre outward just
-  // reads as a smudge.
-  float cloudShade(vec2 p) {
-    float s = 0.0;
-    for (int i = 0; i < ${MAX_CLOUD_SHADOWS}; i++) {
-      float r = uCloudShadows[i * 4 + 2];
-      if (r <= 0.0) continue;
-      float d = distance(p, vec2(uCloudShadows[i * 4], uCloudShadows[i * 4 + 1]));
-      float v = uCloudShadows[i * 4 + 3] * (1.0 - smoothstep(r * 0.55, r, d));
-      // Stacked rather than max()'d: two cells drifting across each other put
-      // more mass between the ground and the sun than either does alone.
-      s = s + v - s * v;
-    }
-    return clamp(s, 0.0, 1.0);
-  }
-`;
-
-// ---------------------------------------------------------------------------
-// Ocean — an animated surface at sea level plus a flat deep bed under it, so
-// the water still has something below it out past the edge of the heightfield.
-// The pair rides with the camera on `ocean`, which is what makes the sea read
-// as endless: there is never an edge to reach, and the fog closes long before
-// the disc's rim. Both live directly in the scene rather than in `objects`, so
-// the third-person boom raycast does not pull the camera in when you swim.
-// ---------------------------------------------------------------------------
-const waterTime = { value: 0 };
-const ocean = new THREE.Group();
-scene.add(ocean);
-{
-  const deep = new THREE.Mesh(
-    new THREE.PlaneGeometry(DEEP_SIZE, DEEP_SIZE),
-    new THREE.MeshStandardMaterial({ color: 0x2b4550, roughness: 1.0, metalness: 0.0 })
-  );
-  deep.rotation.x = -Math.PI / 2;
-  // The one flat surface left in the world, and it is only ever seen edge-on from
-  // twenty metres under water more than ninety metres offshore, where the fog and
-  // the depth tint have long since closed over it. It exists so the ocean has
-  // something under it past the rim of the voxel field; everything inside that
-  // rim, sea floor included, is cubes. It sits low enough that the skirt on the
-  // rim columns reaches past it and no gap ever opens between the two.
-  deep.position.y = -SEABED_DEPTH - 6.0;
-  ocean.add(deep);
-
-  // A radial grid instead of a uniform one. Rings grow geometrically outwards,
-  // so the surface under the camera is tessellated finely enough to carry the
-  // surf while the horizon still costs almost nothing: at 200 units out the
-  // cells are ~10 units, at 1000 they are ~50, and the swells are long enough
-  // out there to survive it. Object-space Y is up, so the shader can displace
-  // `transformed.y` directly.
-  function buildOceanGeo() {
-    const growth = Math.pow(OCEAN_R / OCEAN_R0, 1 / OCEAN_RINGS);
-    const pos = [0, 0, 0];                  // the vertex directly under the camera
-    for (let i = 0, r = OCEAN_R0; i <= OCEAN_RINGS; i++, r *= growth) {
-      for (let s = 0; s < OCEAN_SPOKES; s++) {
-        const a = (s / OCEAN_SPOKES) * Math.PI * 2;
-        pos.push(Math.cos(a) * r, 0, Math.sin(a) * r);
-      }
-    }
-    const idx = [];
-    for (let s = 0; s < OCEAN_SPOKES; s++) {              // fan over the middle
-      idx.push(0, 1 + ((s + 1) % OCEAN_SPOKES), 1 + s);
-    }
-    for (let i = 0; i < OCEAN_RINGS; i++) {               // quads between rings
-      const a0 = 1 + i * OCEAN_SPOKES, b0 = a0 + OCEAN_SPOKES;
-      for (let s = 0; s < OCEAN_SPOKES; s++) {
-        const s1 = (s + 1) % OCEAN_SPOKES;
-        idx.push(a0 + s, b0 + s1, b0 + s);
-        idx.push(a0 + s, a0 + s1, b0 + s1);
-      }
-    }
-    const nrm = new Float32Array(pos.length);
-    for (let i = 1; i < nrm.length; i += 3) nrm[i] = 1;   // the shader replaces these
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
-    geo.setIndex(idx);
-    return geo;
-  }
-
-  const surfMat = new THREE.MeshPhysicalMaterial({
-    color: 0xffffff,          // the shader paints it — colour and alpha both
-    transparent: true,
-    // No transmission out here: at this size it would cost a second full render
-    // of the scene every frame. Plain alpha over the deck reads the same anyway.
-    // Glossy but not a mirror: a perfect reflection of a smooth gradient sky is
-    // a smooth gradient, which is exactly what flat-looking water is.
-    roughness: 0.16,
-    metalness: 0.0,
-    clearcoat: 0.35,
-    clearcoatRoughness: 0.12,
-    side: THREE.DoubleSide,
-    envMapIntensity: 1.6,
-  });
-
-  // How the sea is built up, from the horizon in:
-  //
-  //   * four crossing swells, whose amplitude ramps from a hand's height near
-  //     the platform to a metre of open-water swell offshore, which is why the
-  //     sea gets visibly heavier the further out you swim;
-  //   * shoaling, which pins all of that back to nothing as the bed rises, so a
-  //     two-metre swell cannot stand up in half a metre of water;
-  //   * the shore rollers, which survive right up to the deck and are what
-  //     actually breaks against it.
-  //
-  // Everything is evaluated in world space (via modelMatrix) so the waves stay
-  // put while the mesh slides along under the camera.
-  const WAVE_GLSL = /* glsl */`
-    // (height, dH/dx, dH/dz) of the sea surface, plus how big the local swell is
-    // and how far offshore we are — the fragment shader wants both for foam.
-    vec3 seaSurface(vec2 p, float t, float depth, out float ampOut, out float openOut) {
-      float open  = smoothstep(${CALM_R.toFixed(1)}, ${(CALM_R + 380).toFixed(1)}, length(p));
-      float shoal = smoothstep(0.0, 6.5, depth);
-      float amp   = mix(0.13, 1.05, open) * shoal;
-
-      // The rings of the mesh get coarser the further they are from the camera,
-      // so the short waves have to bow out before there are too few vertices to
-      // carry them — otherwise they beat against the tessellation and the sea
-      // fills with a crawling diamond moire. Each octave fades at the range
-      // where its own wavelength runs out of samples.
-      float dc  = distance(p, cameraPosition.xz);
-      float lod1 = 1.0 - smoothstep(50.0, 165.0, dc);
-      float lod2 = 1.0 - smoothstep(20.0,  80.0, dc);
-
-      vec3 w = vec3(0.0);
-      w += waveOct(p, vec2( 0.0890,  0.0550), 1.00, 0.85, t);          // ~60u swell
-      w += waveOct(p, vec2(-0.0420,  0.0715), 0.72, 0.72, t);          // ~76u, crossing
-      w += waveOct(p, vec2( 0.2160, -0.1640), 0.34, 1.60, t) * lod1;   // ~23u chop
-      w += waveOct(p, vec2( 0.3900,  0.2600), 0.16, 2.30, t) * lod2;   // ~13u ripple
-      w *= amp;
-
-      // The surf. Full height at the waterline and gone by the time the bed
-      // drops past waist depth — the band where it lives is the breaker line.
-      float surfA = SHORE_RUN * (1.0 - smoothstep(2.5, 9.0, depth));
-      w += shoreRoller(p, t) * surfA;
-
-      // The octave amplitudes actually in play here, so that "how close is this
-      // pixel to the top of the local swing" means the same thing at every
-      // range — otherwise the whitecaps thin out wherever the chop has faded.
-      ampOut  = amp * (1.72 + 0.34 * lod1 + 0.16 * lod2) + surfA;
-      openOut = open;
-      return w;
-    }
-  `;
-
-  surfMat.onBeforeCompile = (shader) => {
-    shader.uniforms.uTime = waterTime;
-    shader.uniforms.uCloudShadows = uCloudShadows;
-    shader.uniforms.uLandTex = { value: landTex };
-
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', /* glsl */`
-        #include <common>
-        uniform float uTime;
-        varying vec3 vWPos;
-        varying float vWaveH, vCover, vAmp, vOpen;
-        ${NOISE_GLSL}
-        ${LAND_GLSL}
-        ${WAVE_GLSL}
-      `)
-      .replace('#include <beginnormal_vertex>', /* glsl */`
-        #include <beginnormal_vertex>
-        vec3 wpos = (modelMatrix * vec4(position, 1.0)).xyz;
-        // Signed, not clamped: on dry land this goes negative, and the fragment
-        // shader needs that to know where to stop drawing water.
-        float depth = ${WATER.surfaceY.toFixed(2)} - landAt(wpos.xz);
-        float amp, open;
-        vec3 wave = seaSurface(wpos.xz, uTime, max(depth, 0.0), amp, open);
-        objectNormal = normalize(vec3(-wave.y, 1.0, -wave.z));
-        vWPos  = wpos + vec3(0.0, wave.x, 0.0);
-        vWaveH = wave.x;
-        vCover = depth + wave.x;         // metres of water over the bed, right now
-        vAmp   = max(amp, 0.001);
-        vOpen  = open;
-      `)
-      .replace('#include <begin_vertex>', /* glsl */`
-        #include <begin_vertex>
-        transformed.y += wave.x;
-      `);
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', /* glsl */`
-        #include <common>
-        uniform float uTime;
-        varying vec3 vWPos;
-        varying float vWaveH, vCover, vAmp, vOpen;
-        ${NOISE_GLSL}
-        ${SEA_PALETTE}
-        ${CLOUD_SHADOW_GLSL}
-      `)
-      .replace('#include <map_fragment>', /* glsl */`
-        #include <map_fragment>
-        float foam = 0.0;
-        {
-          vec2 q = vWPos.xz;
-
-          // --- foam where the wave meets the land ---
-          // vCover crosses zero exactly at the edge of the deck, and it carries
-          // the wave displacement with it, so this edge washes in and out with
-          // every roller. The band just inside it is the broken water.
-          float lace = fbmC(q * 0.85 + vec2(uTime * 0.5, uTime * 0.2));
-          float edge = 1.0 - smoothstep(0.0, 0.75, vCover);
-          float shoreFoam = edge * edge * smoothstep(0.15, 0.55, lace);
-          // The leading centimetres are solid white however the noise falls.
-          shoreFoam = max(shoreFoam, 1.0 - smoothstep(0.0, 0.18, vCover));
-
-          // --- the break ---
-          // In the surf zone the roller runs out of water under it, tips over
-          // and goes white along its leading face. Gating on depth is what makes
-          // that a line running parallel to the deck edge, and it marches in
-          // with the wave because vWaveH does.
-          float zone = smoothstep(0.25, 0.9, vCover) * (1.0 - smoothstep(1.3, 3.2, vCover));
-          // Only the top of the swing: a wider gate than this stops being a
-          // breaker and becomes a bay full of milk.
-          float breaker = smoothstep(0.62, 0.97, vWaveH / vAmp) * zone
-                        * (0.45 + 0.55 * fbmC(q * 0.5 + vec2(uTime * 0.3, 0.0)));
-
-          // --- whitecaps on the open-water swell ---
-          // Only crests, only once the swell is big enough to break: near the
-          // platform the water is glassy, offshore it is speckled white.
-          float crest = smoothstep(0.45, 0.88, vWaveH / vAmp);
-          float caps = crest * smoothstep(0.3, 0.85, vOpen)
-                     * smoothstep(0.30, 0.75, fbmC(q * 0.14 + vec2(0.0, uTime * 0.15)));
-
-          foam = clamp(max(max(shoreFoam, breaker), caps * 0.9), 0.0, 1.0);
-
-          float d = max(vCover, 0.0);
-          vec3 water = mix(SEA_SHALLOW, SEA_DEEP, smoothstep(0.3, 9.0, d));
-          diffuseColor.rgb = mix(water, SEA_FOAM, foam);
-          // Cloud shadow. Water reads a squall harder than the land does — a
-          // shaded patch of sea goes flat and slate-coloured.
-          diffuseColor.rgb *= mix(1.0, 0.01, cloudShade(vWPos.xz));
-
-          // Thin water fades out completely at the very edge, which is what
-          // keeps the wash from ending in a hard line against the deck.
-          diffuseColor.a = mix(mix(0.40, 0.93, smoothstep(0.25, 5.0, d)), 1.0, foam)
-                         * smoothstep(0.0, 0.30, vCover);
-        }
-      `)
-      .replace('#include <roughnessmap_fragment>', /* glsl */`
-        #include <roughnessmap_fragment>
-        roughnessFactor = mix(roughnessFactor, 0.86, foam);   // foam is not a mirror
-      `)
-      // Ripples finer than the mesh could ever carry, added straight to the
-      // shading normal. This is most of what the sea looks like up close: a
-      // gently sloped swell with a perfect mirror finish reads as a sheet of
-      // glass, and it is the small stuff that scatters the sun into glitter.
-      // Faded out with distance, where the ripples fall below a pixel and would
-      // only crawl.
-      .replace('#include <normal_fragment_begin>', /* glsl */`
-        #include <normal_fragment_begin>
-        {
-          // The finest octaves fade out first: they are the ones that turn into
-          // a crawling moire once a ripple no longer covers a pixel.
-          float d = length(vWPos - cameraPosition);
-          float closeness = 1.0 - smoothstep(25.0, 130.0, d);
-          float fineness  = 1.0 - smoothstep(10.0,  45.0, d);
-          if (closeness > 0.004) {
-            vec2 q = vWPos.xz;
-            // Amplitudes chosen for the slope they give (a * |k|), which is what
-            // the shading actually reads — roughly a tenth each.
-            vec3 r = waveOct(q, vec2( 0.62,  0.38), 0.150, 1.7, uTime)
-                   + waveOct(q, vec2(-0.47,  0.79), 0.110, 2.1, uTime)
-                   + waveOct(q, vec2( 1.35, -1.02), 0.045, 3.0, uTime) * fineness
-                   + waveOct(q, vec2(-2.60,  1.90), 0.016, 4.4, uTime) * fineness;
-            normal = normalize(normal + vec3(-r.y, 0.0, -r.z) * closeness * (1.0 - foam));
-          }
-        }
-      `);
-  };
-
-  const surf = new THREE.Mesh(buildOceanGeo(), surfMat);
-  surf.position.y = WATER.surfaceY;
-  surf.receiveShadow = true;
-  surf.castShadow = false;
-  // The bounding sphere is centred on the camera and 1180 in radius, so it is
-  // never out of view — culling it would only cost a test.
-  surf.frustumCulled = false;
-  ocean.add(surf);
-}
-
-// Submerging the camera swaps the sky and the distance fog for a dense blue one
-// (the sky dome is a custom shader and ignores scene.fog, so it is hidden and a
-// flat background colour takes over).
-const UNDER_BG = new THREE.Color(WATER_FOG);
-let underwater = false;
-function updateWaterVisuals() {
-  const c = camera.position;
-  const wet = c.y < WATER.surfaceY && c.y > WATER.floorY - 2 && inWaterColumn(c.x, c.z);
-  if (wet === underwater) return;
-  underwater = wet;
-  scene.fog.color.setHex(wet ? WATER_FOG : FOG_COLOR);
-  scene.fog.density = wet ? 0.11 : FOG_DENSITY;
-  scene.background = wet ? UNDER_BG : null;
-  sky.visible = !wet;
-  document.getElementById('underwater').classList.toggle('on', wet);
-}
 
 // ---------------------------------------------------------------------------
 // Camera state + input
@@ -3047,7 +2626,6 @@ const state = {
   touchActive: false,
   // character controller — touch buttons latch, keyboard equivalents are held
   jumpQueued: false,
-  jumpHeld: false,          // held state too, so JUMP can drive a swim upwards
   crouchBtn: false,
   sprintBtn: false,
 };
@@ -3057,7 +2635,7 @@ const keys = new Set();
 // ----- keyboard -----
 const TRACKED = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
-  'KeyF', 'KeyZ', 'KeyX', 'KeyM',
+  'KeyF', 'KeyZ', 'KeyX',
   'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 // A key that lands in a text field is the field's business and nothing else's —
@@ -3074,16 +2652,8 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyF') setShovel(!shovel.on);
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
-  else if (e.code === 'KeyM') setTerrainView(terrainView + 1);
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
-  // Weather controls — free camera only, where the panel showing what they do
-  // is on screen.
-  else if (camMode === CAM.FREE) {
-    if (e.code === 'Digit1' || e.code === 'Numpad1') cycleRate();
-    else if (e.code === 'Digit2' || e.code === 'Numpad2') cycleSpeed();
-    else if (e.code === 'Digit4' || e.code === 'Numpad4') { spawnCloud(true); refreshWxUI(); }
-    else if (e.code === 'Digit0' || e.code === 'Numpad0') clearClouds();
-  }
+  else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (typing(e)) return;
@@ -3318,9 +2888,7 @@ const btnJump   = document.getElementById('btn-jump');
 const btnCrouch = document.getElementById('btn-crouch');
 const btnSprint = document.getElementById('btn-sprint');
 
-bindHold(btnJump,
-  () => { state.jumpQueued = true; state.jumpHeld = true; },
-  () => { state.jumpHeld = false; });
+bindHold(btnJump, () => { state.jumpQueued = true; }, () => {});
 function bindToggle(el, get, set) {
   const press = (e) => {
     e.preventDefault();
@@ -3336,848 +2904,6 @@ bindToggle(btnSprint, () => state.sprintBtn, (v) => state.sprintBtn = v);
 
 const isSprinting = () =>
   state.sprint || state.sprintBtn || keys.has('ShiftLeft') || keys.has('ShiftRight');
-
-// ---------------------------------------------------------------------------
-// Weather — clouds, rain, lightning
-//
-// Each cloud is a solid cluster of 8-20 overlapping lumpy ellipsoids baked into
-// one indexed geometry, so a whole cell is a single draw call. Their surfaces
-// come out merged rather than beaded because the normals are taken from the
-// gradient of a metaball field over *all* the blobs in the cluster, not from the
-// sphere each vertex happens to belong to — neighbouring blobs therefore shade
-// continuously across the seam where they intersect. Triangles buried inside
-// another blob are dropped at build time.
-//
-// Shading is baked, not lit: a directional light cannot give a cloud its
-// characteristic bright top and shadowed underside, because that gradient comes
-// from light scattering *through* the mass, which a surface material knows
-// nothing about. So the material is unlit and mixes a top and a base colour by
-// height-within-the-cloud plus normal, and the pair of colours is what encodes
-// the storm scale.
-// ---------------------------------------------------------------------------
-
-// The four bands the 1-10 scale falls into: fair, building, storm, severe.
-const CLOUD_BAND = (s) => (s <= 3 ? 0 : s <= 5 ? 1 : s <= 7 ? 2 : 3);
-const BAND_SPEC = [
-  { width: [200, 320], height: [ 48,  96], puffs: [ 5,  9], base: [110, 60] },
-  { width: [320, 480], height: [160, 240], puffs: [ 7, 11], base: [140, 70] },
-  { width: [480, 640], height: [320, 432], puffs: [ 9, 13], base: [160, 80] },
-  { width: [560, 720], height: [392, 504], puffs: [11, 15], base: [175, 90] },
-];
-
-// How wide the cluster is at height fraction t: a flat sheet, a heap, a tower
-// that flares at the top, and a tower with a pinched waist under a full anvil.
-function cloudProfile(band, t) {
-  if (band === 0) return 1.00 - 0.30 * t * t;
-  if (band === 1) return 1.00 - 0.44 * Math.pow(t, 1.35);
-  if (band === 2) return 1.00 - 0.46 * Math.pow(t, 0.85) + 0.34 * smooth((t - 0.70) / 0.30);
-  return 1.00 - 0.60 * Math.pow(t, 0.80) + 0.78 * smooth((t - 0.58) / 0.42);
-}
-
-// PolyhedronGeometry hands back a non-indexed soup — every face carries its own
-// three vertices. Welding it first means a blob costs 162 vertices rather than
-// 960, and it is the welded form the merge below assumes.
-function indexedUnitSphere(detail) {
-  const src = new THREE.IcosahedronGeometry(1, detail);
-  const sp = src.attributes.position.array;
-  const seen = new Map();
-  const pos = [], idx = [];
-  for (let i = 0; i < sp.length; i += 3) {
-    const key = sp[i].toFixed(4) + ',' + sp[i + 1].toFixed(4) + ',' + sp[i + 2].toFixed(4);
-    let v = seen.get(key);
-    if (v === undefined) {
-      v = pos.length / 3;
-      seen.set(key, v);
-      pos.push(sp[i], sp[i + 1], sp[i + 2]);
-    }
-    idx.push(v);
-  }
-  src.dispose();
-  return { pos: new Float32Array(pos), idx: new Uint16Array(idx), count: pos.length / 3 };
-}
-// three's `detail` counts subdivision cuts, not recursions: 2 gives 180 faces per
-// blob and 3 gives 320. Three is smooth enough that the lumps read as lumps
-// rather than as facets, and a whole cloud still lands around 5k triangles.
-const CLOUD_PUFF = indexedUnitSphere(isTouchDevice ? 2 : 3);
-const lerpRange = (r, t) => r[0] + (r[1] - r[0]) * t;
-
-function buildCloudGeo(band, rnd) {
-  const spec   = BAND_SPEC[band];
-  const width  = lerpRange(spec.width, rnd());
-  const height = lerpRange(spec.height, rnd());
-  const count  = Math.round(lerpRange(spec.puffs, rnd()));
-  const R = width * 0.5;
-
-  const puffs = [];
-  for (let k = 0; k < count; k++) {
-    const t = count > 1 ? Math.min(1, (k + rnd() * 0.8) / count) : 0;
-    const prof  = Math.max(0.18, cloudProfile(band, t));
-    const anvil = band >= 2 && t > 0.72;      // the flat spreading cap up top
-    const a = rnd() * Math.PI * 2;
-    // sqrt() keeps the blobs spread evenly over the disc instead of crowding
-    // into the middle of it. The spread is deliberately tighter than the blob
-    // radius: neighbours have to interpenetrate by a good margin or the cluster
-    // reads as a bag of balls rather than as one mass.
-    const rad = R * prof * Math.sqrt(rnd()) * 0.72;
-    const pr  = R * (0.24 + 0.28 * rnd()) * Math.max(0.55, prof);
-    puffs.push({
-      x: Math.cos(a) * rad,
-      y: t * height * (band === 0 ? 0.55 : 0.88) + (rnd() - 0.5) * height * 0.22,
-      z: Math.sin(a) * rad,
-      // A narrower spread on the axis jitter than before: one blob at half the
-      // radius of its neighbour pokes out of the mass as a recognisable ball
-      // however well the seam around it is handled.
-      rx: pr * (0.80 + rnd() * 0.50),
-      ry: pr * (anvil ? 0.40 : band === 0 ? 0.55 : 0.80) * (0.90 + rnd() * 0.25),
-      rz: pr * (0.80 + rnd() * 0.50),
-      seed: rnd() * 40,
-    });
-  }
-
-  const sp = CLOUD_PUFF.pos;
-  const si = CLOUD_PUFF.idx;
-  const vc = CLOUD_PUFF.count;
-  const total = vc * puffs.length;
-
-  // Lumps baked into the surface — a perfectly round ball never reads as cloud
-  // however it is shaded. This displaces the surface by up to a third of the
-  // radius either way, so it is not a detail anything downstream can ignore:
-  // both the seam fillet and the buried-face cull have to ask this where a puff
-  // actually ends rather than assume its ellipsoid.
-  const LUMP = 0.20;
-  const lumpAt = (pf, dx, dy, dz) =>
-    1 + LUMP * (Math.sin(dx * 3.1 + pf.seed) * Math.sin(dy * 2.7 + pf.seed * 1.9)
-        + 0.55 * Math.sin(dz * 5.3 + pf.seed * 2.7) * Math.sin(dx * 4.3 - pf.seed));
-
-  // Where a point sits relative to a puff's lumpy surface: below 1 is inside it,
-  // 1 is on it, above 1 is clear of it.
-  const surfDepth = (px, py, pz, pf) => {
-    const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
-    const q = Math.hypot(ex, ey, ez);
-    if (q < 1e-6) return 0;
-    return q / lumpAt(pf, ex / q, ey / q, ez / q);
-  };
-
-  // --- vertices ---
-  // Built and kept in raw space: the flat base is a non-uniform squash, and
-  // every field query below — normals, fillet, cull — compares points against
-  // plain ellipsoids, so it has to happen before that squash distorts them.
-  // Testing squashed points against unsquashed puffs is what put the worst of
-  // the seam junk down in the skirt, which is exactly where a cumulus is most
-  // obviously a heap of balls.
-  const pos = new Float32Array(total * 3);
-  for (let k = 0; k < puffs.length; k++) {
-    const pf = puffs[k];
-    for (let v = 0; v < vc; v++) {
-      const dx = sp[v * 3], dy = sp[v * 3 + 1], dz = sp[v * 3 + 2];
-      const l = lumpAt(pf, dx, dy, dz);
-      const o = (k * vc + v) * 3;
-      pos[o]     = pf.x + dx * pf.rx * l;
-      pos[o + 1] = pf.y + dy * pf.ry * l;
-      pos[o + 2] = pf.z + dz * pf.rz * l;
-    }
-  }
-
-  // --- normals from the metaball field, so the blobs shade as one mass ---
-  const nrm = new Float32Array(total * 3);
-  const fieldNormals = () => {
-    for (let i = 0; i < total; i++) {
-      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
-      let gx = 0, gy = 0, gz = 0;
-      for (let k = 0; k < puffs.length; k++) {
-        const pf = puffs[k];
-        const ex = (px - pf.x) / pf.rx, ey = (py - pf.y) / pf.ry, ez = (pz - pf.z) / pf.rz;
-        const q2 = ex * ex + ey * ey + ez * ez + 1e-4;
-        const w = 1 / (q2 * q2);            // d/dp of the 1/q^2 falloff, outward
-        gx += w * ex / pf.rx;
-        gy += w * ey / pf.ry;
-        gz += w * ez / pf.rz;
-      }
-      const len = Math.hypot(gx, gy, gz) || 1;
-      nrm[i * 3] = gx / len; nrm[i * 3 + 1] = gy / len; nrm[i * 3 + 2] = gz / len;
-    }
-  };
-  fieldNormals();
-
-  // --- fillet the seams ---
-  // Two spheres pushed into each other cross in a hard V, and no amount of
-  // smoothed normals hides a crease that sharp: it catches the light as a line
-  // and the eye reads the two balls straight off it. Nudging the vertices that
-  // sit near a neighbour's surface outward along the field gradient fills that V
-  // in with a fillet, so the pair meets at a waist the way real cloud does.
-  // Vertices already well inside a neighbour are culled below and do not matter.
-  for (let k = 0; k < puffs.length; k++) {
-    const A = puffs[k];
-    const reach = (A.rx + A.ry + A.rz) / 3;
-    for (let v = 0; v < vc; v++) {
-      const i = k * vc + v;
-      const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
-      let near = 0;
-      for (let m = 0; m < puffs.length; m++) {
-        if (m === k) continue;
-        // 1 on the neighbour's surface, tapering to 0 half a radius clear of it.
-        const f = 1.5 - surfDepth(px, py, pz, puffs[m]);
-        if (f > near) near = f;
-      }
-      if (near <= 0) continue;
-      const t2 = Math.min(1, near / 0.5);
-      const push = reach * 0.22 * t2 * t2 * (3 - 2 * t2);
-      pos[i * 3]     = px + nrm[i * 3] * push;
-      pos[i * 3 + 1] = py + nrm[i * 3 + 1] * push;
-      pos[i * 3 + 2] = pz + nrm[i * 3 + 2] * push;
-    }
-  }
-  fieldNormals();   // the surface moved, so the gradient has to be read again
-
-  // --- faces, minus the ones sealed inside a neighbouring blob ---
-  // The material is alpha-blended with no depth write, so a face left inside a
-  // neighbour is not hidden by it — it blends on top, and every one of those
-  // stacked interior shells darkens the overlap into a visible ball-shaped
-  // outline. Culling against the true lumpy surface lets the threshold sit right
-  // at it: anything below 1 is genuinely inside and has to go. The old 0.94
-  // against a plain ellipsoid both kept a shell of interior faces around every
-  // intersection and cut holes wherever a lump dented the surface inward.
-  const buriedIn = (i, pf) => surfDepth(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], pf) < 1.0;
-  const idx = [];
-  for (let k = 0; k < puffs.length; k++) {
-    const base = k * vc;
-    const A = puffs[k];
-    // Only the blobs that actually reach this one can swallow any of its faces —
-    // testing the rest of the cluster per triangle is most of the build cost.
-    // The 1.35 is the widest the lumps plus the fillet push a surface out.
-    const near = [];
-    const rA = Math.max(A.rx, A.ry, A.rz) * 1.35;
-    for (let m = 0; m < puffs.length; m++) {
-      if (m === k) continue;
-      const B = puffs[m];
-      if (Math.hypot(A.x - B.x, A.y - B.y, A.z - B.z) < rA + Math.max(B.rx, B.ry, B.rz) * 1.35) near.push(B);
-    }
-    for (let f = 0; f < si.length; f += 3) {
-      const a = base + si[f], b = base + si[f + 1], c = base + si[f + 2];
-      let buried = false;
-      for (let m = 0; m < near.length && !buried; m++) {
-        const pf = near[m];
-        buried = buriedIn(a, pf) && buriedIn(b, pf) && buriedIn(c, pf);
-      }
-      if (!buried) idx.push(a, b, c);
-    }
-  }
-
-  // --- flatten the base ---
-  // Everything below the cluster datum is squashed into a shallow skirt, which
-  // is what gives cumulus their flat, level bases. Normals take the inverse of
-  // that scale, so faces that were pointing gently downward end up pointing
-  // straight down — a flat base that shades like one.
-  const BASE_SQUASH = 0.22;
-  for (let i = 0; i < total; i++) {
-    if (pos[i * 3 + 1] >= 0) continue;
-    pos[i * 3 + 1] *= BASE_SQUASH;
-    const nx = nrm[i * 3], ny = nrm[i * 3 + 1] / BASE_SQUASH, nz = nrm[i * 3 + 2];
-    const len = Math.hypot(nx, ny, nz) || 1;
-    nrm[i * 3] = nx / len; nrm[i * 3 + 1] = ny / len; nrm[i * 3 + 2] = nz / len;
-  }
-
-  // --- normalise the vertical: local y = 0 is the cloud base, aH is 0..1 ---
-  let minY = Infinity, maxY = -Infinity;
-  for (let i = 1; i < pos.length; i += 3) {
-    if (pos[i] < minY) minY = pos[i];
-    if (pos[i] > maxY) maxY = pos[i];
-  }
-  const span = Math.max(1e-3, maxY - minY);
-  const aH = new Float32Array(total);
-  for (let i = 0; i < total; i++) {
-    pos[i * 3 + 1] -= minY;
-    aH[i] = pos[i * 3 + 1] / span;
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
-  geo.setAttribute('aH', new THREE.BufferAttribute(aH, 1));
-  geo.setIndex(idx);
-  geo.computeBoundingSphere();
-  geo.userData.width = width;
-  geo.userData.height = span;
-  return geo;
-}
-
-// A pool built once at load and shared: a cloud picks a shell, spins it and
-// scales it a little, and gets its own colours from its own weather scale.
-const cloudRand = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
-const CLOUD_GEOS = BAND_SPEC.map((_, band) => {
-  const n = isTouchDevice ? 2 : 3;
-  const out = [];
-  for (let i = 0; i < n; i++) out.push(buildCloudGeo(band, cloudRand));
-  return out;
-});
-
-const CLOUD_VERT = /* glsl */`
-  attribute float aH;
-  varying float vH;
-  varying vec3 vN;
-  varying vec3 vW;
-  void main() {
-    vH = aH;
-    vN = normalize(mat3(modelMatrix) * normal);
-    vec4 wp = modelMatrix * vec4(position, 1.0);
-    vW = wp.xyz;
-    gl_Position = projectionMatrix * viewMatrix * wp;
-  }
-`;
-
-const CLOUD_FRAG = /* glsl */`
-  varying float vH;
-  varying vec3 vN;
-  varying vec3 vW;
-  uniform vec3  uTop, uBot, uTint, uSunDir, uHaze, uSunCol;
-  uniform float uTintAmt, uFlash, uHazeMax, uThickness;
-
-  // Henyey-Greenstein: fraction of light scattered toward the eye for a given
-  // sun/view angle. g > 0 throws most of it forward, through the mass, which
-  // is what makes a cloud glow when the sun sits behind it.
-  float henyeyGreenstein(float cosTheta, float g) {
-    float g2 = g * g;
-    return (1.0 - g2) / (12.566371 * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5));
-  }
-
-  void main() {
-    vec3 n = normalize(vN);
-    vec3 v = normalize(cameraPosition - vW);
-    // Two things decide how much light reaches a patch of cloud: how far up the
-    // mass it is (light comes down through the whole depth of it) and which way
-    // it faces. Downward faces are what the rain falls out of, and they are the
-    // darkest part of any cloud that is worth looking at.
-    float up  = n.y * 0.5 + 0.5;
-    float sun = dot(n, uSunDir) * 0.5 + 0.5;
-
-    // Stand-in for the mass of cloud behind this point: thicker toward the
-    // base of the shell, scaled by the cell's own storminess (uThickness).
-    float density = uThickness * (0.35 + 0.65 * (1.0 - vH));
-    // Beer-Lambert extinction: how much direct light survives that mass.
-    // A steeper falloff than a flatter mass would use — it's what makes the
-    // difference between "thin here, thick there" actually read as depth.
-    float transmit = exp(-density * 2.3);
-
-    // Punchier spread between the two terms that drive the top/bottom
-    // gradient (facing + height) is what reads as real depth rather than a
-    // flat wash — a cloud lit only by a soft blend looks like a painted
-    // sphere, not a mass with a lit crown and a heavy, shadowed belly.
-    float lit = clamp(0.06 + 0.56 * up + 0.30 * pow(sun, 1.4) + 0.42 * vH, 0.0, 1.0);
-    vec3 col = mix(uBot, uTop, lit) * mix(0.7, 1.0, transmit);
-
-    // Extra luminosity on the crown: strongly upward-facing, thin (well-lit)
-    // patches push past the flat top colour into a proper glow, which is what
-    // gives fluffy tops their sunlit puffiness instead of a flat matte white.
-    col += uTop * pow(max(up, 0.0), 5.0) * 0.36 * mix(0.5, 1.0, transmit);
-    // Undersides read as darker, heavier mass by contrast — cheap but the
-    // single biggest lever for the "fluffy top, moody bottom" silhouette.
-    // Widened from the original spread so the gradient carries real
-    // top-to-bottom contrast instead of a gentle fade.
-    col *= mix(0.38, 1.18, up);
-
-    // Forward scatter through the cloud body, brightest looking through thin,
-    // backlit mass toward the sun.
-    float cosTheta = dot(v, -uSunDir);
-    float phase = henyeyGreenstein(cosTheta, 0.45);
-    col += uSunCol * phase * (1.0 - transmit) * 1.4;
-
-    // Subsurface scattering approximation: thin, sunlit-from-behind patches
-    // glow with transmitted light rather than reading as flat silhouette.
-    float backlit = pow(clamp(dot(-v, uSunDir), 0.0, 1.0), 2.0) * (1.0 - transmit);
-    col += uSunCol * backlit * 0.55;
-
-    // Fresnel silver lining: grazing, sun-facing rims catch the most light.
-    // Wider and hotter than a physically-tight rim so it reads clearly at a
-    // distance rather than as a single blown-out pixel.
-    float fresnel = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
-    col += uSunCol * fresnel * pow(max(sun, 0.0), 1.7) * 1.15;
-    // Tight hot rim, kept for the sharp highlight right at the sun.
-    col += vec3(0.34, 0.30, 0.22) * pow(max(sun, 0.0), 7.0);
-    // Golden-hour warmth: a soft amber cast where that rim catches raking
-    // sunlight, so lit edges skew warm rather than the same cool white as the
-    // rest of the mass.
-    vec3 warm = vec3(1.0, 0.66, 0.32);
-    col += warm * fresnel * pow(max(sun, 0.0), 1.6) * 0.56;
-
-    // Severe cells go sickly green-yellow underneath. It is a cast over the
-    // charcoal, not a coat of paint — enough to read as "that one is dangerous"
-    // from across the water and no more, and only across the lowest fifth.
-    col = mix(col, uTint, uTintAmt * (1.0 - smoothstep(0.0, 0.22, vH)));
-    // Lightning lights the cell from the inside, brightest low down.
-    col += vec3(0.80, 0.84, 1.0) * uFlash * (1.15 - vH * 0.55);
-    // The scene's own fog would swallow these at a third of the range they are
-    // meant to be legible from, so they carry their own much thinner haze.
-    float haze = uHazeMax * smoothstep(420.0, 2500.0, distance(vW, cameraPosition));
-    col = mix(col, uHaze, haze);
-
-    // Soft alpha: thin, grazing edges fade toward transparent instead of
-    // hard-clipping at the mesh boundary.
-    float alpha = clamp((1.0 - transmit) * mix(1.0, 0.35, fresnel) + 0.25, 0.0, 1.0);
-
-    gl_FragColor = vec4(col, alpha);
-    #include <tonemapping_fragment>
-    #include <colorspace_fragment>
-  }
-`;
-
-// Colour by weather scale: white and bright at 1, charcoal with almost no light
-// left in the base by 10.
-const CLOUD_KEYS = [
-  { s: 1,  top: 0xffffff, bot: 0xd2e0f0 },
-  { s: 3,  top: 0xfefeff, bot: 0xb3c2d4 },
-  { s: 5,  top: 0xf4f7fb, bot: 0x7c8998 },
-  { s: 7,  top: 0xd2d7de, bot: 0x3c434f },
-  { s: 9,  top: 0xacb2bc, bot: 0x21252c },
-  { s: 10, top: 0x969ba6, bot: 0x14171c },
-];
-function cloudColors(s) {
-  let i = 0;
-  while (i < CLOUD_KEYS.length - 2 && s > CLOUD_KEYS[i + 1].s) i++;
-  const a = CLOUD_KEYS[i], b = CLOUD_KEYS[i + 1];
-  const t = THREE.MathUtils.clamp((s - a.s) / (b.s - a.s), 0, 1);
-  return {
-    top: new THREE.Color(a.top).lerp(new THREE.Color(b.top), t),
-    bot: new THREE.Color(a.bot).lerp(new THREE.Color(b.bot), t),
-  };
-}
-
-const CLOUD_HAZE = new THREE.Color(0xc4d8ea);
-const SEVERE_TINT = new THREE.Color(0x7d7f4e);
-
-const CLOUD_SUN_COLOR = new THREE.Color(0xfff0cf);
-
-function cloudMaterial(scale) {
-  const { top, bot } = cloudColors(scale);
-  return new THREE.ShaderMaterial({
-    vertexShader: CLOUD_VERT,
-    fragmentShader: CLOUD_FRAG,
-    transparent: true,
-    depthWrite: false,
-    uniforms: {
-      uTop:       { value: top },
-      uBot:       { value: bot },
-      uTint:      { value: SEVERE_TINT.clone() },
-      uTintAmt:   { value: smooth((scale - 7.4) / 2.2) * 0.22 },
-      uSunDir:    { value: SUN.clone() },
-      uSunCol:    { value: CLOUD_SUN_COLOR.clone() },
-      uHaze:      { value: CLOUD_HAZE.clone() },
-      uHazeMax:   { value: 0.66 },
-      uFlash:     { value: 0 },
-      // Storm cells thicken faster than fair-weather puffs, which is what
-      // makes the high end of the scale read as distinctly darker and more
-      // ominous rather than just a tinted version of a bright cloud.
-      uThickness: { value: 0.75 + scale * 0.16 },
-    },
-  });
-}
-
-// ----- the controls the free camera exposes -----
-const WX = {
-  rateIdx: 2,
-  speedIdx: 1,
-  // label, seconds between spawns (0 = off)
-  RATES:  [['Off', 0], ['Slow', 16], ['Medium', 7.5], ['Fast', 3]],
-  // label, drift speed in units / second
-  SPEEDS: [['Slow', 5], ['Medium', 13], ['Fast', 27]],
-};
-
-// Storminess is rolled per cloud rather than picked from a shared range: most
-// cells land mild, with severe ones getting rarer the higher the scale climbs.
-function rollStorminess(min, max) {
-  return min + Math.pow(Math.random(), 2.2) * (max - min);
-}
-
-const MAX_CLOUDS    = isTouchDevice ? 14 : 24;
-const CLOUD_DESPAWN = 2100;      // they are gone once they are this far behind you
-
-const clouds = [];
-const cloudGroup = new THREE.Group();
-scene.add(cloudGroup);
-// Depth prepass: render clouds with a depth-only material first so interior
-// faces are hidden by the depth buffer when the volumetric pass runs.
-const depthMat = new THREE.MeshBasicMaterial({ colorWrite: false });
-const cloudDepthGroup = new THREE.Group();
-scene.add(cloudDepthGroup);
-
-const wxFocus = new THREE.Vector3();
-let spawnTimer = 0;
-let gloom = 0;                   // 0 clear sky .. 1 overcast right overhead
-let rainAmt = 0;
-let wxTime = 0;
-
-// A single slowly-drifting wind direction shared by the whole sky, so every
-// cloud heads the same way instead of converging on the player from all sides.
-const WIND_BASE_DIR = Math.random() * Math.PI * 2;
-function liveWindDir() {
-  return WIND_BASE_DIR + Math.sin(wxTime * 0.015) * 0.4;
-}
-
-function spawnCloud(initial) {
-  if (clouds.length >= MAX_CLOUDS) return null;
-  const scale = rollStorminess(1, 10);
-  const band  = CLOUD_BAND(scale);
-  const pool  = CLOUD_GEOS[band];
-  const geo   = pool[(Math.random() * pool.length) | 0];
-
-  // Far out and in a random direction. A fresh cloud is 800-1500 away, which at
-  // the medium drift speed is a couple of minutes of warning; the initial batch
-  // is scattered across the whole range so the sky is never empty at load.
-  const wind = liveWindDir();
-  const bearing = wind + Math.PI + (Math.random() - 0.5) * Math.PI * 0.6;
-  const dist = initial ? 140 + Math.random() * 1360 : 800 + Math.random() * 700;
-  const alt  = BAND_SPEC[band].base[0] + Math.random() * BAND_SPEC[band].base[1];
-  const sc   = 0.65 + Math.random() * 0.9;
-
-  const material = cloudMaterial(scale);
-  const mesh = new THREE.Mesh(geo, material);
-  mesh.position.set(wxFocus.x + Math.cos(bearing) * dist, alt, wxFocus.z + Math.sin(bearing) * dist);
-  mesh.rotation.y = Math.random() * Math.PI * 2;
-  mesh.scale.setScalar(sc);
-  cloudGroup.add(mesh);
-  // Matching depth-only mesh for the prepass.
-  const depthMesh = new THREE.Mesh(geo, depthMat);
-  depthMesh.position.copy(mesh.position);
-  depthMesh.rotation.copy(mesh.rotation);
-  depthMesh.scale.copy(mesh.scale);
-  cloudDepthGroup.add(depthMesh);
-
-  // Heading: the shared wind direction, with a little per-cloud scatter for
-  // gusting, so the whole sky drifts together instead of converging on the
-  // player from every side.
-  const head = liveWindDir() + (Math.random() - 0.5) * 0.3;
-  const c = {
-    mesh,
-    depthMesh,
-    mat: material,
-    scale,
-    band,
-    dirX: Math.cos(head),
-    dirZ: Math.sin(head),
-    spdMul: 1.0,
-    radius: geo.userData.width * 0.5 * sc,
-    baseY: alt,
-    boltT: -1,
-    boltIn: boltInterval(scale) * Math.random(),
-  };
-  clouds.push(c);
-  return c;
-}
-
-function clearClouds() {
-  for (const c of clouds) {
-    cloudGroup.remove(c.mesh); c.mat.dispose();
-    cloudDepthGroup.remove(c.depthMesh);
-  }
-  clouds.length = 0;
-  refreshWxUI();
-}
-
-// ----- lightning -----
-const boltInterval = (scale) => (scale >= 8 ? 2.5 + Math.random() * 6 : 7 + Math.random() * 15);
-
-// The strike envelope: a fast leader, a dip, a brighter return stroke, then the
-// glow rolling away. Real lightning is never a single clean flash.
-function boltEnv(t) {
-  if (t < 0.06) return t / 0.06;
-  if (t < 0.14) return 1.0 - (t - 0.06) / 0.08 * 0.85;
-  if (t < 0.20) return 0.15 + (t - 0.14) / 0.06 * 0.75;
-  if (t < 0.50) return 0.90 * (1 - (t - 0.20) / 0.30);
-  return 0;
-}
-
-let audioCtx = null;
-function initAudio() {
-  if (audioCtx) return audioCtx;
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return null;
-  try { audioCtx = new AC(); } catch (e) { audioCtx = null; }
-  return audioCtx;
-}
-
-// Thunder, synthesised: brown noise (a random walk, which is what gives it the
-// low rumble) shaped by an envelope and rolled off harder the further away the
-// strike was. Close strikes get a crack on the front; distant ones are all roll.
-function playThunder(vol, dist) {
-  const ctx = audioCtx;
-  if (!ctx || vol <= 0.02) return;
-  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-  try {
-    const near = 1 - Math.min(1, dist / 1800);
-    const sr = ctx.sampleRate;
-    const n = Math.floor(sr * (1.5 + (1 - near) * 2.6));
-    const buf = ctx.createBuffer(1, n, sr);
-    const d = buf.getChannelData(0);
-    let b = 0;
-    for (let i = 0; i < n; i++) {
-      b = b * 0.965 + (Math.random() * 2 - 1) * 0.035;
-      const t = i / sr;
-      const crack = near * Math.exp(-t * 26) * (Math.random() * 2 - 1) * 0.5;
-      const roll  = Math.exp(-t * (1.0 + (1 - near) * 0.7)) * (0.6 + 0.4 * Math.sin(t * 3.1));
-      d[i] = THREE.MathUtils.clamp(b * 7.5 * roll + crack, -1, 1);
-    }
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.value = 180 + near * 900;
-    const g = ctx.createGain();
-    g.gain.value = vol * 0.5;
-    src.connect(lp); lp.connect(g); g.connect(ctx.destination);
-    src.start();
-  } catch (e) { /* audio is a nicety; never let it take the frame down */ }
-}
-
-function strike(c, dist) {
-  c.boltT = 0;
-  c.boltIn = boltInterval(c.scale);
-  const vol = THREE.MathUtils.clamp(1 - dist / 2000, 0, 1) * (0.35 + 0.065 * c.scale);
-  if (audioCtx && vol > 0.02) {
-    // Sound lags the flash by the distance over the speed of sound — the reason
-    // you count the seconds between them.
-    setTimeout(() => playThunder(vol, dist), Math.min(dist, 2400) / 340 * 1000);
-  }
-}
-
-// ----- rain -----
-// Drops fill a column that rides with the camera in world space: their fall
-// (straight down, in world Y, wrapped modulo RAIN_H as they pass the player)
-// never depends on which way the camera is looking, so a drop is exactly as
-// present when you look straight down as when you look at the horizon.
-//
-// Each drop is a screen-aligned quad — stretched along the camera's own up
-// vector rather than a fixed world-space "streak" direction — so it is never
-// foreshortened away. A quad built from a fixed world-space length axis goes
-// edge-on and all but disappears the moment the view direction lines up with
-// that axis, which is exactly what happened looking straight down at rain
-// falling straight down. Billboarding fully off the camera (right *and* up)
-// keeps the streak's full width and length on screen from every angle.
-const RAIN_N     = isTouchDevice ? 3000 : 7000;
-const RAIN_R     = 50;
-const RAIN_H     = 50;
-const RAIN_LEN   = 4.2;
-const RAIN_WIDTH = 0.09;
-
-const rainMat = new THREE.ShaderMaterial({
-  transparent: true,
-  depthWrite: false,
-  uniforms: {
-    uTime:      { value: 0 },
-    uCam:       { value: new THREE.Vector3() },
-    uCamRight:  { value: new THREE.Vector3(1, 0, 0) },
-    uCamUp:     { value: new THREE.Vector3(0, 1, 0) },
-    uIntensity: { value: 0 },
-    uCol:       { value: new THREE.Color(0xf0f6fb) },
-  },
-  vertexShader: /* glsl */`
-    attribute vec2 aCorner;   // x: -1/+1 across the streak's width, y: 0 at the head, 1 at the wind-drawn tail
-    uniform float uTime;
-    uniform vec3 uCam;
-    uniform vec3 uCamRight;
-    uniform vec3 uCamUp;
-    varying float vA;
-    void main() {
-      vec3 p = position;
-      // Per-drop fall speed, hashed off its own position so it stays put.
-      float j = fract(sin(p.x * 12.9898 + p.z * 78.233) * 43758.5453);
-      // Straight-down fall in world space, entirely independent of the camera.
-      float y = mod(p.y - uTime * 26.0 * (0.8 + 0.5 * j), ${RAIN_H.toFixed(1)});
-      vec3 w = uCam + vec3(p.x, y - ${(RAIN_H * 0.55).toFixed(2)}, p.z);
-      w += aCorner.y * vec3(1.6, 0.0, 0.9) * 0.5;                 // gentle wind slant on the tail
-      w += uCamUp * -aCorner.y * ${RAIN_LEN.toFixed(2)};          // billboarded length: never edge-on
-      w += uCamRight * aCorner.x * ${RAIN_WIDTH.toFixed(3)};      // billboarded width
-      vA = 1.0 - aCorner.y * 0.5;
-      gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
-    }
-  `,
-  fragmentShader: /* glsl */`
-    uniform float uIntensity;
-    uniform vec3 uCol;
-    varying float vA;
-    void main() { gl_FragColor = vec4(uCol, vA * 0.72 * uIntensity); }
-  `,
-});
-
-const rainObj = (() => {
-  const pos = new Float32Array(RAIN_N * 4 * 3);
-  const corner = new Float32Array(RAIN_N * 4 * 2);
-  const idx = new Uint32Array(RAIN_N * 6);
-  for (let i = 0; i < RAIN_N; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random()) * RAIN_R;
-    const x = Math.cos(a) * r, z = Math.sin(a) * r, y = Math.random() * RAIN_H;
-    const corners = [[-1, 0], [1, 0], [-1, 1], [1, 1]];
-    for (let v = 0; v < 4; v++) {
-      const o = (i * 4 + v) * 3;
-      pos[o] = x; pos[o + 1] = y; pos[o + 2] = z;
-      corner[(i * 4 + v) * 2] = corners[v][0];
-      corner[(i * 4 + v) * 2 + 1] = corners[v][1];
-    }
-    const base = i * 4, o6 = i * 6;
-    idx[o6] = base; idx[o6 + 1] = base + 1; idx[o6 + 2] = base + 2;
-    idx[o6 + 3] = base + 2; idx[o6 + 4] = base + 1; idx[o6 + 5] = base + 3;
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('aCorner', new THREE.BufferAttribute(corner, 2));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1));
-  const o = new THREE.Mesh(geo, rainMat);
-  o.frustumCulled = false;      // it is always around the camera by construction
-  o.visible = false;
-  scene.add(o);
-  return o;
-})();
-
-// ----- overcast palettes -----
-const FOG_BASE  = new THREE.Color(FOG_COLOR);
-const GLOOM_FOG = new THREE.Color(0x8a97a6);
-const GLOOM_Z   = new THREE.Color(0x2c3a4c);
-const GLOOM_H   = new THREE.Color(0x8b98a6);
-const clamp01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
-const shadowList = [];      // scratch, refilled every frame
-
-function updateWeather(dt) {
-  wxTime += dt;
-  wxFocus.copy(camera.position);
-
-  // --- spawn ---
-  const interval = WX.RATES[WX.rateIdx][1];
-  if (interval > 0) {
-    spawnTimer += dt;
-    while (spawnTimer >= interval && clouds.length < MAX_CLOUDS) {
-      spawnTimer -= interval;
-      spawnCloud(false);
-    }
-    if (clouds.length >= MAX_CLOUDS) spawnTimer = Math.min(spawnTimer, interval);
-  } else {
-    spawnTimer = 0;
-  }
-
-  // --- drift, cull, and collect what the rest of the scene needs to know ---
-  const speed = WX.SPEEDS[WX.speedIdx][1];
-  let cover = 0, rainWant = 0, flashGlobal = 0;
-  shadowList.length = 0;
-
-  for (let i = clouds.length - 1; i >= 0; i--) {
-    const c = clouds[i];
-    const p = c.mesh.position;
-    p.x += c.dirX * speed * c.spdMul * dt;
-    p.z += c.dirZ * speed * c.spdMul * dt;
-
-    const dx = p.x - wxFocus.x, dz = p.z - wxFocus.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist > CLOUD_DESPAWN) {
-      cloudGroup.remove(c.mesh);
-      cloudDepthGroup.remove(c.depthMesh);
-      c.mat.dispose();
-      clouds.splice(i, 1);
-      continue;
-    }
-
-    // How much of this cloud is directly over the camera: 1 well inside it,
-    // tapering to 0 a little past its edge.
-    const over = 1 - clamp01((dist - c.radius * 0.35) / (c.radius * 0.8));
-    cover = Math.max(cover, over * clamp01(0.30 + 0.075 * c.scale));
-    // Scale 4-5 spits, 6-7 is heavy, 8-10 is a downpour. Only if we are actually
-    // underneath it rather than flying above the cloud deck.
-    if (c.scale >= 4 && wxFocus.y < c.baseY - 6) {
-      rainWant = Math.max(rainWant, over * Math.min(1, (c.scale - 3) / 5));
-    }
-
-    // --- lightning ---
-    if (c.scale >= 6) {
-      if (c.boltT >= 0) {
-        c.boltT += dt;
-        if (c.boltT > 0.5) c.boltT = -1;
-      } else {
-        c.boltIn -= dt;
-        if (c.boltIn <= 0) strike(c, dist);
-      }
-    }
-    const flash = c.boltT >= 0 ? boltEnv(c.boltT) : 0;
-    c.mat.uniforms.uFlash.value = flash;
-    flashGlobal = Math.max(flashGlobal, flash * (1 - clamp01((dist - 250) / 1300)));
-
-    shadowList.push(c);
-  }
-
-  // --- hand the ground shaders the biggest, nearest footprints ---
-  // The shadow lands well downwind of the cloud that casts it: two hundred
-  // metres of altitude times the tangent of the sun's angle from vertical.
-  for (const c of shadowList) {
-    c.shX = c.mesh.position.x - CLOUD_SHADOW_SLANT.x * c.baseY;
-    c.shZ = c.mesh.position.z - CLOUD_SHADOW_SLANT.y * c.baseY;
-    c.shKey = Math.hypot(c.shX - wxFocus.x, c.shZ - wxFocus.z) - c.radius;
-  }
-  shadowList.sort((a, b) => a.shKey - b.shKey);
-  cloudShadowArr.fill(0);
-  const nSh = Math.min(MAX_CLOUD_SHADOWS, shadowList.length);
-  for (let i = 0; i < nSh; i++) {
-    const c = shadowList[i];
-    const o = i * 4;
-    cloudShadowArr[o]     = c.shX;
-    cloudShadowArr[o + 1] = c.shZ;
-    cloudShadowArr[o + 2] = c.radius * 1.10;
-    // Quadratic in scale rather than linear: a wisp at scale 1 still lays down
-    // a shadow you can watch cross the deck, but a scale-10 storm cell has to
-    // black the ground out under it, so the top of the range needs to pull away
-    // from the bottom much faster than a straight line does. Saturates around
-    // scale 8 — past that the cell is simply opaque.
-    cloudShadowArr[o + 3] = THREE.MathUtils.clamp(0.45 + 0.12 * c.scale + 0.04 * c.scale * c.scale, 0, 1);
-  }
-
-  // --- the sky reacting to what is in it ---
-  gloom += (cover - gloom) * (1 - Math.exp(-1.2 * dt));
-  sun.intensity        = SUN_BASE  * (1 - 0.60 * gloom);
-  hemiLight.intensity  = HEMI_BASE * (1 - 0.30 * gloom) + 0.55 * flashGlobal;
-  ambLight.intensity   = AMB_BASE  * (1 - 0.25 * gloom) + 1.9 * flashGlobal;
-
-  const g = gloom * 0.8;
-  skyMat.uniforms.uZenith.value.copy(SKY_ZENITH).lerp(GLOOM_Z, g);
-  skyMat.uniforms.uHorizon.value.copy(SKY_HORIZON).lerp(GLOOM_H, g);
-  if (!underwater) {
-    scene.fog.color.copy(FOG_BASE).lerp(GLOOM_FOG, gloom * 0.75);
-  }
-
-  // --- rain ---
-  rainAmt += (rainWant - rainAmt) * (1 - Math.exp(-0.9 * dt));
-  rainObj.visible = rainAmt > 0.02 && !underwater;
-  if (rainObj.visible) {
-    rainMat.uniforms.uTime.value = wxTime;
-    rainMat.uniforms.uCam.value.copy(camera.position);
-    // Columns 0 and 1 of the camera's world matrix are its right and up
-    // vectors — billboarding the streak quads off both keeps them fully
-    // screen-facing (and therefore visible) from any camera angle.
-    rainMat.uniforms.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
-    rainMat.uniforms.uCamUp.value.setFromMatrixColumn(camera.matrixWorld, 1);
-    // A gentle floor keeps even a light drizzle legible instead of fading to a
-    // near-invisible haze, while heavier cells still read as visibly heavier.
-    rainMat.uniforms.uIntensity.value = 0.35 + 0.65 * rainAmt;
-  }
-}
-
-// ----- weather HUD -----
-const wxRateBtn      = document.getElementById('wx-rate');
-const wxSpeedBtn     = document.getElementById('wx-speed');
-const wxCountEl      = document.getElementById('wx-count');
-const wxCloudInfoEl  = document.getElementById('wx-cloud-info');
-
-function refreshWxUI() {
-  wxRateBtn.textContent  = WX.RATES[WX.rateIdx][0];
-  wxRateBtn.classList.toggle('off', WX.rateIdx === 0);
-  wxSpeedBtn.textContent = WX.SPEEDS[WX.speedIdx][0];
-  wxCountEl.textContent  = String(clouds.length);
-}
-const cycleRate  = () => { WX.rateIdx  = (WX.rateIdx  + 1) % WX.RATES.length;  refreshWxUI(); };
-const cycleSpeed = () => { WX.speedIdx = (WX.speedIdx + 1) % WX.SPEEDS.length; refreshWxUI(); };
-
-bindTap(wxRateBtn,  cycleRate);
-bindTap(wxSpeedBtn, cycleSpeed);
-refreshWxUI();
-
-// Seed the sky before the first frame so there is weather to look at on arrival.
-wxFocus.copy(camera.position);
-for (let i = 0; i < (isTouchDevice ? 7 : 11); i++) spawnCloud(true);
-refreshWxUI();
 
 // ---------------------------------------------------------------------------
 // Character controller — a cannon-es body whose velocity is driven by input
@@ -4196,7 +2922,6 @@ const playerBody = new CANNON.Body({
   allowSleep: false,
 });
 let crouched = false;
-let swimming = false;
 
 function setPlayerShape(crouch) {
   while (playerBody.shapes.length) playerBody.removeShape(playerBody.shapes[0]);
@@ -4280,17 +3005,8 @@ function respawn() {
 function updatePlayer(dt) {
   const p = playerBody.position, v = playerBody.velocity;
 
-  // --- how much of the body is under the pool surface (0 = dry, 1 = under) ---
-  const bodyH = crouched ? PLAYER.crouchEye : PLAYER.standEye;
-  const submerged = inWaterColumn(p.x, p.z)
-    ? THREE.MathUtils.clamp((WATER.surfaceY - (p.y - centerOffset())) / bodyH, 0, 1)
-    : 0;
-  // Hysteresis: bobbing across a single threshold would flip between swimming and
-  // walking once a frame, and every walking frame would drop the player.
-  swimming = submerged > (swimming ? WATER.swimOut : WATER.swimIn);
-
-  // --- crouch: held on desktop, latched on touch (in water C swims down) ---
-  const wantCrouch = (keys.has('KeyC') || state.crouchBtn) && !swimming;
+  // --- crouch: held on desktop, latched on touch ---
+  const wantCrouch = keys.has('KeyC') || state.crouchBtn;
   if (wantCrouch && !crouched) {
     setPlayerShape(true);
     p.y -= PLAYER.standCenter - PLAYER.crouchCenter;   // keep the feet planted
@@ -4308,7 +3024,6 @@ function updatePlayer(dt) {
 
   // --- wish direction ---
   const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
-  let wishY = 0;
   wishDir.set(0, 0, 0);
   if (camMode === CAM.TOP) {
     // Top-down drives the world axes directly — the camera has no heading to be
@@ -4327,24 +3042,14 @@ function updatePlayer(dt) {
     if (keys.has('KeyA') || keys.has('ArrowLeft'))  str -= 1;
     fwd -= state.joyY;                                          // stick up = forward
     str += state.joyX;
-    // Swimming steers with the camera pitch as well, so you dive where you look.
-    const cp = swimming ? Math.cos(state.pitch) : 1;
-    wishDir.set(-sy * fwd * cp + cy * str, 0, -cy * fwd * cp - sy * str);
-    if (swimming) {
-      if (keys.has('Space') || state.jumpHeld)     wishY += 1;
-      if (keys.has('KeyC')  || state.crouchBtn)    wishY -= 1;
-      wishDir.y = Math.sin(state.pitch) * fwd + wishY;
-    }
+    wishDir.set(-sy * fwd + cy * str, 0, -cy * fwd - sy * str);
   }
   const wl = wishDir.length();
   if (wl > 1) wishDir.divideScalar(wl);
 
-  // Wading drags on you, and past the swim threshold it hands over to the (much
-  // slower) swim speed at roughly the same value, so the change of gait is smooth.
-  const wade = 1 - 0.42 * Math.min(1, submerged / WATER.swimIn);
-  const speed = swimming
-    ? PLAYER.walk * WATER.speedMult
-    : (crouched ? PLAYER.crouchSpeed : PLAYER.walk * (isSprinting() ? PLAYER.sprintMult : 1)) * wade;
+  const speed = crouched
+    ? PLAYER.crouchSpeed
+    : PLAYER.walk * (isSprinting() ? PLAYER.sprintMult : 1);
 
   // Sprint drives forward and strafe only: whatever part of the target velocity
   // points behind the camera is trimmed back to the walk speed, so you can back
@@ -4352,7 +3057,7 @@ function updatePlayer(dt) {
   // behind, so it keeps driving the world axes as before.
   let tx = wishDir.x * speed, tz = wishDir.z * speed;
   if (camMode !== CAM.TOP) {
-    const backCap = Math.min(speed, PLAYER.walk * (swimming ? 1 : wade));
+    const backCap = Math.min(speed, PLAYER.walk);
     const along = tx * -sy + tz * -cy;      // + ahead of the camera, - behind it
     if (along < -backCap) {
       const over = along + backCap;         // negative — the excess to take out
@@ -4361,28 +3066,7 @@ function updatePlayer(dt) {
     }
   }
 
-  if (swimming) {
-    // No ground to push off, so all three axes are driven the same way and the
-    // lerp itself provides the drag.
-    const k = 1 - Math.exp(-WATER.accel * dt);
-    v.x += (tx - v.x) * k;
-    v.z += (tz - v.z) * k;
-    v.y += (wishDir.y * speed - v.y) * k;
-    // Buoyancy: hand back most of the gravity the solver is about to apply.
-    v.y += 9.82 * (1 - WATER.gravityScale) * dt;
-    // Left alone near the top you settle at the surface and ride the swell. A
-    // deliberate dive gives way — but a couple of degrees of look-down does not,
-    // or you would sink every time you swam along the surface off the level.
-    if (Math.abs(wishDir.y) < 0.25) {
-      const bob = Math.sin(elapsed * 1.9) * 0.055 + Math.sin(elapsed * 1.07 + 2.1) * 0.035;
-      const rest = WATER.surfaceY + bob - bodyH * 0.85 + centerOffset();
-      const d = rest - p.y;
-      if (Math.abs(d) < 1.4) {
-        v.y += (THREE.MathUtils.clamp(d * 3.2, -1.2, 1.2) - v.y) * (1 - Math.exp(-6 * dt));
-      }
-    }
-    playerBody.wakeUp();
-  } else if (grounded) {
+  if (grounded) {
     const k = 1 - Math.exp(-PLAYER.groundAccel * dt);
     v.x += (tx - v.x) * k;
     v.z += (tz - v.z) * k;
@@ -4399,8 +3083,8 @@ function updatePlayer(dt) {
   // Steeper than maxSlope: no input authority at all. Player/level friction is
   // zero, so gravity simply slides you back down — that is the red 55-degree lane.
 
-  // --- jump (in water Space is the swim-up key instead) ---
-  if ((state.jumpQueued || keys.has('Space')) && coyote > 0 && !crouched && !swimming) {
+  // --- jump ---
+  if ((state.jumpQueued || keys.has('Space')) && coyote > 0 && !crouched) {
     v.y = PLAYER.jumpSpeed;
     coyote = 0;
     groundNy = 0;
@@ -4503,8 +3187,7 @@ function updateCamera(dt) {
     }
     // The boom ray only knows about the props, so the ground is handled
     // separately: never let the boom drop the camera through the deck. Off the
-    // platform the floor is the sea bed, which lets the boom dip underwater when
-    // you swim away from it. (Top-down needs no such guard — it sits straight
+    // platform the floor is the sea bed. (Top-down needs no such guard — it sits straight
     // above the player, and flat ground has nothing overhead.)
     const floorY = groundHeightAt(desiredPos.x, desiredPos.z) + 0.6;
     if (desiredPos.y < floorY) desiredPos.y = floorY;
@@ -4555,13 +3238,19 @@ window.addEventListener('wheel', (e) => {
 // ---------------------------------------------------------------------------
 const SHOVEL_REACH = 6.0;      // metres of reach from the eye
 const SHOVEL_CAP   = 64;       // blocks your hands hold
-const MAT_NAMES = ['sand', 'dirt', 'rock'];
+const MAT_NAMES = [
+  'sand', 'dirt', 'rock', 'water',
+  'fine dirt', 'mud', 'hard dirt', 'fine mud',
+  'stone dust', 'stone mud', 'brittle stone',
+  'clay', 'clay mud', 'hard clay',
+];
 
 const shovel = {
   on: false,
   held: [],       // materials, last in first out — you put back what you just took
   hit: null,      // {i, j, lvl} the block being looked at, or null
   spot: null,     // {i, j, lvl} the empty cell a placed block would go into
+  debris: null,   // {mesh, local, i, j, lvl} a loose fallen piece being looked at instead
 };
 
 // ----- the ray -----
@@ -4615,11 +3304,35 @@ function spotBlocked(i, j, lvl) {
 
 const aimDir = new THREE.Vector3();
 
+// The cell a world point falls in. Rubble lies wherever the physics dropped it,
+// off the grid and at any angle, so a place against it has to be snapped back.
+const cellOf = (x, y, z) => ({ i: colI(x), j: colJ(z), lvl: Math.floor(y / BLOCK) });
+
+// Fallen pieces are meshes, not store entries, so the DDA cannot see them at
+// all — they get their own raycast.
+const debrisRay = new THREE.Raycaster();
+const debrisOrigin = new THREE.Vector3();
+function debrisAim(ox, oy, oz) {
+  if (debris.children.length === 0) return null;
+  debrisRay.set(debrisOrigin.set(ox, oy, oz), aimDir);
+  debrisRay.far = SHOVEL_REACH;
+  // Recursive: blocks placed onto a piece hang off its mesh as children, and a
+  // hit on one of those is a hit on the piece.
+  const hits = debrisRay.intersectObjects(debris.children, true);
+  if (!hits.length) return null;
+  const hit = hits[0];
+  let o = hit.object;
+  while (o.parent && o.parent !== debris) o = o.parent;
+  hit.piece = o;
+  return hit;
+}
+
 // Refresh what the tool is pointing at. Runs every frame while the shovel is out
 // so the highlight boxes and the two buttons are always telling the truth.
 function shovelAim() {
   shovel.hit = null;
   shovel.spot = null;
+  shovel.debris = null;
   if (!shovel.on) return;
 
   camera.getWorldDirection(aimDir);
@@ -4633,9 +3346,29 @@ function shovelAim() {
     ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
   }
 
-  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, SHOVEL_REACH)) {
+  // Whichever surface is nearer wins: the voxel ray is only let through as far
+  // as the piece of rubble in front of it.
+  const dHit = debrisAim(ox, oy, oz);
+  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
     shovel.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
     shovel.spot = { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl };
+  } else if (dHit) {
+    // Looking at a fallen piece. Digging takes off the one block under the
+    // crosshair; a place joins the piece's own lattice, against the face you can
+    // see, and from then on rides with it — the world grid does not come into it.
+    const p = dHit.point;
+    const dm = dHit.piece;
+    // Which block that is: an instance of the piece itself, or one of the cubes
+    // placed on it since, which hang off it as children. Its position is in the
+    // piece's frame, which is what the highlight and the dig both want.
+    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
+    const child = dHit.object !== dm ? dHit.object : null;
+    const lat = dm.userData.blocks;
+    let blockLocal = null;
+    if (child) blockLocal = child.position;
+    else if (inst >= 0 && inst < lat.length) blockLocal = lat[inst].pos;
+    shovel.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), inst, child, blockLocal },
+                                  cellOf(p.x, p.y, p.z));
   } else if (camMode !== CAM.FREE) {
     // Nothing under the crosshair. Fall back to what you are standing on, and to
     // the ground a stride ahead of you for the other half — looking at the sky
@@ -4662,15 +3395,403 @@ function shovelAim() {
 // than per edit, so holding a button down does not rebuild the same chunk twice.
 const dirtyChunks = new Set();
 
+// Taking a block out from under a pile leaves the pile hanging. Everything that
+// lost its footing — the block that was standing on the hole, whatever is stacked
+// on it, and whatever those are joined to sideways that is also on nothing —
+// breaks off the world as one piece. It stops being terrain at that moment: the
+// blocks are cut out of the store and the piece carries on as a loose rigid body
+// that falls under the same gravity as everything else, hits the ground, tumbles
+// and rolls to a stop wherever the physics puts it. Water neither falls nor holds
+// anything up. What settles keeps its body and stays in the physics world, so it
+// is solid to stand on and shoves awake again when something runs into it — but
+// it is never written back into the voxel grid, so the shovel treats it as a
+// piece rather than as terrain.
+const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER; };
+const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
+
+// ----- loose chunks -----
+// A piece that has broken off is one InstancedMesh (a cube per block, coloured
+// by its material) glued to one cannon body. Every block of it is a box shape on
+// that body while the piece is small enough for the solver to enjoy it; past
+// that it collides as the single box that encloses it, which still falls and
+// tumbles convincingly and costs the same whatever it is made of.
+const FALL_BODY_CAP  = 20;    // pieces under physics at once
+const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
+const FALL_SHAPE_CAP = 24;    // blocks that get a collider each, rather than one box round the lot
+const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
+const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
+const FALL_REST_TICKS = 30;   // frames of that before its body is retired
+const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
+const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
+const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+// White, because the colour of every cube comes in per instance.
+const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
+// Its own group rather than `objects`: the camera boom raycasts that one to pull
+// itself in past props, and rubble lying around the player should not be tugging
+// the camera about.
+const debris = new THREE.Group();
+scene.add(debris);
+const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
+const restedChunks  = [];  // { mesh, body, still } — come to a stop, but still in the world
+
+// A piece that has stopped is no longer watched, but it keeps its body. Cannon
+// puts a body that has not moved for a second to sleep on its own, and a
+// sleeping body still collides — so the player walking into a heap, or the next
+// piece landing on it, shoves it awake again instead of passing through scenery.
+// Only the cull below, and digging the last block off a piece, take a body out
+// of the world.
+function restFallingChunk(n) {
+  const f = fallingChunks[n];
+  fallingChunks.splice(n, 1);
+  restedChunks.push(f);
+  while (restedChunks.length > FALL_MESH_CAP) dropChunk(restedChunks.shift());
+}
+
+// Take a piece away for good: body out of the world, mesh out of the scene.
+function dropChunk(f) {
+  world.removeBody(f.body);
+  const q = syncList.findIndex((e) => e.body === f.body);
+  if (q >= 0) syncList.splice(q, 1);
+  debris.remove(f.mesh);
+  f.mesh.dispose();  // the per-instance buffers only — geometry and material are shared
+}
+
+// The entry for a piece, whether it is still being watched or has settled. A
+// rested piece has a body just like a falling one, so anything that feeds the
+// body — a block placed on it, a block dug off it — works on either.
+const chunkOfMesh = (mesh) => fallingChunks.find((e) => e.mesh === mesh)
+                          || restedChunks.find((e) => e.mesh === mesh);
+
+function spawnFallingChunk(unit) {
+  const blocks = [...unit.values()];
+  const n = blocks.length;
+
+  // Centre of the piece, and the box that encloses it, both in world units.
+  let cx = 0, cy = 0, cz = 0;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const b of blocks) {
+    const x = colX(b.i), y = (b.lvl + 0.5) * BLOCK, z = colZ(b.j);
+    cx += x; cy += y; cz += z;
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+    if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  cx /= n; cy /= n; cz /= n;
+
+  // The mesh: one cube per block, positioned relative to that centre so the
+  // whole thing rotates about it.
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
+  const m4 = new THREE.Matrix4(), col = new THREE.Color();
+  for (let q = 0; q < n; q++) {
+    const b = blocks[q];
+    m4.makeTranslation(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
+    mesh.setMatrixAt(q, m4);
+    mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.m].color));
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor.needsUpdate = true;
+  // The piece's own lattice, in its own frame. Kept because a block placed
+  // against the piece is snapped to this rather than to the world grid.
+  mesh.userData.blocks = blocks.map((b) => ({
+    pos: new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz),
+    mat: b.m,
+  }));
+  mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  debris.add(mesh);
+
+  const body = new CANNON.Body({
+    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    material: physDebris,
+    linearDamping: 0.02,
+    angularDamping: 0.15,
+    // One group for everything, and a mask that lets all of it through, so a
+    // piece collides with the level, with props, with the player — and with the
+    // other pieces, which share this group. The debris-on-debris friction and
+    // bounce come from the physDebris/physDebris contact material up top.
+    collisionFilterGroup: DEBRIS_GROUP,
+    collisionFilterMask: -1,
+  });
+  const h = HALF_BLOCK;
+  if (n <= FALL_SHAPE_CAP) {
+    for (const b of blocks) {
+      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+                    new CANNON.Vec3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz));
+    }
+  } else {
+    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
+                  new CANNON.Vec3((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy, (z0 + z1) / 2 - cz));
+  }
+  body.position.set(cx, cy, cz);
+  // A nudge of spin, so a piece topples off the face it broke from instead of
+  // sitting dead flat all the way down.
+  body.angularVelocity.set((Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.8);
+
+  // Oldest piece gives up its body if the field is already full of them.
+  while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
+  linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
+  fallingChunks.push({ mesh, body, still: 0 });
+}
+
+// Called once a frame after the step: retire whatever has stopped moving, and
+// drop whatever has fallen out of the world altogether.
+function updateFallingChunks() {
+  for (let n = fallingChunks.length - 1; n >= 0; n--) {
+    const f = fallingChunks[n];
+    if (f.body.position.y < FALL_KILL_Y) {
+      fallingChunks.splice(n, 1);
+      dropChunk(f);
+      continue;
+    }
+    const v = f.body.velocity, w = f.body.angularVelocity;
+    const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
+              && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
+    f.still = slow ? f.still + 1 : 0;
+    if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) restFallingChunk(n);
+  }
+  // Settled pieces are still live bodies, so one shoved off the edge of the
+  // field has to be caught here as well.
+  for (let n = restedChunks.length - 1; n >= 0; n--) {
+    const f = restedChunks[n];
+    if (f.body.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); }
+  }
+}
+
+// Taking a whole loose piece away. Its blocks were cut out of the store when it
+// broke off, so nothing here is owed back to the world count.
+function removeDebrisMesh(mesh) {
+  const n = fallingChunks.findIndex((f) => f.mesh === mesh);
+  if (n >= 0) { dropChunk(fallingChunks[n]); fallingChunks.splice(n, 1); return; }
+  const q = restedChunks.findIndex((f) => f.mesh === mesh);
+  if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
+  debris.remove(mesh);
+  mesh.dispose();
+}
+
+// Redo a piece's collider and its weight from the lattice it has left. Runs
+// after a dig: a piece is a few dozen boxes at most, so building the shapes
+// again costs less than trying to patch the ones that are there.
+function rebuildDebrisBody(mesh, body) {
+  const lat = mesh.userData.blocks, h = HALF_BLOCK;
+  body.shapes.length = 0;
+  body.shapeOffsets.length = 0;
+  body.shapeOrientations.length = 0;
+  if (mesh.userData.perBlock) {
+    for (const b of lat) {
+      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+                    new CANNON.Vec3(b.pos.x, b.pos.y, b.pos.z));
+    }
+  } else {
+    // The big ones collide as the single box that encloses what is left.
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const b of lat) {
+      if (b.pos.x < x0) x0 = b.pos.x; if (b.pos.x > x1) x1 = b.pos.x;
+      if (b.pos.y < y0) y0 = b.pos.y; if (b.pos.y > y1) y1 = b.pos.y;
+      if (b.pos.z < z0) z0 = b.pos.z; if (b.pos.z > z1) z1 = b.pos.z;
+    }
+    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
+                  new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
+  }
+  body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
+  body.updateMassProperties();
+  body.updateBoundingRadius();
+  body.updateAABB();
+  body.wakeUp();
+}
+
+// Digging a loose piece takes off the one block under the crosshair and leaves
+// the rest of it standing. The piece's own blocks are instances of its mesh and
+// sit at the front of the lattice array, in step with the instance buffer;
+// anything placed on it since hangs off it as a child mesh. Dig the last block
+// out and the piece goes with it.
+function digDebrisBlock(mesh, inst, child) {
+  const lat = mesh.userData.blocks;
+  let q = -1;
+  if (child) q = lat.findIndex((b) => b.child === child);
+  else if (inst >= 0 && inst < mesh.count) q = inst;
+  if (q < 0) return false;
+
+  if (lat[q].child) {
+    mesh.remove(lat[q].child);
+  } else {
+    // Close the gap in the instance buffers and draw one fewer, so the piece's
+    // own blocks stay the first `count` entries of the lattice.
+    const m4 = new THREE.Matrix4(), col = new THREE.Color();
+    for (let k = q + 1; k < mesh.count; k++) {
+      mesh.getMatrixAt(k, m4); mesh.setMatrixAt(k - 1, m4);
+      mesh.getColorAt(k, col); mesh.setColorAt(k - 1, col);
+    }
+    mesh.count -= 1;
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor.needsUpdate = true;
+  }
+  lat.splice(q, 1);
+
+  if (!lat.length) { removeDebrisMesh(mesh); return true; }   // nothing left of it
+  const f = chunkOfMesh(mesh);
+  if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }    // lighter, and disturbed
+  return true;
+}
+
+// Where a block placed against this piece would go, in the piece's own frame.
+// Rubble lies at whatever angle the physics left it, so the cell is snapped to
+// the piece's lattice — anchored on one of its own blocks — instead of to the
+// world grid. Null if that cell is already filled.
+const debrisLocal = new THREE.Vector3();
+function debrisSpot(mesh, point, dir) {
+  const lat = mesh.userData.blocks;
+  if (!lat || !lat.length) return null;
+  const anchor = lat[0].pos;
+  mesh.updateWorldMatrix(true, false);   // it was moved by the body this frame
+  const v = mesh.worldToLocal(debrisLocal.copy(point).addScaledVector(dir, -HALF_BLOCK));
+  v.x = anchor.x + Math.round((v.x - anchor.x) / BLOCK) * BLOCK;
+  v.y = anchor.y + Math.round((v.y - anchor.y) / BLOCK) * BLOCK;
+  v.z = anchor.z + Math.round((v.z - anchor.z) / BLOCK) * BLOCK;
+  for (const b of lat) {
+    if (Math.abs(b.pos.x - v.x) < 0.01 && Math.abs(b.pos.y - v.y) < 0.01
+        && Math.abs(b.pos.z - v.z) < 0.01) return null;
+  }
+  return v.clone();
+}
+
+// Put a held block onto a fallen piece. The cube hangs off the piece's mesh in
+// local coordinates, so it turns and tumbles with it, and the body it is glued
+// to gets heavier and grows a collider to match.
+function placeOnDebris(mesh, local, m) {
+  const cube = new THREE.Mesh(fallGeo, TERRAIN_MATS[m]);
+  cube.position.copy(local);
+  cube.castShadow = true;
+  cube.receiveShadow = true;
+  mesh.add(cube);
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube });
+
+  // Settled pieces keep their bodies, so one gets fed the same as a falling one:
+  // heavier, a collider round the new block, and shoved awake to feel it.
+  const f = chunkOfMesh(mesh);
+  if (!f) return;
+  const body = f.body, h = HALF_BLOCK;
+  if (mesh.userData.perBlock) {
+    body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+                  new CANNON.Vec3(local.x, local.y, local.z));
+  } else {
+    // Pieces too big for a collider each collide as one box: grow it to take
+    // the new block in.
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const b of mesh.userData.blocks) {
+      if (b.pos.x < x0) x0 = b.pos.x; if (b.pos.x > x1) x1 = b.pos.x;
+      if (b.pos.y < y0) y0 = b.pos.y; if (b.pos.y > y1) y1 = b.pos.y;
+      if (b.pos.z < z0) z0 = b.pos.z; if (b.pos.z > z1) z1 = b.pos.z;
+    }
+    const box = body.shapes[0];
+    box.halfExtents.set((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h);
+    box.updateConvexPolyhedronRepresentation();
+    box.updateBoundingSphereRadius();
+    body.shapeOffsets[0].set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+    body.updateBoundingRadius();
+  }
+  body.mass = Math.min(body.mass + 0.5, FALL_MASS_CAP);
+  body.updateMassProperties();
+  body.updateAABB();
+  body.wakeUp();
+  f.still = 0;                  // it has been disturbed: let it settle again
+}
+
+// The six face neighbours, with the one below last so a stack pops it first: a
+// fill that walks down before it walks out reaches bedrock in a hundred-odd
+// steps from the surface instead of ballooning outwards on the way.
+const GRAV_DIRS = [[0, 0, 1], [-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1]];
+const GRAV_MAX  = 1024;   // blocks one fill walks before it gives the group up as terrain
+
+// Everything joined to (i, j, lvl) through solid faces, as one group. Water is
+// not solid, so it neither joins a group nor holds one up. The group is adrift —
+// and comes down whole — only if none of it reaches bedrock: with all six
+// directions walked, a block standing on anything solid is standing on another
+// member, so the floor is the one thing left that can anchor the lot. Returns
+// the group's blocks, or null if it is anchored, or too big to be worth walking.
+function adriftGroup(i, j, lvl) {
+  if (!gravSolid(i, j, lvl)) return null;
+  const first = { i, j, lvl, m: voxelAt(i, j, lvl) };
+  const unit = new Map([[gravKey(i, j, lvl), first]]);
+  const stack = [first];
+  while (stack.length) {
+    const b = stack.pop();
+    if (b.lvl <= VOX_FLOOR) return null;    // sitting on bedrock: the whole group is held up
+    for (const [di, dj, dl] of GRAV_DIRS) {
+      const ii = b.i + di, jj = b.j + dj, ll = b.lvl + dl;
+      const key = gravKey(ii, jj, ll);
+      if (unit.has(key) || !gravSolid(ii, jj, ll)) continue;
+      if (unit.size >= GRAV_MAX) return null;
+      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll) };
+      unit.set(key, nb);
+      stack.push(nb);
+    }
+  }
+  return unit;
+}
+
+// The removal at (i, j, lvl) opened one face on each of the six cells around it,
+// so whatever they are joined to may have just lost its last path to the ground.
+// Each side is walked in turn; the first group that comes away cuts its blocks
+// out of the store, so a later side that was part of it finds air and is passed
+// over.
+function applyGravity(i, j, lvl) {
+  for (const [di, dj, dl] of GRAV_DIRS) breakOffAdrift(i + di, j + dj, lvl + dl);
+}
+
+function breakOffAdrift(i, j, lvl) {
+  const unit = adriftGroup(i, j, lvl);
+  if (!unit) return;
+
+  // The loose blocks leave the grid. Nothing is written back lower down — the
+  // piece itself takes over from here.
+  for (const b of unit.values()) setVoxel(b.i, b.j, b.lvl, AIR);
+
+  // Then the same housekeeping an edit does, for every cell that emptied.
+  const cols = new Set();
+  for (const b of unit.values()) {
+    const k = b.j * GEN_N + b.i;
+    colDug[k] = 1;
+    if (b.lvl < colDugLo[k]) colDugLo[k] = b.lvl;
+    refreshVisible(b.i, b.j, b.lvl);
+    refreshVisible(b.i - 1, b.j, b.lvl);
+    refreshVisible(b.i + 1, b.j, b.lvl);
+    refreshVisible(b.i, b.j - 1, b.lvl);
+    refreshVisible(b.i, b.j + 1, b.lvl);
+    refreshVisible(b.i, b.j, b.lvl - 1);
+    refreshVisible(b.i, b.j, b.lvl + 1);
+    cols.add(k);
+  }
+  for (const k of cols) {
+    const ci = k % GEN_N, cj = (k - ci) / GEN_N;
+    patchCollider(ci, cj);
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        const ii = ci + di, jj = cj + dj;
+        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+        dirtyChunks.add(chunkOf(ii, jj));
+      }
+    }
+  }
+
+  spawnFallingChunk(unit);
+}
+
 function editBlock(i, j, lvl, m) {
   const was = setVoxel(i, j, lvl, m);
   const k = j * GEN_N + i;
   colDug[k] = 1;
-  landTexel(k);
-  landTex.needsUpdate = true;
+  if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
   patchCollider(i, j);
-  // A column's faces are drawn against its neighbours' tops, so an edit on a
-  // chunk border changes what the chunk next door has to draw as well.
+  // Refresh visibility of the edited block and all six neighbours.
+  refreshVisible(i, j, lvl);
+  refreshVisible(i - 1, j, lvl);
+  refreshVisible(i + 1, j, lvl);
+  refreshVisible(i, j - 1, lvl);
+  refreshVisible(i, j + 1, lvl);
+  refreshVisible(i, j, lvl - 1);
+  refreshVisible(i, j, lvl + 1);
+  // Mark affected chunks dirty so meshes rebuild.
   for (let dj = -1; dj <= 1; dj++) {
     for (let di = -1; di <= 1; di++) {
       const ii = i + di, jj = j + dj;
@@ -4678,18 +3799,28 @@ function editBlock(i, j, lvl, m) {
       dirtyChunks.add(chunkOf(ii, jj));
     }
   }
+  // Anything the removal left hanging comes down.
+  if (m === AIR && was !== AIR) applyGravity(i, j, lvl);
   return was;
 }
 
 function flushDirtyChunks() {
   if (!dirtyChunks.size) return;
-  for (const c of dirtyChunks) { rebuildChunk(c); rebuildFilletChunk(c); }
+  for (const c of dirtyChunks) rebuildChunk(c);
   dirtyChunks.clear();
   blocksHudEl.textContent = worldBlocks.toLocaleString();
 }
 
 function shovelPickUp() {
-  if (!shovel.on || !shovel.hit || shovel.held.length >= SHOVEL_CAP) return false;
+  if (!shovel.on) return false;
+  if (shovel.debris && shovel.debris.blockLocal) {
+    // Rubble comes away a block at a time, and not into your hands.
+    const d = shovel.debris;
+    digDebrisBlock(d.mesh, d.inst, d.child);
+    shovel.debris = null;
+    return true;
+  }
+  if (!shovel.hit || shovel.held.length >= SHOVEL_CAP) return false;
   const { i, j, lvl } = shovel.hit;
   const m = voxelAt(i, j, lvl);
   if (m === AIR) return false;
@@ -4700,7 +3831,13 @@ function shovelPickUp() {
 }
 
 function shovelPlace() {
-  if (!shovel.on || !shovel.spot || shovel.held.length === 0) return false;
+  if (!shovel.on || shovel.held.length === 0) return false;
+  if (shovel.debris && shovel.debris.local) {
+    placeOnDebris(shovel.debris.mesh, shovel.debris.local, shovel.held.pop());
+    refreshShovelUI();
+    return true;
+  }
+  if (!shovel.spot) return false;
   const { i, j, lvl } = shovel.spot;
   // Re-check rather than trusting the aim from earlier in the frame. Popping a
   // block off the stack for a write that then gets rejected would destroy it.
@@ -4737,10 +3874,10 @@ const blocksHudEl = document.getElementById('blocks-hud');
 
 function refreshShovelUI() {
   const n = shovel.held.length;
-  const by = [0, 0, 0];
+  const by = new Array(N_MATS).fill(0);
   for (const m of shovel.held) by[m]++;
   const parts = [];
-  for (let m = 0; m < 3; m++) if (by[m]) parts.push(by[m] + ' ' + MAT_NAMES[m]);
+  for (let m = 0; m < N_MATS; m++) if (by[m]) parts.push(by[m] + ' ' + MAT_NAMES[m]);
   heldPanel.textContent = 'Blocks held: ' + n + (parts.length ? '  —  ' + parts.join(', ') : '');
   heldHudEl.textContent = String(n);
   shovelBtn.innerHTML = 'Shovel &mdash; ' + (shovel.on ? 'On' : 'Off');
@@ -4751,12 +3888,35 @@ function refreshShovelUI() {
 // the buttons grey out when the move they offer is not a legal one.
 function updateShovel() {
   shovelAim();
-  const canPick = !!shovel.hit && shovel.held.length < SHOVEL_CAP;
-  const canPlace = !!shovel.spot && shovel.held.length > 0;
+  const canPick = shovel.debris ? !!shovel.debris.blockLocal
+                                : (!!shovel.hit && shovel.held.length < SHOVEL_CAP);
+  const dLocal = shovel.debris && shovel.debris.local;
+  const canPlace = (!!shovel.spot || !!dLocal) && shovel.held.length > 0;
   hlPick.visible  = shovel.on && canPick;
   hlPlace.visible = shovel.on && canPlace;
-  if (hlPick.visible)  cellCenter(shovel.hit, hlPick.position);
-  if (hlPlace.visible) cellCenter(shovel.spot, hlPlace.position);
+  if (hlPick.visible) {
+    if (shovel.debris) {
+      // On the block and tilted with the piece. A piece lies wherever the
+      // physics left it, at any angle and off the grid, so the world cell it
+      // happens to overlap is nowhere near where the cage belongs.
+      hlPick.position.copy(shovel.debris.blockLocal).applyMatrix4(shovel.debris.mesh.matrixWorld);
+      shovel.debris.mesh.getWorldQuaternion(hlPick.quaternion);
+    } else {
+      cellCenter(shovel.hit, hlPick.position);
+      hlPick.quaternion.identity();
+    }
+  }
+  if (hlPlace.visible) {
+    if (dLocal) {
+      // On the piece, and tilted with it, so the ghost shows where the block
+      // will actually end up rather than where the world grid would put it.
+      hlPlace.position.copy(dLocal).applyMatrix4(shovel.debris.mesh.matrixWorld);
+      shovel.debris.mesh.getWorldQuaternion(hlPlace.quaternion);
+    } else {
+      cellCenter(shovel.spot, hlPlace.position);
+      hlPlace.quaternion.identity();
+    }
+  }
   pickBtn.classList.toggle('dim', !canPick);
   placeBtn.classList.toggle('dim', !canPlace);
 }
@@ -4783,31 +3943,31 @@ const modeBtn   = document.getElementById('mode-btn');
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['Space / C', 'Swim up / down'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'],
                 ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['Space / C', 'Swim up / down'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'],
                 ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['1 2', 'Weather'], ['4 / 0', 'Add / clear cloud'],
+                ['Mouse', 'Look'], ['5', 'Materials'],
                 ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
-  [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump / swim up'],
-                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
-  [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump / swim up'],
-                ['CROUCH', 'Crouch / swim down'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+  [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump'],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+  [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump'],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in'],
                 ['Shovel', 'Button, top left']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
-                ['Weather', 'Panel, top left']],
+                ['MATS', 'Panel, top left']],
 };
 // Appended while the shovel is out, in whichever camera you are in.
 const HELP_SHOVEL_DESKTOP = [['LMB / Z', 'Pick up block'], ['RMB / X', 'Place block']];
@@ -4824,8 +3984,6 @@ function refreshModeUI() {
   instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
 
-  // The weather controls only make sense while you are flying around watching
-  // the sky, so they ride with the free camera.
   document.body.classList.toggle('free-cam', camMode === CAM.FREE);
 
   // Fly pad doubles as the top-down zoom pad; action pad is for on-foot modes.
@@ -4843,11 +4001,74 @@ function refreshModeUI() {
 // makes itself unclickable the moment it succeeds, which is exactly why this one
 // "didn't always work". Esc frees the cursor (and pops the overlay, which this
 // button now sits above); a click in the world captures it again.
-bindTap(modeBtn, () => {
-  initAudio();                          // first gesture — unlock thunder
-  toggleGameMode();
-});
+bindTap(modeBtn, () => toggleGameMode());
 refreshModeUI();
+
+// ---------------------------------------------------------------------------
+// Materials panel
+//
+// A read-out of what the world is made of, one row per entry in TERRAIN_MATS.
+// The swatches are read straight off those materials rather than repeated as
+// literals here, so a colour only ever has to change in one place.
+//
+// The numbers are the material's own properties, indexed by material id and not
+// yet read by anything that simulates: weight is how much a block of it drags on
+// you, buoyancy how much the water pushes it back up, strength how much work it
+// takes to break out of the ground, powder whether it is loose and crumbly.
+// Water is the one entry with none — it is a block in the store but it is not a
+// thing you can carry.
+// ---------------------------------------------------------------------------
+const MAT_STATS = [
+  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 0.5, powder: true  },  // SAND
+  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
+  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
+  null,                                                                        // WATER
+  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
+];
+
+const materialsEl  = document.getElementById('materials-ui');
+const materialsBtn = document.getElementById('btn-materials');
+
+// Title-cased from MAT_NAMES for the one material with no stats row to name it.
+const titleCase = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
+
+document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
+  // getHexString() converts the linear-space colour back to the sRGB the browser
+  // wants, so the swatch matches what the cubes actually render as.
+  const hex = '#' + m.color.getHexString();
+  const st = MAT_STATS[i];
+  const name = st ? st.name : titleCase(MAT_NAMES[i]);
+  // Full width now, so the stats spell themselves out on one line.
+  const stats = st
+    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: ${st.strength} &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
+    : '<span>no stats &mdash; not carryable</span>';
+  return '<div class="mat-row">'
+       + `<div class="mat-sw" style="background:${hex}"></div>`
+       + `<div class="mat-txt"><b>${name}</b>${stats}</div>`
+       + '</div>';
+}).join('');
+
+let materialsOpen = false;
+function setMaterialsUI(on) {
+  materialsOpen = on;
+  materialsEl.classList.toggle('on', on);
+  materialsBtn.classList.toggle('on', on);
+  // Full screen now, so it wants the cursor back — with the pointer locked there
+  // is nothing to click the X with, and mouse look would run on under the panel.
+  if (on && document.pointerLockElement) document.exitPointerLock();
+}
+function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
+bindTap(materialsBtn, toggleMaterialsUI);
+bindTap(document.getElementById('mat-close'), () => setMaterialsUI(false));
 
 // ---------------------------------------------------------------------------
 // Overlay
@@ -4878,7 +4099,6 @@ document.getElementById('start-btn').textContent = isTouchDevice ? 'Tap to fly' 
 
 function hideOverlay() {
   overlay.classList.add('hidden');
-  initAudio();                  // the gesture the browser wants before any sound
   if (!isTouchDevice) requestLock();
 }
 function showOverlay() { overlay.classList.remove('hidden'); }
@@ -4966,29 +4186,24 @@ function tick() {
     updatePlayer(dt);
   }
 
-  // --- physics: fixed 60 Hz steps, sub-stepped to catch up with the frame ---
-  world.step(PHYS_STEP, dt, 4);
+  // --- physics: fixed 120 Hz steps, sub-stepped to catch up with the frame ---
+  // Twice the old rate: a shorter step resolves the block-edge contacts before
+  // they build into a shove, which is the one thing here that helps the walk.
+  // Nothing touches the body afterwards — the solver's answer is the answer.
+  world.step(PHYS_STEP, dt, 8);
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);
     s.mesh.quaternion.copy(s.body.quaternion);
   }
+  updateFallingChunks();
 
   updateCamera(dt);
   // After the camera, since the aim is taken down the view direction, and before
   // the render so the highlight boxes are in the right place this frame.
   if (shovel.on) updateShovel();
   flushDirtyChunks();
-  waterTime.value = elapsed;
-  updateWaterVisuals();
-  // After the water swap, which owns the fog when the camera is submerged — the
-  // weather only repaints it while we are above the surface.
-  updateWeather(dt);
   sky.position.copy(camera.position);
-  // Slide the sea under the camera. The waves themselves are a function of world
-  // position, so nothing moves with it — the tessellation just follows the eye,
-  // and the horizon is always another 1180 units away.
-  ocean.position.set(camera.position.x, 0, camera.position.z);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
 
   // --- HUD ---
@@ -5010,463 +4225,10 @@ function tick() {
       p.x.toFixed(1).padStart(6, ' ') + ',' +
       p.y.toFixed(1).padStart(6, ' ') + ',' +
       p.z.toFixed(1).padStart(6, ' ');
-    if (camMode === CAM.FREE) {
-      wxCountEl.textContent = String(clouds.length);
-      let nearest = null, nearestDist = Infinity;
-      for (const c of clouds) {
-        const d = c.mesh.position.distanceTo(p);
-        if (d < nearestDist) { nearestDist = d; nearest = c; }
-      }
-      wxCloudInfoEl.textContent = nearest
-        ? `nearest: storm ${nearest.scale.toFixed(1)} @ ${nearestDist.toFixed(0)}m`
-        : 'nearest: —';
-    }
   }
 
-  // Depth prepass: render cloud silhouettes into the depth buffer first,
-  // then the full scene with volumetric shading reads that depth to cull
-  // interior faces that would otherwise bleed through.
-  cloudGroup.visible = false;
   renderer.render(scene, camera);
-  cloudGroup.visible = true;
-  cloudDepthGroup.visible = false;
-  renderer.render(scene, camera);
-  cloudDepthGroup.visible = true;
 }
-
-// ---------------------------------------------------------------------------
-// 2D Debug View — terrain smoothing cross-section
-// ---------------------------------------------------------------------------
-(function() {
-  const D2D_COLS = 40, D2D_ROWS = 16;
-  const CELL_PX = 40; // logical CSS pixels per block — large enough to tap on iPhone
-  const CV_W = D2D_COLS * CELL_PX, CV_H = D2D_ROWS * CELL_PX;
-  const CELL_W = CV_W / D2D_COLS, CELL_H = CV_H / D2D_ROWS;
-  // Block materials: 0=air, 1=rock, 2=dirt, 3=grass (top)
-  const D2D_AIR = 0, D2D_ROCK = 1, D2D_DIRT = 2, D2D_GRASS = 3;
-  const D2D_COLORS = ['', '#6a6e78', '#8b6b3d', '#5a8a3c'];
-
-  // 1D grid — each cell is a material (0 = empty)
-  const d2dGrid = new Uint8Array(D2D_COLS * D2D_ROWS);
-
-  // Seed some initial terrain
-  function d2dSeedTerrain() {
-    d2dGrid.fill(0);
-    const profile = [2, 4, 6, 7, 9, 11, 12, 13, 14, 14, 14, 13, 12, 10, 9, 8,
-                     7, 7, 8, 9, 10, 11, 12, 13, 13, 12, 11, 10, 8, 6, 5, 4,
-                     3, 3, 4, 5, 6, 7, 8, 9];
-    for (let x = 0; x < D2D_COLS; x++) {
-      const h = Math.min(profile[x] || 0, D2D_ROWS);
-      for (let y = 0; y < h; y++) {
-        const row = D2D_ROWS - 1 - y;
-        if (y === h - 1) d2dGrid[row * D2D_COLS + x] = D2D_GRASS;
-        else if (y < 3) d2dGrid[row * D2D_COLS + x] = D2D_DIRT;
-        else d2dGrid[row * D2D_COLS + x] = D2D_ROCK;
-      }
-    }
-  }
-  d2dSeedTerrain();
-
-  // Get column surface height — the elevation of the topmost filled cell,
-  // not a count of filled cells. A column can have gaps below its top block
-  // (from toggling), so counting would collapse an overhang onto the column
-  // beneath it instead of tracing the actual block face at its real height.
-  function d2dColHeight(x) {
-    for (let y = 0; y < D2D_ROWS; y++) {
-      if (d2dGrid[y * D2D_COLS + x] !== D2D_AIR) return D2D_ROWS - y;
-    }
-    return 0;
-  }
-
-  // Fillet radius, in grid units — each column is one block wide (1 grid
-  // unit), so BLOCK/2 (half a block) is 0.5 here.
-  const D2D_FILLET_R = 0.5;
-  const D2D_ARC_STEPS = 8; // line segments used to approximate each quarter-circle
-
-  // Is the unit cell at (x, h) solid? h < 0 reads as bedrock — infinite fill
-  // below the visible grid, so a grounded column's bottom face never counts
-  // as exposed, while an empty column still reads as resting on h=0 (its
-  // "floor" is exposed). h >= D2D_ROWS reads as open sky (always empty); x
-  // outside the grid reads as empty too, which is what lets the boundary
-  // walk stop at the viewport edges instead of drawing a wall there.
-  function d2dFilled(x, h) {
-    if (h < 0) return true;
-    if (h >= D2D_ROWS || x < 0 || x >= D2D_COLS) return false;
-    return d2dGrid[(D2D_ROWS - 1 - h) * D2D_COLS + x] !== D2D_AIR;
-  }
-
-  // Collect every exposed unit-length face of the block mass as a directed
-  // edge, oriented so consecutive exposed faces chain head-to-tail into a
-  // walkable outline: left faces go up, top faces go right, right faces go
-  // down, bottom faces (undersides — including a floating block's own
-  // belly) go left. Empty columns also contribute a synthetic ground-level
-  // edge so the outline reads as a continuous baseline where nothing is
-  // built, instead of just vanishing.
-  function d2dCollectEdges() {
-    const edges = [];
-    for (let x = 0; x < D2D_COLS; x++) {
-      for (let h = 0; h < D2D_ROWS; h++) {
-        if (!d2dFilled(x, h)) continue;
-        if (x > 0 && !d2dFilled(x - 1, h)) edges.push([x, h, x, h + 1]);
-        if (x < D2D_COLS - 1 && !d2dFilled(x + 1, h)) edges.push([x + 1, h + 1, x + 1, h]);
-        if (!d2dFilled(x, h + 1)) edges.push([x, h + 1, x + 1, h + 1]);
-        if (!d2dFilled(x, h - 1)) edges.push([x + 1, h, x, h]);
-      }
-      if (!d2dFilled(x, 0)) edges.push([x, 0, x + 1, 0]);
-    }
-    return edges;
-  }
-
-  // Stitch exposed edges into polylines by chaining each edge's end point to
-  // the next edge that starts there. A chain that starts at a point nothing
-  // else ends at is open — it runs off the left/right viewport edge.
-  // Everything left over closes back on itself — a block with no connection
-  // to the ground (floating, or undercut all the way through).
-  function d2dChainEdges(edges) {
-    const byStart = new Map(), byEnd = new Map();
-    edges.forEach((e, i) => {
-      const sk = e[0] + ',' + e[1], ek = e[2] + ',' + e[3];
-      if (!byStart.has(sk)) byStart.set(sk, []);
-      byStart.get(sk).push(i);
-      if (!byEnd.has(ek)) byEnd.set(ek, []);
-      byEnd.get(ek).push(i);
-    });
-    const used = new Array(edges.length).fill(false);
-    function walk(startIdx) {
-      const pts = [];
-      let cur = startIdx;
-      while (cur !== undefined && !used[cur]) {
-        used[cur] = true;
-        const e = edges[cur];
-        if (pts.length === 0) pts.push({ x: e[0], y: e[1] });
-        pts.push({ x: e[2], y: e[3] });
-        const cands = byStart.get(e[2] + ',' + e[3]);
-        cur = cands ? cands.find((idx) => !used[idx]) : undefined;
-      }
-      return pts;
-    }
-    const polylines = [];
-    for (let i = 0; i < edges.length; i++) {
-      if (used[i]) continue;
-      const sk = edges[i][0] + ',' + edges[i][1];
-      if (!byEnd.has(sk)) polylines.push({ pts: walk(i), closed: false });
-    }
-    for (let i = 0; i < edges.length; i++) {
-      if (used[i]) continue;
-      polylines.push({ pts: walk(i), closed: true });
-    }
-    return polylines;
-  }
-
-  // Drop grid-resolution points that just continue in a straight line,
-  // leaving only the real corners so the fillet pass below has genuine 90°
-  // joints to round off (generalises the old flush-run collapsing from a
-  // single top profile to a full outline).
-  function d2dSimplify(pts, closed) {
-    const n = closed ? pts.length - 1 : pts.length;
-    if (n < 3) return pts.slice();
-    const keep = [];
-    const start = closed ? 0 : 1;
-    const end = closed ? n : n - 1;
-    for (let i = start; i < end; i++) {
-      const A = pts[(i - 1 + n) % n], B = pts[i % n], C = pts[(i + 1) % n];
-      const collinear = (A.x === B.x && B.x === C.x) || (A.y === B.y && B.y === C.y);
-      if (!collinear) keep.push(B);
-    }
-    if (closed) {
-      if (keep.length === 0) return [pts[0]];
-      keep.push(keep[0]);
-      return keep;
-    }
-    return [pts[0], ...keep, pts[n - 1]];
-  }
-
-  // Round the 90° corner A->B->C (one leg horizontal, one vertical) into a
-  // circular arc of radius r tangent to both legs, and return its sample
-  // points from the horizontal-leg side through to the vertical-leg side.
-  function d2dFilletCorner(A, B, C, r) {
-    const abHoriz = A.y === B.y;
-    const p1 = abHoriz
-      ? { x: B.x - r * Math.sign(B.x - A.x), y: B.y }
-      : { x: B.x, y: B.y - r * Math.sign(B.y - A.y) };
-    const p2 = abHoriz
-      ? { x: B.x, y: B.y + r * Math.sign(C.y - B.y) }
-      : { x: B.x + r * Math.sign(C.x - B.x), y: B.y };
-    const center = abHoriz ? { x: p1.x, y: p2.y } : { x: p2.x, y: p1.y };
-    const a1 = Math.atan2(p1.y - center.y, p1.x - center.x);
-    let a2 = Math.atan2(p2.y - center.y, p2.x - center.x);
-    let delta = a2 - a1;
-    if (delta > Math.PI) delta -= Math.PI * 2;   // always take the 90° way
-    if (delta < -Math.PI) delta += Math.PI * 2;  // around, never the 270° one
-    const pts = [];
-    for (let i = 0; i <= D2D_ARC_STEPS; i++) {
-      const a = a1 + delta * (i / D2D_ARC_STEPS);
-      pts.push({ x: center.x + r * Math.cos(a), y: center.y + r * Math.sin(a) });
-    }
-    return pts;
-  }
-
-  // Round every corner of a simplified polyline. Open chains leave their two
-  // viewport-edge endpoints sharp (there's no second leg to blend into);
-  // closed loops round every vertex, including the wrap-around seam.
-  function d2dFilletPolyline(verts, closed) {
-    const poly = [];
-    if (closed) {
-      const n = verts.length - 1;
-      for (let i = 0; i < n; i++) {
-        const A = verts[(i - 1 + n) % n], B = verts[i], C = verts[(i + 1) % n];
-        const legAB = Math.hypot(B.x - A.x, B.y - A.y);
-        const legBC = Math.hypot(C.x - B.x, C.y - B.y);
-        const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
-        for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
-      }
-      if (poly.length) poly.push(poly[0]);
-    } else {
-      poly.push(verts[0]);
-      for (let k = 1; k < verts.length - 1; k++) {
-        const A = verts[k - 1], B = verts[k], C = verts[k + 1];
-        const legAB = Math.hypot(B.x - A.x, B.y - A.y);
-        const legBC = Math.hypot(C.x - B.x, C.y - B.y);
-        // Block-quantised geometry means every leg is >= 1 grid unit long, so
-        // this clamp only ever matters at the boundary (r === 0.5) — it just
-        // guards against two corners on the same short leg ever overlapping.
-        const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
-        for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
-      }
-      poly.push(verts[verts.length - 1]);
-    }
-    return poly;
-  }
-
-  // Compute the smooth surface as a list of polylines, each an array of flat
-  // (screenX, screenY) pairs: walk every exposed block face into a
-  // grid-resolution outline, collapse it to its real corners, then replace
-  // every corner with a filleted arc. Most terrain comes back as one
-  // continuous chain from the left viewport edge to the right, tracing tops,
-  // side faces, and — wherever a block overhangs empty space — its
-  // underside too. A block with no connection to the ground at all (fully
-  // floating, or undercut clean through) comes back as its own closed loop.
-  function d2dSmoothLine() {
-    const polylines = d2dChainEdges(d2dCollectEdges());
-    const out = [];
-    for (const { pts, closed } of polylines) {
-      if (pts.length < 2) continue;
-      const simplified = d2dSimplify(pts, closed);
-      const filleted = d2dFilletPolyline(simplified, closed);
-      const flat = [];
-      for (const p of filleted) flat.push(p.x * CELL_W, (D2D_ROWS - p.y) * CELL_H);
-      out.push(flat);
-    }
-    return out;
-  }
-
-  // Tap-flash state
-  let d2dFlashX = -1, d2dFlashY = -1, d2dFlashT = 0;
-  const D2D_FLASH_MS = 350;
-
-  // Drawing — retina-sharp canvas
-  const cv = document.getElementById('debug2d-cv');
-  const ctx = cv.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  cv.width  = CV_W * dpr;
-  cv.height = CV_H * dpr;
-  cv.style.width  = CV_W + 'px';
-  cv.style.height = CV_H + 'px';
-  ctx.scale(dpr, dpr);
-
-  function d2dDraw() {
-    ctx.clearRect(0, 0, CV_W, CV_H);
-    // Background
-    ctx.fillStyle = '#0d1522';
-    ctx.fillRect(0, 0, CV_W, CV_H);
-
-    // Draw blocks
-    for (let x = 0; x < D2D_COLS; x++) {
-      for (let y = 0; y < D2D_ROWS; y++) {
-        const mat = d2dGrid[y * D2D_COLS + x];
-        if (mat === D2D_AIR) continue;
-        const px = x * CELL_W, py = y * CELL_H;
-        // Slight gap between blocks for clarity
-        ctx.fillStyle = D2D_COLORS[mat];
-        ctx.fillRect(px + 0.5, py + 0.5, CELL_W - 1, CELL_H - 1);
-        // Highlight top edge of grass
-        if (mat === D2D_GRASS) {
-          ctx.fillStyle = '#7cb342';
-          ctx.fillRect(px + 0.5, py + 0.5, CELL_W - 1, 3);
-        }
-      }
-    }
-
-    // Draw grid lines (subtle)
-    ctx.strokeStyle = 'rgba(100, 140, 190, 0.08)';
-    ctx.lineWidth = 0.5;
-    for (let x = 0; x <= D2D_COLS; x++) {
-      ctx.beginPath();
-      ctx.moveTo(x * CELL_W, 0);
-      ctx.lineTo(x * CELL_W, CV_H);
-      ctx.stroke();
-    }
-    for (let y = 0; y <= D2D_ROWS; y++) {
-      ctx.beginPath();
-      ctx.moveTo(0, y * CELL_H);
-      ctx.lineTo(CV_W, y * CELL_H);
-      ctx.stroke();
-    }
-
-    // Draw the smooth surface line(s) — thick and glowing. Most terrain is
-    // one polyline; a floating or fully-undercut block adds its own closed
-    // loop alongside it.
-    const polylines = d2dSmoothLine();
-    ctx.strokeStyle = '#2a8ed8';
-    ctx.lineWidth = 6;
-    ctx.shadowColor = 'rgba(42, 142, 216, 0.65)';
-    ctx.shadowBlur = 14;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    for (const pts of polylines) {
-      if (pts.length < 4) continue;
-      ctx.beginPath();
-      ctx.moveTo(pts[0], pts[1]);
-      for (let i = 2; i < pts.length; i += 2) {
-        ctx.lineTo(pts[i], pts[i + 1]);
-      }
-      ctx.stroke();
-    }
-    ctx.shadowBlur = 0;
-
-    // Draw column center dots (where the smooth samples are)
-    ctx.fillStyle = 'rgba(42, 142, 216, 0.6)';
-    for (let x = 0; x < D2D_COLS; x++) {
-      const h = d2dColHeight(x);
-      const cx = (x + 0.5) * CELL_W;
-      const cy = (D2D_ROWS - h) * CELL_H;
-      ctx.beginPath();
-      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Tap-flash highlight
-    if (d2dFlashX >= 0 && performance.now() - d2dFlashT < D2D_FLASH_MS) {
-      const alpha = 1 - (performance.now() - d2dFlashT) / D2D_FLASH_MS;
-      ctx.fillStyle = 'rgba(255, 255, 120, ' + (0.55 * alpha).toFixed(3) + ')';
-      ctx.fillRect(d2dFlashX * CELL_W, d2dFlashY * CELL_H, CELL_W, CELL_H);
-      ctx.strokeStyle = 'rgba(255, 255, 200, ' + (0.8 * alpha).toFixed(3) + ')';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(d2dFlashX * CELL_W + 1, d2dFlashY * CELL_H + 1, CELL_W - 2, CELL_H - 2);
-      requestAnimationFrame(d2dDraw);
-    }
-  }
-
-  // Click/tap to toggle blocks
-  function d2dToggle(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = cv.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    const scale = CV_W / rect.width;
-    const gx = Math.floor((mx * scale) / CELL_W);
-    const gy = Math.floor((my * scale) / CELL_H);
-    if (gx < 0 || gx >= D2D_COLS || gy < 0 || gy >= D2D_ROWS) return;
-    const idx = gy * D2D_COLS + gx;
-    if (d2dGrid[idx] !== D2D_AIR) {
-      d2dGrid[idx] = D2D_AIR;
-    } else {
-      // Place the appropriate material: grass if top of column, dirt if near top, rock below
-      let topY = D2D_ROWS;
-      for (let y = 0; y < D2D_ROWS; y++) {
-        if (d2dGrid[y * D2D_COLS + gx] !== D2D_AIR) { topY = y; break; }
-      }
-      const distFromTop = topY - gy;
-      if (topY === D2D_ROWS) {
-        // Empty column — place rock
-        d2dGrid[idx] = D2D_ROCK;
-      } else if (gy === topY) {
-        // Just above existing blocks — place grass
-        d2dGrid[idx] = D2D_GRASS;
-      } else if (distFromTop <= 2) {
-        d2dGrid[idx] = D2D_DIRT;
-      } else {
-        d2dGrid[idx] = D2D_ROCK;
-      }
-    }
-    d2dFlashX = gx;
-    d2dFlashY = gy;
-    d2dFlashT = performance.now();
-    d2dDraw();
-  }
-
-  // A tap toggles a block; a drag pans the (wider-than-viewport) canvas via the
-  // panel's native scroll. iOS fires a synthetic click after touchend, so — as
-  // with bindTap below — pointer events are the single source of truth and
-  // click is never wired up on the canvas at all. Movement past a few pixels
-  // means the finger was panning, not tapping, so only a still pointerup fires
-  // d2dToggle.
-  const D2D_TAP_MOVE_PX = 10;
-  let d2dPtrStart = null;
-  let d2dPtrMoved = false;
-  cv.addEventListener('pointerdown', (e) => {
-    d2dPtrStart = { x: e.clientX, y: e.clientY };
-    d2dPtrMoved = false;
-  });
-  cv.addEventListener('pointermove', (e) => {
-    if (!d2dPtrStart) return;
-    const dx = e.clientX - d2dPtrStart.x, dy = e.clientY - d2dPtrStart.y;
-    if (Math.hypot(dx, dy) > D2D_TAP_MOVE_PX) d2dPtrMoved = true;
-  });
-  cv.addEventListener('pointerup', (e) => {
-    if (d2dPtrStart && !d2dPtrMoved) d2dToggle(e);
-    d2dPtrStart = null;
-  });
-  cv.addEventListener('pointercancel', () => { d2dPtrStart = null; });
-
-  // Toggle the debug view
-  const wrap = document.getElementById('debug2d-wrap');
-  const closeBtn = document.getElementById('debug2d-close');
-  const debugBtn = document.getElementById('btn-debug2d');
-  let debug2dOpen = false;
-
-  function toggleDebug2d() {
-    debug2dOpen = !debug2dOpen;
-    wrap.classList.toggle('on', debug2dOpen);
-    debugBtn.classList.toggle('on', debug2dOpen);
-    if (debug2dOpen) d2dDraw();
-  }
-
-  // Guard against iOS double-fire: a single tap fires both touchend and click.
-  // Once pointerdown is seen, ignore the synthetic click that follows.
-  let _d2dSawPointer = false;
-  function bindDebugTap(el) {
-    el.addEventListener('pointerdown', (e) => {
-      _d2dSawPointer = true;
-      e.preventDefault();
-      e.stopPropagation();
-      toggleDebug2d();
-    });
-    el.addEventListener('click', (e) => {
-      if (_d2dSawPointer) { _d2dSawPointer = false; e.preventDefault(); e.stopPropagation(); return; }
-      e.stopPropagation();
-      toggleDebug2d();
-    });
-    // Stop touch events from bubbling to canvas/overlay handlers
-    el.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
-    el.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
-  }
-
-  bindDebugTap(closeBtn);
-  bindDebugTap(debugBtn);
-
-  // Expose for the keyboard handler
-  window._toggleDebug2d = toggleDebug2d;
-  window._debug2dIsOpen = () => debug2dOpen;
-
-  // Also allow 'P' key to toggle
-  document.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyP' && !typing(e)) {
-      toggleDebug2d();
-    }
-  }, { passive: true });
-})();
 
 // Debug handle — handy from the console / remote inspector on a phone.
 window.hermes = {
@@ -5476,13 +4238,12 @@ window.hermes = {
   // The island: the block size everything is quantised to, the raw heightmap
   // behind it, and the meshes it was built into.
   BLOCK, islandHeight, terrain, SPAWN,
-  stats: () => ({ worldBlocks, held: shovel.held.length, drawn: blockCount, instances: instanceCount }),
+  stats: () => ({ worldBlocks, held: shovel.held.length, drawn: blockCount, faces: faceCount }),
   // The fillet surface — the block outline with every corner rounded off over
-  // the last half block into it. setTerrainView(0|1|2) picks smooth / cubes /
-  // both, and FILLET_SUB is how many vertices a block gets across an arc.
-  VIEW, setTerrainView, filletGroup, filletMat, rebuildFilletChunk, FILLET_SUB, FILLET_R,
+  // the last half block into it. Disabled: the game renders cubes only, and this
+  // is exposed purely so the skin can still be built by hand from the console.
+  filletGroup, filletMat, rebuildFilletChunk, FILLET_SUB, FILLET_R,
   fillet: () => ({
-    view: VIEW_NAMES[terrainView],
     chunks: filletMesh.reduce((n, m) => n + (m ? 1 : 0), 0),
     tris: filletTris.reduce((n, t) => n + t, 0),
   }),
@@ -5491,30 +4252,21 @@ window.hermes = {
   shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,
   // The voxel store — the material of every block in the volume, not just the
   // surface, which is what a digging system would work against. voxelAtWorld
-  // takes metres; the rest take column indices and levels. SAND/DIRT/ROCK/AIR
-  // are the material values. Editing through setVoxel changes what the world
-  // *is* but not what is drawn: the meshes and the collider are baked.
-  SAND, DIRT, ROCK, AIR, VOX_FLOOR, SOIL_DEPTH, voxCount,
+  // takes metres; the rest take column indices and levels. The MAT_STATS ids and
+  // AIR are the material values. Editing through setVoxel changes what the
+  // world *is* but not what is drawn: the meshes and the collider are baked.
+  SAND, DIRT, ROCK, WATER, AIR, SEA_LVL, VOX_FLOOR, SOIL_DEPTH, voxCount,
+  FINE_DIRT, MUD, HARD_DIRT, FINE_MUD, STONE_DUST, STONE_MUD, BRITTLE_STONE,
+  CLAY, CLAY_MUD, HARD_CLAY, MAT_NAMES, MAT_STATS,
   voxelAt, voxelAtWorld, voxelColumn, setVoxel, solidTopAt,
   colI, colJ, colX, colZ, lvlOfY,
   // The island is bare by design — these are how you put something on it from
   // the console, collider included.
   addBox, addSphere, mat, objects,
-  // Weather: WX holds the live settings, spawnCloud(true) drops one in near you.
-  WX, clouds, spawnCloud, clearClouds, refreshWxUI,
-  weather: () => ({
-    count: clouds.length,
-    rate: WX.RATES[WX.rateIdx][0],
-    speed: WX.SPEEDS[WX.speedIdx][0],
-    gloom, rain: rainAmt,
-    scales: clouds.map((c) => c.scale).sort((a, b) => a - b),
-  }),
   // live read-outs of the controller internals (module-scoped `let`s)
   status: () => ({
     cam: CAM_NAMES[camMode],
     crouched,
-    swimming,
-    underwater,
     groundNy,
     eyeH,
     grounded: groundNy > GROUND_DOT,

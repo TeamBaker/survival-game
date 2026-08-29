@@ -3353,12 +3353,21 @@ function shovelAim() {
     shovel.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
     shovel.spot = { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl };
   } else if (dHit) {
-    // Looking at a fallen piece. Digging takes the whole piece away; a place
-    // joins the piece's own lattice, against the face you can see, and from then
-    // on rides with it — the world grid does not come into it.
+    // Looking at a fallen piece. Digging takes off the one block under the
+    // crosshair; a place joins the piece's own lattice, against the face you can
+    // see, and from then on rides with it — the world grid does not come into it.
     const p = dHit.point;
     const dm = dHit.piece;
-    shovel.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir) },
+    // Which block that is: an instance of the piece itself, or one of the cubes
+    // placed on it since, which hang off it as children. Its position is in the
+    // piece's frame, which is what the highlight and the dig both want.
+    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
+    const child = dHit.object !== dm ? dHit.object : null;
+    const lat = dm.userData.blocks;
+    let blockLocal = null;
+    if (child) blockLocal = child.position;
+    else if (inst >= 0 && inst < lat.length) blockLocal = lat[inst].pos;
+    shovel.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), inst, child, blockLocal },
                                   cellOf(p.x, p.y, p.z));
   } else if (camMode !== CAM.FREE) {
     // Nothing under the crosshair. Fall back to what you are standing on, and to
@@ -3393,8 +3402,10 @@ const dirtyChunks = new Set();
 // blocks are cut out of the store and the piece carries on as a loose rigid body
 // that falls under the same gravity as everything else, hits the ground, tumbles
 // and rolls to a stop wherever the physics puts it. Water neither falls nor holds
-// anything up. What settles is left lying there as scenery — it is not written
-// back into the voxel grid, so you cannot stand on it.
+// anything up. What settles keeps its body and stays in the physics world, so it
+// is solid to stand on and shoves awake again when something runs into it — but
+// it is never written back into the voxel grid, so the shovel treats it as a
+// piece rather than as terrain.
 const FALL_CAP = 4096;  // blocks in one falling unit, so a big dig cannot stall a frame
 const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER; };
 const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
@@ -3406,12 +3417,13 @@ const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 // that it collides as the single box that encloses it, which still falls and
 // tumbles convincingly and costs the same whatever it is made of.
 const FALL_BODY_CAP  = 20;    // pieces under physics at once
-const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled
+const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
 const FALL_SHAPE_CAP = 24;    // blocks that get a collider each, rather than one box round the lot
 const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
+const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
 const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 // White, because the colour of every cube comes in per instance.
 const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
@@ -3420,23 +3432,36 @@ const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
 // the camera about.
 const debris = new THREE.Group();
 scene.add(debris);
-const fallingChunks = [];  // { mesh, body, still } — still falling
-const restedChunks  = [];  // meshes whose body has been taken away again
+const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
+const restedChunks  = [];  // { mesh, body, still } — come to a stop, but still in the world
 
-// Take the body off a piece and leave the mesh where it stopped.
+// A piece that has stopped is no longer watched, but it keeps its body. Cannon
+// puts a body that has not moved for a second to sleep on its own, and a
+// sleeping body still collides — so the player walking into a heap, or the next
+// piece landing on it, shoves it awake again instead of passing through scenery.
+// Only the cull below, and digging the last block off a piece, take a body out
+// of the world.
 function restFallingChunk(n) {
   const f = fallingChunks[n];
   fallingChunks.splice(n, 1);
+  restedChunks.push(f);
+  while (restedChunks.length > FALL_MESH_CAP) dropChunk(restedChunks.shift());
+}
+
+// Take a piece away for good: body out of the world, mesh out of the scene.
+function dropChunk(f) {
   world.removeBody(f.body);
   const q = syncList.findIndex((e) => e.body === f.body);
   if (q >= 0) syncList.splice(q, 1);
-  restedChunks.push(f.mesh);
-  while (restedChunks.length > FALL_MESH_CAP) {
-    const old = restedChunks.shift();
-    debris.remove(old);
-    old.dispose();  // the per-instance buffers only — geometry and material are shared
-  }
+  debris.remove(f.mesh);
+  f.mesh.dispose();  // the per-instance buffers only — geometry and material are shared
 }
+
+// The entry for a piece, whether it is still being watched or has settled. A
+// rested piece has a body just like a falling one, so anything that feeds the
+// body — a block placed on it, a block dug off it — works on either.
+const chunkOfMesh = (mesh) => fallingChunks.find((e) => e.mesh === mesh)
+                          || restedChunks.find((e) => e.mesh === mesh);
 
 function spawnFallingChunk(unit) {
   const blocks = [...unit.values()];
@@ -3482,6 +3507,12 @@ function spawnFallingChunk(unit) {
     material: physDebris,
     linearDamping: 0.02,
     angularDamping: 0.15,
+    // One group for everything, and a mask that lets all of it through, so a
+    // piece collides with the level, with props, with the player — and with the
+    // other pieces, which share this group. The debris-on-debris friction and
+    // bounce come from the physDebris/physDebris contact material up top.
+    collisionFilterGroup: DEBRIS_GROUP,
+    collisionFilterMask: -1,
   });
   const h = HALF_BLOCK;
   if (n <= FALL_SHAPE_CAP) {
@@ -3510,11 +3541,8 @@ function updateFallingChunks() {
   for (let n = fallingChunks.length - 1; n >= 0; n--) {
     const f = fallingChunks[n];
     if (f.body.position.y < FALL_KILL_Y) {
-      restFallingChunk(n);
-      debris.remove(f.mesh);
-      const q = restedChunks.indexOf(f.mesh);
-      if (q >= 0) restedChunks.splice(q, 1);
-      f.mesh.dispose();
+      fallingChunks.splice(n, 1);
+      dropChunk(f);
       continue;
     }
     const v = f.body.velocity, w = f.body.angularVelocity;
@@ -3523,17 +3551,88 @@ function updateFallingChunks() {
     f.still = slow ? f.still + 1 : 0;
     if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) restFallingChunk(n);
   }
+  // Settled pieces are still live bodies, so one shoved off the edge of the
+  // field has to be caught here as well.
+  for (let n = restedChunks.length - 1; n >= 0; n--) {
+    const f = restedChunks[n];
+    if (f.body.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); }
+  }
 }
 
-// Digging a loose piece just takes it away. Its blocks were cut out of the store
-// when it broke off, so nothing here is owed back to the world count.
+// Taking a whole loose piece away. Its blocks were cut out of the store when it
+// broke off, so nothing here is owed back to the world count.
 function removeDebrisMesh(mesh) {
   const n = fallingChunks.findIndex((f) => f.mesh === mesh);
-  if (n >= 0) restFallingChunk(n);
-  const q = restedChunks.indexOf(mesh);
-  if (q >= 0) restedChunks.splice(q, 1);
+  if (n >= 0) { dropChunk(fallingChunks[n]); fallingChunks.splice(n, 1); return; }
+  const q = restedChunks.findIndex((f) => f.mesh === mesh);
+  if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
   mesh.dispose();
+}
+
+// Redo a piece's collider and its weight from the lattice it has left. Runs
+// after a dig: a piece is a few dozen boxes at most, so building the shapes
+// again costs less than trying to patch the ones that are there.
+function rebuildDebrisBody(mesh, body) {
+  const lat = mesh.userData.blocks, h = HALF_BLOCK;
+  body.shapes.length = 0;
+  body.shapeOffsets.length = 0;
+  body.shapeOrientations.length = 0;
+  if (mesh.userData.perBlock) {
+    for (const b of lat) {
+      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+                    new CANNON.Vec3(b.pos.x, b.pos.y, b.pos.z));
+    }
+  } else {
+    // The big ones collide as the single box that encloses what is left.
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const b of lat) {
+      if (b.pos.x < x0) x0 = b.pos.x; if (b.pos.x > x1) x1 = b.pos.x;
+      if (b.pos.y < y0) y0 = b.pos.y; if (b.pos.y > y1) y1 = b.pos.y;
+      if (b.pos.z < z0) z0 = b.pos.z; if (b.pos.z > z1) z1 = b.pos.z;
+    }
+    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
+                  new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
+  }
+  body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
+  body.updateMassProperties();
+  body.updateBoundingRadius();
+  body.updateAABB();
+  body.wakeUp();
+}
+
+// Digging a loose piece takes off the one block under the crosshair and leaves
+// the rest of it standing. The piece's own blocks are instances of its mesh and
+// sit at the front of the lattice array, in step with the instance buffer;
+// anything placed on it since hangs off it as a child mesh. Dig the last block
+// out and the piece goes with it.
+function digDebrisBlock(mesh, inst, child) {
+  const lat = mesh.userData.blocks;
+  let q = -1;
+  if (child) q = lat.findIndex((b) => b.child === child);
+  else if (inst >= 0 && inst < mesh.count) q = inst;
+  if (q < 0) return false;
+
+  if (lat[q].child) {
+    mesh.remove(lat[q].child);
+  } else {
+    // Close the gap in the instance buffers and draw one fewer, so the piece's
+    // own blocks stay the first `count` entries of the lattice.
+    const m4 = new THREE.Matrix4(), col = new THREE.Color();
+    for (let k = q + 1; k < mesh.count; k++) {
+      mesh.getMatrixAt(k, m4); mesh.setMatrixAt(k - 1, m4);
+      mesh.getColorAt(k, col); mesh.setColorAt(k - 1, col);
+    }
+    mesh.count -= 1;
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor.needsUpdate = true;
+  }
+  lat.splice(q, 1);
+
+  if (!lat.length) { removeDebrisMesh(mesh); return true; }   // nothing left of it
+  const f = chunkOfMesh(mesh);
+  if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }    // lighter, and disturbed
+  return true;
 }
 
 // Where a block placed against this piece would go, in the piece's own frame.
@@ -3566,10 +3665,12 @@ function placeOnDebris(mesh, local, m) {
   cube.castShadow = true;
   cube.receiveShadow = true;
   mesh.add(cube);
-  mesh.userData.blocks.push({ pos: local.clone(), mat: m });
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube });
 
-  const f = fallingChunks.find((e) => e.mesh === mesh);
-  if (!f) return;               // already settled — there is no body left to feed
+  // Settled pieces keep their bodies, so one gets fed the same as a falling one:
+  // heavier, a collider round the new block, and shoved awake to feel it.
+  const f = chunkOfMesh(mesh);
+  if (!f) return;
   const body = f.body, h = HALF_BLOCK;
   if (mesh.userData.perBlock) {
     body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
@@ -3694,8 +3795,10 @@ function flushDirtyChunks() {
 
 function shovelPickUp() {
   if (!shovel.on) return false;
-  if (shovel.debris) {          // rubble comes away whole, and not into your hands
-    removeDebrisMesh(shovel.debris.mesh);
+  if (shovel.debris && shovel.debris.blockLocal) {
+    // Rubble comes away a block at a time, and not into your hands.
+    const d = shovel.debris;
+    digDebrisBlock(d.mesh, d.inst, d.child);
     shovel.debris = null;
     return true;
   }
@@ -3767,12 +3870,24 @@ function refreshShovelUI() {
 // the buttons grey out when the move they offer is not a legal one.
 function updateShovel() {
   shovelAim();
-  const canPick = shovel.debris ? true : (!!shovel.hit && shovel.held.length < SHOVEL_CAP);
+  const canPick = shovel.debris ? !!shovel.debris.blockLocal
+                                : (!!shovel.hit && shovel.held.length < SHOVEL_CAP);
   const dLocal = shovel.debris && shovel.debris.local;
   const canPlace = (!!shovel.spot || !!dLocal) && shovel.held.length > 0;
   hlPick.visible  = shovel.on && canPick;
   hlPlace.visible = shovel.on && canPlace;
-  if (hlPick.visible)  cellCenter(shovel.debris || shovel.hit, hlPick.position);
+  if (hlPick.visible) {
+    if (shovel.debris) {
+      // On the block and tilted with the piece. A piece lies wherever the
+      // physics left it, at any angle and off the grid, so the world cell it
+      // happens to overlap is nowhere near where the cage belongs.
+      hlPick.position.copy(shovel.debris.blockLocal).applyMatrix4(shovel.debris.mesh.matrixWorld);
+      shovel.debris.mesh.getWorldQuaternion(hlPick.quaternion);
+    } else {
+      cellCenter(shovel.hit, hlPick.position);
+      hlPick.quaternion.identity();
+    }
+  }
   if (hlPlace.visible) {
     if (dLocal) {
       // On the piece, and tilted with it, so the ghost shows where the block

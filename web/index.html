@@ -3406,7 +3406,6 @@ const dirtyChunks = new Set();
 // is solid to stand on and shoves awake again when something runs into it — but
 // it is never written back into the voxel grid, so the shovel treats it as a
 // piece rather than as terrain.
-const FALL_CAP = 4096;  // blocks in one falling unit, so a big dig cannot stall a frame
 const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER; };
 const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 
@@ -3698,35 +3697,36 @@ function placeOnDebris(mesh, local, m) {
   f.still = 0;                  // it has been disturbed: let it settle again
 }
 
-function applyGravity(i, j, lvl) {
-  // Grow the falling unit outwards from the block left over the hole. A block
-  // joins it when it is standing on nothing — on air or water, or on another
-  // block already in the unit, which is on its way down too. A block rejected
-  // for having a floor under it is not marked, so it gets asked again if that
-  // floor later turns out to be falling as well.
-  const unit = new Map(), queue = [];
-  const consider = (ci, cj, cl) => {
-    if (cl <= VOX_FLOOR || !inVoxelRange(ci, cj, cl)) return;
-    const key = gravKey(ci, cj, cl);
-    if (unit.has(key) || !gravSolid(ci, cj, cl)) return;
-    if (gravSolid(ci, cj, cl - 1) && !unit.has(gravKey(ci, cj, cl - 1))) return;
-    unit.set(key, { i: ci, j: cj, lvl: cl, m: voxelAt(ci, cj, cl) });
-    queue.push(ci, cj, cl);
-  };
-  consider(i, j, lvl + 1);
-  for (let q = 0; q < queue.length && unit.size <= FALL_CAP; q += 3) {
-    const ci = queue[q], cj = queue[q + 1], cl = queue[q + 2];
-    consider(ci - 1, cj, cl);
-    consider(ci + 1, cj, cl);
-    consider(ci, cj - 1, cl);
-    consider(ci, cj + 1, cl);
-    consider(ci, cj, cl - 1);
-    consider(ci, cj, cl + 1);
-  }
-  if (!unit.size || unit.size > FALL_CAP) return;
+// Is (i, j, lvl) touching nothing at all — air, water or the edge of the world
+// on every one of its six sides? That, and only that, is what makes a block come
+// loose. One neighbour anywhere, a wall beside it or a block over it, and it
+// stays part of the terrain even with the ground dug out from under it.
+function gravAdrift(i, j, lvl) {
+  if (lvl <= VOX_FLOOR || !inVoxelRange(i, j, lvl) || !gravSolid(i, j, lvl)) return false;
+  return !gravSolid(i - 1, j, lvl) && !gravSolid(i + 1, j, lvl) &&
+         !gravSolid(i, j - 1, lvl) && !gravSolid(i, j + 1, lvl) &&
+         !gravSolid(i, j, lvl - 1) && !gravSolid(i, j, lvl + 1);
+}
 
-  // Everything that lost its footing leaves the grid at once. Nothing is written
-  // back lower down — the piece itself takes over from here.
+// The removal at (i, j, lvl) opened one face on each of the six cells around it,
+// whichever side it was dug from, so any of the six may have just lost its last
+// neighbour. Each one that has leaves on its own.
+function applyGravity(i, j, lvl) {
+  breakOffAdrift(i - 1, j, lvl);
+  breakOffAdrift(i + 1, j, lvl);
+  breakOffAdrift(i, j - 1, lvl);
+  breakOffAdrift(i, j + 1, lvl);
+  breakOffAdrift(i, j, lvl - 1);
+  breakOffAdrift(i, j, lvl + 1);
+}
+
+function breakOffAdrift(i, j, lvl) {
+  if (!gravAdrift(i, j, lvl)) return;
+  const unit = new Map();
+  unit.set(gravKey(i, j, lvl), { i, j, lvl, m: voxelAt(i, j, lvl) });
+
+  // The loose block leaves the grid. Nothing is written back lower down — the
+  // piece itself takes over from here.
   for (const b of unit.values()) setVoxel(b.i, b.j, b.lvl, AIR);
 
   // Then the same housekeeping an edit does, for every cell that emptied.

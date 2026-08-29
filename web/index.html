@@ -3697,35 +3697,53 @@ function placeOnDebris(mesh, local, m) {
   f.still = 0;                  // it has been disturbed: let it settle again
 }
 
-// Is (i, j, lvl) touching nothing at all — air, water or the edge of the world
-// on every one of its six sides? That, and only that, is what makes a block come
-// loose. One neighbour anywhere, a wall beside it or a block over it, and it
-// stays part of the terrain even with the ground dug out from under it.
-function gravAdrift(i, j, lvl) {
-  if (lvl <= VOX_FLOOR || !inVoxelRange(i, j, lvl) || !gravSolid(i, j, lvl)) return false;
-  return !gravSolid(i - 1, j, lvl) && !gravSolid(i + 1, j, lvl) &&
-         !gravSolid(i, j - 1, lvl) && !gravSolid(i, j + 1, lvl) &&
-         !gravSolid(i, j, lvl - 1) && !gravSolid(i, j, lvl + 1);
+// The six face neighbours, with the one below last so a stack pops it first: a
+// fill that walks down before it walks out reaches bedrock in a hundred-odd
+// steps from the surface instead of ballooning outwards on the way.
+const GRAV_DIRS = [[0, 0, 1], [-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1]];
+const GRAV_MAX  = 1024;   // blocks one fill walks before it gives the group up as terrain
+
+// Everything joined to (i, j, lvl) through solid faces, as one group. Water is
+// not solid, so it neither joins a group nor holds one up. The group is adrift —
+// and comes down whole — only if none of it reaches bedrock: with all six
+// directions walked, a block standing on anything solid is standing on another
+// member, so the floor is the one thing left that can anchor the lot. Returns
+// the group's blocks, or null if it is anchored, or too big to be worth walking.
+function adriftGroup(i, j, lvl) {
+  if (!gravSolid(i, j, lvl)) return null;
+  const first = { i, j, lvl, m: voxelAt(i, j, lvl) };
+  const unit = new Map([[gravKey(i, j, lvl), first]]);
+  const stack = [first];
+  while (stack.length) {
+    const b = stack.pop();
+    if (b.lvl <= VOX_FLOOR) return null;    // sitting on bedrock: the whole group is held up
+    for (const [di, dj, dl] of GRAV_DIRS) {
+      const ii = b.i + di, jj = b.j + dj, ll = b.lvl + dl;
+      const key = gravKey(ii, jj, ll);
+      if (unit.has(key) || !gravSolid(ii, jj, ll)) continue;
+      if (unit.size >= GRAV_MAX) return null;
+      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll) };
+      unit.set(key, nb);
+      stack.push(nb);
+    }
+  }
+  return unit;
 }
 
 // The removal at (i, j, lvl) opened one face on each of the six cells around it,
-// whichever side it was dug from, so any of the six may have just lost its last
-// neighbour. Each one that has leaves on its own.
+// so whatever they are joined to may have just lost its last path to the ground.
+// Each side is walked in turn; the first group that comes away cuts its blocks
+// out of the store, so a later side that was part of it finds air and is passed
+// over.
 function applyGravity(i, j, lvl) {
-  breakOffAdrift(i - 1, j, lvl);
-  breakOffAdrift(i + 1, j, lvl);
-  breakOffAdrift(i, j - 1, lvl);
-  breakOffAdrift(i, j + 1, lvl);
-  breakOffAdrift(i, j, lvl - 1);
-  breakOffAdrift(i, j, lvl + 1);
+  for (const [di, dj, dl] of GRAV_DIRS) breakOffAdrift(i + di, j + dj, lvl + dl);
 }
 
 function breakOffAdrift(i, j, lvl) {
-  if (!gravAdrift(i, j, lvl)) return;
-  const unit = new Map();
-  unit.set(gravKey(i, j, lvl), { i, j, lvl, m: voxelAt(i, j, lvl) });
+  const unit = adriftGroup(i, j, lvl);
+  if (!unit) return;
 
-  // The loose block leaves the grid. Nothing is written back lower down — the
+  // The loose blocks leave the grid. Nothing is written back lower down — the
   // piece itself takes over from here.
   for (const b of unit.values()) setVoxel(b.i, b.j, b.lvl, AIR);
 

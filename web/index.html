@@ -906,6 +906,7 @@ world.defaultContactMaterial.restitution = 0.0;
 const physWorld  = new CANNON.Material('world');
 const physProp   = new CANNON.Material('prop');
 const physPlayer = new CANNON.Material('player');
+const physDebris = new CANNON.Material('debris');
 
 // The character drives its own horizontal velocity, so friction against the
 // level would only fight the controller — zero it and let the code decide when
@@ -914,6 +915,12 @@ world.addContactMaterial(new CANNON.ContactMaterial(physPlayer, physWorld, { fri
 world.addContactMaterial(new CANNON.ContactMaterial(physPlayer, physProp,  { friction: 0.0, restitution: 0.0 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physWorld, { friction: 0.45, restitution: 0.06 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physProp,  { friction: 0.4,  restitution: 0.06 }));
+// Rubble that has broken off the terrain: grabbier than a prop so a chunk does
+// not skate off down a slope, but with enough bounce left to read as rock
+// hitting rock rather than as a box being set down.
+world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physWorld, { friction: 0.6, restitution: 0.22 }));
+world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physProp,  { friction: 0.5, restitution: 0.18 }));
+world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physDebris,{ friction: 0.6, restitution: 0.15 }));
 
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
@@ -3346,11 +3353,134 @@ const dirtyChunks = new Set();
 // Taking a block out from under a pile leaves the pile hanging. Everything that
 // lost its footing — the block that was standing on the hole, whatever is stacked
 // on it, and whatever those are joined to sideways that is also on nothing —
-// comes down together as one piece and lands on the first thing under it. Water
-// neither falls nor holds anything up: a block drops through it to the bed.
+// breaks off the world as one piece. It stops being terrain at that moment: the
+// blocks are cut out of the store and the piece carries on as a loose rigid body
+// that falls under the same gravity as everything else, hits the ground, tumbles
+// and rolls to a stop wherever the physics puts it. Water neither falls nor holds
+// anything up. What settles is left lying there as scenery — it is not written
+// back into the voxel grid, so you cannot stand on it.
 const FALL_CAP = 4096;  // blocks in one falling unit, so a big dig cannot stall a frame
 const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER; };
 const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
+
+// ----- loose chunks -----
+// A piece that has broken off is one InstancedMesh (a cube per block, coloured
+// by its material) glued to one cannon body. Every block of it is a box shape on
+// that body while the piece is small enough for the solver to enjoy it; past
+// that it collides as the single box that encloses it, which still falls and
+// tumbles convincingly and costs the same whatever it is made of.
+const FALL_BODY_CAP  = 20;    // pieces under physics at once
+const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled
+const FALL_SHAPE_CAP = 24;    // blocks that get a collider each, rather than one box round the lot
+const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
+const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
+const FALL_REST_TICKS = 30;   // frames of that before its body is retired
+const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
+const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+// White, because the colour of every cube comes in per instance.
+const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
+// Its own group rather than `objects`: the camera boom raycasts that one to pull
+// itself in past props, and rubble lying around the player should not be tugging
+// the camera about.
+const debris = new THREE.Group();
+scene.add(debris);
+const fallingChunks = [];  // { mesh, body, still } — still falling
+const restedChunks  = [];  // meshes whose body has been taken away again
+
+// Take the body off a piece and leave the mesh where it stopped.
+function restFallingChunk(n) {
+  const f = fallingChunks[n];
+  fallingChunks.splice(n, 1);
+  world.removeBody(f.body);
+  const q = syncList.findIndex((e) => e.body === f.body);
+  if (q >= 0) syncList.splice(q, 1);
+  restedChunks.push(f.mesh);
+  while (restedChunks.length > FALL_MESH_CAP) {
+    const old = restedChunks.shift();
+    debris.remove(old);
+    old.dispose();  // the per-instance buffers only — geometry and material are shared
+  }
+}
+
+function spawnFallingChunk(unit) {
+  const blocks = [...unit.values()];
+  const n = blocks.length;
+
+  // Centre of the piece, and the box that encloses it, both in world units.
+  let cx = 0, cy = 0, cz = 0;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const b of blocks) {
+    const x = colX(b.i), y = (b.lvl + 0.5) * BLOCK, z = colZ(b.j);
+    cx += x; cy += y; cz += z;
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+    if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  cx /= n; cy /= n; cz /= n;
+
+  // The mesh: one cube per block, positioned relative to that centre so the
+  // whole thing rotates about it.
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
+  const m4 = new THREE.Matrix4(), col = new THREE.Color();
+  for (let q = 0; q < n; q++) {
+    const b = blocks[q];
+    m4.makeTranslation(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
+    mesh.setMatrixAt(q, m4);
+    mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.m].color));
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor.needsUpdate = true;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  debris.add(mesh);
+
+  const body = new CANNON.Body({
+    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    material: physDebris,
+    linearDamping: 0.02,
+    angularDamping: 0.15,
+  });
+  const h = HALF_BLOCK;
+  if (n <= FALL_SHAPE_CAP) {
+    for (const b of blocks) {
+      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+                    new CANNON.Vec3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz));
+    }
+  } else {
+    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
+                  new CANNON.Vec3((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy, (z0 + z1) / 2 - cz));
+  }
+  body.position.set(cx, cy, cz);
+  // A nudge of spin, so a piece topples off the face it broke from instead of
+  // sitting dead flat all the way down.
+  body.angularVelocity.set((Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.8);
+
+  // Oldest piece gives up its body if the field is already full of them.
+  while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
+  linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
+  fallingChunks.push({ mesh, body, still: 0 });
+}
+
+// Called once a frame after the step: retire whatever has stopped moving, and
+// drop whatever has fallen out of the world altogether.
+function updateFallingChunks() {
+  for (let n = fallingChunks.length - 1; n >= 0; n--) {
+    const f = fallingChunks[n];
+    if (f.body.position.y < FALL_KILL_Y) {
+      restFallingChunk(n);
+      debris.remove(f.mesh);
+      const q = restedChunks.indexOf(f.mesh);
+      if (q >= 0) restedChunks.splice(q, 1);
+      f.mesh.dispose();
+      continue;
+    }
+    const v = f.body.velocity, w = f.body.angularVelocity;
+    const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
+              && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
+    f.still = slow ? f.still + 1 : 0;
+    if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) restFallingChunk(n);
+  }
+}
 
 function applyGravity(i, j, lvl) {
   // Grow the falling unit outwards from the block left over the hole. A block
@@ -3379,44 +3509,24 @@ function applyGravity(i, j, lvl) {
   }
   if (!unit.size || unit.size > FALL_CAP) return;
 
-  // The unit falls as far as its most obstructed block can, counting the rest of
-  // the unit as clear air since it is coming down at the same rate.
-  let drop = Infinity;
-  for (const b of unit.values()) {
-    let d = 0;
-    while (d < drop) {
-      const nl = b.lvl - d - 1;
-      if (nl < VOX_FLOOR) break;
-      if (!unit.has(gravKey(b.i, b.j, nl)) && gravSolid(b.i, b.j, nl)) break;
-      d++;
-    }
-    if (d < drop) drop = d;
-    if (drop === 0) return;
-  }
-
-  // Empty every old cell before filling any new one, so a block never writes
-  // over one of its own neighbours before that neighbour has moved.
+  // Everything that lost its footing leaves the grid at once. Nothing is written
+  // back lower down — the piece itself takes over from here.
   for (const b of unit.values()) setVoxel(b.i, b.j, b.lvl, AIR);
-  for (const b of unit.values()) setVoxel(b.i, b.j, b.lvl - drop, b.m);
 
-  // Then the same housekeeping an edit does, for both ends of every move.
+  // Then the same housekeeping an edit does, for every cell that emptied.
   const cols = new Set();
-  const settle = (ci, cj, cl) => {
-    refreshVisible(ci, cj, cl);
-    refreshVisible(ci - 1, cj, cl);
-    refreshVisible(ci + 1, cj, cl);
-    refreshVisible(ci, cj - 1, cl);
-    refreshVisible(ci, cj + 1, cl);
-    refreshVisible(ci, cj, cl - 1);
-    refreshVisible(ci, cj, cl + 1);
-    cols.add(cj * GEN_N + ci);
-  };
   for (const b of unit.values()) {
     const k = b.j * GEN_N + b.i;
     colDug[k] = 1;
     if (b.lvl < colDugLo[k]) colDugLo[k] = b.lvl;
-    settle(b.i, b.j, b.lvl);
-    settle(b.i, b.j, b.lvl - drop);
+    refreshVisible(b.i, b.j, b.lvl);
+    refreshVisible(b.i - 1, b.j, b.lvl);
+    refreshVisible(b.i + 1, b.j, b.lvl);
+    refreshVisible(b.i, b.j - 1, b.lvl);
+    refreshVisible(b.i, b.j + 1, b.lvl);
+    refreshVisible(b.i, b.j, b.lvl - 1);
+    refreshVisible(b.i, b.j, b.lvl + 1);
+    cols.add(k);
   }
   for (const k of cols) {
     const ci = k % GEN_N, cj = (k - ci) / GEN_N;
@@ -3429,6 +3539,8 @@ function applyGravity(i, j, lvl) {
       }
     }
   }
+
+  spawnFallingChunk(unit);
 }
 
 function editBlock(i, j, lvl, m) {
@@ -3813,6 +3925,7 @@ function tick() {
     s.mesh.position.copy(s.body.position);
     s.mesh.quaternion.copy(s.body.quaternion);
   }
+  updateFallingChunks();
 
   updateCamera(dt);
   // After the camera, since the aim is taken down the view direction, and before

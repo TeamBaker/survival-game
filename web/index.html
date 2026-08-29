@@ -1148,7 +1148,7 @@ const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 //  2b. fill the voxel store — the material of every block in the volume, not
 //      just the one on top, which is what anything digging into the island will
 //      read and write;
-//   3. build the THREE.InstancedMeshes, per chunk and per material;
+//   3. build the meshes of the exposed faces, per chunk and per material;
 //   4. hand the same numbers to the sea (as a texture, so the water knows where
 //      to shoal and break) and to cannon (as a heightfield, so you can walk).
 //
@@ -1572,11 +1572,11 @@ function voxelColumn(i, j) {
   return { base: VOX_FLOOR, top: cap, materials: voxMat.subarray(voxOff[k], voxOff[k] + cap - VOX_FLOOR + 1) };
 }
 
-// ----- pass 3: the instanced meshes -----
+// ----- pass 3: the terrain meshes -----
 const RIM_DEPTH  = 25;   // blocks of skirt on a column with nothing beside it (5 m)
 const MAX_DEPTH  = 80;   // and the most any column will ever draw (16 m)
 
-// The island is far too wide to be one mesh per material: a single instanced
+// The island is far too wide to be one mesh per material: a single terrain
 // mesh has a single bounding sphere, so every block in it is submitted on every
 // frame and on every shadow pass whether or not it is behind you. Splitting it
 // into a grid of chunks costs a few dozen draw calls and buys back real frustum
@@ -1598,16 +1598,26 @@ const TERRAIN_MATS = [
   // catch the sun and the sky the way none of the dry materials do.
   mat(0x3399cc, 0.22, 0.00, { envMapIntensity: 1.35 }),   // WATER
 ];
-const blockGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+// The same four materials again, white and vertex-coloured. Every block's colour
+// — the material, the column's tint and the depth shading, all of it — is baked
+// into the mesh now that the terrain is one buffer per chunk rather than a pile
+// of instances with a colour each, so what the shader multiplies that by has to
+// be plain white.
+const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
+  const f = src.clone();
+  f.color.setRGB(1, 1, 1);
+  f.vertexColors = true;
+  return f;
+});
 const terrain = new THREE.Group();
 scene.add(terrain);
 
-// Per chunk: the three instanced meshes (any of them null where the chunk has no
-// block of that material), and what it contributes to the two HUD totals.
+// Per chunk: one mesh per material (null where the chunk has no block of that
+// material), and what it contributes to the two HUD totals.
 const chunkMesh   = new Array(CHUNK_N * CHUNK_N).fill(null);
 const chunkBlocks = new Int32Array(CHUNK_N * CHUNK_N);
-const chunkInsts  = new Int32Array(CHUNK_N * CHUNK_N);
-let blockCount = 0, instanceCount = 0;
+const chunkFaces  = new Int32Array(CHUNK_N * CHUNK_N);
+let blockCount = 0, faceCount = 0;
 
 // Cubes are the only terrain surface. The smooth fillet skin of pass 3b still
 // exists in this file but is never built, so nothing ever covers the blocks and
@@ -1625,31 +1635,56 @@ function applyChunkView(c) {
 // depth, so a cliff came out as one flat slab of whatever it is made of; this
 // is the other axis, and it is what makes a face read as a face.
 //
-// Quantised into steps rather than applied per block, because a run of blocks is
-// one box with one colour: the step index joins the material and the soil band
-// as something a run cannot merge across, so a cliff comes back as a handful of
-// banded runs instead of one. SHADE_STEPS of them and no more — past that the
-// gradient has done its work and every extra split is an extra instance.
+// Quantised into steps rather than applied per block, so that a cliff comes back
+// as a handful of bands rather than a smooth ramp — the banding is the point,
+// and it is what makes the depth read as blocks. SHADE_STEPS of them and no
+// more: past that the gradient has done its work.
 const SHADE_SPAN  = 4;      // blocks per step (0.8 m)
 const SHADE_STEPS = 6;      // steps before the shading bottoms out
 const SHADE_FLOOR = 0.62;   // how dark the deepest step is, as a factor on the tint
 const shadeStep = (d) => (d <= 0 ? 0 : Math.min(SHADE_STEPS, (d / SHADE_SPAN) | 0));
 const shadeOf = (step) => 1 - (1 - SHADE_FLOOR) * (step / SHADE_STEPS);
 
-// Scratch, reused by every rebuild: per material, a flat list of runs —
-// x, y-centre, z, height in blocks, tint.
-const runBuf = Array.from({ length: N_MATS }, () => []);
-function pushRun(m, cx, cz, lo, hi, t) {
-  const n = hi - lo + 1;
-  if (n <= 0) return;
-  runBuf[m].push(cx, (lo + n * 0.5) * BLOCK, cz, n, t);
+// Scratch, reused by every rebuild: per material, the loose vertices of one
+// chunk's exposed faces — position, normal and colour, four vertices a quad and
+// nothing shared between quads. Two faces meeting at an edge disagree about both
+// the normal and the colour there, so a shared corner would round the block off.
+const faceBuf = Array.from({ length: N_MATS }, () => ({ pos: [], nor: [], col: [] }));
+
+// The six faces of a block: the neighbour that has to be air for the face to be
+// worth drawing at all, the direction the face looks in, and its four corners as
+// offsets in half-blocks from the centre of the block. The corners are wound
+// counter-clockwise seen from outside, so the quad faces out and its back is the
+// side buried in the solid.
+const HALF_BLOCK = BLOCK * 0.5;
+const FACES = [
+  { di:  1, dj:  0, dl:  0, n: [ 1,  0,  0], v: [ 1, -1,  1,   1, -1, -1,   1,  1, -1,   1,  1,  1] },
+  { di: -1, dj:  0, dl:  0, n: [-1,  0,  0], v: [-1, -1, -1,  -1, -1,  1,  -1,  1,  1,  -1,  1, -1] },
+  { di:  0, dj:  0, dl:  1, n: [ 0,  1,  0], v: [-1,  1,  1,   1,  1,  1,   1,  1, -1,  -1,  1, -1] },
+  { di:  0, dj:  0, dl: -1, n: [ 0, -1,  0], v: [-1, -1, -1,   1, -1, -1,   1, -1,  1,  -1, -1,  1] },
+  { di:  0, dj:  1, dl:  0, n: [ 0,  0,  1], v: [-1, -1,  1,   1, -1,  1,   1,  1,  1,  -1,  1,  1] },
+  { di:  0, dj: -1, dl:  0, n: [ 0,  0, -1], v: [ 1, -1, -1,  -1, -1, -1,  -1,  1, -1,   1,  1, -1] },
+];
+
+// One face of the block centred on (cx, cy, cz), in the one colour that block is.
+function pushFace(m, f, cx, cy, cz, r, g, b) {
+  const B = faceBuf[m], v = f.v, n = f.n;
+  for (let q = 0; q < 4; q++) {
+    const o = q * 3;
+    B.pos.push(cx + v[o] * HALF_BLOCK, cy + v[o + 1] * HALF_BLOCK, cz + v[o + 2] * HALF_BLOCK);
+    B.nor.push(n[0], n[1], n[2]);
+    B.col.push(r, g, b);
+  }
 }
 
 
-// Every visible block in column (i, j), collapsed into runs by material and
-// shade.  A block is visible when blockVisible says it has at least one face
-// touching air — the array is the sole authority on visibility, so digging
-// never leaves a pillar and placing never leaves a ghost.
+// Every exposed face of every visible block in column (i, j), pushed into the
+// scratch buffers. A block is visible when blockVisible says it has at least one
+// face touching air — the array is the sole authority on visibility, so digging
+// never leaves a pillar and placing never leaves a ghost — and of a visible
+// block only the faces that touch air themselves are drawn, so the six-sided box
+// that used to stand in for every block is down to the one or two sides of it
+// anything could ever see. Returns the blocks it drew something for.
 function collectColumn(i, j) {
   const k = j * GEN_N + i;
   const top = sTop[k];
@@ -1657,44 +1692,44 @@ function collectColumn(i, j) {
   const t = tint[k], o = voxOff[k] - VOX_FLOOR;
   const cx = colX(i), cz = colZ(j);
   let drawn = 0;
-  let lvl = top;
-  while (lvl >= VOX_FLOOR) {
+  for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
     const m = voxMat[o + lvl];
-    if (m === AIR || !blockVisible[o + lvl]) { lvl--; continue; }
-    // Visible block found — push it and try to extend the run downward.
+    if (m === AIR || !blockVisible[o + lvl]) continue;
+    // The one colour the whole block is drawn in — its material, the column's
+    // own tint, whether it is still in the soil band, and how far below the top
+    // of the column it sits — baked in here because the mesh carries a colour
+    // per vertex and the material itself is plain white.
     const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
-    const step = shadeStep(top - lvl);
-    let lo = lvl;
-    while (lo > VOX_FLOOR) {
-      const m2 = voxMat[o + lo - 1];
-      if (m2 !== m || !blockVisible[o + lo - 1]) break;
-      const b2 = top - (lo - 1) <= SOIL_DEPTH ? 1 : 0;
-      if (b2 !== band) break;
-      if (shadeStep(top - lo + 1) !== step) break;
-      lo--;
+    const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl));
+    const c = TERRAIN_MATS[m].color;
+    const r = c.r * s, g = c.g * s, b = c.b * s;
+    const cy = (lvl + 0.5) * BLOCK;
+    for (let f = 0; f < 6; f++) {
+      const F = FACES[f];
+      if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
+      pushFace(m, F, cx, cy, cz, r, g, b);
     }
-    pushRun(m, cx, cz, lo, lvl, t * (band ? 0.94 : 0.86) * shadeOf(step));
-    drawn += lvl - lo + 1;
-    lvl = lo - 1;
+    drawn++;
   }
   return drawn;
 }
 
-const runMtx = new THREE.Matrix4();
-const runCol = new THREE.Color();
-
 // (Re)build one chunk's meshes from the store. Cheap enough to call from a tap:
-// the whole cost is one pass over the chunk's columns plus three buffer uploads.
+// the whole cost is one pass over the chunk's columns plus a buffer upload per
+// material.
 function rebuildChunk(c) {
   const old = chunkMesh[c];
   if (old) {
-    for (const im of old) {
-      if (!im) continue;
-      terrain.remove(im);
-      im.dispose();              // frees the instance buffers, not the shared geo
+    for (const me of old) {
+      if (!me) continue;
+      terrain.remove(me);
+      me.geometry.dispose();     // frees the vertex buffers, not the shared material
     }
   }
-  for (let m = 0; m < N_MATS; m++) runBuf[m].length = 0;
+  for (let m = 0; m < N_MATS; m++) {
+    const B = faceBuf[m];
+    B.pos.length = 0; B.nor.length = 0; B.col.length = 0;
+  }
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
@@ -1702,40 +1737,42 @@ function rebuildChunk(c) {
   for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) blocks += collectColumn(i, j);
 
   const meshes = new Array(N_MATS).fill(null);
-  let insts = 0;
+  let faces = 0;
   for (let m = 0; m < N_MATS; m++) {
-    const a = runBuf[m];
-    const n = a.length / 5;
-    if (n === 0) continue;                       // plenty of chunks are all sand
-    const im = new THREE.InstancedMesh(blockGeo, TERRAIN_MATS[m], n);
-    for (let q = 0; q < n; q++) {
-      const o = q * 5;
-      runMtx.makeScale(1, a[o + 3], 1);          // one run, however many blocks tall
-      runMtx.setPosition(a[o], a[o + 1], a[o + 2]);
-      im.setMatrixAt(q, runMtx);
-      runCol.setScalar(a[o + 4]);
-      im.setColorAt(q, runCol);
+    const B = faceBuf[m];
+    const nv = B.pos.length / 3, nq = nv / 4;
+    if (nq === 0) continue;                      // plenty of chunks are all sand
+    // Two triangles a quad, over the four corners the quad already pushed.
+    const idx = nv > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
+    for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
+      idx[p]     = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
+      idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
     }
-    insts += n;
-    im.instanceMatrix.needsUpdate = true;
-    if (im.instanceColor) im.instanceColor.needsUpdate = true;
-    im.receiveShadow = true;
-    // Casting is a second full pass over every block. A phone gets the sun's
-    // shading and the player's shadow, but not the island shadowing itself.
-    im.castShadow = !isTouchDevice;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(B.pos), 3));
+    geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(B.nor), 3));
+    geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(B.col), 3));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
     // The per-chunk bound is the whole reason for the split — without it three
     // quarters of the island would be drawn from behind the camera.
-    if (im.computeBoundingSphere) im.computeBoundingSphere();
-    terrain.add(im);
-    meshes[m] = im;
+    geo.computeBoundingSphere();
+
+    const me = new THREE.Mesh(geo, TERRAIN_FACE_MATS[m]);
+    me.receiveShadow = true;
+    // Casting is a second full pass over every face. A phone gets the sun's
+    // shading and the player's shadow, but not the island shadowing itself.
+    me.castShadow = !isTouchDevice;
+    terrain.add(me);
+    meshes[m] = me;
+    faces += nq;
   }
 
   chunkMesh[c] = meshes;
   applyChunkView(c);
   blockCount    += blocks - chunkBlocks[c];
-  instanceCount += insts  - chunkInsts[c];
+  faceCount     += faces  - chunkFaces[c];
   chunkBlocks[c] = blocks;
-  chunkInsts[c]  = insts;
+  chunkFaces[c]  = faces;
 }
 
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
@@ -4189,7 +4226,7 @@ window.hermes = {
   // The island: the block size everything is quantised to, the raw heightmap
   // behind it, and the meshes it was built into.
   BLOCK, islandHeight, terrain, SPAWN,
-  stats: () => ({ worldBlocks, held: shovel.held.length, drawn: blockCount, instances: instanceCount }),
+  stats: () => ({ worldBlocks, held: shovel.held.length, drawn: blockCount, faces: faceCount }),
   // The fillet surface — the block outline with every corner rounded off over
   // the last half block into it. Disabled: the game renders cubes only, and this
   // is exposed purely so the skin can still be built by hand from the console.

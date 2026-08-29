@@ -3343,6 +3343,94 @@ function shovelAim() {
 // than per edit, so holding a button down does not rebuild the same chunk twice.
 const dirtyChunks = new Set();
 
+// Taking a block out from under a pile leaves the pile hanging. Everything that
+// lost its footing — the block that was standing on the hole, whatever is stacked
+// on it, and whatever those are joined to sideways that is also on nothing —
+// comes down together as one piece and lands on the first thing under it. Water
+// neither falls nor holds anything up: a block drops through it to the bed.
+const FALL_CAP = 4096;  // blocks in one falling unit, so a big dig cannot stall a frame
+const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER; };
+const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
+
+function applyGravity(i, j, lvl) {
+  // Grow the falling unit outwards from the block left over the hole. A block
+  // joins it when it is standing on nothing — on air or water, or on another
+  // block already in the unit, which is on its way down too. A block rejected
+  // for having a floor under it is not marked, so it gets asked again if that
+  // floor later turns out to be falling as well.
+  const unit = new Map(), queue = [];
+  const consider = (ci, cj, cl) => {
+    if (cl <= VOX_FLOOR || !inVoxelRange(ci, cj, cl)) return;
+    const key = gravKey(ci, cj, cl);
+    if (unit.has(key) || !gravSolid(ci, cj, cl)) return;
+    if (gravSolid(ci, cj, cl - 1) && !unit.has(gravKey(ci, cj, cl - 1))) return;
+    unit.set(key, { i: ci, j: cj, lvl: cl, m: voxelAt(ci, cj, cl) });
+    queue.push(ci, cj, cl);
+  };
+  consider(i, j, lvl + 1);
+  for (let q = 0; q < queue.length && unit.size <= FALL_CAP; q += 3) {
+    const ci = queue[q], cj = queue[q + 1], cl = queue[q + 2];
+    consider(ci - 1, cj, cl);
+    consider(ci + 1, cj, cl);
+    consider(ci, cj - 1, cl);
+    consider(ci, cj + 1, cl);
+    consider(ci, cj, cl - 1);
+    consider(ci, cj, cl + 1);
+  }
+  if (!unit.size || unit.size > FALL_CAP) return;
+
+  // The unit falls as far as its most obstructed block can, counting the rest of
+  // the unit as clear air since it is coming down at the same rate.
+  let drop = Infinity;
+  for (const b of unit.values()) {
+    let d = 0;
+    while (d < drop) {
+      const nl = b.lvl - d - 1;
+      if (nl < VOX_FLOOR) break;
+      if (!unit.has(gravKey(b.i, b.j, nl)) && gravSolid(b.i, b.j, nl)) break;
+      d++;
+    }
+    if (d < drop) drop = d;
+    if (drop === 0) return;
+  }
+
+  // Empty every old cell before filling any new one, so a block never writes
+  // over one of its own neighbours before that neighbour has moved.
+  for (const b of unit.values()) setVoxel(b.i, b.j, b.lvl, AIR);
+  for (const b of unit.values()) setVoxel(b.i, b.j, b.lvl - drop, b.m);
+
+  // Then the same housekeeping an edit does, for both ends of every move.
+  const cols = new Set();
+  const settle = (ci, cj, cl) => {
+    refreshVisible(ci, cj, cl);
+    refreshVisible(ci - 1, cj, cl);
+    refreshVisible(ci + 1, cj, cl);
+    refreshVisible(ci, cj - 1, cl);
+    refreshVisible(ci, cj + 1, cl);
+    refreshVisible(ci, cj, cl - 1);
+    refreshVisible(ci, cj, cl + 1);
+    cols.add(cj * GEN_N + ci);
+  };
+  for (const b of unit.values()) {
+    const k = b.j * GEN_N + b.i;
+    colDug[k] = 1;
+    if (b.lvl < colDugLo[k]) colDugLo[k] = b.lvl;
+    settle(b.i, b.j, b.lvl);
+    settle(b.i, b.j, b.lvl - drop);
+  }
+  for (const k of cols) {
+    const ci = k % GEN_N, cj = (k - ci) / GEN_N;
+    patchCollider(ci, cj);
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        const ii = ci + di, jj = cj + dj;
+        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+        dirtyChunks.add(chunkOf(ii, jj));
+      }
+    }
+  }
+}
+
 function editBlock(i, j, lvl, m) {
   const was = setVoxel(i, j, lvl, m);
   const k = j * GEN_N + i;
@@ -3365,6 +3453,8 @@ function editBlock(i, j, lvl, m) {
       dirtyChunks.add(chunkOf(ii, jj));
     }
   }
+  // Anything the removal left hanging comes down.
+  if (m === AIR && was !== AIR) applyGravity(i, j, lvl);
   return was;
 }
 

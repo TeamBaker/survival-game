@@ -311,40 +311,26 @@
   }
 
   /* ---------- Materials panel ---------- */
+  /* Full-screen: fourteen materials with three numbers each is a table, not a
+     tooltip, and at panel size it was a column of ellipses on a phone. */
   #materials-ui {
     position: fixed;
-    left: calc(10px + env(safe-area-inset-left));
-    bottom: calc(22px + env(safe-area-inset-bottom));
-    width: 214px;
-    max-width: 62vw;
-    padding: 9px 11px 10px;
-    font-size: 11px;
+    inset: 0;
+    padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
+             calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
+    font-size: 13px;
     line-height: 1.4;
-    background: rgba(8, 14, 24, 0.62);
-    border: 1px solid rgba(160, 200, 255, 0.16);
-    border-radius: 8px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    background: rgba(8, 14, 24, 0.95);
     display: none;
-    z-index: 60;
-    /* Taller than a phone screen once the list grows — scroll it rather than
-       letting it run off the edge under the home indicator. */
-    max-height: calc(100vh - 220px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    z-index: 100;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
   }
   #materials-ui.on { display: block; }
-  /* On touch the whole left half of the screen is the fly joystick — it is placed
-     wherever the thumb lands — so a panel down there eats input. Move it up under
-     the MATS button, well clear of where a thumb naturally rests. */
-  body.touch #materials-ui {
-    top: calc(178px + env(safe-area-inset-top));
-    bottom: auto;
-  }
   #materials-ui .title {
     display: block;
-    margin-bottom: 6px;
-    font-size: 10px;
+    margin-bottom: 14px;
+    font-size: 12px;
     letter-spacing: 0.16em;
     color: #6f92bd;
     text-transform: uppercase;
@@ -352,23 +338,40 @@
   .mat-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 5px 0;
-    border-top: 1px solid rgba(160, 200, 255, 0.10);
+    gap: 12px;
+    margin-bottom: 12px;
   }
-  .mat-row:first-of-type { border-top: 0; }
   .mat-sw {
     flex: 0 0 auto;
-    width: 18px;
-    height: 18px;
+    width: 30px;
+    height: 30px;
     border-radius: 4px;
     border: 1px solid rgba(255, 255, 255, 0.35);
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
   }
   .mat-txt { min-width: 0; }
   .mat-txt b { display: block; color: #eaf2ff; font-weight: 700; }
-  .mat-txt span { display: block; color: #7fa8d8; font-size: 10px; }
-  #mat-foot { margin-top: 7px; color: #62819f; font-size: 10px; }
+  .mat-txt span { display: block; color: #7fa8d8; font-size: 11px; }
+  /* Same pill as the MATS button that opens it, parked in the top corner. */
+  #mat-close {
+    position: absolute;
+    top: calc(16px + env(safe-area-inset-top));
+    right: calc(16px + env(safe-area-inset-right));
+    width: 34px;
+    height: 34px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #mat-close:active { transform: translateY(1px); }
+  #mat-foot { margin-top: 14px; color: #62819f; font-size: 11px; }
   #mat-foot b { color: #9ecbff; }
   /* A phone has no number row — the MATS button is the whole interface there. */
   body.touch #mat-foot .key { display: none; }
@@ -397,7 +400,7 @@
   #btn-materials:active { transform: translateY(1px); }
 
   @media (max-width: 620px) {
-    #materials-ui { width: 178px; font-size: 10px; padding: 7px 9px 8px; }
+    #materials-ui { font-size: 12px; }
     #btn-materials { font-size: 10px; padding: 7px 12px; }
   }
 
@@ -605,6 +608,7 @@
 
 <!-- Filled in from TERRAIN_MATS so the swatches are the colours actually used. -->
 <div id="materials-ui" class="ui-el">
+  <button id="mat-close" aria-label="Close">&times;</button>
   <span class="title">Materials</span>
   <div id="mat-list"></div>
   <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / buoy / str</div>
@@ -3569,10 +3573,9 @@ document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
   const hex = '#' + m.color.getHexString();
   const st = MAT_STATS[i];
   const name = st ? st.name : titleCase(MAT_NAMES[i]);
-  // Two lines rather than three: at fourteen rows the panel is already taller
-  // than a phone screen, and weight and buoyancy are the pair you read together.
+  // Full width now, so the three numbers spell themselves out on one line.
   const stats = st
-    ? `<span>Wt ${st.weight} &middot; Buoy ${st.buoyancy}</span><span>Str ${st.strength}</span>`
+    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: ${st.strength}</span>`
     : '<span>no stats &mdash; not carryable</span>';
   return '<div class="mat-row">'
        + `<div class="mat-sw" style="background:${hex}"></div>`
@@ -3585,9 +3588,13 @@ function setMaterialsUI(on) {
   materialsOpen = on;
   materialsEl.classList.toggle('on', on);
   materialsBtn.classList.toggle('on', on);
+  // Full screen now, so it wants the cursor back — with the pointer locked there
+  // is nothing to click the X with, and mouse look would run on under the panel.
+  if (on && document.pointerLockElement) document.exitPointerLock();
 }
 function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
 bindTap(materialsBtn, toggleMaterialsUI);
+bindTap(document.getElementById('mat-close'), () => setMaterialsUI(false));
 
 // ---------------------------------------------------------------------------
 // Overlay

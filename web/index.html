@@ -3250,7 +3250,7 @@ const shovel = {
   held: [],       // materials, last in first out — you put back what you just took
   hit: null,      // {i, j, lvl} the block being looked at, or null
   spot: null,     // {i, j, lvl} the empty cell a placed block would go into
-  debris: null,   // {mesh, i, j, lvl} a loose fallen piece being looked at instead
+  debris: null,   // {mesh, local, i, j, lvl} a loose fallen piece being looked at instead
 };
 
 // ----- the ray -----
@@ -3316,8 +3316,15 @@ function debrisAim(ox, oy, oz) {
   if (debris.children.length === 0) return null;
   debrisRay.set(debrisOrigin.set(ox, oy, oz), aimDir);
   debrisRay.far = SHOVEL_REACH;
-  const hits = debrisRay.intersectObjects(debris.children, false);
-  return hits.length ? hits[0] : null;
+  // Recursive: blocks placed onto a piece hang off its mesh as children, and a
+  // hit on one of those is a hit on the piece.
+  const hits = debrisRay.intersectObjects(debris.children, true);
+  if (!hits.length) return null;
+  const hit = hits[0];
+  let o = hit.object;
+  while (o.parent && o.parent !== debris) o = o.parent;
+  hit.piece = o;
+  return hit;
 }
 
 // Refresh what the tool is pointing at. Runs every frame while the shovel is out
@@ -3347,13 +3354,12 @@ function shovelAim() {
     shovel.spot = { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl };
   } else if (dHit) {
     // Looking at a fallen piece. Digging takes the whole piece away; a place
-    // lands in the grid cell just this side of the face you can see, so the new
-    // block sits against the rubble rather than inside it.
+    // joins the piece's own lattice, against the face you can see, and from then
+    // on rides with it — the world grid does not come into it.
     const p = dHit.point;
-    shovel.debris = Object.assign({ mesh: dHit.object }, cellOf(p.x, p.y, p.z));
-    shovel.spot = cellOf(p.x - aimDir.x * HALF_BLOCK,
-                         p.y - aimDir.y * HALF_BLOCK,
-                         p.z - aimDir.z * HALF_BLOCK);
+    const dm = dHit.piece;
+    shovel.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir) },
+                                  cellOf(p.x, p.y, p.z));
   } else if (camMode !== CAM.FREE) {
     // Nothing under the crosshair. Fall back to what you are standing on, and to
     // the ground a stride ahead of you for the other half — looking at the sky
@@ -3460,6 +3466,13 @@ function spawnFallingChunk(unit) {
   }
   mesh.instanceMatrix.needsUpdate = true;
   mesh.instanceColor.needsUpdate = true;
+  // The piece's own lattice, in its own frame. Kept because a block placed
+  // against the piece is snapped to this rather than to the world grid.
+  mesh.userData.blocks = blocks.map((b) => ({
+    pos: new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz),
+    mat: b.m,
+  }));
+  mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   debris.add(mesh);
@@ -3521,6 +3534,67 @@ function removeDebrisMesh(mesh) {
   if (q >= 0) restedChunks.splice(q, 1);
   debris.remove(mesh);
   mesh.dispose();
+}
+
+// Where a block placed against this piece would go, in the piece's own frame.
+// Rubble lies at whatever angle the physics left it, so the cell is snapped to
+// the piece's lattice — anchored on one of its own blocks — instead of to the
+// world grid. Null if that cell is already filled.
+const debrisLocal = new THREE.Vector3();
+function debrisSpot(mesh, point, dir) {
+  const lat = mesh.userData.blocks;
+  if (!lat || !lat.length) return null;
+  const anchor = lat[0].pos;
+  mesh.updateWorldMatrix(true, false);   // it was moved by the body this frame
+  const v = mesh.worldToLocal(debrisLocal.copy(point).addScaledVector(dir, -HALF_BLOCK));
+  v.x = anchor.x + Math.round((v.x - anchor.x) / BLOCK) * BLOCK;
+  v.y = anchor.y + Math.round((v.y - anchor.y) / BLOCK) * BLOCK;
+  v.z = anchor.z + Math.round((v.z - anchor.z) / BLOCK) * BLOCK;
+  for (const b of lat) {
+    if (Math.abs(b.pos.x - v.x) < 0.01 && Math.abs(b.pos.y - v.y) < 0.01
+        && Math.abs(b.pos.z - v.z) < 0.01) return null;
+  }
+  return v.clone();
+}
+
+// Put a held block onto a fallen piece. The cube hangs off the piece's mesh in
+// local coordinates, so it turns and tumbles with it, and the body it is glued
+// to gets heavier and grows a collider to match.
+function placeOnDebris(mesh, local, m) {
+  const cube = new THREE.Mesh(fallGeo, TERRAIN_MATS[m]);
+  cube.position.copy(local);
+  cube.castShadow = true;
+  cube.receiveShadow = true;
+  mesh.add(cube);
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m });
+
+  const f = fallingChunks.find((e) => e.mesh === mesh);
+  if (!f) return;               // already settled — there is no body left to feed
+  const body = f.body, h = HALF_BLOCK;
+  if (mesh.userData.perBlock) {
+    body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+                  new CANNON.Vec3(local.x, local.y, local.z));
+  } else {
+    // Pieces too big for a collider each collide as one box: grow it to take
+    // the new block in.
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const b of mesh.userData.blocks) {
+      if (b.pos.x < x0) x0 = b.pos.x; if (b.pos.x > x1) x1 = b.pos.x;
+      if (b.pos.y < y0) y0 = b.pos.y; if (b.pos.y > y1) y1 = b.pos.y;
+      if (b.pos.z < z0) z0 = b.pos.z; if (b.pos.z > z1) z1 = b.pos.z;
+    }
+    const box = body.shapes[0];
+    box.halfExtents.set((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h);
+    box.updateConvexPolyhedronRepresentation();
+    box.updateBoundingSphereRadius();
+    body.shapeOffsets[0].set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+    body.updateBoundingRadius();
+  }
+  body.mass = Math.min(body.mass + 0.5, FALL_MASS_CAP);
+  body.updateMassProperties();
+  body.updateAABB();
+  body.wakeUp();
+  f.still = 0;                  // it has been disturbed: let it settle again
 }
 
 function applyGravity(i, j, lvl) {
@@ -3636,7 +3710,13 @@ function shovelPickUp() {
 }
 
 function shovelPlace() {
-  if (!shovel.on || !shovel.spot || shovel.held.length === 0) return false;
+  if (!shovel.on || shovel.held.length === 0) return false;
+  if (shovel.debris && shovel.debris.local) {
+    placeOnDebris(shovel.debris.mesh, shovel.debris.local, shovel.held.pop());
+    refreshShovelUI();
+    return true;
+  }
+  if (!shovel.spot) return false;
   const { i, j, lvl } = shovel.spot;
   // Re-check rather than trusting the aim from earlier in the frame. Popping a
   // block off the stack for a write that then gets rejected would destroy it.
@@ -3688,11 +3768,22 @@ function refreshShovelUI() {
 function updateShovel() {
   shovelAim();
   const canPick = shovel.debris ? true : (!!shovel.hit && shovel.held.length < SHOVEL_CAP);
-  const canPlace = !!shovel.spot && shovel.held.length > 0;
+  const dLocal = shovel.debris && shovel.debris.local;
+  const canPlace = (!!shovel.spot || !!dLocal) && shovel.held.length > 0;
   hlPick.visible  = shovel.on && canPick;
   hlPlace.visible = shovel.on && canPlace;
   if (hlPick.visible)  cellCenter(shovel.debris || shovel.hit, hlPick.position);
-  if (hlPlace.visible) cellCenter(shovel.spot, hlPlace.position);
+  if (hlPlace.visible) {
+    if (dLocal) {
+      // On the piece, and tilted with it, so the ghost shows where the block
+      // will actually end up rather than where the world grid would put it.
+      hlPlace.position.copy(dLocal).applyMatrix4(shovel.debris.mesh.matrixWorld);
+      shovel.debris.mesh.getWorldQuaternion(hlPlace.quaternion);
+    } else {
+      cellCenter(shovel.spot, hlPlace.position);
+      hlPlace.quaternion.identity();
+    }
+  }
   pickBtn.classList.toggle('dim', !canPick);
   placeBtn.classList.toggle('dim', !canPlace);
 }

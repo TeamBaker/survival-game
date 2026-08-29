@@ -3541,24 +3541,25 @@ refreshModeUI();
 // The numbers are the material's own properties, indexed by material id and not
 // yet read by anything that simulates: weight is how much a block of it drags on
 // you, buoyancy how much the water pushes it back up, strength how much work it
-// takes to break out of the ground. Water is the one entry with none — it is a
-// block in the store but it is not a thing you can carry.
+// takes to break out of the ground, powder whether it is loose and crumbly.
+// Water is the one entry with none — it is a block in the store but it is not a
+// thing you can carry.
 // ---------------------------------------------------------------------------
 const MAT_STATS = [
-  { name: 'Sand',          weight: 1,   buoyancy: 0, strength: 1 },    // SAND
-  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1 },    // DIRT
-  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7 },    // ROCK
-  null,                                                                // WATER
-  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5 },  // FINE_DIRT
-  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3 },  // MUD
-  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2 },    // HARD_DIRT
-  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5 },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1 },    // STONE_DUST
-  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5 },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2 },    // BRITTLE_STONE
-  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2 },  // CLAY
-  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5 },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5 },  // HARD_CLAY
+  { name: 'Sand',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // SAND
+  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
+  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
+  null,                                                                        // WATER
+  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
 ];
 
 const materialsEl  = document.getElementById('materials-ui');
@@ -3573,9 +3574,9 @@ document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
   const hex = '#' + m.color.getHexString();
   const st = MAT_STATS[i];
   const name = st ? st.name : titleCase(MAT_NAMES[i]);
-  // Full width now, so the three numbers spell themselves out on one line.
+  // Full width now, so the stats spell themselves out on one line.
   const stats = st
-    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: ${st.strength}</span>`
+    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: ${st.strength} &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
     : '<span>no stats &mdash; not carryable</span>';
   return '<div class="mat-row">'
        + `<div class="mat-sw" style="background:${hex}"></div>`

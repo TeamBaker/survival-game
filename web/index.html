@@ -587,116 +587,6 @@
     white-space: pre-wrap;
     text-align: left;
   }
-
-  /* ---------- 2D Debug View ---------- */
-  #debug2d-wrap {
-    position: fixed;
-    inset: 0;
-    display: none;
-    flex-direction: column;
-    background: rgba(4, 8, 16, 0.94);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    z-index: 100;
-    touch-action: none;
-  }
-  #debug2d-wrap.on { display: flex; }
-  #debug2d-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    padding: calc(14px + env(safe-area-inset-top)) 14px 14px 14px;
-    overflow: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  #debug2d-panel canvas {
-    display: block;
-    border-radius: 8px;
-    cursor: crosshair;
-    /* Allow the panel's native scroll to pan the canvas (it's wider than an
-       iPhone viewport); pointer handlers distinguish a tap from a drag. */
-    touch-action: manipulation;
-  }
-  #debug2d-panel .title {
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: #9ecbff;
-    margin-bottom: 2px;
-    flex-shrink: 0;
-  }
-  #debug2d-panel .instructions {
-    font-size: 13px;
-    color: #7fa8d8;
-    margin-bottom: 10px;
-    flex-shrink: 0;
-  }
-  #debug2d-close {
-    position: fixed;
-    top: calc(10px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
-    background: rgba(220, 70, 70, 0.7);
-    border: 1.5px solid rgba(255, 130, 130, 0.6);
-    color: #fff;
-    font-size: 28px;
-    font-weight: 700;
-    cursor: pointer;
-    padding: 8px 18px;
-    border-radius: 12px;
-    font-family: inherit;
-    touch-action: manipulation;
-    z-index: 110;
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  }
-  #debug2d-close:active { background: rgba(255, 80, 80, 0.85); transform: scale(0.95); }
-
-  /* ---------- Debug 2D toggle button ---------- */
-  #btn-debug2d {
-    position: fixed;
-    top: calc(52px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
-    padding: 8px 14px;
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #cfe6ff;
-    background: rgba(20, 34, 54, 0.62);
-    border: 1px solid rgba(150, 195, 245, 0.4);
-    border-radius: 999px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    cursor: pointer;
-    touch-action: manipulation;
-    z-index: 14;
-  }
-  #btn-debug2d.on {
-    color: #06101f;
-    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
-    border-color: transparent;
-  }
-  #btn-debug2d:active { transform: translateY(1px); }
-  @media (max-width: 620px) {
-    #btn-debug2d { font-size: 10px; padding: 7px 12px; }
-  }
-  #debug2d-panel .legend {
-    font-size: 12px;
-    color: #8aa0bc;
-    margin-top: 10px;
-    line-height: 1.8;
-    flex-shrink: 0;
-  }
-  #debug2d-panel .legend span {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border-radius: 3px;
-    vertical-align: middle;
-    margin-right: 5px;
-  }
 </style>
 </head>
 <body>
@@ -711,14 +601,13 @@
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
 <button id="mode-btn" class="ui-el">Game Mode</button>
-<button id="btn-debug2d">2D Map</button>
 <button id="btn-materials">Mats</button>
 
 <!-- Filled in from TERRAIN_MATS so the swatches are the colours actually used. -->
 <div id="materials-ui" class="ui-el">
   <span class="title">Materials</span>
   <div id="mat-list"></div>
-  <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>stats are placeholders</div>
+  <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / buoy / str</div>
 </div>
 
 <div id="crosshair"></div>
@@ -752,22 +641,6 @@
 </div>
 
 <div id="loading">Loading&hellip;</div>
-
-<!-- 2D Debug: terrain smoothing cross-section -->
-<div id="debug2d-wrap">
-  <div id="debug2d-panel">
-    <div class="title">2D Terrain Debug</div>
-    <div class="instructions">Tap blocks to add/remove · Scroll to pan</div>
-    <canvas id="debug2d-cv"></canvas>
-    <div class="legend">
-      <span style="background:#5a8a3c"></span>grass
-      <span style="background:#8b6b3d"></span>dirt
-      <span style="background:#6a6e78"></span>rock
-      <span style="background:#2a8ed8"></span>smoothstep line
-    </div>
-  </div>
-  <button id="debug2d-close">&times;</button>
-</div>
 
 <script src="lib/three.js?v=2"></script>
 <script src="lib/cannon-global.js?v=2"></script>
@@ -1294,8 +1167,16 @@ function fieldAt(i, j) {
 }
 
 // ----- pass 2: block levels and materials -----
+// The four the island was first built out of keep their ids, so nothing that
+// already reads a voxel has to change; the variants added after them extend the
+// list rather than reorder it. Each is a real material with weight, buoyancy and
+// strength (MAT_STATS below) — the same rock in three states of decay, the same
+// earth wet, fine or packed hard.
 const SAND = 0, DIRT = 1, ROCK = 2, WATER = 3;
-const N_MATS = 4;
+const FINE_DIRT = 4, MUD = 5, HARD_DIRT = 6, FINE_MUD = 7;
+const STONE_DUST = 8, STONE_MUD = 9, BRITTLE_STONE = 10;
+const CLAY = 11, CLAY_MUD = 12, HARD_CLAY = 13;
+const N_MATS = 14;
 // Not a terrain material: the value the voxel store below uses for a block that
 // is not there. It sorts after the real ones so `m < AIR` means solid.
 const AIR = N_MATS;
@@ -1333,11 +1214,46 @@ function pickMaterial(h, slope, x, z) {
   // boundaries the same broad scale as everything else on the island — at 3 m
   // they were a per-block speckle along every edge.
   const n = vnoise2(x * 0.12, z * 0.12);           // -1 .. 1
+  // A second field, independent of the first and on the same broad scale, which
+  // only ever chooses *which variant* of a band a patch is made of. Where the
+  // bands themselves fall is still `n` alone, so the island's shape and its
+  // beach line are exactly what they were.
+  const v = vnoise2(x * 0.09 + 41.7, z * 0.09 - 17.3);
   if (h <= SEA_Y) return WATER;                    // sea level and below: the water plane
-  if (slope > 1.05 + n * 0.30) return ROCK;        // anything you could not stand on
+  // Anything you could not stand on. Most of it is sound rock; the rest is the
+  // crumbling face of it, which is softer to dig and lighter to carry.
+  if (slope > 1.05 + n * 0.30) {
+    return v > 0.45 ? BRITTLE_STONE : (v < -0.55 ? STONE_DUST : ROCK);
+  }
   if (h < 1.2 + n * 0.5) return SAND;              // the beach, up to knee height
-  return DIRT;                                     // all the gentle ground above it
+  // Just above the tide line the ground never dries out, so the damp variants
+  // sit in a band there rather than anywhere on the island.
+  if (h < 3.0 + n) return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
+  // All the gentle ground above it: earth, with clay banks and loose topsoil
+  // through it.
+  return v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
 }
+
+// What each surface material becomes further down its own band. Digging is meant
+// to get harder the deeper it goes, so the lower half of the soil under any
+// column is the packed or waterlogged version of whatever caps it. Indexed by
+// material id; WATER's entry is never read (a flooded column's bed is sand).
+const DEEP_MAT = [
+  MUD,            // SAND — wet sand under the beach
+  HARD_DIRT,      // DIRT
+  ROCK,           // ROCK
+  WATER,          // WATER
+  DIRT,           // FINE_DIRT
+  FINE_MUD,       // MUD
+  BRITTLE_STONE,  // HARD_DIRT
+  HARD_DIRT,      // FINE_MUD
+  BRITTLE_STONE,  // STONE_DUST
+  ROCK,           // STONE_MUD
+  ROCK,           // BRITTLE_STONE
+  HARD_CLAY,      // CLAY
+  HARD_CLAY,      // CLAY_MUD
+  BRITTLE_STONE,  // HARD_CLAY
+];
 
 {
   const rnd = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
@@ -1432,8 +1348,13 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   // Sand or dirt in a band under the surface, and bedrock under that whatever is
   // on top — which is what gives a sand-capped headland its grey base.
   const soilLo = Math.max(VOX_FLOOR, bed - SOIL_DEPTH);
+  // The soil band in two halves rather than one: the surface material on top,
+  // its DEEP_MAT variant under it, so a metre down the same hillside is packed
+  // earth or wet clay instead of more of the same.
+  const soilMid = Math.max(soilLo, bed - (SOIL_DEPTH >> 1));
   voxMat.fill(ROCK, voxOff[k], o + soilLo);
-  voxMat.fill(surf, o + soilLo, o + bed + 1);
+  voxMat.fill(DEEP_MAT[surf], o + soilLo, o + soilMid);
+  voxMat.fill(surf, o + soilMid, o + bed + 1);
   // Everything the bed leaves between itself and sea level is water — solid
   // blocks, so the sea is a flat plane of them and not a shader.
   if (bed < top) voxMat.fill(WATER, o + bed + 1, o + top + 1);
@@ -1590,6 +1511,12 @@ const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 
 // Sand light and dry, dirt brown, rock grey, water blue. Nothing green anywhere
 // — no grass on this island yet. Indexed by the material ids above.
+//
+// The variants are the same three families shifted along one axis each: wetter
+// is darker, finer is lighter, harder is darker and less saturated. That is the
+// only thing keeping a fourteen-colour palette legible in a wall of cubes — the
+// band you are looking at is a family, and the shade tells you how deep in it
+// you have dug.
 const TERRAIN_MATS = [
   mat(0xd8c69c, 0.97, 0.00, { envMapIntensity: 0.45 }),   // SAND
   mat(0x8a6a46, 0.98, 0.00, { envMapIntensity: 0.32 }),   // DIRT
@@ -1597,8 +1524,22 @@ const TERRAIN_MATS = [
   // Smoother and glossier than the ground: it is still a cube, but it should
   // catch the sun and the sky the way none of the dry materials do.
   mat(0x3399cc, 0.22, 0.00, { envMapIntensity: 1.35 }),   // WATER
+  // The earth family. Wet ones are a touch smoother — damp ground catches a
+  // little more light than dust does.
+  mat(0x9b7a52, 0.99, 0.00, { envMapIntensity: 0.30 }),   // FINE_DIRT
+  mat(0x6b5a3e, 0.88, 0.00, { envMapIntensity: 0.42 }),   // MUD
+  mat(0x7a5c38, 0.96, 0.00, { envMapIntensity: 0.34 }),   // HARD_DIRT
+  mat(0x5c4a32, 0.86, 0.00, { envMapIntensity: 0.44 }),   // FINE_MUD
+  // The stone family, all of it a shade of the same grey as ROCK.
+  mat(0xa0a8b0, 0.98, 0.00, { envMapIntensity: 0.40 }),   // STONE_DUST
+  mat(0x6a7078, 0.85, 0.02, { envMapIntensity: 0.50 }),   // STONE_MUD
+  mat(0x909898, 0.94, 0.01, { envMapIntensity: 0.50 }),   // BRITTLE_STONE
+  // The clay family — tan, and the least rough of the dry materials.
+  mat(0xc4a882, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
+  mat(0x8a7a60, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
+  mat(0xb09070, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
 ];
-// The same four materials again, white and vertex-coloured. Every block's colour
+// The same materials again, white and vertex-coloured. Every block's colour
 // — the material, the column's tint and the depth shading, all of it — is baked
 // into the mesh now that the terrain is one buffer per chunk rather than a pile
 // of instances with a colour each, so what the shader multiplies that by has to
@@ -1778,18 +1719,17 @@ function rebuildChunk(c) {
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 
 // ----- pass 3b: the fillet surface -----
-// The same terrain as one smooth skin instead of a field of cubes, and the 3D
-// counterpart of the 2D debug view's outline walk. It is not a different shape
+// The same terrain as one smooth skin instead of a field of cubes. It is not a
+// different shape
 // and it is not an interpolation between column heights: it traces the surface
 // the block mass actually exposes — every face of every block that has air
 // against it, tops, sides, and the undersides of anything jutting out over a
 // gap — and the only thing it does differently is round the 90° joints where
 // two of those faces meet.
 //
-// The 2D view does that in three steps: collect every exposed unit face as a
-// directed edge (d2dCollectEdges), chain the edges into an outline
-// (d2dChainEdges), then replace every corner of the outline with a
-// quarter-circle arc (d2dFilletPolyline). Here the same three steps are local
+// In cross-section it is three steps: collect every exposed unit face as a
+// directed edge, chain the edges into an outline, then replace every corner of
+// the outline with a quarter-circle arc. Here the same three steps are local
 // rather than global, because a 3D surface has no single walkable outline: each
 // exposed face contributes its own tile, inset by the fillet radius on every
 // side that joins another face at 90°, and the arc over each joint is split
@@ -1801,7 +1741,7 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // corner of a step, arc bending away from the solid, taking the corner off) and
 // concave where that cell is filled and the one above it is too (the inside
 // corner at the foot of a wall, arc bending out into the air, filling the
-// corner in) — exactly the two cases the 2D corner walk rounds, and with the
+// corner in) — exactly the two cases that corner walk rounds, and with the
 // same radius. A face whose neighbour simply carries on in the same plane has
 // no joint there at all and no inset, so a flat run of blocks comes out flat,
 // a cliff comes out vertical, and a staircase gets a real arc at each step
@@ -1811,10 +1751,9 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // reads as a curve rather than a facet, and every extra one is paid for on
 // every filleted edge of every block in range.
 const FILLET_SUB = 2;
-// Fillet radius, in metres: half a block, matching the 2D view's D2D_FILLET_R
-// (0.5 of its one-unit-wide columns). Two opposite insets on the same face then
-// sum to exactly the block width, so they meet in the middle at worst and never
-// cross.
+// Fillet radius, in metres: half a block. Two opposite insets on the same face
+// then sum to exactly the block width, so they meet in the middle at worst and
+// never cross.
 const FILLET_R_MAX = BLOCK * 0.5;
 // How far out from the middle of the field gets a skin, in metres. Past the
 // shoreline and its wash and not much further: at a vertex every few centimetres
@@ -1854,8 +1793,8 @@ for (let d = 0; d < 6; d++) FDIR[d].op = FDIR[FOPP[d]];
 const FFRAME = [[2, 4], [4, 2], [4, 0], [0, 4], [0, 2], [2, 0]];
 
 // Is there a block at (i, j, l)? Anything under the store's floor reads as
-// bedrock — an infinite solid, so nothing ever grows a face on its underside,
-// the same trick the 2D view's `h < 0` plays — and anything off the side of the
+// bedrock — an infinite solid, so nothing ever grows a face on its underside —
+// and anything off the side of the
 // field, or above a column's top, reads as air.
 function filletSolid(i, j, l) {
   if (l < VOX_FLOOR) return true;
@@ -1910,7 +1849,7 @@ function filletJoint(i, j, l, g, d) {
 // Whether the joint on this face's `g` edge is still at full depth by the time
 // that edge reaches its `h` end, as a 0/1 weight on the arc there.
 //
-// This is the one thing the 2D outline never has to answer. A fillet there runs
+// This is the one thing a cross-section never has to answer. A fillet there runs
 // along a line and stops at a corner; here it runs along a strip, and the ends
 // of that strip are edges other tiles have to meet flush. So the question is
 // really about the tile on the other side of that end: the joint keeps its full
@@ -3288,7 +3227,12 @@ window.addEventListener('wheel', (e) => {
 // ---------------------------------------------------------------------------
 const SHOVEL_REACH = 6.0;      // metres of reach from the eye
 const SHOVEL_CAP   = 64;       // blocks your hands hold
-const MAT_NAMES = ['sand', 'dirt', 'rock', 'water'];
+const MAT_NAMES = [
+  'sand', 'dirt', 'rock', 'water',
+  'fine dirt', 'mud', 'hard dirt', 'fine mud',
+  'stone dust', 'stone mud', 'brittle stone',
+  'clay', 'clay mud', 'hard clay',
+];
 
 const shovel = {
   on: false,
@@ -3588,31 +3532,51 @@ refreshModeUI();
 //
 // A read-out of what the world is made of, one row per entry in TERRAIN_MATS.
 // The swatches are read straight off those materials rather than repeated as
-// literals here, so a colour only ever has to change in one place. The stats are
-// placeholders: nothing in the game has hardness or durability yet, and the
-// panel exists so there is somewhere for them to land when it does.
+// literals here, so a colour only ever has to change in one place.
+//
+// The numbers are the material's own properties, indexed by material id and not
+// yet read by anything that simulates: weight is how much a block of it drags on
+// you, buoyancy how much the water pushes it back up, strength how much work it
+// takes to break out of the ground. Water is the one entry with none — it is a
+// block in the store but it is not a thing you can carry.
 // ---------------------------------------------------------------------------
-const MAT_LABELS = ['Sand', 'Dirt', 'Rock', 'Water'];
-// Per material, the placeholder rows under its name. The same shape the real
-// stats will have, so filling them in later is a data change and not a layout one.
 const MAT_STATS = [
-  ['Hardness: --', 'Durability: --'],
-  ['Hardness: --', 'Durability: --'],
-  ['Hardness: --', 'Durability: --'],
-  ['Hardness: --', 'Durability: --'],
+  { name: 'Sand',          weight: 1,   buoyancy: 0, strength: 1 },    // SAND
+  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1 },    // DIRT
+  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7 },    // ROCK
+  null,                                                                // WATER
+  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5 },  // FINE_DIRT
+  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3 },  // MUD
+  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2 },    // HARD_DIRT
+  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5 },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1 },    // STONE_DUST
+  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5 },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2 },    // BRITTLE_STONE
+  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2 },  // CLAY
+  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5 },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5 },  // HARD_CLAY
 ];
 
 const materialsEl  = document.getElementById('materials-ui');
 const materialsBtn = document.getElementById('btn-materials');
 
+// Title-cased from MAT_NAMES for the one material with no stats row to name it.
+const titleCase = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
+
 document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
   // getHexString() converts the linear-space colour back to the sRGB the browser
   // wants, so the swatch matches what the cubes actually render as.
   const hex = '#' + m.color.getHexString();
-  const stats = (MAT_STATS[i] || []).map((t) => `<span>${t}</span>`).join('');
+  const st = MAT_STATS[i];
+  const name = st ? st.name : titleCase(MAT_NAMES[i]);
+  // Two lines rather than three: at fourteen rows the panel is already taller
+  // than a phone screen, and weight and buoyancy are the pair you read together.
+  const stats = st
+    ? `<span>Wt ${st.weight} &middot; Buoy ${st.buoyancy}</span><span>Str ${st.strength}</span>`
+    : '<span>no stats &mdash; not carryable</span>';
   return '<div class="mat-row">'
        + `<div class="mat-sw" style="background:${hex}"></div>`
-       + `<div class="mat-txt"><b>${MAT_LABELS[i] || MAT_NAMES[i]}</b>${stats}</div>`
+       + `<div class="mat-txt"><b>${name}</b>${stats}</div>`
        + '</div>';
 }).join('');
 
@@ -3784,440 +3748,6 @@ function tick() {
   renderer.render(scene, camera);
 }
 
-// ---------------------------------------------------------------------------
-// 2D Debug View — terrain smoothing cross-section
-// ---------------------------------------------------------------------------
-(function() {
-  const D2D_COLS = 40, D2D_ROWS = 16;
-  const CELL_PX = 40; // logical CSS pixels per block — large enough to tap on iPhone
-  const CV_W = D2D_COLS * CELL_PX, CV_H = D2D_ROWS * CELL_PX;
-  const CELL_W = CV_W / D2D_COLS, CELL_H = CV_H / D2D_ROWS;
-  // Block materials: 0=air, 1=rock, 2=dirt, 3=grass (top)
-  const D2D_AIR = 0, D2D_ROCK = 1, D2D_DIRT = 2, D2D_GRASS = 3;
-  const D2D_COLORS = ['', '#6a6e78', '#8b6b3d', '#5a8a3c'];
-
-  // 1D grid — each cell is a material (0 = empty)
-  const d2dGrid = new Uint8Array(D2D_COLS * D2D_ROWS);
-
-  // Seed some initial terrain
-  function d2dSeedTerrain() {
-    d2dGrid.fill(0);
-    const profile = [2, 4, 6, 7, 9, 11, 12, 13, 14, 14, 14, 13, 12, 10, 9, 8,
-                     7, 7, 8, 9, 10, 11, 12, 13, 13, 12, 11, 10, 8, 6, 5, 4,
-                     3, 3, 4, 5, 6, 7, 8, 9];
-    for (let x = 0; x < D2D_COLS; x++) {
-      const h = Math.min(profile[x] || 0, D2D_ROWS);
-      for (let y = 0; y < h; y++) {
-        const row = D2D_ROWS - 1 - y;
-        if (y === h - 1) d2dGrid[row * D2D_COLS + x] = D2D_GRASS;
-        else if (y < 3) d2dGrid[row * D2D_COLS + x] = D2D_DIRT;
-        else d2dGrid[row * D2D_COLS + x] = D2D_ROCK;
-      }
-    }
-  }
-  d2dSeedTerrain();
-
-  // Get column surface height — the elevation of the topmost filled cell,
-  // not a count of filled cells. A column can have gaps below its top block
-  // (from toggling), so counting would collapse an overhang onto the column
-  // beneath it instead of tracing the actual block face at its real height.
-  function d2dColHeight(x) {
-    for (let y = 0; y < D2D_ROWS; y++) {
-      if (d2dGrid[y * D2D_COLS + x] !== D2D_AIR) return D2D_ROWS - y;
-    }
-    return 0;
-  }
-
-  // Fillet radius, in grid units — each column is one block wide (1 grid
-  // unit), so BLOCK/2 (half a block) is 0.5 here.
-  const D2D_FILLET_R = 0.5;
-  const D2D_ARC_STEPS = 8; // line segments used to approximate each quarter-circle
-
-  // Is the unit cell at (x, h) solid? h < 0 reads as bedrock — infinite fill
-  // below the visible grid, so a grounded column's bottom face never counts
-  // as exposed, while an empty column still reads as resting on h=0 (its
-  // "floor" is exposed). h >= D2D_ROWS reads as open sky (always empty); x
-  // outside the grid reads as empty too, which is what lets the boundary
-  // walk stop at the viewport edges instead of drawing a wall there.
-  function d2dFilled(x, h) {
-    if (h < 0) return true;
-    if (h >= D2D_ROWS || x < 0 || x >= D2D_COLS) return false;
-    return d2dGrid[(D2D_ROWS - 1 - h) * D2D_COLS + x] !== D2D_AIR;
-  }
-
-  // Collect every exposed unit-length face of the block mass as a directed
-  // edge, oriented so consecutive exposed faces chain head-to-tail into a
-  // walkable outline: left faces go up, top faces go right, right faces go
-  // down, bottom faces (undersides — including a floating block's own
-  // belly) go left. Empty columns also contribute a synthetic ground-level
-  // edge so the outline reads as a continuous baseline where nothing is
-  // built, instead of just vanishing.
-  function d2dCollectEdges() {
-    const edges = [];
-    for (let x = 0; x < D2D_COLS; x++) {
-      for (let h = 0; h < D2D_ROWS; h++) {
-        if (!d2dFilled(x, h)) continue;
-        if (x > 0 && !d2dFilled(x - 1, h)) edges.push([x, h, x, h + 1]);
-        if (x < D2D_COLS - 1 && !d2dFilled(x + 1, h)) edges.push([x + 1, h + 1, x + 1, h]);
-        if (!d2dFilled(x, h + 1)) edges.push([x, h + 1, x + 1, h + 1]);
-        if (!d2dFilled(x, h - 1)) edges.push([x + 1, h, x, h]);
-      }
-      if (!d2dFilled(x, 0)) edges.push([x, 0, x + 1, 0]);
-    }
-    return edges;
-  }
-
-  // Stitch exposed edges into polylines by chaining each edge's end point to
-  // the next edge that starts there. A chain that starts at a point nothing
-  // else ends at is open — it runs off the left/right viewport edge.
-  // Everything left over closes back on itself — a block with no connection
-  // to the ground (floating, or undercut all the way through).
-  function d2dChainEdges(edges) {
-    const byStart = new Map(), byEnd = new Map();
-    edges.forEach((e, i) => {
-      const sk = e[0] + ',' + e[1], ek = e[2] + ',' + e[3];
-      if (!byStart.has(sk)) byStart.set(sk, []);
-      byStart.get(sk).push(i);
-      if (!byEnd.has(ek)) byEnd.set(ek, []);
-      byEnd.get(ek).push(i);
-    });
-    const used = new Array(edges.length).fill(false);
-    function walk(startIdx) {
-      const pts = [];
-      let cur = startIdx;
-      while (cur !== undefined && !used[cur]) {
-        used[cur] = true;
-        const e = edges[cur];
-        if (pts.length === 0) pts.push({ x: e[0], y: e[1] });
-        pts.push({ x: e[2], y: e[3] });
-        const cands = byStart.get(e[2] + ',' + e[3]);
-        cur = cands ? cands.find((idx) => !used[idx]) : undefined;
-      }
-      return pts;
-    }
-    const polylines = [];
-    for (let i = 0; i < edges.length; i++) {
-      if (used[i]) continue;
-      const sk = edges[i][0] + ',' + edges[i][1];
-      if (!byEnd.has(sk)) polylines.push({ pts: walk(i), closed: false });
-    }
-    for (let i = 0; i < edges.length; i++) {
-      if (used[i]) continue;
-      polylines.push({ pts: walk(i), closed: true });
-    }
-    return polylines;
-  }
-
-  // Drop grid-resolution points that just continue in a straight line,
-  // leaving only the real corners so the fillet pass below has genuine 90°
-  // joints to round off (generalises the old flush-run collapsing from a
-  // single top profile to a full outline).
-  function d2dSimplify(pts, closed) {
-    const n = closed ? pts.length - 1 : pts.length;
-    if (n < 3) return pts.slice();
-    const keep = [];
-    const start = closed ? 0 : 1;
-    const end = closed ? n : n - 1;
-    for (let i = start; i < end; i++) {
-      const A = pts[(i - 1 + n) % n], B = pts[i % n], C = pts[(i + 1) % n];
-      const collinear = (A.x === B.x && B.x === C.x) || (A.y === B.y && B.y === C.y);
-      if (!collinear) keep.push(B);
-    }
-    if (closed) {
-      if (keep.length === 0) return [pts[0]];
-      keep.push(keep[0]);
-      return keep;
-    }
-    return [pts[0], ...keep, pts[n - 1]];
-  }
-
-  // Round the 90° corner A->B->C (one leg horizontal, one vertical) into a
-  // circular arc of radius r tangent to both legs, and return its sample
-  // points from the horizontal-leg side through to the vertical-leg side.
-  function d2dFilletCorner(A, B, C, r) {
-    const abHoriz = A.y === B.y;
-    const p1 = abHoriz
-      ? { x: B.x - r * Math.sign(B.x - A.x), y: B.y }
-      : { x: B.x, y: B.y - r * Math.sign(B.y - A.y) };
-    const p2 = abHoriz
-      ? { x: B.x, y: B.y + r * Math.sign(C.y - B.y) }
-      : { x: B.x + r * Math.sign(C.x - B.x), y: B.y };
-    const center = abHoriz ? { x: p1.x, y: p2.y } : { x: p2.x, y: p1.y };
-    const a1 = Math.atan2(p1.y - center.y, p1.x - center.x);
-    let a2 = Math.atan2(p2.y - center.y, p2.x - center.x);
-    let delta = a2 - a1;
-    if (delta > Math.PI) delta -= Math.PI * 2;   // always take the 90° way
-    if (delta < -Math.PI) delta += Math.PI * 2;  // around, never the 270° one
-    const pts = [];
-    for (let i = 0; i <= D2D_ARC_STEPS; i++) {
-      const a = a1 + delta * (i / D2D_ARC_STEPS);
-      pts.push({ x: center.x + r * Math.cos(a), y: center.y + r * Math.sin(a) });
-    }
-    return pts;
-  }
-
-  // Round every corner of a simplified polyline. Open chains leave their two
-  // viewport-edge endpoints sharp (there's no second leg to blend into);
-  // closed loops round every vertex, including the wrap-around seam.
-  function d2dFilletPolyline(verts, closed) {
-    const poly = [];
-    if (closed) {
-      const n = verts.length - 1;
-      for (let i = 0; i < n; i++) {
-        const A = verts[(i - 1 + n) % n], B = verts[i], C = verts[(i + 1) % n];
-        const legAB = Math.hypot(B.x - A.x, B.y - A.y);
-        const legBC = Math.hypot(C.x - B.x, C.y - B.y);
-        const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
-        for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
-      }
-      if (poly.length) poly.push(poly[0]);
-    } else {
-      poly.push(verts[0]);
-      for (let k = 1; k < verts.length - 1; k++) {
-        const A = verts[k - 1], B = verts[k], C = verts[k + 1];
-        const legAB = Math.hypot(B.x - A.x, B.y - A.y);
-        const legBC = Math.hypot(C.x - B.x, C.y - B.y);
-        // Block-quantised geometry means every leg is >= 1 grid unit long, so
-        // this clamp only ever matters at the boundary (r === 0.5) — it just
-        // guards against two corners on the same short leg ever overlapping.
-        const r = Math.min(D2D_FILLET_R, legAB / 2, legBC / 2);
-        for (const p of d2dFilletCorner(A, B, C, r)) poly.push(p);
-      }
-      poly.push(verts[verts.length - 1]);
-    }
-    return poly;
-  }
-
-  // Compute the smooth surface as a list of polylines, each an array of flat
-  // (screenX, screenY) pairs: walk every exposed block face into a
-  // grid-resolution outline, collapse it to its real corners, then replace
-  // every corner with a filleted arc. Most terrain comes back as one
-  // continuous chain from the left viewport edge to the right, tracing tops,
-  // side faces, and — wherever a block overhangs empty space — its
-  // underside too. A block with no connection to the ground at all (fully
-  // floating, or undercut clean through) comes back as its own closed loop.
-  function d2dSmoothLine() {
-    const polylines = d2dChainEdges(d2dCollectEdges());
-    const out = [];
-    for (const { pts, closed } of polylines) {
-      if (pts.length < 2) continue;
-      const simplified = d2dSimplify(pts, closed);
-      const filleted = d2dFilletPolyline(simplified, closed);
-      const flat = [];
-      for (const p of filleted) flat.push(p.x * CELL_W, (D2D_ROWS - p.y) * CELL_H);
-      out.push(flat);
-    }
-    return out;
-  }
-
-  // Tap-flash state
-  let d2dFlashX = -1, d2dFlashY = -1, d2dFlashT = 0;
-  const D2D_FLASH_MS = 350;
-
-  // Drawing — retina-sharp canvas
-  const cv = document.getElementById('debug2d-cv');
-  const ctx = cv.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
-  cv.width  = CV_W * dpr;
-  cv.height = CV_H * dpr;
-  cv.style.width  = CV_W + 'px';
-  cv.style.height = CV_H + 'px';
-  ctx.scale(dpr, dpr);
-
-  function d2dDraw() {
-    ctx.clearRect(0, 0, CV_W, CV_H);
-    // Background
-    ctx.fillStyle = '#0d1522';
-    ctx.fillRect(0, 0, CV_W, CV_H);
-
-    // Draw blocks
-    for (let x = 0; x < D2D_COLS; x++) {
-      for (let y = 0; y < D2D_ROWS; y++) {
-        const mat = d2dGrid[y * D2D_COLS + x];
-        if (mat === D2D_AIR) continue;
-        const px = x * CELL_W, py = y * CELL_H;
-        // Slight gap between blocks for clarity
-        ctx.fillStyle = D2D_COLORS[mat];
-        ctx.fillRect(px + 0.5, py + 0.5, CELL_W - 1, CELL_H - 1);
-        // Highlight top edge of grass
-        if (mat === D2D_GRASS) {
-          ctx.fillStyle = '#7cb342';
-          ctx.fillRect(px + 0.5, py + 0.5, CELL_W - 1, 3);
-        }
-      }
-    }
-
-    // Draw grid lines (subtle)
-    ctx.strokeStyle = 'rgba(100, 140, 190, 0.08)';
-    ctx.lineWidth = 0.5;
-    for (let x = 0; x <= D2D_COLS; x++) {
-      ctx.beginPath();
-      ctx.moveTo(x * CELL_W, 0);
-      ctx.lineTo(x * CELL_W, CV_H);
-      ctx.stroke();
-    }
-    for (let y = 0; y <= D2D_ROWS; y++) {
-      ctx.beginPath();
-      ctx.moveTo(0, y * CELL_H);
-      ctx.lineTo(CV_W, y * CELL_H);
-      ctx.stroke();
-    }
-
-    // Draw the smooth surface line(s) — thick and glowing. Most terrain is
-    // one polyline; a floating or fully-undercut block adds its own closed
-    // loop alongside it.
-    const polylines = d2dSmoothLine();
-    ctx.strokeStyle = '#2a8ed8';
-    ctx.lineWidth = 6;
-    ctx.shadowColor = 'rgba(42, 142, 216, 0.65)';
-    ctx.shadowBlur = 14;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    for (const pts of polylines) {
-      if (pts.length < 4) continue;
-      ctx.beginPath();
-      ctx.moveTo(pts[0], pts[1]);
-      for (let i = 2; i < pts.length; i += 2) {
-        ctx.lineTo(pts[i], pts[i + 1]);
-      }
-      ctx.stroke();
-    }
-    ctx.shadowBlur = 0;
-
-    // Draw column center dots (where the smooth samples are)
-    ctx.fillStyle = 'rgba(42, 142, 216, 0.6)';
-    for (let x = 0; x < D2D_COLS; x++) {
-      const h = d2dColHeight(x);
-      const cx = (x + 0.5) * CELL_W;
-      const cy = (D2D_ROWS - h) * CELL_H;
-      ctx.beginPath();
-      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Tap-flash highlight
-    if (d2dFlashX >= 0 && performance.now() - d2dFlashT < D2D_FLASH_MS) {
-      const alpha = 1 - (performance.now() - d2dFlashT) / D2D_FLASH_MS;
-      ctx.fillStyle = 'rgba(255, 255, 120, ' + (0.55 * alpha).toFixed(3) + ')';
-      ctx.fillRect(d2dFlashX * CELL_W, d2dFlashY * CELL_H, CELL_W, CELL_H);
-      ctx.strokeStyle = 'rgba(255, 255, 200, ' + (0.8 * alpha).toFixed(3) + ')';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(d2dFlashX * CELL_W + 1, d2dFlashY * CELL_H + 1, CELL_W - 2, CELL_H - 2);
-      requestAnimationFrame(d2dDraw);
-    }
-  }
-
-  // Click/tap to toggle blocks
-  function d2dToggle(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = cv.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-    const scale = CV_W / rect.width;
-    const gx = Math.floor((mx * scale) / CELL_W);
-    const gy = Math.floor((my * scale) / CELL_H);
-    if (gx < 0 || gx >= D2D_COLS || gy < 0 || gy >= D2D_ROWS) return;
-    const idx = gy * D2D_COLS + gx;
-    if (d2dGrid[idx] !== D2D_AIR) {
-      d2dGrid[idx] = D2D_AIR;
-    } else {
-      // Place the appropriate material: grass if top of column, dirt if near top, rock below
-      let topY = D2D_ROWS;
-      for (let y = 0; y < D2D_ROWS; y++) {
-        if (d2dGrid[y * D2D_COLS + gx] !== D2D_AIR) { topY = y; break; }
-      }
-      const distFromTop = topY - gy;
-      if (topY === D2D_ROWS) {
-        // Empty column — place rock
-        d2dGrid[idx] = D2D_ROCK;
-      } else if (gy === topY) {
-        // Just above existing blocks — place grass
-        d2dGrid[idx] = D2D_GRASS;
-      } else if (distFromTop <= 2) {
-        d2dGrid[idx] = D2D_DIRT;
-      } else {
-        d2dGrid[idx] = D2D_ROCK;
-      }
-    }
-    d2dFlashX = gx;
-    d2dFlashY = gy;
-    d2dFlashT = performance.now();
-    d2dDraw();
-  }
-
-  // A tap toggles a block; a drag pans the (wider-than-viewport) canvas via the
-  // panel's native scroll. iOS fires a synthetic click after touchend, so — as
-  // with bindTap below — pointer events are the single source of truth and
-  // click is never wired up on the canvas at all. Movement past a few pixels
-  // means the finger was panning, not tapping, so only a still pointerup fires
-  // d2dToggle.
-  const D2D_TAP_MOVE_PX = 10;
-  let d2dPtrStart = null;
-  let d2dPtrMoved = false;
-  cv.addEventListener('pointerdown', (e) => {
-    d2dPtrStart = { x: e.clientX, y: e.clientY };
-    d2dPtrMoved = false;
-  });
-  cv.addEventListener('pointermove', (e) => {
-    if (!d2dPtrStart) return;
-    const dx = e.clientX - d2dPtrStart.x, dy = e.clientY - d2dPtrStart.y;
-    if (Math.hypot(dx, dy) > D2D_TAP_MOVE_PX) d2dPtrMoved = true;
-  });
-  cv.addEventListener('pointerup', (e) => {
-    if (d2dPtrStart && !d2dPtrMoved) d2dToggle(e);
-    d2dPtrStart = null;
-  });
-  cv.addEventListener('pointercancel', () => { d2dPtrStart = null; });
-
-  // Toggle the debug view
-  const wrap = document.getElementById('debug2d-wrap');
-  const closeBtn = document.getElementById('debug2d-close');
-  const debugBtn = document.getElementById('btn-debug2d');
-  let debug2dOpen = false;
-
-  function toggleDebug2d() {
-    debug2dOpen = !debug2dOpen;
-    wrap.classList.toggle('on', debug2dOpen);
-    debugBtn.classList.toggle('on', debug2dOpen);
-    if (debug2dOpen) d2dDraw();
-  }
-
-  // Guard against iOS double-fire: a single tap fires both touchend and click.
-  // Once pointerdown is seen, ignore the synthetic click that follows.
-  let _d2dSawPointer = false;
-  function bindDebugTap(el) {
-    el.addEventListener('pointerdown', (e) => {
-      _d2dSawPointer = true;
-      e.preventDefault();
-      e.stopPropagation();
-      toggleDebug2d();
-    });
-    el.addEventListener('click', (e) => {
-      if (_d2dSawPointer) { _d2dSawPointer = false; e.preventDefault(); e.stopPropagation(); return; }
-      e.stopPropagation();
-      toggleDebug2d();
-    });
-    // Stop touch events from bubbling to canvas/overlay handlers
-    el.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
-    el.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
-  }
-
-  bindDebugTap(closeBtn);
-  bindDebugTap(debugBtn);
-
-  // Expose for the keyboard handler
-  window._toggleDebug2d = toggleDebug2d;
-  window._debug2dIsOpen = () => debug2dOpen;
-
-  // Also allow 'P' key to toggle
-  document.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyP' && !typing(e)) {
-      toggleDebug2d();
-    }
-  }, { passive: true });
-})();
-
 // Debug handle — handy from the console / remote inspector on a phone.
 window.hermes = {
   THREE, CANNON, scene, camera, renderer, state, keys, world, playerBody,
@@ -4240,10 +3770,12 @@ window.hermes = {
   shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,
   // The voxel store — the material of every block in the volume, not just the
   // surface, which is what a digging system would work against. voxelAtWorld
-  // takes metres; the rest take column indices and levels. SAND/DIRT/ROCK/WATER
-  // and AIR are the material values. Editing through setVoxel changes what the
+  // takes metres; the rest take column indices and levels. The MAT_STATS ids and
+  // AIR are the material values. Editing through setVoxel changes what the
   // world *is* but not what is drawn: the meshes and the collider are baked.
   SAND, DIRT, ROCK, WATER, AIR, SEA_LVL, VOX_FLOOR, SOIL_DEPTH, voxCount,
+  FINE_DIRT, MUD, HARD_DIRT, FINE_MUD, STONE_DUST, STONE_MUD, BRITTLE_STONE,
+  CLAY, CLAY_MUD, HARD_CLAY, MAT_NAMES, MAT_STATS,
   voxelAt, voxelAtWorld, voxelColumn, setVoxel, solidTopAt,
   colI, colJ, colX, colZ, lvlOfY,
   // The island is bare by design — these are how you put something on it from

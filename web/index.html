@@ -3250,6 +3250,7 @@ const shovel = {
   held: [],       // materials, last in first out — you put back what you just took
   hit: null,      // {i, j, lvl} the block being looked at, or null
   spot: null,     // {i, j, lvl} the empty cell a placed block would go into
+  debris: null,   // {mesh, i, j, lvl} a loose fallen piece being looked at instead
 };
 
 // ----- the ray -----
@@ -3303,11 +3304,28 @@ function spotBlocked(i, j, lvl) {
 
 const aimDir = new THREE.Vector3();
 
+// The cell a world point falls in. Rubble lies wherever the physics dropped it,
+// off the grid and at any angle, so a place against it has to be snapped back.
+const cellOf = (x, y, z) => ({ i: colI(x), j: colJ(z), lvl: Math.floor(y / BLOCK) });
+
+// Fallen pieces are meshes, not store entries, so the DDA cannot see them at
+// all — they get their own raycast.
+const debrisRay = new THREE.Raycaster();
+const debrisOrigin = new THREE.Vector3();
+function debrisAim(ox, oy, oz) {
+  if (debris.children.length === 0) return null;
+  debrisRay.set(debrisOrigin.set(ox, oy, oz), aimDir);
+  debrisRay.far = SHOVEL_REACH;
+  const hits = debrisRay.intersectObjects(debris.children, false);
+  return hits.length ? hits[0] : null;
+}
+
 // Refresh what the tool is pointing at. Runs every frame while the shovel is out
 // so the highlight boxes and the two buttons are always telling the truth.
 function shovelAim() {
   shovel.hit = null;
   shovel.spot = null;
+  shovel.debris = null;
   if (!shovel.on) return;
 
   camera.getWorldDirection(aimDir);
@@ -3321,9 +3339,21 @@ function shovelAim() {
     ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
   }
 
-  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, SHOVEL_REACH)) {
+  // Whichever surface is nearer wins: the voxel ray is only let through as far
+  // as the piece of rubble in front of it.
+  const dHit = debrisAim(ox, oy, oz);
+  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
     shovel.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
     shovel.spot = { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl };
+  } else if (dHit) {
+    // Looking at a fallen piece. Digging takes the whole piece away; a place
+    // lands in the grid cell just this side of the face you can see, so the new
+    // block sits against the rubble rather than inside it.
+    const p = dHit.point;
+    shovel.debris = Object.assign({ mesh: dHit.object }, cellOf(p.x, p.y, p.z));
+    shovel.spot = cellOf(p.x - aimDir.x * HALF_BLOCK,
+                         p.y - aimDir.y * HALF_BLOCK,
+                         p.z - aimDir.z * HALF_BLOCK);
   } else if (camMode !== CAM.FREE) {
     // Nothing under the crosshair. Fall back to what you are standing on, and to
     // the ground a stride ahead of you for the other half — looking at the sky
@@ -3482,6 +3512,17 @@ function updateFallingChunks() {
   }
 }
 
+// Digging a loose piece just takes it away. Its blocks were cut out of the store
+// when it broke off, so nothing here is owed back to the world count.
+function removeDebrisMesh(mesh) {
+  const n = fallingChunks.findIndex((f) => f.mesh === mesh);
+  if (n >= 0) restFallingChunk(n);
+  const q = restedChunks.indexOf(mesh);
+  if (q >= 0) restedChunks.splice(q, 1);
+  debris.remove(mesh);
+  mesh.dispose();
+}
+
 function applyGravity(i, j, lvl) {
   // Grow the falling unit outwards from the block left over the hole. A block
   // joins it when it is standing on nothing — on air or water, or on another
@@ -3578,7 +3619,13 @@ function flushDirtyChunks() {
 }
 
 function shovelPickUp() {
-  if (!shovel.on || !shovel.hit || shovel.held.length >= SHOVEL_CAP) return false;
+  if (!shovel.on) return false;
+  if (shovel.debris) {          // rubble comes away whole, and not into your hands
+    removeDebrisMesh(shovel.debris.mesh);
+    shovel.debris = null;
+    return true;
+  }
+  if (!shovel.hit || shovel.held.length >= SHOVEL_CAP) return false;
   const { i, j, lvl } = shovel.hit;
   const m = voxelAt(i, j, lvl);
   if (m === AIR) return false;
@@ -3640,11 +3687,11 @@ function refreshShovelUI() {
 // the buttons grey out when the move they offer is not a legal one.
 function updateShovel() {
   shovelAim();
-  const canPick = !!shovel.hit && shovel.held.length < SHOVEL_CAP;
+  const canPick = shovel.debris ? true : (!!shovel.hit && shovel.held.length < SHOVEL_CAP);
   const canPlace = !!shovel.spot && shovel.held.length > 0;
   hlPick.visible  = shovel.on && canPick;
   hlPlace.visible = shovel.on && canPlace;
-  if (hlPick.visible)  cellCenter(shovel.hit, hlPick.position);
+  if (hlPick.visible)  cellCenter(shovel.debris || shovel.hit, hlPick.position);
   if (hlPlace.visible) cellCenter(shovel.spot, hlPlace.position);
   pickBtn.classList.toggle('dim', !canPick);
   placeBtn.classList.toggle('dim', !canPlace);

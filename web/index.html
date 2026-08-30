@@ -3600,23 +3600,14 @@ function rebuildDebrisBody(mesh, body) {
   body.wakeUp();
 }
 
-// Digging a loose piece takes off the one block under the crosshair and leaves
-// the rest of it standing. The piece's own blocks are instances of its mesh and
-// sit at the front of the lattice array, in step with the instance buffer;
-// anything placed on it since hangs off it as a child mesh. Dig the last block
-// out and the piece goes with it.
-function digDebrisBlock(mesh, inst, child) {
+// Take block `q` off a piece. A placed block is a child mesh; one of the piece's
+// own is an instance, and those sit at the front of the lattice in step with the
+// instance buffer, so the gap behind it has to be closed and one fewer drawn.
+function cutDebrisLat(mesh, q) {
   const lat = mesh.userData.blocks;
-  let q = -1;
-  if (child) q = lat.findIndex((b) => b.child === child);
-  else if (inst >= 0 && inst < mesh.count) q = inst;
-  if (q < 0) return false;
-
   if (lat[q].child) {
     mesh.remove(lat[q].child);
   } else {
-    // Close the gap in the instance buffers and draw one fewer, so the piece's
-    // own blocks stay the first `count` entries of the lattice.
     const m4 = new THREE.Matrix4(), col = new THREE.Color();
     for (let k = q + 1; k < mesh.count; k++) {
       mesh.getMatrixAt(k, m4); mesh.setMatrixAt(k - 1, m4);
@@ -3627,9 +3618,126 @@ function digDebrisBlock(mesh, inst, child) {
     mesh.instanceColor.needsUpdate = true;
   }
   lat.splice(q, 1);
+}
 
+// A part cut off an existing piece, spawned as a piece of its own. It is built
+// in the parent's frame rather than the world's — re-centred on its own blocks,
+// turned to the parent's tilt — so it comes away sitting exactly where it was
+// drawn, and it starts with the parent's motion at that point so the two parts
+// drift apart instead of springing.
+const partQuat = new THREE.Quaternion();
+function spawnDebrisPart(parent, blocks, pbody) {
+  const n = blocks.length, h = HALF_BLOCK;
+  parent.updateWorldMatrix(true, false);
+  const c = new THREE.Vector3();
+  for (const b of blocks) c.add(b.pos);
+  c.multiplyScalar(1 / n);
+
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
+  const m4 = new THREE.Matrix4(), col = new THREE.Color();
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  mesh.userData.blocks = blocks.map((b, q) => {
+    const p = b.pos.clone().sub(c);
+    m4.makeTranslation(p.x, p.y, p.z);
+    mesh.setMatrixAt(q, m4);
+    mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.mat].color));
+    if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+    if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+    if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
+    return { pos: p, mat: b.mat };
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor.needsUpdate = true;
+  mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  debris.add(mesh);
+
+  const body = new CANNON.Body({
+    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    material: physDebris,
+    linearDamping: 0.02,
+    angularDamping: 0.15,
+    collisionFilterGroup: DEBRIS_GROUP,
+    collisionFilterMask: -1,
+  });
+  if (mesh.userData.perBlock) {
+    for (const b of mesh.userData.blocks) {
+      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+                    new CANNON.Vec3(b.pos.x, b.pos.y, b.pos.z));
+    }
+  } else {
+    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
+                  new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
+  }
+  const w = c.applyMatrix4(parent.matrixWorld);
+  body.position.set(w.x, w.y, w.z);
+  parent.getWorldQuaternion(partQuat);
+  body.quaternion.set(partQuat.x, partQuat.y, partQuat.z, partQuat.w);
+  if (pbody) {
+    // v + w x r: the parent's velocity where this part of it was.
+    const r = new CANNON.Vec3(w.x - pbody.position.x, w.y - pbody.position.y, w.z - pbody.position.z);
+    pbody.angularVelocity.cross(r, r);
+    body.velocity.set(pbody.velocity.x + r.x, pbody.velocity.y + r.y, pbody.velocity.z + r.z);
+    body.angularVelocity.copy(pbody.angularVelocity);
+  }
+  body.angularVelocity.x += (Math.random() - 0.5) * 0.4;
+  body.angularVelocity.y += (Math.random() - 0.5) * 0.2;
+  body.angularVelocity.z += (Math.random() - 0.5) * 0.4;
+
+  while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
+  linkBody(mesh, body);
+  fallingChunks.push({ mesh, body, still: 0 });
+}
+
+// Digging a loose piece takes off the one block under the crosshair and leaves
+// the rest of it standing. Dig the last block out and the piece goes with it;
+// dig one out of the middle and what is left may be two pieces, in which case
+// the biggest part keeps the mesh and the rest are spawned on their own.
+function digDebrisBlock(mesh, inst, child) {
+  const lat = mesh.userData.blocks;
+  let q = -1;
+  if (child) q = lat.findIndex((b) => b.child === child);
+  else if (inst >= 0 && inst < mesh.count) q = inst;
+  if (q < 0) return false;
+
+  cutDebrisLat(mesh, q);
   if (!lat.length) { removeDebrisMesh(mesh); return true; }   // nothing left of it
   const f = chunkOfMesh(mesh);
+
+  // What is left, walked by its faces. The lattice is the piece's own grid, so
+  // cells are counted off its first block: neighbours are one step apart in one
+  // axis, however the piece is lying.
+  const a0 = lat[0].pos;
+  const cellKey = (p) => Math.round((p.x - a0.x) / BLOCK) + ',' + Math.round((p.y - a0.y) / BLOCK)
+                                                         + ',' + Math.round((p.z - a0.z) / BLOCK);
+  const at = new Map();
+  lat.forEach((b, k) => at.set(cellKey(b.pos), k));
+  const seen = new Array(lat.length).fill(false), groups = [], v = new THREE.Vector3();
+  for (let s = 0; s < lat.length; s++) {
+    if (seen[s]) continue;
+    seen[s] = true;
+    const g = [s], stack = [s];
+    while (stack.length) {
+      const p = lat[stack.pop()].pos;
+      for (const [dx, dz, dy] of GRAV_DIRS) {    // the six face neighbours
+        v.set(p.x + dx * BLOCK, p.y + dy * BLOCK, p.z + dz * BLOCK);
+        const k = at.get(cellKey(v));
+        if (k === undefined || seen[k]) continue;
+        seen[k] = true; g.push(k); stack.push(k);
+      }
+    }
+    groups.push(g);
+  }
+
+  if (groups.length > 1) {
+    groups.sort((g1, g2) => g2.length - g1.length);   // the biggest stays put
+    const parts = groups.slice(1).map((g) => g.map((k) => lat[k]));
+    // Off the back, so the earlier indices are still the ones they were.
+    for (const k of groups.slice(1).flat().sort((x, y) => y - x)) cutDebrisLat(mesh, k);
+    for (const blocks of parts) spawnDebrisPart(mesh, blocks, f && f.body);
+  }
+
   if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }    // lighter, and disturbed
   return true;
 }

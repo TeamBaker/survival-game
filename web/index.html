@@ -3625,7 +3625,12 @@ function shedPowder() {
         const nx = b.pos.x + dx, ny = b.pos.y + dy, nz = b.pos.z + dz;
         if (lat.some((u) => Math.abs(u.pos.x - nx) < 0.01 && Math.abs(u.pos.y - ny) < 0.01
                                                           && Math.abs(u.pos.z - nz) < 0.01)) continue;
-        powderFalling.push({ pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh });
+        const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
+        g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[b.mat]);   // boxGeo is a unit cube: scale it to block size
+        g.mesh.scale.setScalar(BLOCK);
+        g.mesh.position.copy(g.pos);
+        scene.add(g.mesh);
+        powderFalling.push(g);
         cutDebrisLat(mesh, q);   // the same gap-close a dig does
         cut = true;
       }
@@ -3643,12 +3648,14 @@ function catchPowder(dt) {
     const p = powderFalling[n];
     p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
     p.pos.y -= p.v * dt;
-    if (p.pos.y < FALL_KILL_Y) { powderFalling.splice(n, 1); continue; }
+    if (p.mesh) p.mesh.position.copy(p.pos);
+    if (p.pos.y < FALL_KILL_Y) { if (p.mesh) scene.remove(p.mesh); powderFalling.splice(n, 1); continue; }
     if (voxelAtWorld(p.pos.x, p.pos.y, p.pos.z) !== AIR) {
       const i = colI(p.pos.x), j = colJ(p.pos.z);
       let lvl = lvlOfY(p.pos.y);
       while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) lvl++;   // the first free cell over what it hit
       if (inVoxelRange(i, j, lvl)) editBlock(i, j, lvl, p.mat);
+      if (p.mesh) scene.remove(p.mesh);
       powderFalling.splice(n, 1);
       continue;
     }
@@ -3667,6 +3674,7 @@ function catchPowder(dt) {
       }
       if (!local) continue;
       placeOnDebris(mesh, local, p.mat);
+      if (p.mesh) scene.remove(p.mesh);
       powderFalling.splice(n, 1);
       break;
     }

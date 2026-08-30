@@ -3559,8 +3559,15 @@ function checkTerrainPowder() {
       const m = voxMat[o + lvl];
       if (m === AIR || !MAT_STATS[m]?.powder) continue;
       if (lvl - 1 < VOX_FLOOR || voxMat[o + lvl - 1] !== AIR) continue;
-      const i = c % GEN_N;
-      editBlock(i, (c - i) / GEN_N, lvl, AIR);   // refreshes the faces, and brings down what was above
+      const i = c % GEN_N, j = (c - i) / GEN_N;
+      editBlock(i, j, lvl, AIR);   // refreshes the faces, and brings down what was above
+      // It is not gone, it is falling: hand it to the same grain path the rubble uses.
+      const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
+      g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[m]);   // boxGeo is a unit cube: scale it to block size
+      g.mesh.scale.setScalar(BLOCK);
+      g.mesh.position.copy(g.pos);
+      scene.add(g.mesh);
+      powderFalling.push(g);
       budget--;
     }
   }

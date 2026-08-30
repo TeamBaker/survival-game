@@ -3569,6 +3569,31 @@ function removeDebrisMesh(mesh) {
   mesh.dispose();
 }
 
+// Cannon turns a body about its origin, so a piece's origin has to sit on its
+// centre of mass. Blocks dug off or laid on move that centre: put the lattice,
+// the colliders and the drawn cubes back in step with it, then slide the body
+// the same way in world space so none of it appears to move.
+const debrisCoM = new THREE.Vector3(), debrisArm = new CANNON.Vec3();
+function recentreDebris(mesh, body) {
+  const lat = mesh.userData.blocks;
+  if (!lat.length) return;
+  const c = debrisCoM.set(0, 0, 0);
+  for (const b of lat) c.add(b.pos);
+  c.multiplyScalar(1 / lat.length);
+  if (c.lengthSq() < 1e-12) return;
+  const m4 = new THREE.Matrix4();
+  for (let q = 0; q < lat.length; q++) {
+    lat[q].pos.sub(c);
+    if (lat[q].child) lat[q].child.position.copy(lat[q].pos);
+    else mesh.setMatrixAt(q, m4.makeTranslation(lat[q].pos.x, lat[q].pos.y, lat[q].pos.z));
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
+  body.quaternion.vmult(debrisArm.set(c.x, c.y, c.z), debrisArm);
+  body.position.vadd(debrisArm, body.position);
+  mesh.position.copy(body.position);
+}
+
 // Redo a piece's collider and its weight from the lattice it has left. Runs
 // after a dig: a piece is a few dozen boxes at most, so building the shapes
 // again costs less than trying to patch the ones that are there.
@@ -3593,6 +3618,7 @@ function rebuildDebrisBody(mesh, body) {
     body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
                   new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
   }
+  recentreDebris(mesh, body);
   body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
   body.updateMassProperties();
   body.updateBoundingRadius();
@@ -3798,7 +3824,9 @@ function placeOnDebris(mesh, local, m) {
     body.shapeOffsets[0].set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
     body.updateBoundingRadius();
   }
-  body.mass = Math.min(body.mass + 0.5, FALL_MASS_CAP);
+  recentreDebris(mesh, body);
+  body.updateBoundingRadius();
+  body.mass = Math.min(mesh.userData.blocks.length * 0.5, FALL_MASS_CAP);
   body.updateMassProperties();
   body.updateAABB();
   body.wakeUp();

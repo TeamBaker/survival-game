@@ -3534,42 +3534,6 @@ function spawnFallingChunk(unit) {
   fallingChunks.push({ mesh, body, still: 0 });
 }
 
-// Powder — sand and the like — will not hang in the air. The group walk above
-// only brings down what has lost every path to bedrock, so a powder block left
-// on a ledge that is still joined to the ground stays where it is; this is the
-// pass that catches it, a block at a time. It reads the whole field, so it runs
-// every POWDER_EVERY frames rather than every one, and lets go of at most
-// POWDER_MAX blocks in a pass so a big collapse is spread over several.
-const POWDER_EVERY = 10;   // frames between passes
-const POWDER_MAX   = 64;   // blocks one pass will drop
-let powderTick = 0;
-
-function checkTerrainPowder() {
-  if (++powderTick < POWDER_EVERY) return;
-  powderTick = 0;
-  let budget = POWDER_MAX;
-  for (let k = 0; k < sTop.length && budget > 0; k++) {
-    const top = sTop[k];
-    if (top === NO_COLUMN || top <= VOX_FLOOR) continue;
-    // An untouched column is solid all the way down, so only its top block can
-    // have air under it. A dug one is read down as far as the digging went.
-    let lo = colDug[k] ? Math.min(colDugLo[k], top) : top;
-    if (lo <= VOX_FLOOR) lo = VOX_FLOOR + 1;
-    const o = voxOff[k] - VOX_FLOOR;
-    const i = k % GEN_N, j = (k - i) / GEN_N;
-    for (let lvl = top; lvl >= lo && budget > 0; lvl--) {
-      const m = voxMat[o + lvl];
-      if (m === AIR || !MAT_STATS[m] || !MAT_STATS[m].powder) continue;
-      if (voxMat[o + lvl - 1] !== AIR) continue;
-      // Out of the grid with the housekeeping a dig does, then away as a
-      // one-block piece that the falling-chunk system takes over from here.
-      editBlock(i, j, lvl, AIR);
-      spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m }]]));
-      budget--;
-    }
-  }
-}
-
 // Called once a frame after the step: retire whatever has stopped moving, and
 // drop whatever has fallen out of the world altogether.
 function updateFallingChunks() {
@@ -3986,16 +3950,9 @@ function flushDirtyChunks() {
 function shovelPickUp() {
   if (!shovel.on) return false;
   if (shovel.debris && shovel.debris.blockLocal) {
-    // Rubble comes away a block at a time, and into your hands like any other.
-    // The material has to be read off the piece's lattice before the dig, since
-    // that is what the dig takes the entry out of.
+    // Rubble comes away a block at a time, and not into your hands.
     const d = shovel.debris;
-    const lat = d.mesh.userData.blocks;
-    let mat = -1;
-    if (d.child) { const idx = lat.findIndex((b) => b.child === d.child); if (idx >= 0) mat = lat[idx].mat; }
-    else if (d.inst >= 0 && d.inst < d.mesh.count) mat = lat[d.inst].mat;
     digDebrisBlock(d.mesh, d.inst, d.child);
-    if (mat >= 0 && shovel.held.length < SHOVEL_CAP) { shovel.held.push(mat); refreshShovelUI(); }
     shovel.debris = null;
     return true;
   }
@@ -4376,7 +4333,6 @@ function tick() {
     s.mesh.quaternion.copy(s.body.quaternion);
   }
   updateFallingChunks();
-  checkTerrainPowder();
 
   updateCamera(dt);
   // After the camera, since the aim is taken down the view direction, and before

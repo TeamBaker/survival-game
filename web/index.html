@@ -1318,19 +1318,23 @@ const VOX_FLOOR = Math.round(-24 / BLOCK);  // level -120: bedrock, under the de
 // Levels of empty space allocated on top of every column, so a block can be
 // *put back* somewhere higher than the ground was ever generated. Without this
 // the store has no room above the surface and the shovel could only ever fill in
-// holes it had already dug. Three metres of it: at 20 cm a block the store pays
-// for this on every one of the field's columns, so it buys the stack you would
-// actually build by hand and not a storey more.
-const VOX_HEAD = 15;
+// holes it had already dug. Generous headroom for building: at 20 cm a block
+// that is forty metres over the generated surface, so a tower goes up until you
+// run out of blocks rather than until the store runs out of room.
+const VOX_HEAD = 200;
 // Blocks of surface material before it turns to rock — a metre and a half of
 // soil, so a gentle hillside is dirt the whole way through anything you would dig
 // by hand, and the face of a bluff shows a band of earth over stone rather than
 // one brown pixel.
 const SOIL_DEPTH = 8;
 
-// The highest level column k has storage for — its generated surface plus the
-// headroom. Above this is permanently air and nothing can be placed there.
-const voxCap = (k) => topLvl[k] + VOX_HEAD;
+// The current storage cap for column k — grows when building above it. Every
+// column starts at its generated surface plus the headroom, and a place that
+// lands higher than that grows the column instead of being refused, so a tower
+// goes up until you run out of blocks and not until the store runs out of room.
+const colMaxCap = new Int32Array(GEN_N * GEN_N);
+for (let k = 0; k < GEN_N * GEN_N; k++) colMaxCap[k] = topLvl[k] === NO_COLUMN ? 0 : topLvl[k] + VOX_HEAD;
+const voxCap = (k) => colMaxCap[k];
 
 // Where column k's blocks start in voxMat, or -1 where there is no column.
 const voxOff = new Int32Array(GEN_N * GEN_N).fill(-1);
@@ -1341,13 +1345,13 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   voxCount += voxCap(k) - VOX_FLOOR + 1;
 }
 // voxMat[voxOff[k] + lvl - VOX_FLOOR] is the material of block `lvl` in column k.
-const voxMat = new Uint8Array(voxCount);
+let voxMat = new Uint8Array(voxCount);
 // Whether that block has anything to draw: 1 where at least one of its six
 // faces touches air, 0 where all six touch another block and nothing that drew
 // it could ever be seen. Same indexing as voxMat, and the only thing the mesh
 // builder consults about visibility — which is what keeps the question per
 // block instead of per column, so a dig leaves a wall and not a pillar.
-const blockVisible = new Uint8Array(voxCount);
+let blockVisible = new Uint8Array(voxCount);
 // Solid blocks in the world. The shovel moves blocks between here and the
 // player's hands and never anywhere else, so this plus what is held is an
 // invariant of the whole session.
@@ -1421,6 +1425,16 @@ function inVoxelRange(i, j, lvl) {
   return topLvl[k] !== NO_COLUMN && lvl >= VOX_FLOOR && lvl <= voxCap(k);
 }
 
+// Is (i, j, lvl) somewhere a block can be *put*? The same question without the
+// ceiling: the store grows to meet a write above the cap, so the only limits on
+// building up are the field and the bedrock under it. inVoxelRange still answers
+// for reads and for anything that indexes the store directly, which must not run
+// off the end of a column that has not been grown yet.
+function canBuildAt(i, j, lvl) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return false;
+  return topLvl[j * GEN_N + i] !== NO_COLUMN && lvl >= VOX_FLOOR;
+}
+
 // How many of the six faces of (i, j, lvl) are open — a neighbour that is air,
 // or no neighbour at all because the block sits on the edge of the world. This
 // is the whole of the visibility rule: one open face and the block is drawn,
@@ -1458,13 +1472,46 @@ for (let j = 0; j < GEN_N; j++) {
   }
 }
 
+// Make room over column k up to at least `needLv`. The store is one flat array,
+// so growing a column in the middle of it means rebuilding the array with a gap
+// of air opened at that column's end and every offset after it pushed along —
+// O(columns) for the offsets, which is why the cap doubles rather than growing
+// by the one level asked for. It only ever fires on a place above the cap.
+function growColumn(k, needLv) {
+  const oldCap = colMaxCap[k];
+  const newCap = Math.max(needLv + 1, oldCap * 2);   // double to amortize
+  const growth = newCap - oldCap;
+  const oldEnd = voxOff[k] + oldCap - VOX_FLOOR + 1;
+  const nv = new Uint8Array(voxCount + growth);
+  nv.set(voxMat.subarray(0, oldEnd));                 // everything before the gap
+  nv.fill(AIR, oldEnd, oldEnd + growth);              // the new headroom
+  nv.set(voxMat.subarray(oldEnd), oldEnd + growth);   // everything after
+  // blockVisible shares the indexing, so it takes the same gap in the same place.
+  const nbv = new Uint8Array(voxCount + growth);
+  nbv.set(blockVisible.subarray(0, oldEnd));
+  nbv.fill(0, oldEnd, oldEnd + growth);
+  nbv.set(blockVisible.subarray(oldEnd), oldEnd + growth);
+  for (let c = 0; c < GEN_N * GEN_N; c++) {
+    if (voxOff[c] >= oldEnd) voxOff[c] += growth;
+  }
+  voxMat = nv;
+  blockVisible = nbv;
+  voxCount += growth;
+  colMaxCap[k] = newCap;
+}
+
 // Writing one back. This is the whole of what the shovel needs from the data
 // side; the meshes and the collider are baked, so a caller that changes a block
 // still has to rebuild those before it shows up — editBlock() below does both.
 // Returns what was there.
 function setVoxel(i, j, lvl, m) {
-  if (!inVoxelRange(i, j, lvl)) return AIR;
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
   const k = j * GEN_N + i;
+  // Above the top of this column's storage: grow it and then write, rather than
+  // dropping the block on the floor. Has to come before the range check, which
+  // is asking about the cap this is about to move.
+  if (lvl > colMaxCap[k] && topLvl[k] !== NO_COLUMN) growColumn(k, lvl);
+  if (!inVoxelRange(i, j, lvl)) return AIR;
   const p = voxOff[k] + lvl - VOX_FLOOR;
   const was = voxMat[p];
   if (was === m) return was;
@@ -3386,7 +3433,7 @@ function shovelAim() {
   // A place has to land in a cell the store can actually hold a block in, that
   // is empty, and that the player is not standing in.
   const s = shovel.spot;
-  if (s && (!inVoxelRange(s.i, s.j, s.lvl) || voxelAt(s.i, s.j, s.lvl) !== AIR
+  if (s && (!canBuildAt(s.i, s.j, s.lvl) || voxelAt(s.i, s.j, s.lvl) !== AIR
             || spotBlocked(s.i, s.j, s.lvl))) shovel.spot = null;
 }
 
@@ -3433,6 +3480,12 @@ const debris = new THREE.Group();
 scene.add(debris);
 const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
 const restedChunks  = [];  // { mesh, body, still } — come to a stop, but still in the world
+const powderFalling = [];  // { pos, mat, v, from } — a grain in the air, between the piece it left and whatever catches it
+// Terrain powder that a landing grain has just left unsupported. A column comes
+// down one block at a time, bottom to top: the block that lands queues whatever
+// is over it, and that one queues the next, so a pile pours instead of dropping
+// as a slab. Drained at the top of the next checkTerrainPowder.
+const powderQueue = [];  // { i, j, lvl }
 
 // A piece that has stopped is no longer watched, but it keeps its body. Cannon
 // puts a body that has not moved for a second to sleep on its own, and a
@@ -3534,6 +3587,88 @@ function spawnFallingChunk(unit) {
   fallingChunks.push({ mesh, body, still: 0 });
 }
 
+// ----- powder in the ground -----
+// Sand and fine dirt (MAT_STATS[].powder) will not hang over a hole. The field
+// is far too big to walk every frame, so it is swept a slice at a time, and only
+// a few blocks come away in one pass — the collapse carries itself from there,
+// since every removal drops whatever was resting on top.
+const POWDER_SCAN_COLS = 120000;  // columns looked at per pass
+const POWDER_SCAN_CAP  = 32;      // blocks taken per pass, so a sand cliff costs a few frames rather than one long one
+let powderTick = 0, powderCursor = 0;
+// Columns something has just edited. The rolling scan reaches any one column
+// only every few seconds, which is a long time to watch sand hang in the air
+// over the hole you dug, so a touched column is answered on the spot instead.
+const powderDirty = new Set();
+// Shed whatever powder in column c has nothing under it, up to `budget` blocks.
+// Returns what is left of the budget.
+function shedColumn(c, budget) {
+  const top = topLvl[c];
+  if (top === NO_COLUMN) return budget;
+  // Ground nobody has touched is solid all the way down, so only a dug column
+  // can have air under anything but its own surface.
+  const dug = colDug[c] !== 0, o = voxOff[c] - VOX_FLOOR;
+  const hi = dug ? voxCap(c) : top;
+  const lo = dug ? Math.max(VOX_FLOOR, Math.min(top, colDugLo[c])) : top;
+  for (let lvl = hi; lvl >= lo && budget > 0; lvl--) {
+    const m = voxMat[o + lvl];
+    if (m === AIR || !MAT_STATS[m]?.powder) continue;
+    if (lvl - 1 < VOX_FLOOR || voxMat[o + lvl - 1] !== AIR) continue;
+    // Something solid stacked on top was put there on purpose. Only powder that
+    // is properly exposed sheds; the grain holding up a placed block stays put.
+    if (lvl + 1 <= voxCap(c) && voxMat[o + lvl + 1] !== AIR
+        && !MAT_STATS[voxMat[o + lvl + 1]]?.powder) continue;
+    const i = c % GEN_N, j = (c - i) / GEN_N;
+    editBlock(i, j, lvl, AIR);   // refreshes the faces, and brings down what was above
+    // It is not gone, it is falling: hand it to the same grain path the rubble uses.
+    const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
+    g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[m]);   // boxGeo is a unit cube: scale it to block size
+    g.mesh.scale.setScalar(BLOCK);
+    g.mesh.position.copy(g.pos);
+    scene.add(g.mesh);
+    powderFalling.push(g);
+    budget--;
+  }
+  return budget;
+}
+function checkTerrainPowder() {
+  // Queued cascade first, and off the budget the sweep works to: these are
+  // blocks already known to be hanging, so they come away this frame and each
+  // one hands the next level up to the frame after.
+  while (powderQueue.length) {
+    const { i, j, lvl: qLvl } = powderQueue.shift();
+    const mat = voxelAt(i, j, qLvl);
+    if (mat === AIR || !MAT_STATS[mat]?.powder) continue;
+    if (qLvl - 1 >= VOX_FLOOR && voxelAt(i, j, qLvl - 1) !== AIR) continue;
+    editBlock(i, j, qLvl, AIR);
+    const grain = new THREE.Mesh(boxGeo, TERRAIN_MATS[mat]);   // boxGeo is a unit cube: scale it to block size
+    grain.scale.setScalar(BLOCK);
+    grain.position.set(colX(i), (qLvl + 0.5) * BLOCK, colZ(j));
+    scene.add(grain);
+    powderFalling.push({ pos: grain.position.clone(), mat, v: 0, from: null, mesh: grain });
+    const nextAbove = qLvl + 1;
+    if (inVoxelRange(i, j, nextAbove) && MAT_STATS[voxelAt(i, j, nextAbove)]?.powder
+        && (nextAbove - 1 < VOX_FLOOR || voxelAt(i, j, nextAbove - 1) === AIR)) {
+      powderQueue.push({ i, j, lvl: nextAbove });
+    }
+  }
+  // Dig out from under a bank of sand and it goes this frame, not whenever the
+  // sweep next comes round. editBlock re-marks the column as it empties it, so a
+  // collapse that outruns the budget carries on next frame.
+  if (powderDirty.size) {
+    const touched = [...powderDirty];
+    powderDirty.clear();
+    let b = POWDER_SCAN_CAP;
+    for (const c of touched) b = shedColumn(c, b);
+  }
+  if (++powderTick % 10) return;
+  const cols = GEN_N * GEN_N;
+  let budget = POWDER_SCAN_CAP, k = powderCursor;
+  for (const end = k + POWDER_SCAN_COLS; k < end && budget > 0; k++) {
+    budget = shedColumn(k % cols, budget);
+  }
+  powderCursor = k % cols;
+}
+
 // Called once a frame after the step: retire whatever has stopped moving, and
 // drop whatever has fallen out of the world altogether.
 function updateFallingChunks() {
@@ -3558,6 +3693,107 @@ function updateFallingChunks() {
   }
 }
 
+// ----- powder on loose pieces -----
+// A grain of sand on a lump of rubble has nothing holding it on once the block
+// under it — under it as the piece is lying, not as the world is — has gone. It
+// leaves the piece and falls on its own, and goes back into the world wherever
+// it lands.
+const POWDER_G = 9.82, POWDER_VMAX = 40;
+const powderDown = new CANNON.Vec3(0, -1, 0), powderQ = new CANNON.Quaternion();
+const powderLocalDown = new CANNON.Vec3();
+const powderProbe = new THREE.Vector3(), powderZero = new THREE.Vector3();
+
+function shedPowder() {
+  for (let s = 0; s < 2; s++) {
+    const list = s ? fallingChunks : restedChunks;
+    for (let n = list.length - 1; n >= 0; n--) {
+      const f = list[n];
+      // A piece still travelling is mid-break: leave it, or it dissolves in the air.
+      if (s && f.body.velocity.lengthSquared() > FALL_REST_V * FALL_REST_V) continue;
+      const mesh = f.mesh, lat = mesh.userData.blocks;
+      // World down in the piece's own frame, snapped to the axis it leans on most,
+      // so a tilted piece sheds down one of its own columns rather than diagonally.
+      f.body.quaternion.inverse(powderQ);
+      powderQ.vmult(powderDown, powderLocalDown);
+      const ax = Math.abs(powderLocalDown.x), ay = Math.abs(powderLocalDown.y), az = Math.abs(powderLocalDown.z);
+      const dx = ax >= ay && ax >= az ? Math.sign(powderLocalDown.x) * BLOCK : 0;
+      const dy = ay > ax && ay >= az ? Math.sign(powderLocalDown.y) * BLOCK : 0;
+      const dz = az > ax && az > ay ? Math.sign(powderLocalDown.z) * BLOCK : 0;
+      mesh.updateWorldMatrix(true, false);   // it was moved by the body this frame
+      let cut = false;
+      for (let q = lat.length - 1; q >= 0; q--) {
+        const b = lat[q];
+        if (!MAT_STATS[b.mat]?.powder) continue;
+        const nx = b.pos.x + dx, ny = b.pos.y + dy, nz = b.pos.z + dz;
+        if (lat.some((u) => Math.abs(u.pos.x - nx) < 0.01 && Math.abs(u.pos.y - ny) < 0.01
+                                                          && Math.abs(u.pos.z - nz) < 0.01)) continue;
+        const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
+        g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[b.mat]);   // boxGeo is a unit cube: scale it to block size
+        g.mesh.scale.setScalar(BLOCK);
+        g.mesh.position.copy(g.pos);
+        scene.add(g.mesh);
+        powderFalling.push(g);
+        cutDebrisLat(mesh, q);   // the same gap-close a dig does
+        cut = true;
+      }
+      if (!cut) continue;
+      if (!lat.length) removeDebrisMesh(mesh);   // takes itself out of the list
+      else { rebuildDebrisBody(mesh, f.body); f.still = 0; }
+    }
+  }
+}
+
+// Where the loose grains end up: the ground if there is ground under them, the
+// rubble if there is rubble, and nowhere at all if they have left the field.
+function catchPowder(dt) {
+  for (let n = powderFalling.length - 1; n >= 0; n--) {
+    const p = powderFalling[n];
+    p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
+    p.pos.y -= p.v * dt;
+    if (p.mesh) p.mesh.position.copy(p.pos);
+    if (p.pos.y < FALL_KILL_Y) { if (p.mesh) scene.remove(p.mesh); powderFalling.splice(n, 1); continue; }
+    if (voxelAtWorld(p.pos.x, p.pos.y, p.pos.z) !== AIR) {
+      const i = colI(p.pos.x), j = colJ(p.pos.z);
+      let lvl = lvlOfY(p.pos.y);
+      while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) lvl++;   // the first free cell over what it hit
+      if (canBuildAt(i, j, lvl)) editBlock(i, j, lvl, p.mat);
+      // Cascade: if the block above is powder with nothing under it, it goes next.
+      const aboveLvl = lvl + 1;
+      if (inVoxelRange(i, j, aboveLvl) && MAT_STATS[voxelAt(i, j, aboveLvl)]?.powder
+          && (aboveLvl - 1 < VOX_FLOOR || voxelAt(i, j, aboveLvl - 1) === AIR)) {
+        powderQueue.push({ i, j, lvl: aboveLvl });
+      }
+      if (p.mesh) scene.remove(p.mesh);
+      powderFalling.splice(n, 1);
+      continue;
+    }
+    // Rubble lies at whatever angle the physics left it, so the grain is snapped
+    // to the piece's own lattice. Never back onto the piece it fell off: that one
+    // had no room for it, and it would only shed again next frame.
+    for (const f of restedChunks.concat(fallingChunks)) {
+      const mesh = f.mesh;
+      if (mesh === p.from) continue;
+      mesh.updateWorldMatrix(true, false);
+      let local = null;
+      for (const b of mesh.userData.blocks) {
+        const w = powderProbe.copy(b.pos).applyMatrix4(mesh.matrixWorld);
+        if (w.y < p.pos.y && w.distanceTo(p.pos) <= BLOCK) { local = debrisSpot(mesh, p.pos, powderZero); }
+        if (local) break;
+      }
+      if (!local) continue;
+      placeOnDebris(mesh, local, p.mat);
+      if (p.mesh) scene.remove(p.mesh);
+      powderFalling.splice(n, 1);
+      break;
+    }
+  }
+}
+
+function updatePowderBlocks(dt) {
+  shedPowder(dt);
+  catchPowder(dt);
+}
+
 // Taking a whole loose piece away. Its blocks were cut out of the store when it
 // broke off, so nothing here is owed back to the world count.
 function removeDebrisMesh(mesh) {
@@ -3567,6 +3803,31 @@ function removeDebrisMesh(mesh) {
   if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
   mesh.dispose();
+}
+
+// Cannon turns a body about its origin, so a piece's origin has to sit on its
+// centre of mass. Blocks dug off or laid on move that centre: put the lattice,
+// the colliders and the drawn cubes back in step with it, then slide the body
+// the same way in world space so none of it appears to move.
+const debrisCoM = new THREE.Vector3(), debrisArm = new CANNON.Vec3();
+function recentreDebris(mesh, body) {
+  const lat = mesh.userData.blocks;
+  if (!lat.length) return;
+  const c = debrisCoM.set(0, 0, 0);
+  for (const b of lat) c.add(b.pos);
+  c.multiplyScalar(1 / lat.length);
+  if (c.lengthSq() < 1e-12) return;
+  const m4 = new THREE.Matrix4();
+  for (let q = 0; q < lat.length; q++) {
+    lat[q].pos.sub(c);
+    if (lat[q].child) lat[q].child.position.copy(lat[q].pos);
+    else mesh.setMatrixAt(q, m4.makeTranslation(lat[q].pos.x, lat[q].pos.y, lat[q].pos.z));
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
+  body.quaternion.vmult(debrisArm.set(c.x, c.y, c.z), debrisArm);
+  body.position.vadd(debrisArm, body.position);
+  mesh.position.copy(body.position);
 }
 
 // Redo a piece's collider and its weight from the lattice it has left. Runs
@@ -3593,6 +3854,7 @@ function rebuildDebrisBody(mesh, body) {
     body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
                   new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
   }
+  recentreDebris(mesh, body);
   body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
   body.updateMassProperties();
   body.updateBoundingRadius();
@@ -3600,23 +3862,14 @@ function rebuildDebrisBody(mesh, body) {
   body.wakeUp();
 }
 
-// Digging a loose piece takes off the one block under the crosshair and leaves
-// the rest of it standing. The piece's own blocks are instances of its mesh and
-// sit at the front of the lattice array, in step with the instance buffer;
-// anything placed on it since hangs off it as a child mesh. Dig the last block
-// out and the piece goes with it.
-function digDebrisBlock(mesh, inst, child) {
+// Take block `q` off a piece. A placed block is a child mesh; one of the piece's
+// own is an instance, and those sit at the front of the lattice in step with the
+// instance buffer, so the gap behind it has to be closed and one fewer drawn.
+function cutDebrisLat(mesh, q) {
   const lat = mesh.userData.blocks;
-  let q = -1;
-  if (child) q = lat.findIndex((b) => b.child === child);
-  else if (inst >= 0 && inst < mesh.count) q = inst;
-  if (q < 0) return false;
-
   if (lat[q].child) {
     mesh.remove(lat[q].child);
   } else {
-    // Close the gap in the instance buffers and draw one fewer, so the piece's
-    // own blocks stay the first `count` entries of the lattice.
     const m4 = new THREE.Matrix4(), col = new THREE.Color();
     for (let k = q + 1; k < mesh.count; k++) {
       mesh.getMatrixAt(k, m4); mesh.setMatrixAt(k - 1, m4);
@@ -3627,9 +3880,126 @@ function digDebrisBlock(mesh, inst, child) {
     mesh.instanceColor.needsUpdate = true;
   }
   lat.splice(q, 1);
+}
 
+// A part cut off an existing piece, spawned as a piece of its own. It is built
+// in the parent's frame rather than the world's — re-centred on its own blocks,
+// turned to the parent's tilt — so it comes away sitting exactly where it was
+// drawn, and it starts with the parent's motion at that point so the two parts
+// drift apart instead of springing.
+const partQuat = new THREE.Quaternion();
+function spawnDebrisPart(parent, blocks, pbody) {
+  const n = blocks.length, h = HALF_BLOCK;
+  parent.updateWorldMatrix(true, false);
+  const c = new THREE.Vector3();
+  for (const b of blocks) c.add(b.pos);
+  c.multiplyScalar(1 / n);
+
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
+  const m4 = new THREE.Matrix4(), col = new THREE.Color();
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  mesh.userData.blocks = blocks.map((b, q) => {
+    const p = b.pos.clone().sub(c);
+    m4.makeTranslation(p.x, p.y, p.z);
+    mesh.setMatrixAt(q, m4);
+    mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.mat].color));
+    if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+    if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+    if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
+    return { pos: p, mat: b.mat };
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor.needsUpdate = true;
+  mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  debris.add(mesh);
+
+  const body = new CANNON.Body({
+    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    material: physDebris,
+    linearDamping: 0.02,
+    angularDamping: 0.15,
+    collisionFilterGroup: DEBRIS_GROUP,
+    collisionFilterMask: -1,
+  });
+  if (mesh.userData.perBlock) {
+    for (const b of mesh.userData.blocks) {
+      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+                    new CANNON.Vec3(b.pos.x, b.pos.y, b.pos.z));
+    }
+  } else {
+    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
+                  new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
+  }
+  const w = c.applyMatrix4(parent.matrixWorld);
+  body.position.set(w.x, w.y, w.z);
+  parent.getWorldQuaternion(partQuat);
+  body.quaternion.set(partQuat.x, partQuat.y, partQuat.z, partQuat.w);
+  if (pbody) {
+    // v + w x r: the parent's velocity where this part of it was.
+    const r = new CANNON.Vec3(w.x - pbody.position.x, w.y - pbody.position.y, w.z - pbody.position.z);
+    pbody.angularVelocity.cross(r, r);
+    body.velocity.set(pbody.velocity.x + r.x, pbody.velocity.y + r.y, pbody.velocity.z + r.z);
+    body.angularVelocity.copy(pbody.angularVelocity);
+  }
+  body.angularVelocity.x += (Math.random() - 0.5) * 0.4;
+  body.angularVelocity.y += (Math.random() - 0.5) * 0.2;
+  body.angularVelocity.z += (Math.random() - 0.5) * 0.4;
+
+  while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
+  linkBody(mesh, body);
+  fallingChunks.push({ mesh, body, still: 0 });
+}
+
+// Digging a loose piece takes off the one block under the crosshair and leaves
+// the rest of it standing. Dig the last block out and the piece goes with it;
+// dig one out of the middle and what is left may be two pieces, in which case
+// the biggest part keeps the mesh and the rest are spawned on their own.
+function digDebrisBlock(mesh, inst, child) {
+  const lat = mesh.userData.blocks;
+  let q = -1;
+  if (child) q = lat.findIndex((b) => b.child === child);
+  else if (inst >= 0 && inst < mesh.count) q = inst;
+  if (q < 0) return false;
+
+  cutDebrisLat(mesh, q);
   if (!lat.length) { removeDebrisMesh(mesh); return true; }   // nothing left of it
   const f = chunkOfMesh(mesh);
+
+  // What is left, walked by its faces. The lattice is the piece's own grid, so
+  // cells are counted off its first block: neighbours are one step apart in one
+  // axis, however the piece is lying.
+  const a0 = lat[0].pos;
+  const cellKey = (p) => Math.round((p.x - a0.x) / BLOCK) + ',' + Math.round((p.y - a0.y) / BLOCK)
+                                                         + ',' + Math.round((p.z - a0.z) / BLOCK);
+  const at = new Map();
+  lat.forEach((b, k) => at.set(cellKey(b.pos), k));
+  const seen = new Array(lat.length).fill(false), groups = [], v = new THREE.Vector3();
+  for (let s = 0; s < lat.length; s++) {
+    if (seen[s]) continue;
+    seen[s] = true;
+    const g = [s], stack = [s];
+    while (stack.length) {
+      const p = lat[stack.pop()].pos;
+      for (const [dx, dz, dy] of GRAV_DIRS) {    // the six face neighbours
+        v.set(p.x + dx * BLOCK, p.y + dy * BLOCK, p.z + dz * BLOCK);
+        const k = at.get(cellKey(v));
+        if (k === undefined || seen[k]) continue;
+        seen[k] = true; g.push(k); stack.push(k);
+      }
+    }
+    groups.push(g);
+  }
+
+  if (groups.length > 1) {
+    groups.sort((g1, g2) => g2.length - g1.length);   // the biggest stays put
+    const parts = groups.slice(1).map((g) => g.map((k) => lat[k]));
+    // Off the back, so the earlier indices are still the ones they were.
+    for (const k of groups.slice(1).flat().sort((x, y) => y - x)) cutDebrisLat(mesh, k);
+    for (const blocks of parts) spawnDebrisPart(mesh, blocks, f && f.body);
+  }
+
   if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }    // lighter, and disturbed
   return true;
 }
@@ -3690,7 +4060,9 @@ function placeOnDebris(mesh, local, m) {
     body.shapeOffsets[0].set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
     body.updateBoundingRadius();
   }
-  body.mass = Math.min(body.mass + 0.5, FALL_MASS_CAP);
+  recentreDebris(mesh, body);
+  body.updateBoundingRadius();
+  body.mass = Math.min(mesh.userData.blocks.length * 0.5, FALL_MASS_CAP);
   body.updateMassProperties();
   body.updateAABB();
   body.wakeUp();
@@ -3727,6 +4099,12 @@ function adriftGroup(i, j, lvl) {
       stack.push(nb);
     }
   }
+  // A group of nothing but loose grain does not come down as one piece: it is
+  // left to the cascade, which sheds it a grain at a time from the bottom. Any
+  // solid in the mix holds the rest together, and the powder rides along.
+  let allPowder = true;
+  for (const b of unit.values()) if (!MAT_STATS[b.m]?.powder) { allPowder = false; break; }
+  if (allPowder) return null;
   return unit;
 }
 
@@ -3782,6 +4160,7 @@ function editBlock(i, j, lvl, m) {
   const k = j * GEN_N + i;
   colDug[k] = 1;
   if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
+  powderDirty.add(k);   // anything loose in this column falls this frame, not on the next sweep
   patchCollider(i, j);
   // Refresh visibility of the edited block and all six neighbours.
   refreshVisible(i, j, lvl);
@@ -3814,9 +4193,14 @@ function flushDirtyChunks() {
 function shovelPickUp() {
   if (!shovel.on) return false;
   if (shovel.debris && shovel.debris.blockLocal) {
-    // Rubble comes away a block at a time, and not into your hands.
+    // Rubble comes away a block at a time, into your hands like anything else.
     const d = shovel.debris;
+    const lat = d.mesh.userData.blocks;
+    let mat = -1;
+    if (d.child) { const idx = lat.findIndex((b) => b.child === d.child); if (idx >= 0) mat = lat[idx].mat; }
+    else if (d.inst >= 0 && d.inst < d.mesh.count) mat = lat[d.inst].mat;
     digDebrisBlock(d.mesh, d.inst, d.child);
+    if (mat >= 0 && shovel.held.length < SHOVEL_CAP) { shovel.held.push(mat); refreshShovelUI(); }
     shovel.debris = null;
     return true;
   }
@@ -3841,7 +4225,7 @@ function shovelPlace() {
   const { i, j, lvl } = shovel.spot;
   // Re-check rather than trusting the aim from earlier in the frame. Popping a
   // block off the stack for a write that then gets rejected would destroy it.
-  if (!inVoxelRange(i, j, lvl) || voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) return false;
+  if (!canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) return false;
   editBlock(i, j, lvl, shovel.held.pop());
   refreshShovelUI();
   return true;
@@ -4197,6 +4581,8 @@ function tick() {
     s.mesh.quaternion.copy(s.body.quaternion);
   }
   updateFallingChunks();
+  updatePowderBlocks(dt);
+  checkTerrainPowder();
 
   updateCamera(dt);
   // After the camera, since the aim is taken down the view direction, and before

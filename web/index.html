@@ -1328,9 +1328,13 @@ const VOX_HEAD = 200;
 // one brown pixel.
 const SOIL_DEPTH = 8;
 
-// The highest level column k has storage for — its generated surface plus the
-// headroom. Above this is permanently air and nothing can be placed there.
-const voxCap = (k) => topLvl[k] + VOX_HEAD;
+// The current storage cap for column k — grows when building above it. Every
+// column starts at its generated surface plus the headroom, and a place that
+// lands higher than that grows the column instead of being refused, so a tower
+// goes up until you run out of blocks and not until the store runs out of room.
+const colMaxCap = new Int32Array(GEN_N * GEN_N);
+for (let k = 0; k < GEN_N * GEN_N; k++) colMaxCap[k] = topLvl[k] === NO_COLUMN ? 0 : topLvl[k] + VOX_HEAD;
+const voxCap = (k) => colMaxCap[k];
 
 // Where column k's blocks start in voxMat, or -1 where there is no column.
 const voxOff = new Int32Array(GEN_N * GEN_N).fill(-1);
@@ -1341,13 +1345,13 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   voxCount += voxCap(k) - VOX_FLOOR + 1;
 }
 // voxMat[voxOff[k] + lvl - VOX_FLOOR] is the material of block `lvl` in column k.
-const voxMat = new Uint8Array(voxCount);
+let voxMat = new Uint8Array(voxCount);
 // Whether that block has anything to draw: 1 where at least one of its six
 // faces touches air, 0 where all six touch another block and nothing that drew
 // it could ever be seen. Same indexing as voxMat, and the only thing the mesh
 // builder consults about visibility — which is what keeps the question per
 // block instead of per column, so a dig leaves a wall and not a pillar.
-const blockVisible = new Uint8Array(voxCount);
+let blockVisible = new Uint8Array(voxCount);
 // Solid blocks in the world. The shovel moves blocks between here and the
 // player's hands and never anywhere else, so this plus what is held is an
 // invariant of the whole session.
@@ -1421,6 +1425,16 @@ function inVoxelRange(i, j, lvl) {
   return topLvl[k] !== NO_COLUMN && lvl >= VOX_FLOOR && lvl <= voxCap(k);
 }
 
+// Is (i, j, lvl) somewhere a block can be *put*? The same question without the
+// ceiling: the store grows to meet a write above the cap, so the only limits on
+// building up are the field and the bedrock under it. inVoxelRange still answers
+// for reads and for anything that indexes the store directly, which must not run
+// off the end of a column that has not been grown yet.
+function canBuildAt(i, j, lvl) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return false;
+  return topLvl[j * GEN_N + i] !== NO_COLUMN && lvl >= VOX_FLOOR;
+}
+
 // How many of the six faces of (i, j, lvl) are open — a neighbour that is air,
 // or no neighbour at all because the block sits on the edge of the world. This
 // is the whole of the visibility rule: one open face and the block is drawn,
@@ -1458,13 +1472,46 @@ for (let j = 0; j < GEN_N; j++) {
   }
 }
 
+// Make room over column k up to at least `needLv`. The store is one flat array,
+// so growing a column in the middle of it means rebuilding the array with a gap
+// of air opened at that column's end and every offset after it pushed along —
+// O(columns) for the offsets, which is why the cap doubles rather than growing
+// by the one level asked for. It only ever fires on a place above the cap.
+function growColumn(k, needLv) {
+  const oldCap = colMaxCap[k];
+  const newCap = Math.max(needLv + 1, oldCap * 2);   // double to amortize
+  const growth = newCap - oldCap;
+  const oldEnd = voxOff[k] + oldCap - VOX_FLOOR + 1;
+  const nv = new Uint8Array(voxCount + growth);
+  nv.set(voxMat.subarray(0, oldEnd));                 // everything before the gap
+  nv.fill(AIR, oldEnd, oldEnd + growth);              // the new headroom
+  nv.set(voxMat.subarray(oldEnd), oldEnd + growth);   // everything after
+  // blockVisible shares the indexing, so it takes the same gap in the same place.
+  const nbv = new Uint8Array(voxCount + growth);
+  nbv.set(blockVisible.subarray(0, oldEnd));
+  nbv.fill(0, oldEnd, oldEnd + growth);
+  nbv.set(blockVisible.subarray(oldEnd), oldEnd + growth);
+  for (let c = 0; c < GEN_N * GEN_N; c++) {
+    if (voxOff[c] >= oldEnd) voxOff[c] += growth;
+  }
+  voxMat = nv;
+  blockVisible = nbv;
+  voxCount += growth;
+  colMaxCap[k] = newCap;
+}
+
 // Writing one back. This is the whole of what the shovel needs from the data
 // side; the meshes and the collider are baked, so a caller that changes a block
 // still has to rebuild those before it shows up — editBlock() below does both.
 // Returns what was there.
 function setVoxel(i, j, lvl, m) {
-  if (!inVoxelRange(i, j, lvl)) return AIR;
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
   const k = j * GEN_N + i;
+  // Above the top of this column's storage: grow it and then write, rather than
+  // dropping the block on the floor. Has to come before the range check, which
+  // is asking about the cap this is about to move.
+  if (lvl > colMaxCap[k] && topLvl[k] !== NO_COLUMN) growColumn(k, lvl);
+  if (!inVoxelRange(i, j, lvl)) return AIR;
   const p = voxOff[k] + lvl - VOX_FLOOR;
   const was = voxMat[p];
   if (was === m) return was;
@@ -3386,7 +3433,7 @@ function shovelAim() {
   // A place has to land in a cell the store can actually hold a block in, that
   // is empty, and that the player is not standing in.
   const s = shovel.spot;
-  if (s && (!inVoxelRange(s.i, s.j, s.lvl) || voxelAt(s.i, s.j, s.lvl) !== AIR
+  if (s && (!canBuildAt(s.i, s.j, s.lvl) || voxelAt(s.i, s.j, s.lvl) !== AIR
             || spotBlocked(s.i, s.j, s.lvl))) shovel.spot = null;
 }
 
@@ -3434,6 +3481,11 @@ scene.add(debris);
 const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
 const restedChunks  = [];  // { mesh, body, still } — come to a stop, but still in the world
 const powderFalling = [];  // { pos, mat, v, from } — a grain in the air, between the piece it left and whatever catches it
+// Terrain powder that a landing grain has just left unsupported. A column comes
+// down one block at a time, bottom to top: the block that lands queues whatever
+// is over it, and that one queues the next, so a pile pours instead of dropping
+// as a slab. Drained at the top of the next checkTerrainPowder.
+const powderQueue = [];  // { i, j, lvl }
 
 // A piece that has stopped is no longer watched, but it keeps its body. Cannon
 // puts a body that has not moved for a second to sleep on its own, and a
@@ -3579,6 +3631,26 @@ function shedColumn(c, budget) {
   return budget;
 }
 function checkTerrainPowder() {
+  // Queued cascade first, and off the budget the sweep works to: these are
+  // blocks already known to be hanging, so they come away this frame and each
+  // one hands the next level up to the frame after.
+  while (powderQueue.length) {
+    const { i, j, lvl: qLvl } = powderQueue.shift();
+    const mat = voxelAt(i, j, qLvl);
+    if (mat === AIR || !MAT_STATS[mat]?.powder) continue;
+    if (qLvl - 1 >= VOX_FLOOR && voxelAt(i, j, qLvl - 1) !== AIR) continue;
+    editBlock(i, j, qLvl, AIR);
+    const grain = new THREE.Mesh(boxGeo, TERRAIN_MATS[mat]);   // boxGeo is a unit cube: scale it to block size
+    grain.scale.setScalar(BLOCK);
+    grain.position.set(colX(i), (qLvl + 0.5) * BLOCK, colZ(j));
+    scene.add(grain);
+    powderFalling.push({ pos: grain.position.clone(), mat, v: 0, from: null, mesh: grain });
+    const nextAbove = qLvl + 1;
+    if (inVoxelRange(i, j, nextAbove) && MAT_STATS[voxelAt(i, j, nextAbove)]?.powder
+        && (nextAbove - 1 < VOX_FLOOR || voxelAt(i, j, nextAbove - 1) === AIR)) {
+      powderQueue.push({ i, j, lvl: nextAbove });
+    }
+  }
   // Dig out from under a bank of sand and it goes this frame, not whenever the
   // sweep next comes round. editBlock re-marks the column as it empties it, so a
   // collapse that outruns the budget carries on next frame.
@@ -3684,7 +3756,13 @@ function catchPowder(dt) {
       const i = colI(p.pos.x), j = colJ(p.pos.z);
       let lvl = lvlOfY(p.pos.y);
       while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) lvl++;   // the first free cell over what it hit
-      if (inVoxelRange(i, j, lvl)) editBlock(i, j, lvl, p.mat);
+      if (canBuildAt(i, j, lvl)) editBlock(i, j, lvl, p.mat);
+      // Cascade: if the block above is powder with nothing under it, it goes next.
+      const aboveLvl = lvl + 1;
+      if (inVoxelRange(i, j, aboveLvl) && MAT_STATS[voxelAt(i, j, aboveLvl)]?.powder
+          && (aboveLvl - 1 < VOX_FLOOR || voxelAt(i, j, aboveLvl - 1) === AIR)) {
+        powderQueue.push({ i, j, lvl: aboveLvl });
+      }
       if (p.mesh) scene.remove(p.mesh);
       powderFalling.splice(n, 1);
       continue;
@@ -4141,7 +4219,7 @@ function shovelPlace() {
   const { i, j, lvl } = shovel.spot;
   // Re-check rather than trusting the aim from earlier in the frame. Popping a
   // block off the stack for a write that then gets rejected would destroy it.
-  if (!inVoxelRange(i, j, lvl) || voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) return false;
+  if (!canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) return false;
   editBlock(i, j, lvl, shovel.held.pop());
   refreshShovelUI();
   return true;

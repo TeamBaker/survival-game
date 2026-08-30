@@ -3433,6 +3433,7 @@ const debris = new THREE.Group();
 scene.add(debris);
 const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
 const restedChunks  = [];  // { mesh, body, still } — come to a stop, but still in the world
+const powderFalling = [];  // { pos, mat, v, from } — a grain in the air, between the piece it left and whatever catches it
 
 // A piece that has stopped is no longer watched, but it keeps its body. Cannon
 // puts a body that has not moved for a second to sleep on its own, and a
@@ -3534,6 +3535,38 @@ function spawnFallingChunk(unit) {
   fallingChunks.push({ mesh, body, still: 0 });
 }
 
+// ----- powder in the ground -----
+// Sand and fine dirt (MAT_STATS[].powder) will not hang over a hole. The field
+// is far too big to walk every frame, so it is swept a slice at a time, and only
+// a few blocks come away in one pass — the collapse carries itself from there,
+// since every removal drops whatever was resting on top.
+const POWDER_SCAN_COLS = 120000;  // columns looked at per pass
+const POWDER_SCAN_CAP  = 32;      // blocks taken per pass, so a sand cliff costs a few frames rather than one long one
+let powderTick = 0, powderCursor = 0;
+function checkTerrainPowder() {
+  if (++powderTick % 10) return;
+  const cols = GEN_N * GEN_N;
+  let budget = POWDER_SCAN_CAP, k = powderCursor;
+  for (const end = k + POWDER_SCAN_COLS; k < end && budget > 0; k++) {
+    const c = k % cols, top = topLvl[c];
+    if (top === NO_COLUMN) continue;
+    // Ground nobody has touched is solid all the way down, so only a dug column
+    // can have air under anything but its own surface.
+    const dug = colDug[c] !== 0, o = voxOff[c] - VOX_FLOOR;
+    const hi = dug ? voxCap(c) : top;
+    const lo = dug ? Math.max(VOX_FLOOR, Math.min(top, colDugLo[c])) : top;
+    for (let lvl = hi; lvl >= lo && budget > 0; lvl--) {
+      const m = voxMat[o + lvl];
+      if (m === AIR || !MAT_STATS[m]?.powder) continue;
+      if (lvl - 1 < VOX_FLOOR || voxMat[o + lvl - 1] !== AIR) continue;
+      const i = c % GEN_N;
+      editBlock(i, (c - i) / GEN_N, lvl, AIR);   // refreshes the faces, and brings down what was above
+      budget--;
+    }
+  }
+  powderCursor = k % cols;
+}
+
 // Called once a frame after the step: retire whatever has stopped moving, and
 // drop whatever has fallen out of the world altogether.
 function updateFallingChunks() {
@@ -3556,6 +3589,93 @@ function updateFallingChunks() {
     const f = restedChunks[n];
     if (f.body.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); }
   }
+}
+
+// ----- powder on loose pieces -----
+// A grain of sand on a lump of rubble has nothing holding it on once the block
+// under it — under it as the piece is lying, not as the world is — has gone. It
+// leaves the piece and falls on its own, and goes back into the world wherever
+// it lands.
+const POWDER_G = 9.82, POWDER_VMAX = 40;
+const powderDown = new CANNON.Vec3(0, -1, 0), powderQ = new CANNON.Quaternion();
+const powderLocalDown = new CANNON.Vec3();
+const powderProbe = new THREE.Vector3(), powderZero = new THREE.Vector3();
+
+function shedPowder() {
+  for (let s = 0; s < 2; s++) {
+    const list = s ? fallingChunks : restedChunks;
+    for (let n = list.length - 1; n >= 0; n--) {
+      const f = list[n];
+      // A piece still travelling is mid-break: leave it, or it dissolves in the air.
+      if (s && f.body.velocity.lengthSquared() > FALL_REST_V * FALL_REST_V) continue;
+      const mesh = f.mesh, lat = mesh.userData.blocks;
+      // World down in the piece's own frame, snapped to the axis it leans on most,
+      // so a tilted piece sheds down one of its own columns rather than diagonally.
+      f.body.quaternion.inverse(powderQ);
+      powderQ.vmult(powderDown, powderLocalDown);
+      const ax = Math.abs(powderLocalDown.x), ay = Math.abs(powderLocalDown.y), az = Math.abs(powderLocalDown.z);
+      const dx = ax >= ay && ax >= az ? Math.sign(powderLocalDown.x) * BLOCK : 0;
+      const dy = ay > ax && ay >= az ? Math.sign(powderLocalDown.y) * BLOCK : 0;
+      const dz = az > ax && az > ay ? Math.sign(powderLocalDown.z) * BLOCK : 0;
+      mesh.updateWorldMatrix(true, false);   // it was moved by the body this frame
+      let cut = false;
+      for (let q = lat.length - 1; q >= 0; q--) {
+        const b = lat[q];
+        if (!MAT_STATS[b.mat]?.powder) continue;
+        const nx = b.pos.x + dx, ny = b.pos.y + dy, nz = b.pos.z + dz;
+        if (lat.some((u) => Math.abs(u.pos.x - nx) < 0.01 && Math.abs(u.pos.y - ny) < 0.01
+                                                          && Math.abs(u.pos.z - nz) < 0.01)) continue;
+        powderFalling.push({ pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh });
+        cutDebrisLat(mesh, q);   // the same gap-close a dig does
+        cut = true;
+      }
+      if (!cut) continue;
+      if (!lat.length) removeDebrisMesh(mesh);   // takes itself out of the list
+      else { rebuildDebrisBody(mesh, f.body); f.still = 0; }
+    }
+  }
+}
+
+// Where the loose grains end up: the ground if there is ground under them, the
+// rubble if there is rubble, and nowhere at all if they have left the field.
+function catchPowder(dt) {
+  for (let n = powderFalling.length - 1; n >= 0; n--) {
+    const p = powderFalling[n];
+    p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
+    p.pos.y -= p.v * dt;
+    if (p.pos.y < FALL_KILL_Y) { powderFalling.splice(n, 1); continue; }
+    if (voxelAtWorld(p.pos.x, p.pos.y, p.pos.z) !== AIR) {
+      const i = colI(p.pos.x), j = colJ(p.pos.z);
+      let lvl = lvlOfY(p.pos.y);
+      while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) lvl++;   // the first free cell over what it hit
+      if (inVoxelRange(i, j, lvl)) editBlock(i, j, lvl, p.mat);
+      powderFalling.splice(n, 1);
+      continue;
+    }
+    // Rubble lies at whatever angle the physics left it, so the grain is snapped
+    // to the piece's own lattice. Never back onto the piece it fell off: that one
+    // had no room for it, and it would only shed again next frame.
+    for (const f of restedChunks.concat(fallingChunks)) {
+      const mesh = f.mesh;
+      if (mesh === p.from) continue;
+      mesh.updateWorldMatrix(true, false);
+      let local = null;
+      for (const b of mesh.userData.blocks) {
+        const w = powderProbe.copy(b.pos).applyMatrix4(mesh.matrixWorld);
+        if (w.y < p.pos.y && w.distanceTo(p.pos) <= BLOCK) { local = debrisSpot(mesh, p.pos, powderZero); }
+        if (local) break;
+      }
+      if (!local) continue;
+      placeOnDebris(mesh, local, p.mat);
+      powderFalling.splice(n, 1);
+      break;
+    }
+  }
+}
+
+function updatePowderBlocks(dt) {
+  shedPowder(dt);
+  catchPowder(dt);
 }
 
 // Taking a whole loose piece away. Its blocks were cut out of the store when it
@@ -3950,9 +4070,14 @@ function flushDirtyChunks() {
 function shovelPickUp() {
   if (!shovel.on) return false;
   if (shovel.debris && shovel.debris.blockLocal) {
-    // Rubble comes away a block at a time, and not into your hands.
+    // Rubble comes away a block at a time, into your hands like anything else.
     const d = shovel.debris;
+    const lat = d.mesh.userData.blocks;
+    let mat = -1;
+    if (d.child) { const idx = lat.findIndex((b) => b.child === d.child); if (idx >= 0) mat = lat[idx].mat; }
+    else if (d.inst >= 0 && d.inst < d.mesh.count) mat = lat[d.inst].mat;
     digDebrisBlock(d.mesh, d.inst, d.child);
+    if (mat >= 0 && shovel.held.length < SHOVEL_CAP) { shovel.held.push(mat); refreshShovelUI(); }
     shovel.debris = null;
     return true;
   }
@@ -4333,6 +4458,8 @@ function tick() {
     s.mesh.quaternion.copy(s.body.quaternion);
   }
   updateFallingChunks();
+  updatePowderBlocks(dt);
+  checkTerrainPowder();
 
   updateCamera(dt);
   // After the camera, since the aim is taken down the view direction, and before

@@ -3453,7 +3453,7 @@ const dirtyChunks = new Set();
 // is solid to stand on and shoves awake again when something runs into it — but
 // it is never written back into the voxel grid, so the shovel treats it as a
 // piece rather than as terrain.
-const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER && !MAT_STATS[m]?.powder; };
+const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER; };
 const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 
 // ----- loose chunks -----
@@ -4099,6 +4099,12 @@ function adriftGroup(i, j, lvl) {
       stack.push(nb);
     }
   }
+  // A group of nothing but loose grain does not come down as one piece: it is
+  // left to the cascade, which sheds it a grain at a time from the bottom. Any
+  // solid in the mix holds the rest together, and the powder rides along.
+  let allPowder = true;
+  for (const b of unit.values()) if (!MAT_STATS[b.m]?.powder) { allPowder = false; break; }
+  if (allPowder) return null;
   return unit;
 }
 

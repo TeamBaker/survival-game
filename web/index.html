@@ -3453,7 +3453,7 @@ const dirtyChunks = new Set();
 // is solid to stand on and shoves awake again when something runs into it — but
 // it is never written back into the voxel grid, so the shovel treats it as a
 // piece rather than as terrain.
-const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER; };
+const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER && !MAT_STATS[m]?.powder; };
 const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 
 // ----- loose chunks -----

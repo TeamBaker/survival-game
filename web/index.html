@@ -1318,10 +1318,10 @@ const VOX_FLOOR = Math.round(-24 / BLOCK);  // level -120: bedrock, under the de
 // Levels of empty space allocated on top of every column, so a block can be
 // *put back* somewhere higher than the ground was ever generated. Without this
 // the store has no room above the surface and the shovel could only ever fill in
-// holes it had already dug. Three metres of it: at 20 cm a block the store pays
-// for this on every one of the field's columns, so it buys the stack you would
-// actually build by hand and not a storey more.
-const VOX_HEAD = 15;
+// holes it had already dug. Generous headroom for building: at 20 cm a block
+// that is forty metres over the generated surface, so a tower goes up until you
+// run out of blocks rather than until the store runs out of room.
+const VOX_HEAD = 200;
 // Blocks of surface material before it turns to rock — a metre and a half of
 // soil, so a gentle hillside is dirt the whole way through anything you would dig
 // by hand, and the face of a bluff shows a band of earth over stone rather than
@@ -3543,33 +3543,56 @@ function spawnFallingChunk(unit) {
 const POWDER_SCAN_COLS = 120000;  // columns looked at per pass
 const POWDER_SCAN_CAP  = 32;      // blocks taken per pass, so a sand cliff costs a few frames rather than one long one
 let powderTick = 0, powderCursor = 0;
+// Columns something has just edited. The rolling scan reaches any one column
+// only every few seconds, which is a long time to watch sand hang in the air
+// over the hole you dug, so a touched column is answered on the spot instead.
+const powderDirty = new Set();
+// Shed whatever powder in column c has nothing under it, up to `budget` blocks.
+// Returns what is left of the budget.
+function shedColumn(c, budget) {
+  const top = topLvl[c];
+  if (top === NO_COLUMN) return budget;
+  // Ground nobody has touched is solid all the way down, so only a dug column
+  // can have air under anything but its own surface.
+  const dug = colDug[c] !== 0, o = voxOff[c] - VOX_FLOOR;
+  const hi = dug ? voxCap(c) : top;
+  const lo = dug ? Math.max(VOX_FLOOR, Math.min(top, colDugLo[c])) : top;
+  for (let lvl = hi; lvl >= lo && budget > 0; lvl--) {
+    const m = voxMat[o + lvl];
+    if (m === AIR || !MAT_STATS[m]?.powder) continue;
+    if (lvl - 1 < VOX_FLOOR || voxMat[o + lvl - 1] !== AIR) continue;
+    // Something solid stacked on top was put there on purpose. Only powder that
+    // is properly exposed sheds; the grain holding up a placed block stays put.
+    if (lvl + 1 <= voxCap(c) && voxMat[o + lvl + 1] !== AIR
+        && !MAT_STATS[voxMat[o + lvl + 1]]?.powder) continue;
+    const i = c % GEN_N, j = (c - i) / GEN_N;
+    editBlock(i, j, lvl, AIR);   // refreshes the faces, and brings down what was above
+    // It is not gone, it is falling: hand it to the same grain path the rubble uses.
+    const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
+    g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[m]);   // boxGeo is a unit cube: scale it to block size
+    g.mesh.scale.setScalar(BLOCK);
+    g.mesh.position.copy(g.pos);
+    scene.add(g.mesh);
+    powderFalling.push(g);
+    budget--;
+  }
+  return budget;
+}
 function checkTerrainPowder() {
+  // Dig out from under a bank of sand and it goes this frame, not whenever the
+  // sweep next comes round. editBlock re-marks the column as it empties it, so a
+  // collapse that outruns the budget carries on next frame.
+  if (powderDirty.size) {
+    const touched = [...powderDirty];
+    powderDirty.clear();
+    let b = POWDER_SCAN_CAP;
+    for (const c of touched) b = shedColumn(c, b);
+  }
   if (++powderTick % 10) return;
   const cols = GEN_N * GEN_N;
   let budget = POWDER_SCAN_CAP, k = powderCursor;
   for (const end = k + POWDER_SCAN_COLS; k < end && budget > 0; k++) {
-    const c = k % cols, top = topLvl[c];
-    if (top === NO_COLUMN) continue;
-    // Ground nobody has touched is solid all the way down, so only a dug column
-    // can have air under anything but its own surface.
-    const dug = colDug[c] !== 0, o = voxOff[c] - VOX_FLOOR;
-    const hi = dug ? voxCap(c) : top;
-    const lo = dug ? Math.max(VOX_FLOOR, Math.min(top, colDugLo[c])) : top;
-    for (let lvl = hi; lvl >= lo && budget > 0; lvl--) {
-      const m = voxMat[o + lvl];
-      if (m === AIR || !MAT_STATS[m]?.powder) continue;
-      if (lvl - 1 < VOX_FLOOR || voxMat[o + lvl - 1] !== AIR) continue;
-      const i = c % GEN_N, j = (c - i) / GEN_N;
-      editBlock(i, j, lvl, AIR);   // refreshes the faces, and brings down what was above
-      // It is not gone, it is falling: hand it to the same grain path the rubble uses.
-      const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
-      g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[m]);   // boxGeo is a unit cube: scale it to block size
-      g.mesh.scale.setScalar(BLOCK);
-      g.mesh.position.copy(g.pos);
-      scene.add(g.mesh);
-      powderFalling.push(g);
-      budget--;
-    }
+    budget = shedColumn(k % cols, budget);
   }
   powderCursor = k % cols;
 }
@@ -4053,6 +4076,7 @@ function editBlock(i, j, lvl, m) {
   const k = j * GEN_N + i;
   colDug[k] = 1;
   if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
+  powderDirty.add(k);   // anything loose in this column falls this frame, not on the next sweep
   patchCollider(i, j);
   // Refresh visibility of the edited block and all six neighbours.
   refreshVisible(i, j, lvl);

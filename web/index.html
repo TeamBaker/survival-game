@@ -378,7 +378,7 @@
 
   #btn-materials {
     position: fixed;
-    top: calc(136px + env(safe-area-inset-top));
+    top: calc(176px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
@@ -401,7 +401,7 @@
 
   @media (max-width: 620px) {
     #materials-ui { font-size: 12px; }
-    #btn-materials { font-size: 10px; padding: 7px 12px; }
+    #btn-materials { top: calc(152px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
   }
 
   /* ---------- Shovel (temporary block-moving tool) ---------- */
@@ -494,8 +494,71 @@
   body.shovel-on #btn-down   { bottom: calc(126px + env(safe-area-inset-bottom)); }
   body.shovel-on #btn-up     { bottom: calc(216px + env(safe-area-inset-bottom)); }
 
+  /* ---------- Hammer (knocks a block loose, keeps nothing) ---------- */
+  #btn-hammer {
+    position: fixed;
+    top: calc(130px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-hammer.on {
+    color: #1d0700;
+    background: linear-gradient(180deg, #ffc09a, #f0703c);
+    border-color: transparent;
+  }
+
+  #hammer-ui {
+    position: fixed;
+    left: 50%;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    z-index: 13;
+  }
+  body.hammer-on #hammer-ui { display: flex; }
+
+  #hammer-note {
+    padding: 5px 13px;
+    font-size: 12px;
+    color: #ffe2d0;
+    background: rgba(8, 14, 24, 0.62);
+    border: 1px solid rgba(255, 170, 120, 0.28);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    white-space: nowrap;
+  }
+
+  /* Only the one strike button down there, so everything else steps up by less
+     than it does for the shovel's two-button pad. */
+  body.hammer-on #stick-base { bottom: calc(112px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-jump   { bottom: calc(122px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-crouch { bottom: calc(118px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-sprint { bottom: calc(224px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-down   { bottom: calc(118px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-up     { bottom: calc(208px + env(safe-area-inset-bottom)); }
+
   @media (max-width: 620px) {
     #btn-shovel { top: calc(84px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-hammer { top: calc(118px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #hammer-note { font-size: 11px; padding: 4px 11px; }
     .sv-btn { width: 106px; height: 58px; font-size: 10px; }
     #shovel-held { font-size: 11px; padding: 4px 11px; }
   }
@@ -633,6 +696,12 @@
     <button class="sv-btn" id="btn-pick"><span class="glyph">&#9935;</span>PICK UP</button>
     <button class="sv-btn" id="btn-place"><span class="glyph">&#9635;</span>PLACE</button>
   </div>
+</div>
+
+<button id="btn-hammer" class="ui-el">Hammer &mdash; Off</button>
+<div id="hammer-ui">
+  <div id="hammer-note">Hammer &mdash; On</div>
+  <button class="sv-btn" id="btn-strike"><span class="glyph">&#128296;</span>STRIKE</button>
 </div>
 
 <div id="overlay">
@@ -2682,7 +2751,7 @@ const keys = new Set();
 // ----- keyboard -----
 const TRACKED = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
-  'KeyF', 'KeyZ', 'KeyX',
+  'KeyF', 'KeyH', 'KeyZ', 'KeyX',
   'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 // A key that lands in a text field is the field's business and nothing else's —
@@ -2697,6 +2766,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyG') toggleGameMode();
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
   else if (e.code === 'KeyF') setShovel(!shovel.on);
+  else if (e.code === 'KeyH') setHammer(!hammer.on);
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
@@ -2725,6 +2795,8 @@ renderer.domElement.addEventListener('mousedown', (e) => {
   // Once the pointer is captured the two buttons are the shovel: left takes the
   // block under the crosshair, right puts one back. Nothing else in the world is
   // clickable, so there is nothing to steal them from.
+  // The hammer takes the left button on its own — it is the only thing it does.
+  if (hammer.on) { if (e.button === 0) hammerStrike(); return; }
   if (!shovel.on) return;
   if (e.button === 0) shovelPickUp();
   else if (e.button === 2) shovelPlace();
@@ -3298,6 +3370,13 @@ const shovel = {
   hit: null,      // {i, j, lvl} the block being looked at, or null
   spot: null,     // {i, j, lvl} the empty cell a placed block would go into
   debris: null,   // {mesh, local, i, j, lvl} a loose fallen piece being looked at instead
+};
+
+// The hammer knocks one block out of the world and lets it fall. It carries
+// nothing and holds nothing, so all it needs is the cell under the crosshair.
+const hammer = {
+  on: false,
+  hit: null,      // {i, j, lvl} the block a strike would knock loose, or null
 };
 
 // ----- the ray -----
@@ -4183,6 +4262,47 @@ function editBlock(i, j, lvl, m) {
   return was;
 }
 
+// Knock one block out of the world and let it fall. Nothing is kept: the block
+// leaves the grid, becomes a one-cube piece of rubble, and from then on belongs
+// to the physics. The housekeeping is editBlock's, done by hand because the
+// falling piece has to be spawned from the material before it is overwritten.
+function hammerStrike() {
+  if (!hammer.on || !hammer.hit) return false;
+  const { i, j, lvl } = hammer.hit;
+  if (!inVoxelRange(i, j, lvl)) return false;
+  const m = voxelAt(i, j, lvl);
+  if (m === AIR || m === WATER) return false;
+
+  setVoxel(i, j, lvl, AIR);
+  const k = j * GEN_N + i;
+  colDug[k] = 1;
+  if (lvl < colDugLo[k]) colDugLo[k] = lvl;
+  powderDirty.add(k);
+  patchCollider(i, j);
+  refreshVisible(i, j, lvl);
+  refreshVisible(i - 1, j, lvl);
+  refreshVisible(i + 1, j, lvl);
+  refreshVisible(i, j - 1, lvl);
+  refreshVisible(i, j + 1, lvl);
+  refreshVisible(i, j, lvl - 1);
+  refreshVisible(i, j, lvl + 1);
+  for (let dj = -1; dj <= 1; dj++) {
+    for (let di = -1; di <= 1; di++) {
+      const ii = i + di, jj = j + dj;
+      if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+      dirtyChunks.add(chunkOf(ii, jj));
+    }
+  }
+
+  // A group of one — the same path a broken-off cliff takes, just smaller.
+  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m }]]));
+
+  // And whatever the hole left hanging comes down after it.
+  applyGravity(i, j, lvl);
+  hammer.hit = null;
+  return true;
+}
+
 function flushDirtyChunks() {
   if (!dirtyChunks.size) return;
   for (const c of dirtyChunks) rebuildChunk(c);
@@ -4243,9 +4363,15 @@ const hlPlace = new THREE.Mesh(
   new THREE.BoxGeometry(BLOCK * 0.92, BLOCK * 0.92, BLOCK * 0.92),
   new THREE.MeshBasicMaterial({ color: 0x8fd8ff, transparent: true, opacity: 0.3, depthWrite: false })
 );
-hlPick.visible = hlPlace.visible = false;
-hlPick.frustumCulled = hlPlace.frustumCulled = false;
-scene.add(hlPick, hlPlace);
+// The hammer's own cage, in ember orange so there is never any doubt about
+// which tool is out and what it is about to knock loose.
+const hlHammer = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(BLOCK * 1.05, BLOCK * 1.05, BLOCK * 1.05)),
+  new THREE.LineBasicMaterial({ color: 0xff8a3c, transparent: true, opacity: 0.95, depthWrite: false })
+);
+hlPick.visible = hlPlace.visible = hlHammer.visible = false;
+hlPick.frustumCulled = hlPlace.frustumCulled = hlHammer.frustumCulled = false;
+scene.add(hlPick, hlPlace, hlHammer);
 
 const cellCenter = (o, v) => v.set(colX(o.i), (o.lvl + 0.5) * BLOCK, colZ(o.j));
 
@@ -4271,6 +4397,7 @@ function refreshShovelUI() {
 // Called every frame while the shovel is out: the highlights follow the aim and
 // the buttons grey out when the move they offer is not a legal one.
 function updateShovel() {
+  if (hammer.on) return;         // one tool at a time; the hammer has the aim
   shovelAim();
   const canPick = shovel.debris ? !!shovel.debris.blockLocal
                                 : (!!shovel.hit && shovel.held.length < SHOVEL_CAP);
@@ -4306,6 +4433,7 @@ function updateShovel() {
 }
 
 function setShovel(on) {
+  if (on && hammer.on) setHammer(false);   // one tool out at a time
   shovel.on = on;
   document.body.classList.toggle('shovel-on', on);
   if (!on) hlPick.visible = hlPlace.visible = false;
@@ -4318,6 +4446,65 @@ bindTap(pickBtn,   () => { if (shovel.on) shovelPickUp(); });
 bindTap(placeBtn,  () => { if (shovel.on) shovelPlace(); });
 refreshShovelUI();
 
+// ----- the hammer -----
+// Same ray as the shovel's, but it only wants the solid cell: there is no spot
+// to fill and rubble is already loose, so a piece of it in the way just shortens
+// the reach rather than becoming a target.
+function hammerAim() {
+  hammer.hit = null;
+  if (!hammer.on) return;
+
+  camera.getWorldDirection(aimDir);
+  let ox, oy, oz;
+  if (camMode === CAM.FREE) {
+    ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
+  } else {
+    const p = playerBody.position;
+    ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
+  }
+
+  const dHit = debrisAim(ox, oy, oz);
+  if (!voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) return;
+  const m = voxelAt(ddaHit.i, ddaHit.j, ddaHit.lvl);
+  if (m === AIR || m === WATER) return;    // water is not a block you can knock out
+  hammer.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
+}
+
+const hammerBtn  = document.getElementById('btn-hammer');
+const strikeBtn  = document.getElementById('btn-strike');
+const hammerNote = document.getElementById('hammer-note');
+
+function refreshHammerUI() {
+  hammerBtn.innerHTML = 'Hammer &mdash; ' + (hammer.on ? 'On' : 'Off');
+  hammerBtn.classList.toggle('on', hammer.on);
+  hammerNote.innerHTML = 'Hammer &mdash; ' + (hammer.on ? 'On' : 'Off');
+}
+
+// Called every frame while the hammer is out, for the same reason updateShovel
+// is: on a phone the cage is the only way to tell what the crosshair has.
+function updateHammer() {
+  hammerAim();
+  hlHammer.visible = hammer.on && !!hammer.hit;
+  if (hlHammer.visible) {
+    cellCenter(hammer.hit, hlHammer.position);
+    hlHammer.quaternion.identity();
+  }
+  strikeBtn.classList.toggle('dim', !hammer.hit);
+}
+
+function setHammer(on) {
+  if (on && shovel.on) setShovel(false);   // one tool out at a time
+  hammer.on = on;
+  document.body.classList.toggle('hammer-on', on);
+  if (!on) { hlHammer.visible = false; hammer.hit = null; }
+  refreshHammerUI();
+  refreshModeUI();
+}
+
+bindTap(hammerBtn, () => setHammer(!hammer.on));
+bindTap(strikeBtn, () => { if (hammer.on) hammerStrike(); });
+refreshHammerUI();
+
 // ---------------------------------------------------------------------------
 // Mode UI
 // ---------------------------------------------------------------------------
@@ -4328,27 +4515,31 @@ const modeBtn   = document.getElementById('mode-btn');
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'],
-                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'],
-                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'],
+                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'],
+                ['H', 'Hammer on / off'], ['M', 'Terrain skin / cubes'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
                 ['Mouse', 'Look'], ['5', 'Materials'],
-                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
+                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel / Hammer', 'Buttons, top left']],
   [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel / Hammer', 'Buttons, top left']],
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in'],
-                ['Shovel', 'Button, top left']],
+                ['Shovel / Hammer', 'Buttons, top left']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
                 ['MATS', 'Panel, top left']],
@@ -4356,6 +4547,9 @@ const HELP_TOUCH = {
 // Appended while the shovel is out, in whichever camera you are in.
 const HELP_SHOVEL_DESKTOP = [['LMB / Z', 'Pick up block'], ['RMB / X', 'Place block']];
 const HELP_SHOVEL_TOUCH   = [['PICK UP', 'Take the lit block'], ['PLACE', 'Fill the ghost cell']];
+// And while the hammer is. It keeps nothing, so there is only the one move.
+const HELP_HAMMER_DESKTOP = [['LMB', 'Knock the lit block loose']];
+const HELP_HAMMER_TOUCH   = [['STRIKE', 'Knock the lit block loose']];
 
 function refreshModeUI() {
   const inGame = camMode !== CAM.FREE;
@@ -4365,6 +4559,7 @@ function refreshModeUI() {
 
   let rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
   if (shovel.on) rows = rows.concat(isTouchDevice ? HELP_SHOVEL_TOUCH : HELP_SHOVEL_DESKTOP);
+  if (hammer.on) rows = rows.concat(isTouchDevice ? HELP_HAMMER_TOUCH : HELP_HAMMER_DESKTOP);
   instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
 
@@ -4375,7 +4570,7 @@ function refreshModeUI() {
   document.body.classList.toggle('pad-act', camMode === CAM.FIRST || camMode === CAM.THIRD);
   // Third person normally has nothing to aim, but with the shovel out the
   // crosshair is what picks the block — so it comes back for that.
-  const noCross = (camMode === CAM.THIRD && !shovel.on) || camMode === CAM.TOP;
+  const noCross = (camMode === CAM.THIRD && !shovel.on && !hammer.on) || camMode === CAM.TOP;
   document.getElementById('crosshair').style.display = noCross ? 'none' : '';
 }
 
@@ -4588,6 +4783,7 @@ function tick() {
   // After the camera, since the aim is taken down the view direction, and before
   // the render so the highlight boxes are in the right place this frame.
   if (shovel.on) updateShovel();
+  if (hammer.on) updateHammer();
   flushDirtyChunks();
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
@@ -4636,6 +4832,8 @@ window.hermes = {
   // The shovel. `shovel.held` is the stack of materials in your hands; moving a
   // block through it is the only way anything ever changes.
   shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,
+  // The hammer. One block out of the grid and into the rubble, nothing kept.
+  hammer, setHammer, hammerStrike,
   // The voxel store — the material of every block in the volume, not just the
   // surface, which is what a digging system would work against. voxelAtWorld
   // takes metres; the rest take column indices and levels. The MAT_STATS ids and

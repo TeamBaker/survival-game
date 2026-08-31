@@ -3280,6 +3280,7 @@ const playerBody = new CANNON.Body({
   allowSleep: false,
   collisionFilterGroup: PLAYER_GROUP,
   collisionFilterMask: DEBRIS_GROUP,
+  collisionResponse: false,
 });
 let crouched = false;
 

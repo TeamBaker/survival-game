@@ -4370,7 +4370,7 @@ function debrisSpot(mesh, point, dir) {
   // Determine which face of the block the hit point is on by checking
   // which axis has the largest offset from the block center.
   const ox = localPt.x - best.pos.x, oy = localPt.y - best.pos.y, oz = localPt.z - best.pos.z;
-  let bestFace = null, bestDist = Infinity;
+  let bestFace = null; bestDist = Infinity;
   for (const f of faces) {
     const fx = best.pos.x + f.dx, fy = best.pos.y + f.dy, fz = best.pos.z + f.dz;
     // Skip if occupied.

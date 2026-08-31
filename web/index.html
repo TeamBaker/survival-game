@@ -4044,7 +4044,7 @@ function shedPowder() {
     for (let n = list.length - 1; n >= 0; n--) {
       const f = list[n];
       // A piece still travelling is mid-break: leave it, or it dissolves in the air.
-      if (s && f.body.velocity.lengthSquared() > FALL_REST_V * FALL_REST_V) continue;
+      // Actually, shed powder always — it should fall when unsupported regardless.
       const mesh = f.mesh, lat = mesh.userData.blocks;
       // World down in the piece's own frame, snapped to the axis it leans on most,
       // so a tilted piece sheds down one of its own columns rather than diagonally.
@@ -4517,6 +4517,18 @@ function breakOffAdrift(i, j, lvl) {
   }
 
   spawnFallingChunk(unit);
+
+  // Propagate: blocks next to the ones that fell might now be adrift too.
+  const checked = new Set();
+  for (const b of unit.values()) {
+    for (const [di, dj, dl] of GRAV_DIRS) {
+      const ni = b.i + di, nj = b.j + dj, nl = b.lvl + dl;
+      const nk = ni + ',' + nj + ',' + nl;
+      if (checked.has(nk)) continue;
+      checked.add(nk);
+      if (gravSolid(ni, nj, nl)) breakOffAdrift(ni, nj, nl);
+    }
+  }
 }
 
 function editBlock(i, j, lvl, m) {

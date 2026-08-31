@@ -563,6 +563,152 @@
     #shovel-held { font-size: 11px; padding: 4px 11px; }
   }
 
+  /* ---------- Material interaction chart ---------- */
+  /* A reference card, not a takeover: the backdrop dims the world and eats the
+     clicks, and the panel itself stays a bounded box you can scroll on a phone. */
+  #btn-chart {
+    position: fixed;
+    top: calc(212px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-chart.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-chart:active { transform: translateY(1px); }
+
+  #chart-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.chart-open #chart-overlay { display: flex; }
+
+  #chart-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: min(760px, 100%);
+    max-height: 100%;
+    padding: 16px;
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  }
+  #chart-panel .title {
+    display: block;
+    margin: 0 34px 12px 0;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+  /* The grid is the scroller, so the title, close button and footnote stay put
+     while fifteen materials slide past under them. */
+  #chart-scroll {
+    min-height: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #chart-grid {
+    display: grid;
+    grid-template-columns: minmax(88px, 1.2fr) repeat(5, minmax(72px, 1fr));
+    gap: 2px;
+    min-width: 520px;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+  .ch-h {
+    position: sticky;
+    top: 0;
+    padding: 6px 7px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: #10101f;
+    border-radius: 4px;
+    z-index: 1;
+  }
+  .ch-h small {
+    display: block;
+    margin-top: 2px;
+    font-size: 8px;
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    color: #7b8ba6;
+  }
+  .ch-h.dry      { color: #ffab5c; }
+  .ch-h.water    { color: #5c9dff; }
+  .ch-h.rain     { color: #7fd4ff; }
+  .ch-h.break    { color: #ff6b6b; }
+  .ch-h.compress { color: #9aa5b5; }
+  .ch-h.mat      { color: #cfe6ff; }
+
+  .ch-mat {
+    padding: 7px;
+    font-weight: 700;
+    color: #eaf2ff;
+    background: rgba(120, 165, 225, 0.14);
+    border-radius: 4px;
+  }
+  .ch-c {
+    padding: 7px;
+    color: #dfe9f8;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+  }
+  /* Nothing happens here — flatten it so the eye skips straight to what does. */
+  .ch-c.empty { color: #3d4658; background: rgba(255, 255, 255, 0.015); }
+
+  #chart-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #chart-close:active { transform: translateY(1px); }
+  #chart-foot { margin-top: 10px; color: #62819f; font-size: 10px; }
+
+  @media (max-width: 620px) {
+    #btn-chart { top: calc(186px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #chart-panel { padding: 12px; }
+    #chart-grid { font-size: 10px; min-width: 460px; }
+  }
+
   /* ---------- Start / pause overlay ---------- */
   #overlay {
     position: fixed;
@@ -702,6 +848,18 @@
 <div id="hammer-ui">
   <div id="hammer-note">Hammer &mdash; On</div>
   <button class="sv-btn" id="btn-strike"><span class="glyph">&#128296;</span>STRIKE</button>
+</div>
+
+<button id="btn-chart" class="ui-el">Chart</button>
+
+<!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
+<div id="chart-overlay" class="ui-el">
+  <div id="chart-panel">
+    <button id="chart-close" aria-label="Close">&times;</button>
+    <span class="title">Material Interactions</span>
+    <div id="chart-scroll"><div id="chart-grid"></div></div>
+    <div id="chart-foot">50% = random chance on break</div>
+  </div>
 </div>
 
 <div id="overlay">
@@ -2754,7 +2912,7 @@ const keys = new Set();
 // ----- keyboard -----
 const TRACKED = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
-  'KeyF', 'KeyH', 'KeyZ', 'KeyX',
+  'KeyF', 'KeyH', 'KeyZ', 'KeyX', 'KeyT',
   'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 // A key that lands in a text field is the field's business and nothing else's —
@@ -2774,6 +2932,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyX') shovelPlace();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
   else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
+  else if (e.code === 'KeyT') toggleChart();
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (typing(e)) return;
@@ -4518,35 +4677,38 @@ const modeBtn   = document.getElementById('mode-btn');
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'],
+                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'],
+                ['T', 'Material chart'], ['F', 'Shovel on / off'],
                 ['H', 'Hammer on / off'], ['M', 'Terrain skin / cubes'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['5', 'Materials'],
+                ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel / Hammer', 'Buttons, top left']],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
+                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel / Hammer', 'Buttons, top left']],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
+                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in'],
-                ['Shovel / Hammer', 'Buttons, top left']],
+                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
-                ['MATS', 'Panel, top left']],
+                ['MATS / CHART', 'Panels, top left']],
 };
 // Appended while the shovel is out, in whichever camera you are in.
 const HELP_SHOVEL_DESKTOP = [['LMB / Z', 'Pick up block'], ['RMB / X', 'Place block']];
@@ -4654,6 +4816,65 @@ function setMaterialsUI(on) {
 function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
 bindTap(materialsBtn, toggleMaterialsUI);
 bindTap(document.getElementById('mat-close'), () => setMaterialsUI(false));
+
+// ---------------------------------------------------------------------------
+// Material interaction chart
+// ---------------------------------------------------------------------------
+// What each material turns into under the five things that can happen to it.
+// An empty string is "nothing happens" and renders as the dim dash.
+const CHART_COLS = [
+  { key: 'dry',      label: 'Dry' },
+  { key: 'water',    label: 'Water' },
+  { key: 'rain',     label: 'Rain' },
+  { key: 'break',    label: 'Break', sub: 'If empty block breaks' },
+  { key: 'compress', label: 'Compress' },
+];
+const MAT_CHART = [
+  { mat: 'Dirt',          dry: '',              water: 'Mud',        rain: 'Mud',        break: '50% Fine dirt, 50% Dirt',  compress: '' },
+  { mat: 'Mud',           dry: 'Dirt',          water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Fine dirt',     dry: '',              water: 'Fine mud',   rain: 'Fine mud',   break: '',                         compress: '' },
+  { mat: 'Hard dirt',     dry: '',              water: 'Fine mud',   rain: '',           break: 'Dirt',                     compress: '' },
+  { mat: 'Fine mud',      dry: 'Hard dirt',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Stone',         dry: '',              water: '',           rain: '',           break: '50% Stone, 50% Stone dust',compress: '' },
+  { mat: 'Stone dust',    dry: '',              water: 'Stone mud',  rain: 'Stone mud',  break: '',                         compress: '' },
+  { mat: 'Stone mud',     dry: 'Brittle stone', water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Brittle stone', dry: '',              water: '',           rain: '',           break: 'Stone dust',               compress: '' },
+  { mat: 'Clay',          dry: '',              water: 'Clay mud',   rain: 'Clay mud',   break: '',                         compress: '' },
+  { mat: 'Clay mud',      dry: 'Hard clay',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Hard clay',     dry: '',              water: '',           rain: '',           break: 'Clay',                     compress: '' },
+  { mat: 'Sand',          dry: '',              water: 'Wet sand',   rain: 'Wet sand',   break: '',                         compress: '' },
+  { mat: 'Wet sand',      dry: 'Hard sand',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Hard sand',     dry: '',              water: 'Wet sand',   rain: '',           break: 'Sand',                     compress: '' },
+];
+
+document.getElementById('chart-grid').innerHTML =
+  '<div class="ch-h mat">Material</div>'
+  + CHART_COLS.map((c) => `<div class="ch-h ${c.key}">${c.label}${c.sub ? `<small>${c.sub}</small>` : ''}</div>`).join('')
+  + MAT_CHART.map((r) => `<div class="ch-mat">${r.mat}</div>`
+      + CHART_COLS.map((c) => r[c.key]
+          ? `<div class="ch-c">${r[c.key]}</div>`
+          : '<div class="ch-c empty">&mdash;</div>').join('')).join('');
+
+const chartBtn = document.getElementById('btn-chart');
+
+let chartOpen = false;
+function setChartUI(on) {
+  chartOpen = on;
+  document.body.classList.toggle('chart-open', on);
+  chartBtn.classList.toggle('on', on);
+  // Same deal as the materials panel: with the pointer locked there is no cursor
+  // to hit the X with, and mouse look would keep running underneath.
+  if (on && document.pointerLockElement) document.exitPointerLock();
+}
+function toggleChart() { setChartUI(!chartOpen); }
+bindTap(chartBtn, toggleChart);
+bindTap(document.getElementById('chart-close'), () => setChartUI(false));
+// The backdrop is the other way out, but a drag that scrolls the table must not
+// count as one — only a tap on the dimmed area itself closes.
+document.getElementById('chart-overlay').addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'chart-overlay') setChartUI(false);
+  e.stopPropagation();
+});
 
 // ---------------------------------------------------------------------------
 // Overlay

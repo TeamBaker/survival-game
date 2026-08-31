@@ -4352,6 +4352,15 @@ function debrisSpot(mesh, point, dir) {
   v.x = anchor.x + Math.round((v.x - anchor.x) / BLOCK) * BLOCK;
   v.y = anchor.y + Math.round((v.y - anchor.y) / BLOCK) * BLOCK;
   v.z = anchor.z + Math.round((v.z - anchor.z) / BLOCK) * BLOCK;
+  // Check the spot is face-adjacent to at least one existing block.
+  let hasFace = false;
+  for (const b of lat) {
+    const dx = Math.abs(b.pos.x - v.x), dy = Math.abs(b.pos.y - v.y), dz = Math.abs(b.pos.z - v.z);
+    if ((dx === BLOCK && dy === 0 && dz === 0) ||
+        (dy === BLOCK && dx === 0 && dz === 0) ||
+        (dz === BLOCK && dx === 0 && dy === 0)) { hasFace = true; break; }
+  }
+  if (!hasFace) return null;
   for (const b of lat) {
     if (Math.abs(b.pos.x - v.x) < 0.01 && Math.abs(b.pos.y - v.y) < 0.01
         && Math.abs(b.pos.z - v.z) < 0.01) return null;

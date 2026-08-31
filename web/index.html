@@ -3954,6 +3954,12 @@ function shedColumn(c, budget) {
         && !MAT_STATS[voxMat[o + lvl + 1]]?.powder) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
     editBlock(i, j, lvl, AIR);   // refreshes the faces, and brings down what was above
+    // Mark neighboring columns dirty so blocks that lost their sand bridge
+    // get rechecked for adrift status by the next cascade pass.
+    for (const [di, dj] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const ni = i + di, nj = j + dj;
+      if (ni >= 0 && nj >= 0 && ni < GEN_N && nj < GEN_N) powderDirty.add(nj * GEN_N + ni);
+    }
     // It is not gone, it is falling: hand it to the same grain path the rubble uses.
     const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
     g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[m]);   // boxGeo is a unit cube: scale it to block size
@@ -3989,11 +3995,17 @@ function checkTerrainPowder() {
   // Dig out from under a bank of sand and it goes this frame, not whenever the
   // sweep next comes round. editBlock re-marks the column as it empties it, so a
   // collapse that outruns the budget carries on next frame.
+  // Loop until stable: each shed can trigger gravity that sheds more, which
+  // triggers more gravity. Solid blocks that were held up only by sand must all
+  // fall before we stop, or the gravity check sees stale paths.
   if (powderDirty.size) {
-    const touched = [...powderDirty];
-    powderDirty.clear();
-    let b = POWDER_SCAN_CAP;
-    for (const c of touched) b = shedColumn(c, b);
+    for (let safety = 0; safety < 16; safety++) {
+      const touched = [...powderDirty];
+      powderDirty.clear();
+      let b = POWDER_SCAN_CAP;
+      for (const c of touched) b = shedColumn(c, b);
+      if (!powderDirty.size) break;
+    }
   }
   if (++powderTick % 10) return;
   const cols = GEN_N * GEN_N;

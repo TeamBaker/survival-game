@@ -2922,6 +2922,7 @@ hfBody.addShape(hfShape);
 hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
 hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
 hfBody.updateAABB();
+hfBody.collisionFilterMask = DEBRIS_GROUP;  // heightfield only collides with debris — player uses voxel collision
 world.addBody(hfBody);
 
 // One column of the collider, after the store under it changed.
@@ -3274,6 +3275,8 @@ const playerBody = new CANNON.Body({
   linearDamping: 0,
   angularDamping: 1,
   allowSleep: false,
+  collisionFilterGroup: PLAYER_GROUP,
+  collisionFilterMask: DEBRIS_GROUP,
 });
 let crouched = false;
 
@@ -3866,6 +3869,7 @@ const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
+const PLAYER_GROUP  = 2;     // player uses voxel collision, so skip cannon's heightfield     // the default group — pieces collide with each other and with everything else
 const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 // White, because the colour of every cube comes in per instance.
 const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });

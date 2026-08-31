@@ -3356,8 +3356,36 @@ function respawn() {
   state.pitch = 0;
 }
 
+// Voxel ground: the top of the highest solid block spanning the player's own
+// height, so an overhang is collided with where it actually is rather than at
+// the top of its column the way the heightfield reports it.
+function voxelGroundY(wx, wy, wz) {
+  const i = colI(wx), j = colJ(wz);
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return HF_FLOOR;
+  const k = j * GEN_N + i;
+  const top = sTop[k];
+  if (top === NO_COLUMN) return HF_FLOOR;
+  const o = voxOff[k] - VOX_FLOOR;
+  const headLvl = Math.floor((wy + 0.8) / BLOCK);
+  const footLvl = Math.floor((wy - 0.8) / BLOCK);
+  for (let lvl = Math.min(top, headLvl); lvl >= Math.max(VOX_FLOOR, footLvl); lvl--) {
+    const m = voxMat[o + lvl];
+    if (m !== AIR && m !== WATER) return (lvl + 1) * BLOCK;
+  }
+  return HF_FLOOR;
+}
+
 function updatePlayer(dt) {
   const p = playerBody.position, v = playerBody.velocity;
+
+  // Voxel override: the heightfield only knows the column top, so lift the
+  // player out of whatever solid block their feet are actually inside.
+  const groundY = voxelGroundY(p.x, p.y, p.z);
+  if (p.y - centerOffset() < groundY) {
+    p.y = groundY + centerOffset();
+    if (v.y < 0) v.y = 0;
+    groundNy = 1.0;
+  }
 
   // --- crouch: held on desktop, latched on touch ---
   const wantCrouch = keys.has('KeyC') || state.crouchBtn;

@@ -2925,8 +2925,7 @@ hfBody.addShape(hfShape);
 hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
 hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
 hfBody.updateAABB();
-hfBody.collisionFilterMask = DEBRIS_GROUP;  // heightfield only collides with debris — player uses voxel collision
-world.addBody(hfBody);
+// hfBody removed — voxel collision handles both player and debris
 
 // One column of the collider, after the store under it changed.
 function patchCollider(i, j) {
@@ -4072,6 +4071,85 @@ function checkTerrainPowder() {
   powderCursor = k % cols;
 }
 
+// The heightfield the loose pieces fall against only knows the top of each
+// column, so a hollow — inside an arch, a room under its roof — reads as solid
+// rock the whole way down, and a piece that lands in one gets shoved out through
+// the wall. The same override the player gets: once the step is over, walk the
+// piece's own lattice and put whichever of its blocks ended up buried in real
+// voxels back out through the nearest face.
+const debrisLists = [fallingChunks, restedChunks];  // both mutate in place, so the handles keep
+const debrisProbe = new CANNON.Vec3();
+// Cannon lets a resting body settle a hair into what holds it up. Anything
+// shallower than this is that, not a piece in a wall, and correcting it would
+// only wake the heap up again every frame.
+const VOX_DEBRIS_SLOP = BLOCK * 0.02;
+
+function voxelDebrisCollide() {
+  for (const list of debrisLists) {
+    for (const f of list) {
+      const body = f.body, lat = f.mesh.userData.blocks;
+      if (!lat || !lat.length) continue;
+      const p = body.position;
+      // Deepest push each way over the whole piece, so one block wedged in a
+      // floor cannot undo another one wedged in a wall.
+      let xp = 0, xn = 0, yp = 0, yn = 0, zp = 0, zn = 0;
+      for (const b of lat) {
+        debrisProbe.set(b.pos.x, b.pos.y, b.pos.z);
+        body.quaternion.vmult(debrisProbe, debrisProbe);
+        const px = p.x + debrisProbe.x, py = p.y + debrisProbe.y, pz = p.z + debrisProbe.z;
+        // Both sides are cubes of the same size, so ask instead where this one's
+        // centre may not go: the voxel grown by a half block on every face. A
+        // tilted piece is taken as if it were square on, which errs towards
+        // keeping it out rather than letting it through.
+        const mi = colI(px - BLOCK), xi = colI(px + BLOCK);
+        const mj = colJ(pz - BLOCK), xj = colJ(pz + BLOCK);
+        const mlvl = Math.floor((py - BLOCK) / BLOCK), xlvl = Math.floor((py + BLOCK) / BLOCK);
+        for (let jj = mj; jj <= xj; jj++) {
+          for (let ii = mi; ii <= xi; ii++) {
+            if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+            const k = jj * GEN_N + ii;
+            const top = sTop[k];
+            if (top === NO_COLUMN) continue;
+            const o = voxOff[k] - VOX_FLOOR;
+            const lo = Math.max(VOX_FLOOR, mlvl), hi = Math.min(top, xlvl);
+            const bx = colX(ii), bz = colZ(jj);
+            for (let lvl = lo; lvl <= hi; lvl++) {
+              const m = voxMat[o + lvl];
+              if (m === AIR || m === WATER) continue;
+              const ex = Math.min(px - bx + BLOCK, bx + BLOCK - px);
+              if (ex <= VOX_DEBRIS_SLOP) continue;
+              const ez = Math.min(pz - bz + BLOCK, bz + BLOCK - pz);
+              if (ez <= VOX_DEBRIS_SLOP) continue;
+              const bminY = lvl * BLOCK, bmaxY = bminY + BLOCK;
+              const ey = Math.min(py - bminY + HALF_BLOCK, bmaxY + HALF_BLOCK - py);
+              if (ey <= VOX_DEBRIS_SLOP) continue;
+              // Out through the nearest face of that grown box.
+              if (ey <= ex && ey <= ez) {
+                if (py < bminY + HALF_BLOCK) { if (-ey < yn) yn = -ey; } else if (ey > yp) yp = ey;
+              } else if (ex <= ez) {
+                if (px < bx) { if (-ex < xn) xn = -ex; } else if (ex > xp) xp = ex;
+              } else {
+                if (pz < bz) { if (-ez < zn) zn = -ez; } else if (ez > zp) zp = ez;
+              }
+            }
+          }
+        }
+      }
+      const dx = xp + xn, dy = yp + yn, dz = zp + zn;
+      if (!dx && !dy && !dz) continue;
+      p.x += dx; p.y += dy; p.z += dz;
+      // Only the part of the motion that was going into the block is lost — the
+      // piece keeps whatever was carrying it along the face.
+      const v = body.velocity;
+      if (dx > 0 ? v.x < 0 : dx < 0 && v.x > 0) v.x = 0;
+      if (dy > 0 ? v.y < 0 : dy < 0 && v.y > 0) v.y = 0;
+      if (dz > 0 ? v.z < 0 : dz < 0 && v.z > 0) v.z = 0;
+      // A settled heap the ground has since grown into has to fall again.
+      body.wakeUp();
+    }
+  }
+}
+
 // Called once a frame after the step: retire whatever has stopped moving, and
 // drop whatever has fallen out of the world altogether.
 function updateFallingChunks() {
@@ -5160,8 +5238,11 @@ function tick() {
   // --- physics: fixed 120 Hz steps, sub-stepped to catch up with the frame ---
   // Twice the old rate: a shorter step resolves the block-edge contacts before
   // they build into a shove, which is the one thing here that helps the walk.
-  // Nothing touches the body afterwards — the solver's answer is the answer.
+  // Nothing touches the player body afterwards — the solver's answer is the answer.
   world.step(PHYS_STEP, dt, 8);
+  // The loose pieces do get one correction: the heightfield cannot see a hollow,
+  // so the voxels have the last word on where a piece may be.
+  voxelDebrisCollide();
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);

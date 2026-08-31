@@ -1830,7 +1830,7 @@ const MAX_DEPTH  = 80;   // and the most any column will ever draw (16 m)
 // most of the geometry. The split is also the unit the shovel rebuilds in: one
 // edited block redraws its chunk and the ones its neighbours' faces reach into,
 // which is fourteen thousand columns rather than nine hundred thousand.
-const CHUNK   = 120;                        // columns per chunk side (24 m)
+const CHUNK   = 16;                         // columns per chunk side (3.2 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 
@@ -3637,6 +3637,7 @@ const hammer = {
 // front of it to fill.
 const ddaHit  = { i: 0, j: 0, lvl: 0 };
 const ddaPrev = { i: 0, j: 0, lvl: 0 };
+const ddaFace = { di: 0, dj: 0, dl: 0 }; // face normal of the hit block's entry face
 function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
   // One grid unit per block, so the DDA is the textbook unit-cell one and the
   // direction carries over unchanged (the scaling is uniform).
@@ -3652,6 +3653,7 @@ function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
   const tMax = reach / BLOCK;
 
   let pi = i, pj = j, pl = lvl, t = 0;
+  ddaFace.di = 0; ddaFace.dj = 0; ddaFace.dl = 0;
   for (let step = 0; step < 256; step++) {
     if (voxelAt(i, j, lvl) !== AIR) {
       ddaHit.i = i;   ddaHit.j = j;   ddaHit.lvl = lvl;
@@ -3659,9 +3661,9 @@ function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
       return true;
     }
     pi = i; pj = j; pl = lvl;
-    if (tI <= tL && tI <= tJ)  { t = tI; i   += si; tI += tdI; }
-    else if (tL <= tJ)         { t = tL; lvl += sl; tL += tdL; }
-    else                       { t = tJ; j   += sj; tJ += tdJ; }
+    if (tI <= tL && tI <= tJ)  { t = tI; i   += si; tI += tdI; ddaFace.di=-si; ddaFace.dj=0; ddaFace.dl=0; }
+    else if (tL <= tJ)         { t = tL; lvl += sl; tL += tdL; ddaFace.di=0; ddaFace.dj=0; ddaFace.dl=-sl; }
+    else                       { t = tJ; j   += sj; tJ += tdJ; ddaFace.di=0; ddaFace.dj=-sj; ddaFace.dl=0; }
     if (t > tMax) return false;
   }
   return false;
@@ -3728,7 +3730,7 @@ function shovelAim() {
   const dHit = debrisAim(ox, oy, oz);
   if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
     shovel.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
-    shovel.spot = { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl };
+    shovel.spot = { i: ddaHit.i + ddaFace.di, j: ddaHit.j + ddaFace.dj, lvl: ddaHit.lvl + ddaFace.dl };
   } else if (dHit) {
     // Looking at a fallen piece. Digging takes off the one block under the
     // crosshair; a place joins the piece's own lattice, against the face you can

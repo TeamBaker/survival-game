@@ -4582,22 +4582,15 @@ function resolveBreakMat(m) {
 function hammerStrike() {
   if (!hammer.on || !hammer.hit) return false;
 
-  // Debris block — pop it off the piece.
+  // Debris block — knock it off the piece (splits if needed).
   if (hammer.debris) {
     const { mesh, idx } = hammer.debris;
     const lat = mesh.userData.blocks;
     if (idx < 0 || idx >= lat.length) return false;
     const dropMat = resolveBreakMat(lat[idx].mat);
+    digDebrisBlock(mesh, idx, null);
     shovel.held.push(dropMat);
-    cutDebrisLat(mesh, idx);
     refreshShovelUI();
-    // Rebuild the body and recenter.
-    const f = chunkOfMesh(mesh);
-    if (f) {
-      recentreDebris(mesh, f.body);
-      rebuildDebrisBody(mesh, f.body);
-      f.body.wakeUp();
-    }
     hammer.hit = null;
     hammer.debris = null;
     return true;

@@ -378,7 +378,7 @@
 
   #btn-materials {
     position: fixed;
-    top: calc(136px + env(safe-area-inset-top));
+    top: calc(176px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
@@ -401,7 +401,7 @@
 
   @media (max-width: 620px) {
     #materials-ui { font-size: 12px; }
-    #btn-materials { font-size: 10px; padding: 7px 12px; }
+    #btn-materials { top: calc(152px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
   }
 
   /* ---------- Shovel (temporary block-moving tool) ---------- */
@@ -494,10 +494,219 @@
   body.shovel-on #btn-down   { bottom: calc(126px + env(safe-area-inset-bottom)); }
   body.shovel-on #btn-up     { bottom: calc(216px + env(safe-area-inset-bottom)); }
 
+  /* ---------- Hammer (knocks a block loose, keeps nothing) ---------- */
+  #btn-hammer {
+    position: fixed;
+    top: calc(130px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-hammer.on {
+    color: #1d0700;
+    background: linear-gradient(180deg, #ffc09a, #f0703c);
+    border-color: transparent;
+  }
+
+  #hammer-ui {
+    position: fixed;
+    left: 50%;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    z-index: 13;
+  }
+  body.hammer-on #hammer-ui { display: flex; }
+
+  #hammer-note {
+    padding: 5px 13px;
+    font-size: 12px;
+    color: #ffe2d0;
+    background: rgba(8, 14, 24, 0.62);
+    border: 1px solid rgba(255, 170, 120, 0.28);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    white-space: nowrap;
+  }
+
+  /* Only the one strike button down there, so everything else steps up by less
+     than it does for the shovel's two-button pad. */
+  body.hammer-on #stick-base { bottom: calc(112px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-jump   { bottom: calc(122px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-crouch { bottom: calc(118px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-sprint { bottom: calc(224px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-down   { bottom: calc(118px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-up     { bottom: calc(208px + env(safe-area-inset-bottom)); }
+
   @media (max-width: 620px) {
     #btn-shovel { top: calc(84px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-hammer { top: calc(118px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #hammer-note { font-size: 11px; padding: 4px 11px; }
     .sv-btn { width: 106px; height: 58px; font-size: 10px; }
     #shovel-held { font-size: 11px; padding: 4px 11px; }
+  }
+
+  /* ---------- Material interaction chart ---------- */
+  /* A reference card, not a takeover: the backdrop dims the world and eats the
+     clicks, and the panel itself stays a bounded box you can scroll on a phone. */
+  #btn-chart {
+    position: fixed;
+    top: calc(212px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-chart.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-chart:active { transform: translateY(1px); }
+
+  #chart-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.chart-open #chart-overlay { display: flex; }
+
+  #chart-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: min(760px, 100%);
+    max-height: 100%;
+    padding: 16px;
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  }
+  #chart-panel .title {
+    display: block;
+    margin: 0 34px 12px 0;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+  /* The grid is the scroller, so the title, close button and footnote stay put
+     while fifteen materials slide past under them. */
+  #chart-scroll {
+    min-height: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #chart-grid {
+    display: grid;
+    grid-template-columns: minmax(88px, 1.2fr) repeat(5, minmax(72px, 1fr));
+    gap: 2px;
+    min-width: 520px;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+  .ch-h {
+    position: sticky;
+    top: 0;
+    padding: 6px 7px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: #10101f;
+    border-radius: 4px;
+    z-index: 1;
+  }
+  .ch-h small {
+    display: block;
+    margin-top: 2px;
+    font-size: 8px;
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    color: #7b8ba6;
+  }
+  .ch-h.dry      { color: #ffab5c; }
+  .ch-h.water    { color: #5c9dff; }
+  .ch-h.rain     { color: #7fd4ff; }
+  .ch-h.break    { color: #ff6b6b; }
+  .ch-h.compress { color: #9aa5b5; }
+  .ch-h.mat      { color: #cfe6ff; }
+
+  .ch-mat {
+    padding: 7px;
+    font-weight: 700;
+    color: #eaf2ff;
+    background: rgba(120, 165, 225, 0.14);
+    border-radius: 4px;
+  }
+  .ch-c {
+    padding: 7px;
+    color: #dfe9f8;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+  }
+  /* Nothing happens here — flatten it so the eye skips straight to what does. */
+  .ch-c.empty { color: #3d4658; background: rgba(255, 255, 255, 0.015); }
+
+  #chart-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #chart-close:active { transform: translateY(1px); }
+  #chart-foot { margin-top: 10px; color: #62819f; font-size: 10px; }
+
+  @media (max-width: 620px) {
+    #btn-chart { top: calc(186px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #chart-panel { padding: 12px; }
+    #chart-grid { font-size: 10px; min-width: 460px; }
   }
 
   /* ---------- Start / pause overlay ---------- */
@@ -635,6 +844,24 @@
   </div>
 </div>
 
+<button id="btn-hammer" class="ui-el">Hammer &mdash; Off</button>
+<div id="hammer-ui">
+  <div id="hammer-note">Hammer &mdash; On</div>
+  <button class="sv-btn" id="btn-strike"><span class="glyph">&#128296;</span>STRIKE</button>
+</div>
+
+<button id="btn-chart" class="ui-el">Chart</button>
+
+<!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
+<div id="chart-overlay" class="ui-el">
+  <div id="chart-panel">
+    <button id="chart-close" aria-label="Close">&times;</button>
+    <span class="title">Material Interactions</span>
+    <div id="chart-scroll"><div id="chart-grid"></div></div>
+    <div id="chart-foot">50% = random chance on break</div>
+  </div>
+</div>
+
 <div id="overlay">
   <div>
     <h1>Hermes 3D</h1>
@@ -718,7 +945,7 @@ const ISLAND_PEAK = 12.0;
 // Half-width of the generated field, in metres. Everything inside this is cubes,
 // sea floor included, so it has to reach well past the shoreline: at the rim the
 // bed is already twenty metres down, which is deeper than the water is legible.
-const GEN_R      = 96;
+const GEN_R      = 48;
 const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (960)
 const SEABED_DEPTH = 16;     // how far the sea floor drops away offshore
 const SUN = new THREE.Vector3(0.45, 0.72, 0.52).normalize();
@@ -1187,10 +1414,35 @@ const SAND = 0, DIRT = 1, ROCK = 2, WATER = 3;
 const FINE_DIRT = 4, MUD = 5, HARD_DIRT = 6, FINE_MUD = 7;
 const STONE_DUST = 8, STONE_MUD = 9, BRITTLE_STONE = 10;
 const CLAY = 11, CLAY_MUD = 12, HARD_CLAY = 13;
-const N_MATS = 14;
+const N_MATS = 16;
 // Not a terrain material: the value the voxel store below uses for a block that
 // is not there. It sorts after the real ones so `m < AIR` means solid.
 const AIR = N_MATS;
+
+// The numbers are the material's own properties, indexed by material id and not
+// yet read by anything that simulates: weight is how much a block of it drags on
+// you, buoyancy how much the water pushes it back up, strength how much work it
+// takes to break out of the ground, powder whether it is loose and crumbly.
+// Water is the one entry with none — it is a block in the store but it is not a
+// thing you can carry.
+const MAT_STATS = [
+  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 0.5, powder: true  },  // SAND
+  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
+  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
+  null,                                                                        // WATER
+  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 0.8, powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 1.4, powder: false },  // HARD_SAND
+];
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -1435,6 +1687,21 @@ function canBuildAt(i, j, lvl) {
   return topLvl[j * GEN_N + i] !== NO_COLUMN && lvl >= VOX_FLOOR;
 }
 
+// Does (i, j, lvl) share a face with (hi, hj, hlvl)?
+function isFaceAdjacent(i, j, lvl, hi, hj, hlvl) {
+  return (Math.abs(i - hi) === 1 && j === hj && lvl === hlvl) ||
+         (Math.abs(j - hj) === 1 && i === hi && lvl === hlvl) ||
+         (Math.abs(lvl - hlvl) === 1 && i === hi && j === hj);
+}
+
+// Does (i, j, lvl) share a face with at least one solid block?
+// A block can only attach to the world via a face, never a corner or edge.
+function hasFaceNeighbor(i, j, lvl) {
+  return voxelAt(i-1,j,lvl)!==AIR || voxelAt(i+1,j,lvl)!==AIR
+      || voxelAt(i,j-1,lvl)!==AIR || voxelAt(i,j+1,lvl)!==AIR
+      || voxelAt(i,j,lvl-1)!==AIR || voxelAt(i,j,lvl+1)!==AIR;
+}
+
 // How many of the six faces of (i, j, lvl) are open — a neighbour that is air,
 // or no neighbour at all because the block sits on the edge of the world. This
 // is the whole of the visibility rule: one open face and the block is drawn,
@@ -1563,7 +1830,7 @@ const MAX_DEPTH  = 80;   // and the most any column will ever draw (16 m)
 // most of the geometry. The split is also the unit the shovel rebuilds in: one
 // edited block redraws its chunk and the ones its neighbours' faces reach into,
 // which is fourteen thousand columns rather than nine hundred thousand.
-const CHUNK   = 120;                        // columns per chunk side (24 m)
+const CHUNK   = 16;                         // columns per chunk side (3.2 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 
@@ -1596,6 +1863,9 @@ const TERRAIN_MATS = [
   mat(0xc4a882, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
   mat(0x8a7a60, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
   mat(0xb09070, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
+  // The sand family, either side of SAND: damp is darker, packed is warmer.
+  mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
+  mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
 ];
 // The same materials again, white and vertex-coloured. Every block's colour
 // — the material, the column's tint and the depth shading, all of it — is baked
@@ -1665,14 +1935,62 @@ const FACES = [
   { di:  0, dj: -1, dl:  0, n: [ 0,  0, -1], v: [ 1, -1, -1,  -1, -1, -1,  -1,  1, -1,   1,  1, -1] },
 ];
 
-// One face of the block centred on (cx, cy, cz), in the one colour that block is.
+// A powder face is diced this many cells each way, and each cell's shade may
+// stray this far from the block's own colour, either way.
+const GRAIN_GRID = 3;
+const GRAIN_PIXEL = 0.06;
+const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
+
+// One face of the block centred on (cx, cy, cz), in the one colour that block
+// is — except powder, which is diced into flat-shaded pixels.
 function pushFace(m, f, cx, cy, cz, r, g, b) {
   const B = faceBuf[m], v = f.v, n = f.n;
-  for (let q = 0; q < 4; q++) {
-    const o = q * 3;
-    B.pos.push(cx + v[o] * HALF_BLOCK, cy + v[o + 1] * HALF_BLOCK, cz + v[o + 2] * HALF_BLOCK);
-    B.nor.push(n[0], n[1], n[2]);
-    B.col.push(r, g, b);
+
+  if (!MAT_STATS[m]?.powder) {
+    for (let q = 0; q < 4; q++) {
+      const o = q * 3;
+      B.pos.push(cx + v[o] * HALF_BLOCK, cy + v[o + 1] * HALF_BLOCK, cz + v[o + 2] * HALF_BLOCK);
+      B.nor.push(n[0], n[1], n[2]);
+      B.col.push(r, g, b);
+    }
+    return;
+  }
+
+  // Powder is loose grain, so it is not painted flat: the face is cut into a
+  // grid of little quads, each carrying one colour across all four of its
+  // corners so it reads as a pixel rather than a gradient. The offset is hashed
+  // from where the cell's centre stands in the world, so the same block always
+  // speckles the same way however often the mesh is rebuilt.
+  //
+  // The quad runs v0, v1, v2, v3, so du walks it one way and dv the other, and
+  // a cell is v0 + u * du + w * dv. Its corners are pushed in that same order —
+  // (u0,w0), (u1,w0), (u1,w1), (u0,w1) — to keep the winding the face had.
+  const dux = v[3] - v[0], duy = v[4] - v[1], duz = v[5] - v[2];
+  const dvx = v[9] - v[0], dvy = v[10] - v[1], dvz = v[11] - v[2];
+
+  for (let row = 0; row < GRAIN_GRID; row++) {
+    const w0 = row / GRAIN_GRID, w1 = (row + 1) / GRAIN_GRID;
+    for (let col = 0; col < GRAIN_GRID; col++) {
+      const u0 = col / GRAIN_GRID, u1 = (col + 1) / GRAIN_GRID;
+      const um = (u0 + u1) / 2, wm = (w0 + w1) / 2;
+
+      // Random tint pick from a discrete palette — same range as per-column
+      // tint (0.86–1.14) but applied per-pixel for a speckled grain look.
+      const tintPalette = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
+      const ti = (Math.sin(cx * 99.1 + cz * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
+      const s = tintPalette[Math.abs(ti) % tintPalette.length];
+      const cr = clamp01(r * s), cg = clamp01(g * s), cb = clamp01(b * s);
+
+      for (let q = 0; q < 4; q++) {
+        const u = q === 0 || q === 3 ? u0 : u1;
+        const w = q < 2 ? w0 : w1;
+        B.pos.push(cx + (v[0] + u * dux + w * dvx) * HALF_BLOCK,
+                   cy + (v[1] + u * duy + w * dvy) * HALF_BLOCK,
+                   cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK);
+        B.nor.push(n[0], n[1], n[2]);
+        B.col.push(cr, cg, cb);
+      }
+    }
   }
 }
 
@@ -2682,7 +3000,7 @@ const keys = new Set();
 // ----- keyboard -----
 const TRACKED = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
-  'KeyF', 'KeyZ', 'KeyX',
+  'KeyF', 'KeyH', 'KeyZ', 'KeyX', 'KeyT',
   'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 // A key that lands in a text field is the field's business and nothing else's —
@@ -2697,10 +3015,12 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyG') toggleGameMode();
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
   else if (e.code === 'KeyF') setShovel(!shovel.on);
+  else if (e.code === 'KeyH') setHammer(!hammer.on);
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
   else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
+  else if (e.code === 'KeyT') toggleChart();
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (typing(e)) return;
@@ -2725,6 +3045,8 @@ renderer.domElement.addEventListener('mousedown', (e) => {
   // Once the pointer is captured the two buttons are the shovel: left takes the
   // block under the crosshair, right puts one back. Nothing else in the world is
   // clickable, so there is nothing to steal them from.
+  // The hammer takes the left button on its own — it is the only thing it does.
+  if (hammer.on) { if (e.button === 0) hammerStrike(); return; }
   if (!shovel.on) return;
   if (e.button === 0) shovelPickUp();
   else if (e.button === 2) shovelPlace();
@@ -3290,6 +3612,7 @@ const MAT_NAMES = [
   'fine dirt', 'mud', 'hard dirt', 'fine mud',
   'stone dust', 'stone mud', 'brittle stone',
   'clay', 'clay mud', 'hard clay',
+  'wet sand', 'hard sand',
 ];
 
 const shovel = {
@@ -3300,6 +3623,14 @@ const shovel = {
   debris: null,   // {mesh, local, i, j, lvl} a loose fallen piece being looked at instead
 };
 
+// The hammer knocks one block out of the world and lets it fall. It carries
+// nothing and holds nothing, so all it needs is the cell under the crosshair.
+const hammer = {
+  on: false,
+  hit: null,      // {i, j, lvl} the block a strike would knock loose, or null
+  debris: null,   // {mesh, idx} debris block target, or null
+};
+
 // ----- the ray -----
 // Amanatides & Woo over the column grid. It reports the first solid cell along
 // the ray *and* the last empty one before it, which are exactly the two cells a
@@ -3307,6 +3638,7 @@ const shovel = {
 // front of it to fill.
 const ddaHit  = { i: 0, j: 0, lvl: 0 };
 const ddaPrev = { i: 0, j: 0, lvl: 0 };
+const ddaFace = { di: 0, dj: 0, dl: 0 }; // face normal of the hit block's entry face
 function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
   // One grid unit per block, so the DDA is the textbook unit-cell one and the
   // direction carries over unchanged (the scaling is uniform).
@@ -3322,6 +3654,7 @@ function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
   const tMax = reach / BLOCK;
 
   let pi = i, pj = j, pl = lvl, t = 0;
+  ddaFace.di = 0; ddaFace.dj = 0; ddaFace.dl = 0;
   for (let step = 0; step < 256; step++) {
     if (voxelAt(i, j, lvl) !== AIR) {
       ddaHit.i = i;   ddaHit.j = j;   ddaHit.lvl = lvl;
@@ -3329,9 +3662,9 @@ function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
       return true;
     }
     pi = i; pj = j; pl = lvl;
-    if (tI <= tL && tI <= tJ)  { t = tI; i   += si; tI += tdI; }
-    else if (tL <= tJ)         { t = tL; lvl += sl; tL += tdL; }
-    else                       { t = tJ; j   += sj; tJ += tdJ; }
+    if (tI <= tL && tI <= tJ)  { t = tI; i   += si; tI += tdI; ddaFace.di=-si; ddaFace.dj=0; ddaFace.dl=0; }
+    else if (tL <= tJ)         { t = tL; lvl += sl; tL += tdL; ddaFace.di=0; ddaFace.dj=0; ddaFace.dl=-sl; }
+    else                       { t = tJ; j   += sj; tJ += tdJ; ddaFace.di=0; ddaFace.dj=-sj; ddaFace.dl=0; }
     if (t > tMax) return false;
   }
   return false;
@@ -3398,7 +3731,7 @@ function shovelAim() {
   const dHit = debrisAim(ox, oy, oz);
   if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
     shovel.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
-    shovel.spot = { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl };
+    shovel.spot = { i: ddaHit.i + ddaFace.di, j: ddaHit.j + ddaFace.dj, lvl: ddaHit.lvl + ddaFace.dl };
   } else if (dHit) {
     // Looking at a fallen piece. Digging takes off the one block under the
     // crosshair; a place joins the piece's own lattice, against the face you can
@@ -3431,9 +3764,11 @@ function shovelAim() {
   }
 
   // A place has to land in a cell the store can actually hold a block in, that
-  // is empty, and that the player is not standing in.
+  // is empty, face-adjacent to the block you're looking at, and not inside you.
   const s = shovel.spot;
+  const h = shovel.hit;
   if (s && (!canBuildAt(s.i, s.j, s.lvl) || voxelAt(s.i, s.j, s.lvl) !== AIR
+            || !h || !isFaceAdjacent(s.i, s.j, s.lvl, h.i, h.j, h.lvl)
             || spotBlocked(s.i, s.j, s.lvl))) shovel.spot = null;
 }
 
@@ -3619,6 +3954,12 @@ function shedColumn(c, budget) {
         && !MAT_STATS[voxMat[o + lvl + 1]]?.powder) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
     editBlock(i, j, lvl, AIR);   // refreshes the faces, and brings down what was above
+    // Mark neighboring columns dirty so blocks that lost their sand bridge
+    // get rechecked for adrift status by the next cascade pass.
+    for (const [di, dj] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const ni = i + di, nj = j + dj;
+      if (ni >= 0 && nj >= 0 && ni < GEN_N && nj < GEN_N) powderDirty.add(nj * GEN_N + ni);
+    }
     // It is not gone, it is falling: hand it to the same grain path the rubble uses.
     const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
     g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[m]);   // boxGeo is a unit cube: scale it to block size
@@ -3654,11 +3995,17 @@ function checkTerrainPowder() {
   // Dig out from under a bank of sand and it goes this frame, not whenever the
   // sweep next comes round. editBlock re-marks the column as it empties it, so a
   // collapse that outruns the budget carries on next frame.
+  // Loop until stable: each shed can trigger gravity that sheds more, which
+  // triggers more gravity. Solid blocks that were held up only by sand must all
+  // fall before we stop, or the gravity check sees stale paths.
   if (powderDirty.size) {
-    const touched = [...powderDirty];
-    powderDirty.clear();
-    let b = POWDER_SCAN_CAP;
-    for (const c of touched) b = shedColumn(c, b);
+    for (let safety = 0; safety < 16; safety++) {
+      const touched = [...powderDirty];
+      powderDirty.clear();
+      let b = POWDER_SCAN_CAP;
+      for (const c of touched) b = shedColumn(c, b);
+      if (!powderDirty.size) break;
+    }
   }
   if (++powderTick % 10) return;
   const cols = GEN_N * GEN_N;
@@ -3709,7 +4056,7 @@ function shedPowder() {
     for (let n = list.length - 1; n >= 0; n--) {
       const f = list[n];
       // A piece still travelling is mid-break: leave it, or it dissolves in the air.
-      if (s && f.body.velocity.lengthSquared() > FALL_REST_V * FALL_REST_V) continue;
+      // Actually, shed powder always — it should fall when unsupported regardless.
       const mesh = f.mesh, lat = mesh.userData.blocks;
       // World down in the piece's own frame, snapped to the axis it leans on most,
       // so a tilted piece sheds down one of its own columns rather than diagonally.
@@ -3737,6 +4084,10 @@ function shedPowder() {
         cut = true;
       }
       if (!cut) continue;
+      // After removing powder blocks, the remaining lattice may have split
+      // into disconnected pieces (e.g. sand was the only bridge between two
+      // stone chunks). Break them into separate debris pieces.
+      splitDebrisIfNeeded(mesh);
       if (!lat.length) removeDebrisMesh(mesh);   // takes itself out of the list
       else { rebuildDebrisBody(mesh, f.body); f.still = 0; }
     }
@@ -3882,6 +4233,41 @@ function cutDebrisLat(mesh, q) {
   lat.splice(q, 1);
 }
 
+// After blocks are cut from a debris piece, check if the remaining lattice
+// formed disconnected groups. If so, keep the largest on the original mesh
+// and spawn new debris pieces for the rest — same logic digDebrisBlock uses.
+function splitDebrisIfNeeded(mesh) {
+  const lat = mesh.userData.blocks;
+  if (!lat || lat.length <= 1) return;
+  const a0 = lat[0].pos;
+  const cellKey = (p) => Math.round((p.x - a0.x) / BLOCK) + ',' + Math.round((p.y - a0.y) / BLOCK)
+                                                         + ',' + Math.round((p.z - a0.z) / BLOCK);
+  const at = new Map();
+  lat.forEach((b, k) => at.set(cellKey(b.pos), k));
+  const seen = new Array(lat.length).fill(false), groups = [], v = new THREE.Vector3();
+  for (let s = 0; s < lat.length; s++) {
+    if (seen[s]) continue;
+    seen[s] = true;
+    const g = [s], stack = [s];
+    while (stack.length) {
+      const p = lat[stack.pop()].pos;
+      for (const [dx, dz, dy] of GRAV_DIRS) {
+        v.set(p.x + dx * BLOCK, p.y + dy * BLOCK, p.z + dz * BLOCK);
+        const k = at.get(cellKey(v));
+        if (k === undefined || seen[k]) continue;
+        seen[k] = true; g.push(k); stack.push(k);
+      }
+    }
+    groups.push(g);
+  }
+  if (groups.length <= 1) return;
+  groups.sort((g1, g2) => g2.length - g1.length);   // biggest stays put
+  const f = chunkOfMesh(mesh);
+  const parts = groups.slice(1).map((g) => g.map((k) => lat[k]));
+  for (const k of groups.slice(1).flat().sort((x, y) => y - x)) cutDebrisLat(mesh, k);
+  for (const blocks of parts) spawnDebrisPart(mesh, blocks, f && f.body);
+}
+
 // A part cut off an existing piece, spawned as a piece of its own. It is built
 // in the parent's frame rather than the world's — re-centred on its own blocks,
 // turned to the parent's tilt — so it comes away sitting exactly where it was
@@ -3965,41 +4351,9 @@ function digDebrisBlock(mesh, inst, child) {
 
   cutDebrisLat(mesh, q);
   if (!lat.length) { removeDebrisMesh(mesh); return true; }   // nothing left of it
+  splitDebrisIfNeeded(mesh);
+
   const f = chunkOfMesh(mesh);
-
-  // What is left, walked by its faces. The lattice is the piece's own grid, so
-  // cells are counted off its first block: neighbours are one step apart in one
-  // axis, however the piece is lying.
-  const a0 = lat[0].pos;
-  const cellKey = (p) => Math.round((p.x - a0.x) / BLOCK) + ',' + Math.round((p.y - a0.y) / BLOCK)
-                                                         + ',' + Math.round((p.z - a0.z) / BLOCK);
-  const at = new Map();
-  lat.forEach((b, k) => at.set(cellKey(b.pos), k));
-  const seen = new Array(lat.length).fill(false), groups = [], v = new THREE.Vector3();
-  for (let s = 0; s < lat.length; s++) {
-    if (seen[s]) continue;
-    seen[s] = true;
-    const g = [s], stack = [s];
-    while (stack.length) {
-      const p = lat[stack.pop()].pos;
-      for (const [dx, dz, dy] of GRAV_DIRS) {    // the six face neighbours
-        v.set(p.x + dx * BLOCK, p.y + dy * BLOCK, p.z + dz * BLOCK);
-        const k = at.get(cellKey(v));
-        if (k === undefined || seen[k]) continue;
-        seen[k] = true; g.push(k); stack.push(k);
-      }
-    }
-    groups.push(g);
-  }
-
-  if (groups.length > 1) {
-    groups.sort((g1, g2) => g2.length - g1.length);   // the biggest stays put
-    const parts = groups.slice(1).map((g) => g.map((k) => lat[k]));
-    // Off the back, so the earlier indices are still the ones they were.
-    for (const k of groups.slice(1).flat().sort((x, y) => y - x)) cutDebrisLat(mesh, k);
-    for (const blocks of parts) spawnDebrisPart(mesh, blocks, f && f.body);
-  }
-
   if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }    // lighter, and disturbed
   return true;
 }
@@ -4009,20 +4363,49 @@ function digDebrisBlock(mesh, inst, child) {
 // the piece's lattice — anchored on one of its own blocks — instead of to the
 // world grid. Null if that cell is already filled.
 const debrisLocal = new THREE.Vector3();
+const _debrisLocalDir = new THREE.Vector3();
 function debrisSpot(mesh, point, dir) {
   const lat = mesh.userData.blocks;
   if (!lat || !lat.length) return null;
-  const anchor = lat[0].pos;
-  mesh.updateWorldMatrix(true, false);   // it was moved by the body this frame
-  const v = mesh.worldToLocal(debrisLocal.copy(point).addScaledVector(dir, -HALF_BLOCK));
-  v.x = anchor.x + Math.round((v.x - anchor.x) / BLOCK) * BLOCK;
-  v.y = anchor.y + Math.round((v.y - anchor.y) / BLOCK) * BLOCK;
-  v.z = anchor.z + Math.round((v.z - anchor.z) / BLOCK) * BLOCK;
+  mesh.updateWorldMatrix(true, false);
+  const localPt = mesh.worldToLocal(debrisLocal.copy(point));
+  // Transform the ray direction into local space.
+  _debrisLocalDir.copy(dir).transformDirection(mesh.matrixWorld).negate();
+  // Find the closest existing block to the hit point.
+  let best = null, bestDist = Infinity;
   for (const b of lat) {
-    if (Math.abs(b.pos.x - v.x) < 0.01 && Math.abs(b.pos.y - v.y) < 0.01
-        && Math.abs(b.pos.z - v.z) < 0.01) return null;
+    const dx = localPt.x - b.pos.x, dy = localPt.y - b.pos.y, dz = localPt.z - b.pos.z;
+    const d = dx*dx + dy*dy + dz*dz;
+    if (d < bestDist) { bestDist = d; best = b; }
   }
-  return v.clone();
+  if (!best) return null;
+  // Check all 6 face-adjacent cells of the closest block.
+  // Pick the empty one closest to where the ray hit on the block surface.
+  const T = 0.1;
+  const faces = [
+    { dx: BLOCK, dy: 0, dz: 0 }, { dx: -BLOCK, dy: 0, dz: 0 },
+    { dx: 0, dy: BLOCK, dz: 0 }, { dx: 0, dy: -BLOCK, dz: 0 },
+    { dx: 0, dy: 0, dz: BLOCK }, { dx: 0, dy: 0, dz: -BLOCK },
+  ];
+  // Determine which face of the block the hit point is on by checking
+  // which axis has the largest offset from the block center.
+  const ox = localPt.x - best.pos.x, oy = localPt.y - best.pos.y, oz = localPt.z - best.pos.z;
+  let bestFace = null; bestDist = Infinity;
+  for (const f of faces) {
+    const fx = best.pos.x + f.dx, fy = best.pos.y + f.dy, fz = best.pos.z + f.dz;
+    // Skip if occupied.
+    let occupied = false;
+    for (const b of lat) {
+      if (Math.abs(b.pos.x - fx) < T && Math.abs(b.pos.y - fy) < T && Math.abs(b.pos.z - fz) < T) { occupied = true; break; }
+    }
+    if (occupied) continue;
+    // Distance from the hit point to the center of this face cell.
+    const dx = localPt.x - fx, dy = localPt.y - fy, dz = localPt.z - fz;
+    const d = dx*dx + dy*dy + dz*dz;
+    if (d < bestDist) { bestDist = d; bestFace = f; }
+  }
+  if (!bestFace) return null;
+  return debrisLocal.set(best.pos.x + bestFace.dx, best.pos.y + bestFace.dy, best.pos.z + bestFace.dz);
 }
 
 // Put a held block onto a fallen piece. The cube hangs off the piece's mesh in
@@ -4153,6 +4536,18 @@ function breakOffAdrift(i, j, lvl) {
   }
 
   spawnFallingChunk(unit);
+
+  // Propagate: blocks next to the ones that fell might now be adrift too.
+  const checked = new Set();
+  for (const b of unit.values()) {
+    for (const [di, dj, dl] of GRAV_DIRS) {
+      const ni = b.i + di, nj = b.j + dj, nl = b.lvl + dl;
+      const nk = ni + ',' + nj + ',' + nl;
+      if (checked.has(nk)) continue;
+      checked.add(nk);
+      if (gravSolid(ni, nj, nl)) breakOffAdrift(ni, nj, nl);
+    }
+  }
 }
 
 function editBlock(i, j, lvl, m) {
@@ -4181,6 +4576,95 @@ function editBlock(i, j, lvl, m) {
   // Anything the removal left hanging comes down.
   if (m === AIR && was !== AIR) applyGravity(i, j, lvl);
   return was;
+}
+
+// The Break column of MAT_CHART, read at the moment of the strike. Rows are
+// found by name, not by index: the chart is written in reading order, not
+// material order, and it calls ROCK "Stone". An empty Break means the block
+// falls as whatever it already was.
+const matIndexByName = (name) => {
+  const n = name.trim().toLowerCase();
+  return MAT_NAMES.indexOf(n === 'stone' ? 'rock' : n);
+};
+
+function resolveBreakMat(m) {
+  const row = MAT_CHART.find((r) => matIndexByName(r.mat) === m);
+  if (!row || !row.break) return m;
+  // Either one name, or "50% Fine dirt, 50% Dirt" — one roll walked down the
+  // percentages. Anything the chart names that isn't a material is left alone.
+  let roll = Math.random() * 100;
+  for (const part of row.break.split(',')) {
+    const pct = part.match(/^\s*(\d+)%\s*(.+)$/);
+    const idx = pct ? -1 : matIndexByName(part);
+    if (!pct) return idx === -1 ? m : idx;
+    roll -= Number(pct[1]);
+    if (roll < 0) {
+      const i = matIndexByName(pct[2]);
+      return i === -1 ? m : i;
+    }
+  }
+  return m;
+}
+
+// Knock one block out of the world and let it fall. Nothing is kept: the block
+// leaves the grid, becomes a one-cube piece of rubble, and from then on belongs
+// to the physics. The housekeeping is editBlock's, done by hand because the
+// falling piece has to be spawned from the material before it is overwritten.
+function hammerStrike() {
+  if (!hammer.on || !hammer.hit) return false;
+
+  // Debris block — knock it off the piece as its own physics object (splits if needed).
+  if (hammer.debris) {
+    const { mesh, idx } = hammer.debris;
+    const lat = mesh.userData.blocks;
+    if (idx < 0 || idx >= lat.length) return false;
+    const dropMat = resolveBreakMat(lat[idx].mat);
+    // Get the block's world position before removing it.
+    const wp = lat[idx].pos.clone().applyMatrix4(mesh.matrixWorld);
+    const gi = colI(wp.x), gj = colJ(wp.z), gl = lvlOfY(wp.y);
+    // Spawn it as its own single-block falling piece.
+    spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat }]]));
+    // Remove from the original piece (may split it).
+    digDebrisBlock(mesh, idx, null);
+    hammer.hit = null;
+    hammer.debris = null;
+    return true;
+  }
+
+  // Terrain block.
+  const { i, j, lvl } = hammer.hit;
+  if (!inVoxelRange(i, j, lvl)) return false;
+  const m = voxelAt(i, j, lvl);
+  if (m === AIR || m === WATER) return false;
+  const dropMat = resolveBreakMat(m);
+
+  setVoxel(i, j, lvl, AIR);
+  const k = j * GEN_N + i;
+  colDug[k] = 1;
+  if (lvl < colDugLo[k]) colDugLo[k] = lvl;
+  powderDirty.add(k);
+  patchCollider(i, j);
+  refreshVisible(i, j, lvl);
+  refreshVisible(i - 1, j, lvl);
+  refreshVisible(i + 1, j, lvl);
+  refreshVisible(i, j - 1, lvl);
+  refreshVisible(i, j + 1, lvl);
+  refreshVisible(i, j, lvl - 1);
+  refreshVisible(i, j, lvl + 1);
+  for (let dj = -1; dj <= 1; dj++) {
+    for (let di = -1; di <= 1; di++) {
+      const ii = i + di, jj = j + dj;
+      if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+      dirtyChunks.add(chunkOf(ii, jj));
+    }
+  }
+
+  // A group of one — the same path a broken-off cliff takes, just smaller.
+  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat }]]));
+  // And whatever the hole left hanging comes down after it.
+  applyGravity(i, j, lvl);
+  hammer.hit = null;
+  return true;
 }
 
 function flushDirtyChunks() {
@@ -4225,7 +4709,10 @@ function shovelPlace() {
   const { i, j, lvl } = shovel.spot;
   // Re-check rather than trusting the aim from earlier in the frame. Popping a
   // block off the stack for a write that then gets rejected would destroy it.
-  if (!canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) return false;
+  const h = shovel.hit;
+  if (!canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR
+      || !h || !isFaceAdjacent(i, j, lvl, h.i, h.j, h.lvl)
+      || spotBlocked(i, j, lvl)) return false;
   editBlock(i, j, lvl, shovel.held.pop());
   refreshShovelUI();
   return true;
@@ -4243,9 +4730,15 @@ const hlPlace = new THREE.Mesh(
   new THREE.BoxGeometry(BLOCK * 0.92, BLOCK * 0.92, BLOCK * 0.92),
   new THREE.MeshBasicMaterial({ color: 0x8fd8ff, transparent: true, opacity: 0.3, depthWrite: false })
 );
-hlPick.visible = hlPlace.visible = false;
-hlPick.frustumCulled = hlPlace.frustumCulled = false;
-scene.add(hlPick, hlPlace);
+// The hammer's own cage, in ember orange so there is never any doubt about
+// which tool is out and what it is about to knock loose.
+const hlHammer = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(BLOCK * 1.05, BLOCK * 1.05, BLOCK * 1.05)),
+  new THREE.LineBasicMaterial({ color: 0xff8a3c, transparent: true, opacity: 0.95, depthWrite: false })
+);
+hlPick.visible = hlPlace.visible = hlHammer.visible = false;
+hlPick.frustumCulled = hlPlace.frustumCulled = hlHammer.frustumCulled = false;
+scene.add(hlPick, hlPlace, hlHammer);
 
 const cellCenter = (o, v) => v.set(colX(o.i), (o.lvl + 0.5) * BLOCK, colZ(o.j));
 
@@ -4271,6 +4764,7 @@ function refreshShovelUI() {
 // Called every frame while the shovel is out: the highlights follow the aim and
 // the buttons grey out when the move they offer is not a legal one.
 function updateShovel() {
+  if (hammer.on) return;         // one tool at a time; the hammer has the aim
   shovelAim();
   const canPick = shovel.debris ? !!shovel.debris.blockLocal
                                 : (!!shovel.hit && shovel.held.length < SHOVEL_CAP);
@@ -4306,6 +4800,7 @@ function updateShovel() {
 }
 
 function setShovel(on) {
+  if (on && hammer.on) setHammer(false);   // one tool out at a time
   shovel.on = on;
   document.body.classList.toggle('shovel-on', on);
   if (!on) hlPick.visible = hlPlace.visible = false;
@@ -4318,6 +4813,94 @@ bindTap(pickBtn,   () => { if (shovel.on) shovelPickUp(); });
 bindTap(placeBtn,  () => { if (shovel.on) shovelPlace(); });
 refreshShovelUI();
 
+// ----- the hammer -----
+// Same ray as the shovel's, but it only wants the solid cell: there is no spot
+// to fill and rubble is already loose, so a piece of it in the way just shortens
+// the reach rather than becoming a target.
+function hammerAim() {
+  hammer.hit = null;
+  hammer.debris = null;
+  if (!hammer.on) return;
+
+  camera.getWorldDirection(aimDir);
+  let ox, oy, oz;
+  if (camMode === CAM.FREE) {
+    ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
+  } else {
+    const p = playerBody.position;
+    ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
+  }
+
+  const dHit = debrisAim(ox, oy, oz);
+  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
+    const m = voxelAt(ddaHit.i, ddaHit.j, ddaHit.lvl);
+    if (m !== AIR && m !== WATER) {
+      hammer.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
+      return;
+    }
+  }
+  // Debris piece in the way — target the block on it.
+  if (dHit) {
+    const dm = dHit.piece;
+    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
+    const child = dHit.object !== dm ? dHit.object : null;
+    const lat = dm.userData.blocks;
+    let idx = -1;
+    if (child) {
+      for (let q = 0; q < lat.length; q++) { if (lat[q].child === child) { idx = q; break; } }
+    } else if (inst >= 0 && inst < lat.length) {
+      idx = inst;
+    }
+    if (idx >= 0) {
+      hammer.debris = { mesh: dm, idx };
+      // Store the actual world position for the highlight.
+      hammer.debrisWp = new THREE.Vector3().copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);
+      hammer.hit = true;  // truthy so the highlight shows
+    }
+  }
+}
+
+const hammerBtn  = document.getElementById('btn-hammer');
+const strikeBtn  = document.getElementById('btn-strike');
+const hammerNote = document.getElementById('hammer-note');
+
+function refreshHammerUI() {
+  hammerBtn.innerHTML = 'Hammer &mdash; ' + (hammer.on ? 'On' : 'Off');
+  hammerBtn.classList.toggle('on', hammer.on);
+  hammerNote.innerHTML = 'Hammer &mdash; ' + (hammer.on ? 'On' : 'Off');
+}
+
+// Called every frame while the hammer is out, for the same reason updateShovel
+// is: on a phone the cage is the only way to tell what the crosshair has.
+function updateHammer() {
+  hammerAim();
+  hlHammer.visible = hammer.on && !!hammer.hit;
+  if (hlHammer.visible) {
+    if (hammer.debris && hammer.debrisWp) {
+      hlHammer.position.copy(hammer.debrisWp);
+      // Match the piece's tilt.
+      hammer.debris.mesh.getWorldQuaternion(hlHammer.quaternion);
+    } else if (hammer.hit && hammer.hit.i !== undefined) {
+      cellCenter(hammer.hit, hlHammer.position);
+      hlHammer.quaternion.identity();
+    }
+  }
+  strikeBtn.classList.toggle('dim', !hammer.hit);
+}
+
+function setHammer(on) {
+  if (on && shovel.on) setShovel(false);   // one tool out at a time
+  hammer.on = on;
+  document.body.classList.toggle('hammer-on', on);
+  if (!on) { hlHammer.visible = false; hammer.hit = null; hammer.debris = null; hammer.debrisWp = null; }
+  refreshHammerUI();
+  refreshModeUI();
+}
+
+bindTap(hammerBtn, () => setHammer(!hammer.on));
+bindTap(strikeBtn, () => { if (hammer.on) hammerStrike(); });
+refreshHammerUI();
+
 // ---------------------------------------------------------------------------
 // Mode UI
 // ---------------------------------------------------------------------------
@@ -4327,35 +4910,45 @@ const modeBtn   = document.getElementById('mode-btn');
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'],
-                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
+                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'],
-                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'], ['T', 'Material chart'],
+                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'],
+                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'],
+                ['T', 'Material chart'], ['F', 'Shovel on / off'],
+                ['H', 'Hammer on / off'], ['M', 'Terrain skin / cubes'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['5', 'Materials'],
-                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
+                ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
+                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
+                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
+                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in'],
-                ['Shovel', 'Button, top left']],
+                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
-                ['MATS', 'Panel, top left']],
+                ['MATS / CHART', 'Panels, top left']],
 };
 // Appended while the shovel is out, in whichever camera you are in.
 const HELP_SHOVEL_DESKTOP = [['LMB / Z', 'Pick up block'], ['RMB / X', 'Place block']];
 const HELP_SHOVEL_TOUCH   = [['PICK UP', 'Take the lit block'], ['PLACE', 'Fill the ghost cell']];
+// And while the hammer is. It keeps nothing, so there is only the one move.
+const HELP_HAMMER_DESKTOP = [['LMB', 'Knock the lit block loose']];
+const HELP_HAMMER_TOUCH   = [['STRIKE', 'Knock the lit block loose']];
 
 function refreshModeUI() {
   const inGame = camMode !== CAM.FREE;
@@ -4365,6 +4958,7 @@ function refreshModeUI() {
 
   let rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
   if (shovel.on) rows = rows.concat(isTouchDevice ? HELP_SHOVEL_TOUCH : HELP_SHOVEL_DESKTOP);
+  if (hammer.on) rows = rows.concat(isTouchDevice ? HELP_HAMMER_TOUCH : HELP_HAMMER_DESKTOP);
   instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
 
@@ -4375,7 +4969,7 @@ function refreshModeUI() {
   document.body.classList.toggle('pad-act', camMode === CAM.FIRST || camMode === CAM.THIRD);
   // Third person normally has nothing to aim, but with the shovel out the
   // crosshair is what picks the block — so it comes back for that.
-  const noCross = (camMode === CAM.THIRD && !shovel.on) || camMode === CAM.TOP;
+  const noCross = (camMode === CAM.THIRD && !shovel.on && !hammer.on) || camMode === CAM.TOP;
   document.getElementById('crosshair').style.display = noCross ? 'none' : '';
 }
 
@@ -4394,30 +4988,7 @@ refreshModeUI();
 // A read-out of what the world is made of, one row per entry in TERRAIN_MATS.
 // The swatches are read straight off those materials rather than repeated as
 // literals here, so a colour only ever has to change in one place.
-//
-// The numbers are the material's own properties, indexed by material id and not
-// yet read by anything that simulates: weight is how much a block of it drags on
-// you, buoyancy how much the water pushes it back up, strength how much work it
-// takes to break out of the ground, powder whether it is loose and crumbly.
-// Water is the one entry with none — it is a block in the store but it is not a
-// thing you can carry.
 // ---------------------------------------------------------------------------
-const MAT_STATS = [
-  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 0.5, powder: true  },  // SAND
-  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
-  null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
-];
 
 const materialsEl  = document.getElementById('materials-ui');
 const materialsBtn = document.getElementById('btn-materials');
@@ -4453,6 +5024,65 @@ function setMaterialsUI(on) {
 function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
 bindTap(materialsBtn, toggleMaterialsUI);
 bindTap(document.getElementById('mat-close'), () => setMaterialsUI(false));
+
+// ---------------------------------------------------------------------------
+// Material interaction chart
+// ---------------------------------------------------------------------------
+// What each material turns into under the five things that can happen to it.
+// An empty string is "nothing happens" and renders as the dim dash.
+const CHART_COLS = [
+  { key: 'dry',      label: 'Dry' },
+  { key: 'water',    label: 'Water' },
+  { key: 'rain',     label: 'Rain' },
+  { key: 'break',    label: 'Break', sub: 'If empty block breaks' },
+  { key: 'compress', label: 'Compress' },
+];
+const MAT_CHART = [
+  { mat: 'Dirt',          dry: '',              water: 'Mud',        rain: 'Mud',        break: '50% Fine dirt, 50% Dirt',  compress: '' },
+  { mat: 'Mud',           dry: 'Dirt',          water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Fine dirt',     dry: '',              water: 'Fine mud',   rain: 'Fine mud',   break: '',                         compress: '' },
+  { mat: 'Hard dirt',     dry: '',              water: 'Fine mud',   rain: '',           break: 'Dirt',                     compress: '' },
+  { mat: 'Fine mud',      dry: 'Hard dirt',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Stone',         dry: '',              water: '',           rain: '',           break: '50% Stone, 50% Stone dust',compress: '' },
+  { mat: 'Stone dust',    dry: '',              water: 'Stone mud',  rain: 'Stone mud',  break: '',                         compress: '' },
+  { mat: 'Stone mud',     dry: 'Brittle stone', water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Brittle stone', dry: '',              water: '',           rain: '',           break: 'Stone dust',               compress: '' },
+  { mat: 'Clay',          dry: '',              water: 'Clay mud',   rain: 'Clay mud',   break: '',                         compress: '' },
+  { mat: 'Clay mud',      dry: 'Hard clay',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Hard clay',     dry: '',              water: '',           rain: '',           break: 'Clay',                     compress: '' },
+  { mat: 'Sand',          dry: '',              water: 'Wet sand',   rain: 'Wet sand',   break: '',                         compress: '' },
+  { mat: 'Wet sand',      dry: 'Hard sand',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Hard sand',     dry: '',              water: 'Wet sand',   rain: '',           break: 'Sand',                     compress: '' },
+];
+
+document.getElementById('chart-grid').innerHTML =
+  '<div class="ch-h mat">Material</div>'
+  + CHART_COLS.map((c) => `<div class="ch-h ${c.key}">${c.label}${c.sub ? `<small>${c.sub}</small>` : ''}</div>`).join('')
+  + MAT_CHART.map((r) => `<div class="ch-mat">${r.mat}</div>`
+      + CHART_COLS.map((c) => r[c.key]
+          ? `<div class="ch-c">${r[c.key]}</div>`
+          : '<div class="ch-c empty">&mdash;</div>').join('')).join('');
+
+const chartBtn = document.getElementById('btn-chart');
+
+let chartOpen = false;
+function setChartUI(on) {
+  chartOpen = on;
+  document.body.classList.toggle('chart-open', on);
+  chartBtn.classList.toggle('on', on);
+  // Same deal as the materials panel: with the pointer locked there is no cursor
+  // to hit the X with, and mouse look would keep running underneath.
+  if (on && document.pointerLockElement) document.exitPointerLock();
+}
+function toggleChart() { setChartUI(!chartOpen); }
+bindTap(chartBtn, toggleChart);
+bindTap(document.getElementById('chart-close'), () => setChartUI(false));
+// The backdrop is the other way out, but a drag that scrolls the table must not
+// count as one — only a tap on the dimmed area itself closes.
+document.getElementById('chart-overlay').addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'chart-overlay') setChartUI(false);
+  e.stopPropagation();
+});
 
 // ---------------------------------------------------------------------------
 // Overlay
@@ -4588,6 +5218,7 @@ function tick() {
   // After the camera, since the aim is taken down the view direction, and before
   // the render so the highlight boxes are in the right place this frame.
   if (shovel.on) updateShovel();
+  if (hammer.on) updateHammer();
   flushDirtyChunks();
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
@@ -4636,6 +5267,8 @@ window.hermes = {
   // The shovel. `shovel.held` is the stack of materials in your hands; moving a
   // block through it is the only way anything ever changes.
   shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,
+  // The hammer. One block out of the grid and into the rubble, nothing kept.
+  hammer, setHammer, hammerStrike,
   // The voxel store — the material of every block in the volume, not just the
   // surface, which is what a digging system would work against. voxelAtWorld
   // takes metres; the rest take column indices and levels. The MAT_STATS ids and

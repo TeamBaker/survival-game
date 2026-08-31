@@ -1959,12 +1959,12 @@ function pushFace(m, f, cx, cy, cz, r, g, b) {
       const u0 = col / GRAIN_GRID, u1 = (col + 1) / GRAIN_GRID;
       const um = (u0 + u1) / 2, wm = (w0 + w1) / 2;
 
-      const mx = cx + (v[0] + um * dux + wm * dvx) * HALF_BLOCK;
-      const my = cy + (v[1] + um * duy + wm * dvy) * HALF_BLOCK;
-      const mz = cz + (v[2] + um * duz + wm * dvz) * HALF_BLOCK;
-      const h = Math.sin(mx * 127.1 + my * 311.7 + mz * 74.7) * 43758.5453;
-      const d = ((h - Math.floor(h)) * 2 - 1) * GRAIN_PIXEL;
-      const cr = clamp01(r + d), cg = clamp01(g + d), cb = clamp01(b + d);
+      // Random tint pick from a discrete palette — same range as per-column
+      // tint (0.86–1.14) but applied per-pixel for a speckled grain look.
+      const tintPalette = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
+      const ti = (Math.sin(cx * 99.1 + cz * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
+      const s = tintPalette[Math.abs(ti) % tintPalette.length];
+      const cr = clamp01(r * s), cg = clamp01(g * s), cb = clamp01(b * s);
 
       for (let q = 0; q < 4; q++) {
         const u = q === 0 || q === 3 ? u0 : u1;

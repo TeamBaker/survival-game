@@ -1920,30 +1920,61 @@ const FACES = [
   { di:  0, dj: -1, dl:  0, n: [ 0,  0, -1], v: [ 1, -1, -1,  -1, -1, -1,  -1,  1, -1,   1,  1, -1] },
 ];
 
-// How far a powder corner's colour may stray from the block's own, either way.
-const GRAIN_SPECKLE = 0.075;
+// A powder face is diced this many cells each way, and each cell's shade may
+// stray this far from the block's own colour, either way.
+const GRAIN_GRID = 5;
+const GRAIN_PIXEL = 0.06;
 const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
 
 // One face of the block centred on (cx, cy, cz), in the one colour that block
-// is — except powder, which is speckled corner by corner.
+// is — except powder, which is diced into flat-shaded pixels.
 function pushFace(m, f, cx, cy, cz, r, g, b) {
   const B = faceBuf[m], v = f.v, n = f.n;
-  // Powder is loose grain, so it is not painted flat: each corner gets a small
-  // offset off the block's one colour, hashed from where the corner stands so
-  // the same block always speckles the same way however often the mesh is
-  // rebuilt, and so corners two blocks share agree.
-  const powder = MAT_STATS[m]?.powder;
-  for (let q = 0; q < 4; q++) {
-    const o = q * 3;
-    const vx = cx + v[o] * HALF_BLOCK, vy = cy + v[o + 1] * HALF_BLOCK, vz = cz + v[o + 2] * HALF_BLOCK;
-    B.pos.push(vx, vy, vz);
-    B.nor.push(n[0], n[1], n[2]);
-    if (powder) {
-      const h = Math.sin(vx * 127.1 + vy * 311.7 + vz * 74.7) * 43758.5453;
-      const d = (h - Math.floor(h)) * GRAIN_SPECKLE * 2 - GRAIN_SPECKLE;
-      B.col.push(clamp01(r + d), clamp01(g + d), clamp01(b + d));
-    } else {
+
+  if (!MAT_STATS[m]?.powder) {
+    for (let q = 0; q < 4; q++) {
+      const o = q * 3;
+      B.pos.push(cx + v[o] * HALF_BLOCK, cy + v[o + 1] * HALF_BLOCK, cz + v[o + 2] * HALF_BLOCK);
+      B.nor.push(n[0], n[1], n[2]);
       B.col.push(r, g, b);
+    }
+    return;
+  }
+
+  // Powder is loose grain, so it is not painted flat: the face is cut into a
+  // grid of little quads, each carrying one colour across all four of its
+  // corners so it reads as a pixel rather than a gradient. The offset is hashed
+  // from where the cell's centre stands in the world, so the same block always
+  // speckles the same way however often the mesh is rebuilt.
+  //
+  // The quad runs v0, v1, v2, v3, so du walks it one way and dv the other, and
+  // a cell is v0 + u * du + w * dv. Its corners are pushed in that same order —
+  // (u0,w0), (u1,w0), (u1,w1), (u0,w1) — to keep the winding the face had.
+  const dux = v[3] - v[0], duy = v[4] - v[1], duz = v[5] - v[2];
+  const dvx = v[9] - v[0], dvy = v[10] - v[1], dvz = v[11] - v[2];
+
+  for (let row = 0; row < GRAIN_GRID; row++) {
+    const w0 = row / GRAIN_GRID, w1 = (row + 1) / GRAIN_GRID;
+    for (let col = 0; col < GRAIN_GRID; col++) {
+      const u0 = col / GRAIN_GRID, u1 = (col + 1) / GRAIN_GRID;
+      const um = (u0 + u1) / 2, wm = (w0 + w1) / 2;
+
+      const mx = cx + (v[0] + um * dux + wm * dvx) * HALF_BLOCK;
+      const my = cy + (v[1] + um * duy + wm * dvy) * HALF_BLOCK;
+      const mz = cz + (v[2] + um * duz + wm * dvz) * HALF_BLOCK;
+      const h = Math.sin(mx * 127.1 + my * 311.7 + mz * 74.7) * 43758.5453;
+      const d = ((h - Math.floor(h)) * 2 - 1) * GRAIN_PIXEL;
+      const cr = clamp01(r + d), cg = clamp01(g + d), cb = clamp01(b + d);
+
+      for (let q = 0; q < 4; q++) {
+        const u = q === 0 || q === 3 ? u0 : u1;
+        const w = q < 2 ? w0 : w1;
+        B.pos.push(cx + (v[0] + u * dux + w * dvx) * HALF_BLOCK,
+                   cy + (v[1] + u * duy + w * dvy) * HALF_BLOCK,
+                   cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK);
+        B.nor.push(n[0], n[1], n[2]);
+        B.col.push(cr, cg, cb);
+      }
     }
   }
 }

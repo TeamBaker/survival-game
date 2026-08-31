@@ -4350,7 +4350,7 @@ function debrisSpot(mesh, point, dir) {
   mesh.updateWorldMatrix(true, false);
   const localPt = mesh.worldToLocal(debrisLocal.copy(point));
   // Transform the ray direction into local space.
-  _debrisLocalDir.copy(dir).transformDirection(mesh.matrixWorld);
+  _debrisLocalDir.copy(dir).transformDirection(mesh.matrixWorld).negate();
   // Find the closest existing block to the hit point.
   let best = null, bestDist = Infinity;
   for (const b of lat) {

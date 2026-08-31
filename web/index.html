@@ -1687,6 +1687,14 @@ function canBuildAt(i, j, lvl) {
   return topLvl[j * GEN_N + i] !== NO_COLUMN && lvl >= VOX_FLOOR;
 }
 
+// Does (i, j, lvl) share a face with at least one solid block?
+// A block can only attach to the world via a face, never a corner or edge.
+function hasFaceNeighbor(i, j, lvl) {
+  return voxelAt(i-1,j,lvl)!==AIR || voxelAt(i+1,j,lvl)!==AIR
+      || voxelAt(i,j-1,lvl)!==AIR || voxelAt(i,j+1,lvl)!==AIR
+      || voxelAt(i,j,lvl-1)!==AIR || voxelAt(i,j,lvl+1)!==AIR;
+}
+
 // How many of the six faces of (i, j, lvl) are open — a neighbour that is air,
 // or no neighbour at all because the block sits on the edge of the world. This
 // is the whole of the visibility rule: one open face and the block is drawn,
@@ -3746,10 +3754,10 @@ function shovelAim() {
   }
 
   // A place has to land in a cell the store can actually hold a block in, that
-  // is empty, and that the player is not standing in.
+  // is empty, face-adjacent to a solid block, and that the player is not standing in.
   const s = shovel.spot;
   if (s && (!canBuildAt(s.i, s.j, s.lvl) || voxelAt(s.i, s.j, s.lvl) !== AIR
-            || spotBlocked(s.i, s.j, s.lvl))) shovel.spot = null;
+            || !hasFaceNeighbor(s.i, s.j, s.lvl) || spotBlocked(s.i, s.j, s.lvl))) shovel.spot = null;
 }
 
 // ----- writing it back -----
@@ -4610,7 +4618,8 @@ function shovelPlace() {
   const { i, j, lvl } = shovel.spot;
   // Re-check rather than trusting the aim from earlier in the frame. Popping a
   // block off the stack for a write that then gets rejected would destroy it.
-  if (!canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) return false;
+  if (!canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR
+      || !hasFaceNeighbor(i, j, lvl) || spotBlocked(i, j, lvl)) return false;
   editBlock(i, j, lvl, shovel.held.pop());
   refreshShovelUI();
   return true;

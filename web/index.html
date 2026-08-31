@@ -5304,7 +5304,7 @@ function tick() {
   // The solver's answer is the answer for everything on the heightfield; debris
   // is off it and gets pushed clear of the real terrain voxels right after.
   world.step(PHYS_STEP, dt, 8);
-  resolveDebrisTerrain();
+  for (let _iter = 0; _iter < 3; _iter++) resolveDebrisTerrain();
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);

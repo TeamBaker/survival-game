@@ -4425,6 +4425,34 @@ function editBlock(i, j, lvl, m) {
   return was;
 }
 
+// The Break column of MAT_CHART, read at the moment of the strike. Rows are
+// found by name, not by index: the chart is written in reading order, not
+// material order, and it calls ROCK "Stone". An empty Break means the block
+// falls as whatever it already was.
+const matIndexByName = (name) => {
+  const n = name.trim().toLowerCase();
+  return MAT_NAMES.indexOf(n === 'stone' ? 'rock' : n);
+};
+
+function resolveBreakMat(m) {
+  const row = MAT_CHART.find((r) => matIndexByName(r.mat) === m);
+  if (!row || !row.break) return m;
+  // Either one name, or "50% Fine dirt, 50% Dirt" — one roll walked down the
+  // percentages. Anything the chart names that isn't a material is left alone.
+  let roll = Math.random() * 100;
+  for (const part of row.break.split(',')) {
+    const pct = part.match(/^\s*(\d+)%\s*(.+)$/);
+    const idx = pct ? -1 : matIndexByName(part);
+    if (!pct) return idx === -1 ? m : idx;
+    roll -= Number(pct[1]);
+    if (roll < 0) {
+      const i = matIndexByName(pct[2]);
+      return i === -1 ? m : i;
+    }
+  }
+  return m;
+}
+
 // Knock one block out of the world and let it fall. Nothing is kept: the block
 // leaves the grid, becomes a one-cube piece of rubble, and from then on belongs
 // to the physics. The housekeeping is editBlock's, done by hand because the
@@ -4435,6 +4463,7 @@ function hammerStrike() {
   if (!inVoxelRange(i, j, lvl)) return false;
   const m = voxelAt(i, j, lvl);
   if (m === AIR || m === WATER) return false;
+  const dropMat = resolveBreakMat(m);
 
   setVoxel(i, j, lvl, AIR);
   const k = j * GEN_N + i;
@@ -4458,7 +4487,7 @@ function hammerStrike() {
   }
 
   // A group of one — the same path a broken-off cliff takes, just smaller.
-  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m }]]));
+  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat }]]));
 
   // And whatever the hole left hanging comes down after it.
   applyGravity(i, j, lvl);

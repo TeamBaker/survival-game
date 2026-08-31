@@ -3628,6 +3628,7 @@ const shovel = {
 const hammer = {
   on: false,
   hit: null,      // {i, j, lvl} the block a strike would knock loose, or null
+  debris: null,   // {mesh, idx} debris block target, or null
 };
 
 // ----- the ray -----
@@ -4580,6 +4581,29 @@ function resolveBreakMat(m) {
 // falling piece has to be spawned from the material before it is overwritten.
 function hammerStrike() {
   if (!hammer.on || !hammer.hit) return false;
+
+  // Debris block — pop it off the piece.
+  if (hammer.debris) {
+    const { mesh, idx } = hammer.debris;
+    const lat = mesh.userData.blocks;
+    if (idx < 0 || idx >= lat.length) return false;
+    const dropMat = resolveBreakMat(lat[idx].mat);
+    shovel.held.push(dropMat);
+    cutDebrisLat(mesh, idx);
+    refreshShovelUI();
+    // Rebuild the body and recenter.
+    const f = chunkOfMesh(mesh);
+    if (f) {
+      recentreDebris(mesh, f.body);
+      rebuildDebrisBody(mesh, f.body);
+      f.body.wakeUp();
+    }
+    hammer.hit = null;
+    hammer.debris = null;
+    return true;
+  }
+
+  // Terrain block.
   const { i, j, lvl } = hammer.hit;
   if (!inVoxelRange(i, j, lvl)) return false;
   const m = voxelAt(i, j, lvl);
@@ -4768,6 +4792,7 @@ refreshShovelUI();
 // the reach rather than becoming a target.
 function hammerAim() {
   hammer.hit = null;
+  hammer.debris = null;
   if (!hammer.on) return;
 
   camera.getWorldDirection(aimDir);
@@ -4780,10 +4805,34 @@ function hammerAim() {
   }
 
   const dHit = debrisAim(ox, oy, oz);
-  if (!voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) return;
-  const m = voxelAt(ddaHit.i, ddaHit.j, ddaHit.lvl);
-  if (m === AIR || m === WATER) return;    // water is not a block you can knock out
-  hammer.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
+  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
+    const m = voxelAt(ddaHit.i, ddaHit.j, ddaHit.lvl);
+    if (m !== AIR && m !== WATER) {
+      hammer.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
+      return;
+    }
+  }
+  // Debris piece in the way — target the block on it.
+  if (dHit) {
+    const dm = dHit.piece;
+    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
+    const child = dHit.object !== dm ? dHit.object : null;
+    const lat = dm.userData.blocks;
+    let idx = -1;
+    if (child) {
+      for (let q = 0; q < lat.length; q++) { if (lat[q].child === child) { idx = q; break; } }
+    } else if (inst >= 0 && inst < lat.length) {
+      idx = inst;
+    }
+    if (idx >= 0) {
+      hammer.debris = { mesh: dm, idx };
+      // Fake a hit for the highlight — use world position of the block.
+      const wp = new THREE.Vector3();
+      wp.copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);
+      const ci = colI(wp.x), cj = colJ(wp.z);
+      hammer.hit = { i: ci, j: cj, lvl: Math.floor(wp.y / BLOCK) };
+    }
+  }
 }
 
 const hammerBtn  = document.getElementById('btn-hammer');
@@ -4812,7 +4861,7 @@ function setHammer(on) {
   if (on && shovel.on) setShovel(false);   // one tool out at a time
   hammer.on = on;
   document.body.classList.toggle('hammer-on', on);
-  if (!on) { hlHammer.visible = false; hammer.hit = null; }
+  if (!on) { hlHammer.visible = false; hammer.hit = null; hammer.debris = null; }
   refreshHammerUI();
   refreshModeUI();
 }

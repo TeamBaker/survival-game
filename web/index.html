@@ -2939,9 +2939,27 @@ hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
 hfBody.updateAABB();
 world.addBody(hfBody);
 
+// The top of a column's unbroken run of solid material starting at the world
+// floor — as opposed to sTop, which is just the highest block regardless of
+// what (if anything) is under it. A hole dug clean through a column leaves
+// debris or a beam sitting above open air; sTop would still report that
+// height, and the heightfield would then be solid all the way up from the
+// ground through the gap, trapping anything that ends up in it. Only the
+// collider needs this distinction, so it is not what solidTopAt answers.
+function groundTopAt(k) {
+  if (topLvl[k] === NO_COLUMN) return NO_COLUMN;
+  const o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
+  let t = NO_COLUMN;
+  for (let l = VOX_FLOOR; l <= cap; l++) {
+    if (voxMat[o + l] === AIR) break;
+    t = l;
+  }
+  return t;
+}
+
 // One column of the collider, after the store under it changed.
 function patchCollider(i, j) {
-  const top = sTop[j * GEN_N + i];
+  const top = groundTopAt(j * GEN_N + i);
   const y = top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
   hfShape.setHeightValueAtIndex(i, GEN_N - 1 - j, y);
   // Only ever widened. Recomputing the true extremes means walking the whole

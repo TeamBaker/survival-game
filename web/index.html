@@ -1418,6 +1418,31 @@ const N_MATS = 16;
 // Not a terrain material: the value the voxel store below uses for a block that
 // is not there. It sorts after the real ones so `m < AIR` means solid.
 const AIR = N_MATS;
+
+// The numbers are the material's own properties, indexed by material id and not
+// yet read by anything that simulates: weight is how much a block of it drags on
+// you, buoyancy how much the water pushes it back up, strength how much work it
+// takes to break out of the ground, powder whether it is loose and crumbly.
+// Water is the one entry with none — it is a block in the store but it is not a
+// thing you can carry.
+const MAT_STATS = [
+  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 0.5, powder: true  },  // SAND
+  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
+  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
+  null,                                                                        // WATER
+  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 0.8, powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 1.4, powder: false },  // HARD_SAND
+];
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -1895,14 +1920,31 @@ const FACES = [
   { di:  0, dj: -1, dl:  0, n: [ 0,  0, -1], v: [ 1, -1, -1,  -1, -1, -1,  -1,  1, -1,   1,  1, -1] },
 ];
 
-// One face of the block centred on (cx, cy, cz), in the one colour that block is.
+// How far a powder corner's colour may stray from the block's own, either way.
+const GRAIN_SPECKLE = 0.075;
+const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
+
+// One face of the block centred on (cx, cy, cz), in the one colour that block
+// is — except powder, which is speckled corner by corner.
 function pushFace(m, f, cx, cy, cz, r, g, b) {
   const B = faceBuf[m], v = f.v, n = f.n;
+  // Powder is loose grain, so it is not painted flat: each corner gets a small
+  // offset off the block's one colour, hashed from where the corner stands so
+  // the same block always speckles the same way however often the mesh is
+  // rebuilt, and so corners two blocks share agree.
+  const powder = MAT_STATS[m]?.powder;
   for (let q = 0; q < 4; q++) {
     const o = q * 3;
-    B.pos.push(cx + v[o] * HALF_BLOCK, cy + v[o + 1] * HALF_BLOCK, cz + v[o + 2] * HALF_BLOCK);
+    const vx = cx + v[o] * HALF_BLOCK, vy = cy + v[o + 1] * HALF_BLOCK, vz = cz + v[o + 2] * HALF_BLOCK;
+    B.pos.push(vx, vy, vz);
     B.nor.push(n[0], n[1], n[2]);
-    B.col.push(r, g, b);
+    if (powder) {
+      const h = Math.sin(vx * 127.1 + vy * 311.7 + vz * 74.7) * 43758.5453;
+      const d = (h - Math.floor(h)) * GRAIN_SPECKLE * 2 - GRAIN_SPECKLE;
+      B.col.push(clamp01(r + d), clamp01(g + d), clamp01(b + d));
+    } else {
+      B.col.push(r, g, b);
+    }
   }
 }
 
@@ -4784,32 +4826,7 @@ refreshModeUI();
 // A read-out of what the world is made of, one row per entry in TERRAIN_MATS.
 // The swatches are read straight off those materials rather than repeated as
 // literals here, so a colour only ever has to change in one place.
-//
-// The numbers are the material's own properties, indexed by material id and not
-// yet read by anything that simulates: weight is how much a block of it drags on
-// you, buoyancy how much the water pushes it back up, strength how much work it
-// takes to break out of the ground, powder whether it is loose and crumbly.
-// Water is the one entry with none — it is a block in the store but it is not a
-// thing you can carry.
 // ---------------------------------------------------------------------------
-const MAT_STATS = [
-  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 0.5, powder: true  },  // SAND
-  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
-  null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 0.8, powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 1.4, powder: false },  // HARD_SAND
-];
 
 const materialsEl  = document.getElementById('materials-ui');
 const materialsBtn = document.getElementById('btn-materials');

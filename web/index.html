@@ -1256,7 +1256,7 @@ const SAND = 0, DIRT = 1, ROCK = 2, WATER = 3;
 const FINE_DIRT = 4, MUD = 5, HARD_DIRT = 6, FINE_MUD = 7;
 const STONE_DUST = 8, STONE_MUD = 9, BRITTLE_STONE = 10;
 const CLAY = 11, CLAY_MUD = 12, HARD_CLAY = 13;
-const N_MATS = 14;
+const N_MATS = 16;
 // Not a terrain material: the value the voxel store below uses for a block that
 // is not there. It sorts after the real ones so `m < AIR` means solid.
 const AIR = N_MATS;
@@ -1665,6 +1665,9 @@ const TERRAIN_MATS = [
   mat(0xc4a882, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
   mat(0x8a7a60, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
   mat(0xb09070, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
+  // The sand family, either side of SAND: damp is darker, packed is warmer.
+  mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
+  mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
 ];
 // The same materials again, white and vertex-coloured. Every block's colour
 // — the material, the column's tint and the depth shading, all of it — is baked
@@ -3362,6 +3365,7 @@ const MAT_NAMES = [
   'fine dirt', 'mud', 'hard dirt', 'fine mud',
   'stone dust', 'stone mud', 'brittle stone',
   'clay', 'clay mud', 'hard clay',
+  'wet sand', 'hard sand',
 ];
 
 const shovel = {
@@ -4612,6 +4616,8 @@ const MAT_STATS = [
   { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
   { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
   { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 0.8, powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 1.4, powder: false },  // HARD_SAND
 ];
 
 const materialsEl  = document.getElementById('materials-ui');

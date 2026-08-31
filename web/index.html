@@ -4826,11 +4826,9 @@ function hammerAim() {
     }
     if (idx >= 0) {
       hammer.debris = { mesh: dm, idx };
-      // Fake a hit for the highlight — use world position of the block.
-      const wp = new THREE.Vector3();
-      wp.copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);
-      const ci = colI(wp.x), cj = colJ(wp.z);
-      hammer.hit = { i: ci, j: cj, lvl: Math.floor(wp.y / BLOCK) };
+      // Store the actual world position for the highlight.
+      hammer.debrisWp = new THREE.Vector3().copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);
+      hammer.hit = true;  // truthy so the highlight shows
     }
   }
 }
@@ -4851,8 +4849,14 @@ function updateHammer() {
   hammerAim();
   hlHammer.visible = hammer.on && !!hammer.hit;
   if (hlHammer.visible) {
-    cellCenter(hammer.hit, hlHammer.position);
-    hlHammer.quaternion.identity();
+    if (hammer.debris && hammer.debrisWp) {
+      hlHammer.position.copy(hammer.debrisWp);
+      // Match the piece's tilt.
+      hammer.debris.mesh.getWorldQuaternion(hlHammer.quaternion);
+    } else if (hammer.hit && hammer.hit.i !== undefined) {
+      cellCenter(hammer.hit, hlHammer.position);
+      hlHammer.quaternion.identity();
+    }
   }
   strikeBtn.classList.toggle('dim', !hammer.hit);
 }
@@ -4861,7 +4865,7 @@ function setHammer(on) {
   if (on && shovel.on) setShovel(false);   // one tool out at a time
   hammer.on = on;
   document.body.classList.toggle('hammer-on', on);
-  if (!on) { hlHammer.visible = false; hammer.hit = null; hammer.debris = null; }
+  if (!on) { hlHammer.visible = false; hammer.hit = null; hammer.debris = null; hammer.debrisWp = null; }
   refreshHammerUI();
   refreshModeUI();
 }

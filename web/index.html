@@ -378,7 +378,7 @@
 
   #btn-materials {
     position: fixed;
-    top: calc(136px + env(safe-area-inset-top));
+    top: calc(176px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
@@ -401,7 +401,7 @@
 
   @media (max-width: 620px) {
     #materials-ui { font-size: 12px; }
-    #btn-materials { font-size: 10px; padding: 7px 12px; }
+    #btn-materials { top: calc(152px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
   }
 
   /* ---------- Shovel (temporary block-moving tool) ---------- */
@@ -494,10 +494,219 @@
   body.shovel-on #btn-down   { bottom: calc(126px + env(safe-area-inset-bottom)); }
   body.shovel-on #btn-up     { bottom: calc(216px + env(safe-area-inset-bottom)); }
 
+  /* ---------- Hammer (knocks a block loose, keeps nothing) ---------- */
+  #btn-hammer {
+    position: fixed;
+    top: calc(130px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-hammer.on {
+    color: #1d0700;
+    background: linear-gradient(180deg, #ffc09a, #f0703c);
+    border-color: transparent;
+  }
+
+  #hammer-ui {
+    position: fixed;
+    left: 50%;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    z-index: 13;
+  }
+  body.hammer-on #hammer-ui { display: flex; }
+
+  #hammer-note {
+    padding: 5px 13px;
+    font-size: 12px;
+    color: #ffe2d0;
+    background: rgba(8, 14, 24, 0.62);
+    border: 1px solid rgba(255, 170, 120, 0.28);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    white-space: nowrap;
+  }
+
+  /* Only the one strike button down there, so everything else steps up by less
+     than it does for the shovel's two-button pad. */
+  body.hammer-on #stick-base { bottom: calc(112px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-jump   { bottom: calc(122px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-crouch { bottom: calc(118px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-sprint { bottom: calc(224px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-down   { bottom: calc(118px + env(safe-area-inset-bottom)); }
+  body.hammer-on #btn-up     { bottom: calc(208px + env(safe-area-inset-bottom)); }
+
   @media (max-width: 620px) {
     #btn-shovel { top: calc(84px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-hammer { top: calc(118px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #hammer-note { font-size: 11px; padding: 4px 11px; }
     .sv-btn { width: 106px; height: 58px; font-size: 10px; }
     #shovel-held { font-size: 11px; padding: 4px 11px; }
+  }
+
+  /* ---------- Material interaction chart ---------- */
+  /* A reference card, not a takeover: the backdrop dims the world and eats the
+     clicks, and the panel itself stays a bounded box you can scroll on a phone. */
+  #btn-chart {
+    position: fixed;
+    top: calc(212px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-chart.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-chart:active { transform: translateY(1px); }
+
+  #chart-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.chart-open #chart-overlay { display: flex; }
+
+  #chart-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: min(760px, 100%);
+    max-height: 100%;
+    padding: 16px;
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  }
+  #chart-panel .title {
+    display: block;
+    margin: 0 34px 12px 0;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+  /* The grid is the scroller, so the title, close button and footnote stay put
+     while fifteen materials slide past under them. */
+  #chart-scroll {
+    min-height: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #chart-grid {
+    display: grid;
+    grid-template-columns: minmax(88px, 1.2fr) repeat(5, minmax(72px, 1fr));
+    gap: 2px;
+    min-width: 520px;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+  .ch-h {
+    position: sticky;
+    top: 0;
+    padding: 6px 7px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: #10101f;
+    border-radius: 4px;
+    z-index: 1;
+  }
+  .ch-h small {
+    display: block;
+    margin-top: 2px;
+    font-size: 8px;
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    color: #7b8ba6;
+  }
+  .ch-h.dry      { color: #ffab5c; }
+  .ch-h.water    { color: #5c9dff; }
+  .ch-h.rain     { color: #7fd4ff; }
+  .ch-h.break    { color: #ff6b6b; }
+  .ch-h.compress { color: #9aa5b5; }
+  .ch-h.mat      { color: #cfe6ff; }
+
+  .ch-mat {
+    padding: 7px;
+    font-weight: 700;
+    color: #eaf2ff;
+    background: rgba(120, 165, 225, 0.14);
+    border-radius: 4px;
+  }
+  .ch-c {
+    padding: 7px;
+    color: #dfe9f8;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+  }
+  /* Nothing happens here — flatten it so the eye skips straight to what does. */
+  .ch-c.empty { color: #3d4658; background: rgba(255, 255, 255, 0.015); }
+
+  #chart-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #chart-close:active { transform: translateY(1px); }
+  #chart-foot { margin-top: 10px; color: #62819f; font-size: 10px; }
+
+  @media (max-width: 620px) {
+    #btn-chart { top: calc(186px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #chart-panel { padding: 12px; }
+    #chart-grid { font-size: 10px; min-width: 460px; }
   }
 
   /* ---------- Start / pause overlay ---------- */
@@ -635,6 +844,24 @@
   </div>
 </div>
 
+<button id="btn-hammer" class="ui-el">Hammer &mdash; Off</button>
+<div id="hammer-ui">
+  <div id="hammer-note">Hammer &mdash; On</div>
+  <button class="sv-btn" id="btn-strike"><span class="glyph">&#128296;</span>STRIKE</button>
+</div>
+
+<button id="btn-chart" class="ui-el">Chart</button>
+
+<!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
+<div id="chart-overlay" class="ui-el">
+  <div id="chart-panel">
+    <button id="chart-close" aria-label="Close">&times;</button>
+    <span class="title">Material Interactions</span>
+    <div id="chart-scroll"><div id="chart-grid"></div></div>
+    <div id="chart-foot">50% = random chance on break</div>
+  </div>
+</div>
+
 <div id="overlay">
   <div>
     <h1>Hermes 3D</h1>
@@ -718,7 +945,7 @@ const ISLAND_PEAK = 12.0;
 // Half-width of the generated field, in metres. Everything inside this is cubes,
 // sea floor included, so it has to reach well past the shoreline: at the rim the
 // bed is already twenty metres down, which is deeper than the water is legible.
-const GEN_R      = 96;
+const GEN_R      = 48;
 const GEN_N      = Math.round((2 * GEN_R) / BLOCK);   // columns per side (960)
 const SEABED_DEPTH = 16;     // how far the sea floor drops away offshore
 const SUN = new THREE.Vector3(0.45, 0.72, 0.52).normalize();
@@ -1187,10 +1414,35 @@ const SAND = 0, DIRT = 1, ROCK = 2, WATER = 3;
 const FINE_DIRT = 4, MUD = 5, HARD_DIRT = 6, FINE_MUD = 7;
 const STONE_DUST = 8, STONE_MUD = 9, BRITTLE_STONE = 10;
 const CLAY = 11, CLAY_MUD = 12, HARD_CLAY = 13;
-const N_MATS = 14;
+const N_MATS = 16;
 // Not a terrain material: the value the voxel store below uses for a block that
 // is not there. It sorts after the real ones so `m < AIR` means solid.
 const AIR = N_MATS;
+
+// The numbers are the material's own properties, indexed by material id and not
+// yet read by anything that simulates: weight is how much a block of it drags on
+// you, buoyancy how much the water pushes it back up, strength how much work it
+// takes to break out of the ground, powder whether it is loose and crumbly.
+// Water is the one entry with none — it is a block in the store but it is not a
+// thing you can carry.
+const MAT_STATS = [
+  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 0.5, powder: true  },  // SAND
+  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
+  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
+  null,                                                                        // WATER
+  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 0.8, powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 1.4, powder: false },  // HARD_SAND
+];
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -1596,6 +1848,9 @@ const TERRAIN_MATS = [
   mat(0xc4a882, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
   mat(0x8a7a60, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
   mat(0xb09070, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
+  // The sand family, either side of SAND: damp is darker, packed is warmer.
+  mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
+  mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
 ];
 // The same materials again, white and vertex-coloured. Every block's colour
 // — the material, the column's tint and the depth shading, all of it — is baked
@@ -1665,14 +1920,62 @@ const FACES = [
   { di:  0, dj: -1, dl:  0, n: [ 0,  0, -1], v: [ 1, -1, -1,  -1, -1, -1,  -1,  1, -1,   1,  1, -1] },
 ];
 
-// One face of the block centred on (cx, cy, cz), in the one colour that block is.
+// A powder face is diced this many cells each way, and each cell's shade may
+// stray this far from the block's own colour, either way.
+const GRAIN_GRID = 3;
+const GRAIN_PIXEL = 0.06;
+const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
+
+// One face of the block centred on (cx, cy, cz), in the one colour that block
+// is — except powder, which is diced into flat-shaded pixels.
 function pushFace(m, f, cx, cy, cz, r, g, b) {
   const B = faceBuf[m], v = f.v, n = f.n;
-  for (let q = 0; q < 4; q++) {
-    const o = q * 3;
-    B.pos.push(cx + v[o] * HALF_BLOCK, cy + v[o + 1] * HALF_BLOCK, cz + v[o + 2] * HALF_BLOCK);
-    B.nor.push(n[0], n[1], n[2]);
-    B.col.push(r, g, b);
+
+  if (!MAT_STATS[m]?.powder) {
+    for (let q = 0; q < 4; q++) {
+      const o = q * 3;
+      B.pos.push(cx + v[o] * HALF_BLOCK, cy + v[o + 1] * HALF_BLOCK, cz + v[o + 2] * HALF_BLOCK);
+      B.nor.push(n[0], n[1], n[2]);
+      B.col.push(r, g, b);
+    }
+    return;
+  }
+
+  // Powder is loose grain, so it is not painted flat: the face is cut into a
+  // grid of little quads, each carrying one colour across all four of its
+  // corners so it reads as a pixel rather than a gradient. The offset is hashed
+  // from where the cell's centre stands in the world, so the same block always
+  // speckles the same way however often the mesh is rebuilt.
+  //
+  // The quad runs v0, v1, v2, v3, so du walks it one way and dv the other, and
+  // a cell is v0 + u * du + w * dv. Its corners are pushed in that same order —
+  // (u0,w0), (u1,w0), (u1,w1), (u0,w1) — to keep the winding the face had.
+  const dux = v[3] - v[0], duy = v[4] - v[1], duz = v[5] - v[2];
+  const dvx = v[9] - v[0], dvy = v[10] - v[1], dvz = v[11] - v[2];
+
+  for (let row = 0; row < GRAIN_GRID; row++) {
+    const w0 = row / GRAIN_GRID, w1 = (row + 1) / GRAIN_GRID;
+    for (let col = 0; col < GRAIN_GRID; col++) {
+      const u0 = col / GRAIN_GRID, u1 = (col + 1) / GRAIN_GRID;
+      const um = (u0 + u1) / 2, wm = (w0 + w1) / 2;
+
+      // Random tint pick from a discrete palette — same range as per-column
+      // tint (0.86–1.14) but applied per-pixel for a speckled grain look.
+      const tintPalette = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
+      const ti = (Math.sin(cx * 99.1 + cz * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
+      const s = tintPalette[Math.abs(ti) % tintPalette.length];
+      const cr = clamp01(r * s), cg = clamp01(g * s), cb = clamp01(b * s);
+
+      for (let q = 0; q < 4; q++) {
+        const u = q === 0 || q === 3 ? u0 : u1;
+        const w = q < 2 ? w0 : w1;
+        B.pos.push(cx + (v[0] + u * dux + w * dvx) * HALF_BLOCK,
+                   cy + (v[1] + u * duy + w * dvy) * HALF_BLOCK,
+                   cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK);
+        B.nor.push(n[0], n[1], n[2]);
+        B.col.push(cr, cg, cb);
+      }
+    }
   }
 }
 
@@ -2600,6 +2903,9 @@ function rebuildFilletChunk(c) {
 // represent — dig sideways under a ledge and the collider will not follow you —
 // but it is exact for the one-block-at-a-time editing the shovel actually does.
 const HF_FLOOR = -3.2;         // where the field bottoms out under open water
+const DEBRIS_GROUP  = 1;     // pieces collide with each other and with everything else
+const PLAYER_GROUP = 2;     // player uses voxel collision, so skip cannon heightfield
+
 const hfShape = (() => {
   const data = [];
   for (let i = 0; i < GEN_N; i++) {
@@ -2619,6 +2925,7 @@ hfBody.addShape(hfShape);
 hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
 hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
 hfBody.updateAABB();
+hfBody.collisionFilterMask = DEBRIS_GROUP;  // heightfield only collides with debris — player uses voxel collision
 world.addBody(hfBody);
 
 // One column of the collider, after the store under it changed.
@@ -2682,7 +2989,7 @@ const keys = new Set();
 // ----- keyboard -----
 const TRACKED = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyQ', 'KeyC', 'KeyV', 'KeyG', 'KeyR',
-  'KeyF', 'KeyZ', 'KeyX',
+  'KeyF', 'KeyH', 'KeyZ', 'KeyX', 'KeyT',
   'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
 ]);
 // A key that lands in a text field is the field's business and nothing else's —
@@ -2697,10 +3004,12 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyG') toggleGameMode();
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
   else if (e.code === 'KeyF') setShovel(!shovel.on);
+  else if (e.code === 'KeyH') setHammer(!hammer.on);
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
   else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
+  else if (e.code === 'KeyT') toggleChart();
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (typing(e)) return;
@@ -2725,6 +3034,8 @@ renderer.domElement.addEventListener('mousedown', (e) => {
   // Once the pointer is captured the two buttons are the shovel: left takes the
   // block under the crosshair, right puts one back. Nothing else in the world is
   // clickable, so there is nothing to steal them from.
+  // The hammer takes the left button on its own — it is the only thing it does.
+  if (hammer.on) { if (e.button === 0) hammerStrike(); return; }
   if (!shovel.on) return;
   if (e.button === 0) shovelPickUp();
   else if (e.button === 2) shovelPlace();
@@ -2967,6 +3278,9 @@ const playerBody = new CANNON.Body({
   linearDamping: 0,
   angularDamping: 1,
   allowSleep: false,
+  collisionFilterGroup: PLAYER_GROUP,
+  collisionFilterMask: DEBRIS_GROUP,
+  collisionResponse: false,
 });
 let crouched = false;
 
@@ -3049,8 +3363,89 @@ function respawn() {
   state.pitch = 0;
 }
 
+// Block-by-block collision: every solid voxel is a hard cube, so an overhang is
+// collided with where it actually is rather than at the top of its column the
+// way the heightfield reports it. The player is three stacked spheres standing
+// (one crouched); each sphere is pushed along the shortest way out of every
+// block it overlaps, walls included. Pushes are combined by keeping the deepest
+// one per direction rather than summing them, so resting on the seam between
+// four columns doesn't launch anyone.
+function voxelCollide(px, py, pz) {
+  const r = PLAYER.radius;
+  const centers = crouched
+    ? [px, py, pz]
+    : [px, py - 0.4, pz, px, py, pz, px, py + 0.4, pz];
+  let xp = 0, xn = 0, yp = 0, yn = 0, zp = 0, zn = 0;
+  for (let c = 0; c < centers.length; c += 3) {
+    const cx = centers[c], cy = centers[c + 1], cz = centers[c + 2];
+    const mi = colI(cx - r), xi = colI(cx + r);
+    const mj = colJ(cz - r), xj = colJ(cz + r);
+    const mlvl = Math.floor((cy - r) / BLOCK), xlvl = Math.floor((cy + r) / BLOCK);
+    for (let jj = mj; jj <= xj; jj++) {
+      for (let ii = mi; ii <= xi; ii++) {
+        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+        const k = jj * GEN_N + ii;
+        const top = sTop[k];
+        if (top === NO_COLUMN) continue;
+        const o = voxOff[k] - VOX_FLOOR;
+        const lo = Math.max(VOX_FLOOR, mlvl), hi = Math.min(top, xlvl);
+        const bx = colX(ii), bz = colZ(jj);
+        for (let lvl = lo; lvl <= hi; lvl++) {
+          const m = voxMat[o + lvl];
+          if (m === AIR || m === WATER) continue;
+          const bminY = lvl * BLOCK, bmaxY = bminY + BLOCK;
+          // Closest point on the block's box to this sphere centre.
+          const qx = Math.min(Math.max(cx, bx - HALF_BLOCK), bx + HALF_BLOCK);
+          const qy = Math.min(Math.max(cy, bminY), bmaxY);
+          const qz = Math.min(Math.max(cz, bz - HALF_BLOCK), bz + HALF_BLOCK);
+          const dx = cx - qx, dy = cy - qy, dz = cz - qz;
+          const d2 = dx * dx + dy * dy + dz * dz;
+          let nx = 0, ny = 0, nz = 0, overlap;
+          if (d2 > 1e-12) {
+            const d = Math.sqrt(d2);
+            if (d >= r) continue;
+            overlap = r - d;
+            nx = dx / d; ny = dy / d; nz = dz / d;
+          } else {
+            // Centre is buried in the block — leave through its nearest face.
+            const ex = Math.min(cx - bx + HALF_BLOCK, bx + HALF_BLOCK - cx);
+            const ey = Math.min(cy - bminY, bmaxY - cy);
+            const ez = Math.min(cz - bz + HALF_BLOCK, bz + HALF_BLOCK - cz);
+            if (ey <= ex && ey <= ez)  { ny = cy - bminY < bmaxY - cy ? -1 : 1; overlap = ey + r; }
+            else if (ex <= ez)         { nx = cx < bx ? -1 : 1;                 overlap = ex + r; }
+            else                       { nz = cz < bz ? -1 : 1;                 overlap = ez + r; }
+          }
+          const ox = nx * overlap, oy = ny * overlap, oz = nz * overlap;
+          if (ox > xp) xp = ox; else if (ox < xn) xn = ox;
+          if (oy > yp) yp = oy; else if (oy < yn) yn = oy;
+          if (oz > zp) zp = oz; else if (oz < zn) zn = oz;
+        }
+      }
+    }
+  }
+  return { x: xp + xn, y: yp + yn, z: zp + zn };
+}
+
 function updatePlayer(dt) {
   const p = playerBody.position, v = playerBody.velocity;
+
+  // Voxel override: the heightfield only knows the column top, so push the
+  // player out of whatever solid blocks they are actually inside — sideways as
+  // well as up, otherwise an overhang's column reads as a full-height wall.
+  const push = voxelCollide(p.x, p.y, p.z);
+  p.x += push.x;
+  p.y += push.y;
+  p.z += push.z;
+  if (push.y > 0.001) {
+    groundNy = 1.0;
+    if (v.y < 0) v.y = 0;
+  }
+  // Backstop under the open sea, where there are no voxels to stand on.
+  if (p.y - centerOffset() < HF_FLOOR) {
+    p.y = HF_FLOOR + centerOffset();
+    if (v.y < 0) v.y = 0;
+    groundNy = 1.0;
+  }
 
   // --- crouch: held on desktop, latched on touch ---
   const wantCrouch = keys.has('KeyC') || state.crouchBtn;
@@ -3290,6 +3685,7 @@ const MAT_NAMES = [
   'fine dirt', 'mud', 'hard dirt', 'fine mud',
   'stone dust', 'stone mud', 'brittle stone',
   'clay', 'clay mud', 'hard clay',
+  'wet sand', 'hard sand',
 ];
 
 const shovel = {
@@ -3298,6 +3694,13 @@ const shovel = {
   hit: null,      // {i, j, lvl} the block being looked at, or null
   spot: null,     // {i, j, lvl} the empty cell a placed block would go into
   debris: null,   // {mesh, local, i, j, lvl} a loose fallen piece being looked at instead
+};
+
+// The hammer knocks one block out of the world and lets it fall. It carries
+// nothing and holds nothing, so all it needs is the cell under the crosshair.
+const hammer = {
+  on: false,
+  hit: null,      // {i, j, lvl} the block a strike would knock loose, or null
 };
 
 // ----- the ray -----
@@ -3469,7 +3872,7 @@ const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can t
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
-const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
+
 const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 // White, because the colour of every cube comes in per instance.
 const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
@@ -4183,6 +4586,76 @@ function editBlock(i, j, lvl, m) {
   return was;
 }
 
+// The Break column of MAT_CHART, read at the moment of the strike. Rows are
+// found by name, not by index: the chart is written in reading order, not
+// material order, and it calls ROCK "Stone". An empty Break means the block
+// falls as whatever it already was.
+const matIndexByName = (name) => {
+  const n = name.trim().toLowerCase();
+  return MAT_NAMES.indexOf(n === 'stone' ? 'rock' : n);
+};
+
+function resolveBreakMat(m) {
+  const row = MAT_CHART.find((r) => matIndexByName(r.mat) === m);
+  if (!row || !row.break) return m;
+  // Either one name, or "50% Fine dirt, 50% Dirt" — one roll walked down the
+  // percentages. Anything the chart names that isn't a material is left alone.
+  let roll = Math.random() * 100;
+  for (const part of row.break.split(',')) {
+    const pct = part.match(/^\s*(\d+)%\s*(.+)$/);
+    const idx = pct ? -1 : matIndexByName(part);
+    if (!pct) return idx === -1 ? m : idx;
+    roll -= Number(pct[1]);
+    if (roll < 0) {
+      const i = matIndexByName(pct[2]);
+      return i === -1 ? m : i;
+    }
+  }
+  return m;
+}
+
+// Knock one block out of the world and let it fall. Nothing is kept: the block
+// leaves the grid, becomes a one-cube piece of rubble, and from then on belongs
+// to the physics. The housekeeping is editBlock's, done by hand because the
+// falling piece has to be spawned from the material before it is overwritten.
+function hammerStrike() {
+  if (!hammer.on || !hammer.hit) return false;
+  const { i, j, lvl } = hammer.hit;
+  if (!inVoxelRange(i, j, lvl)) return false;
+  const m = voxelAt(i, j, lvl);
+  if (m === AIR || m === WATER) return false;
+  const dropMat = resolveBreakMat(m);
+
+  setVoxel(i, j, lvl, AIR);
+  const k = j * GEN_N + i;
+  colDug[k] = 1;
+  if (lvl < colDugLo[k]) colDugLo[k] = lvl;
+  powderDirty.add(k);
+  patchCollider(i, j);
+  refreshVisible(i, j, lvl);
+  refreshVisible(i - 1, j, lvl);
+  refreshVisible(i + 1, j, lvl);
+  refreshVisible(i, j - 1, lvl);
+  refreshVisible(i, j + 1, lvl);
+  refreshVisible(i, j, lvl - 1);
+  refreshVisible(i, j, lvl + 1);
+  for (let dj = -1; dj <= 1; dj++) {
+    for (let di = -1; di <= 1; di++) {
+      const ii = i + di, jj = j + dj;
+      if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+      dirtyChunks.add(chunkOf(ii, jj));
+    }
+  }
+
+  // A group of one — the same path a broken-off cliff takes, just smaller.
+  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat }]]));
+
+  // And whatever the hole left hanging comes down after it.
+  applyGravity(i, j, lvl);
+  hammer.hit = null;
+  return true;
+}
+
 function flushDirtyChunks() {
   if (!dirtyChunks.size) return;
   for (const c of dirtyChunks) rebuildChunk(c);
@@ -4243,9 +4716,15 @@ const hlPlace = new THREE.Mesh(
   new THREE.BoxGeometry(BLOCK * 0.92, BLOCK * 0.92, BLOCK * 0.92),
   new THREE.MeshBasicMaterial({ color: 0x8fd8ff, transparent: true, opacity: 0.3, depthWrite: false })
 );
-hlPick.visible = hlPlace.visible = false;
-hlPick.frustumCulled = hlPlace.frustumCulled = false;
-scene.add(hlPick, hlPlace);
+// The hammer's own cage, in ember orange so there is never any doubt about
+// which tool is out and what it is about to knock loose.
+const hlHammer = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(BLOCK * 1.05, BLOCK * 1.05, BLOCK * 1.05)),
+  new THREE.LineBasicMaterial({ color: 0xff8a3c, transparent: true, opacity: 0.95, depthWrite: false })
+);
+hlPick.visible = hlPlace.visible = hlHammer.visible = false;
+hlPick.frustumCulled = hlPlace.frustumCulled = hlHammer.frustumCulled = false;
+scene.add(hlPick, hlPlace, hlHammer);
 
 const cellCenter = (o, v) => v.set(colX(o.i), (o.lvl + 0.5) * BLOCK, colZ(o.j));
 
@@ -4271,6 +4750,7 @@ function refreshShovelUI() {
 // Called every frame while the shovel is out: the highlights follow the aim and
 // the buttons grey out when the move they offer is not a legal one.
 function updateShovel() {
+  if (hammer.on) return;         // one tool at a time; the hammer has the aim
   shovelAim();
   const canPick = shovel.debris ? !!shovel.debris.blockLocal
                                 : (!!shovel.hit && shovel.held.length < SHOVEL_CAP);
@@ -4306,6 +4786,7 @@ function updateShovel() {
 }
 
 function setShovel(on) {
+  if (on && hammer.on) setHammer(false);   // one tool out at a time
   shovel.on = on;
   document.body.classList.toggle('shovel-on', on);
   if (!on) hlPick.visible = hlPlace.visible = false;
@@ -4318,6 +4799,65 @@ bindTap(pickBtn,   () => { if (shovel.on) shovelPickUp(); });
 bindTap(placeBtn,  () => { if (shovel.on) shovelPlace(); });
 refreshShovelUI();
 
+// ----- the hammer -----
+// Same ray as the shovel's, but it only wants the solid cell: there is no spot
+// to fill and rubble is already loose, so a piece of it in the way just shortens
+// the reach rather than becoming a target.
+function hammerAim() {
+  hammer.hit = null;
+  if (!hammer.on) return;
+
+  camera.getWorldDirection(aimDir);
+  let ox, oy, oz;
+  if (camMode === CAM.FREE) {
+    ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
+  } else {
+    const p = playerBody.position;
+    ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
+  }
+
+  const dHit = debrisAim(ox, oy, oz);
+  if (!voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) return;
+  const m = voxelAt(ddaHit.i, ddaHit.j, ddaHit.lvl);
+  if (m === AIR || m === WATER) return;    // water is not a block you can knock out
+  hammer.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
+}
+
+const hammerBtn  = document.getElementById('btn-hammer');
+const strikeBtn  = document.getElementById('btn-strike');
+const hammerNote = document.getElementById('hammer-note');
+
+function refreshHammerUI() {
+  hammerBtn.innerHTML = 'Hammer &mdash; ' + (hammer.on ? 'On' : 'Off');
+  hammerBtn.classList.toggle('on', hammer.on);
+  hammerNote.innerHTML = 'Hammer &mdash; ' + (hammer.on ? 'On' : 'Off');
+}
+
+// Called every frame while the hammer is out, for the same reason updateShovel
+// is: on a phone the cage is the only way to tell what the crosshair has.
+function updateHammer() {
+  hammerAim();
+  hlHammer.visible = hammer.on && !!hammer.hit;
+  if (hlHammer.visible) {
+    cellCenter(hammer.hit, hlHammer.position);
+    hlHammer.quaternion.identity();
+  }
+  strikeBtn.classList.toggle('dim', !hammer.hit);
+}
+
+function setHammer(on) {
+  if (on && shovel.on) setShovel(false);   // one tool out at a time
+  hammer.on = on;
+  document.body.classList.toggle('hammer-on', on);
+  if (!on) { hlHammer.visible = false; hammer.hit = null; }
+  refreshHammerUI();
+  refreshModeUI();
+}
+
+bindTap(hammerBtn, () => setHammer(!hammer.on));
+bindTap(strikeBtn, () => { if (hammer.on) hammerStrike(); });
+refreshHammerUI();
+
 // ---------------------------------------------------------------------------
 // Mode UI
 // ---------------------------------------------------------------------------
@@ -4327,35 +4867,45 @@ const modeBtn   = document.getElementById('mode-btn');
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'],
-                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
+                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'],
-                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'], ['T', 'Material chart'],
+                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'], ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'],
+                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'],
+                ['T', 'Material chart'], ['F', 'Shovel on / off'],
+                ['H', 'Hammer on / off'], ['M', 'Terrain skin / cubes'],
                 ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['5', 'Materials'],
-                ['F', 'Shovel on / off'], ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
+                ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
+                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Esc', 'Free the cursor']],
 };
 const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
+                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'], ['Shovel', 'Button, top left']],
+                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
+                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in'],
-                ['Shovel', 'Button, top left']],
+                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
-                ['MATS', 'Panel, top left']],
+                ['MATS / CHART', 'Panels, top left']],
 };
 // Appended while the shovel is out, in whichever camera you are in.
 const HELP_SHOVEL_DESKTOP = [['LMB / Z', 'Pick up block'], ['RMB / X', 'Place block']];
 const HELP_SHOVEL_TOUCH   = [['PICK UP', 'Take the lit block'], ['PLACE', 'Fill the ghost cell']];
+// And while the hammer is. It keeps nothing, so there is only the one move.
+const HELP_HAMMER_DESKTOP = [['LMB', 'Knock the lit block loose']];
+const HELP_HAMMER_TOUCH   = [['STRIKE', 'Knock the lit block loose']];
 
 function refreshModeUI() {
   const inGame = camMode !== CAM.FREE;
@@ -4365,6 +4915,7 @@ function refreshModeUI() {
 
   let rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
   if (shovel.on) rows = rows.concat(isTouchDevice ? HELP_SHOVEL_TOUCH : HELP_SHOVEL_DESKTOP);
+  if (hammer.on) rows = rows.concat(isTouchDevice ? HELP_HAMMER_TOUCH : HELP_HAMMER_DESKTOP);
   instrEl.innerHTML = '<span class="title">' + CAM_NAMES[camMode] + '</span>' +
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
 
@@ -4375,7 +4926,7 @@ function refreshModeUI() {
   document.body.classList.toggle('pad-act', camMode === CAM.FIRST || camMode === CAM.THIRD);
   // Third person normally has nothing to aim, but with the shovel out the
   // crosshair is what picks the block — so it comes back for that.
-  const noCross = (camMode === CAM.THIRD && !shovel.on) || camMode === CAM.TOP;
+  const noCross = (camMode === CAM.THIRD && !shovel.on && !hammer.on) || camMode === CAM.TOP;
   document.getElementById('crosshair').style.display = noCross ? 'none' : '';
 }
 
@@ -4394,30 +4945,7 @@ refreshModeUI();
 // A read-out of what the world is made of, one row per entry in TERRAIN_MATS.
 // The swatches are read straight off those materials rather than repeated as
 // literals here, so a colour only ever has to change in one place.
-//
-// The numbers are the material's own properties, indexed by material id and not
-// yet read by anything that simulates: weight is how much a block of it drags on
-// you, buoyancy how much the water pushes it back up, strength how much work it
-// takes to break out of the ground, powder whether it is loose and crumbly.
-// Water is the one entry with none — it is a block in the store but it is not a
-// thing you can carry.
 // ---------------------------------------------------------------------------
-const MAT_STATS = [
-  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 0.5, powder: true  },  // SAND
-  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
-  null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
-];
 
 const materialsEl  = document.getElementById('materials-ui');
 const materialsBtn = document.getElementById('btn-materials');
@@ -4453,6 +4981,65 @@ function setMaterialsUI(on) {
 function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
 bindTap(materialsBtn, toggleMaterialsUI);
 bindTap(document.getElementById('mat-close'), () => setMaterialsUI(false));
+
+// ---------------------------------------------------------------------------
+// Material interaction chart
+// ---------------------------------------------------------------------------
+// What each material turns into under the five things that can happen to it.
+// An empty string is "nothing happens" and renders as the dim dash.
+const CHART_COLS = [
+  { key: 'dry',      label: 'Dry' },
+  { key: 'water',    label: 'Water' },
+  { key: 'rain',     label: 'Rain' },
+  { key: 'break',    label: 'Break', sub: 'If empty block breaks' },
+  { key: 'compress', label: 'Compress' },
+];
+const MAT_CHART = [
+  { mat: 'Dirt',          dry: '',              water: 'Mud',        rain: 'Mud',        break: '50% Fine dirt, 50% Dirt',  compress: '' },
+  { mat: 'Mud',           dry: 'Dirt',          water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Fine dirt',     dry: '',              water: 'Fine mud',   rain: 'Fine mud',   break: '',                         compress: '' },
+  { mat: 'Hard dirt',     dry: '',              water: 'Fine mud',   rain: '',           break: 'Dirt',                     compress: '' },
+  { mat: 'Fine mud',      dry: 'Hard dirt',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Stone',         dry: '',              water: '',           rain: '',           break: '50% Stone, 50% Stone dust',compress: '' },
+  { mat: 'Stone dust',    dry: '',              water: 'Stone mud',  rain: 'Stone mud',  break: '',                         compress: '' },
+  { mat: 'Stone mud',     dry: 'Brittle stone', water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Brittle stone', dry: '',              water: '',           rain: '',           break: 'Stone dust',               compress: '' },
+  { mat: 'Clay',          dry: '',              water: 'Clay mud',   rain: 'Clay mud',   break: '',                         compress: '' },
+  { mat: 'Clay mud',      dry: 'Hard clay',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Hard clay',     dry: '',              water: '',           rain: '',           break: 'Clay',                     compress: '' },
+  { mat: 'Sand',          dry: '',              water: 'Wet sand',   rain: 'Wet sand',   break: '',                         compress: '' },
+  { mat: 'Wet sand',      dry: 'Hard sand',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Hard sand',     dry: '',              water: 'Wet sand',   rain: '',           break: 'Sand',                     compress: '' },
+];
+
+document.getElementById('chart-grid').innerHTML =
+  '<div class="ch-h mat">Material</div>'
+  + CHART_COLS.map((c) => `<div class="ch-h ${c.key}">${c.label}${c.sub ? `<small>${c.sub}</small>` : ''}</div>`).join('')
+  + MAT_CHART.map((r) => `<div class="ch-mat">${r.mat}</div>`
+      + CHART_COLS.map((c) => r[c.key]
+          ? `<div class="ch-c">${r[c.key]}</div>`
+          : '<div class="ch-c empty">&mdash;</div>').join('')).join('');
+
+const chartBtn = document.getElementById('btn-chart');
+
+let chartOpen = false;
+function setChartUI(on) {
+  chartOpen = on;
+  document.body.classList.toggle('chart-open', on);
+  chartBtn.classList.toggle('on', on);
+  // Same deal as the materials panel: with the pointer locked there is no cursor
+  // to hit the X with, and mouse look would keep running underneath.
+  if (on && document.pointerLockElement) document.exitPointerLock();
+}
+function toggleChart() { setChartUI(!chartOpen); }
+bindTap(chartBtn, toggleChart);
+bindTap(document.getElementById('chart-close'), () => setChartUI(false));
+// The backdrop is the other way out, but a drag that scrolls the table must not
+// count as one — only a tap on the dimmed area itself closes.
+document.getElementById('chart-overlay').addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'chart-overlay') setChartUI(false);
+  e.stopPropagation();
+});
 
 // ---------------------------------------------------------------------------
 // Overlay
@@ -4588,6 +5175,7 @@ function tick() {
   // After the camera, since the aim is taken down the view direction, and before
   // the render so the highlight boxes are in the right place this frame.
   if (shovel.on) updateShovel();
+  if (hammer.on) updateHammer();
   flushDirtyChunks();
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
@@ -4636,6 +5224,8 @@ window.hermes = {
   // The shovel. `shovel.held` is the stack of materials in your hands; moving a
   // block through it is the only way anything ever changes.
   shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,
+  // The hammer. One block out of the grid and into the rubble, nothing kept.
+  hammer, setHammer, hammerStrike,
   // The voxel store — the material of every block in the volume, not just the
   // surface, which is what a digging system would work against. voxelAtWorld
   // takes metres; the rest take column indices and levels. The MAT_STATS ids and

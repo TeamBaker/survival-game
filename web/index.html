@@ -4343,30 +4343,45 @@ function digDebrisBlock(mesh, inst, child) {
 // the piece's lattice — anchored on one of its own blocks — instead of to the
 // world grid. Null if that cell is already filled.
 const debrisLocal = new THREE.Vector3();
+const _debrisLocalDir = new THREE.Vector3();
 function debrisSpot(mesh, point, dir) {
   const lat = mesh.userData.blocks;
   if (!lat || !lat.length) return null;
-  const anchor = lat[0].pos;
-  mesh.updateWorldMatrix(true, false);   // it was moved by the body this frame
-  const v = mesh.worldToLocal(debrisLocal.copy(point).addScaledVector(dir, -HALF_BLOCK));
-  v.x = anchor.x + Math.round((v.x - anchor.x) / BLOCK) * BLOCK;
-  v.y = anchor.y + Math.round((v.y - anchor.y) / BLOCK) * BLOCK;
-  v.z = anchor.z + Math.round((v.z - anchor.z) / BLOCK) * BLOCK;
-  // Check the spot is face-adjacent to at least one existing block.
+  mesh.updateWorldMatrix(true, false);
+  const localPt = mesh.worldToLocal(debrisLocal.copy(point));
+  // Transform the ray direction into local space.
+  _debrisLocalDir.copy(dir).transformDirection(mesh.matrixWorld);
+  // Find the closest existing block to the hit point.
+  let best = null, bestDist = Infinity;
+  for (const b of lat) {
+    const dx = localPt.x - b.pos.x, dy = localPt.y - b.pos.y, dz = localPt.z - b.pos.z;
+    const d = dx*dx + dy*dy + dz*dz;
+    if (d < bestDist) { bestDist = d; best = b; }
+  }
+  if (!best) return null;
+  // Check all 6 face-adjacent cells of the closest block.
+  // Pick the empty one whose outward face normal aligns best with the ray direction.
   const T = 0.1;
-  let hasFace = false;
-  for (const b of lat) {
-    const dx = Math.abs(b.pos.x - v.x), dy = Math.abs(b.pos.y - v.y), dz = Math.abs(b.pos.z - v.z);
-    if ((Math.abs(dx - BLOCK) < T && dy < T && dz < T) ||
-        (Math.abs(dy - BLOCK) < T && dx < T && dz < T) ||
-        (Math.abs(dz - BLOCK) < T && dx < T && dy < T)) { hasFace = true; break; }
+  const faces = [
+    { dx: BLOCK, dy: 0, dz: 0 }, { dx: -BLOCK, dy: 0, dz: 0 },
+    { dx: 0, dy: BLOCK, dz: 0 }, { dx: 0, dy: -BLOCK, dz: 0 },
+    { dx: 0, dy: 0, dz: BLOCK }, { dx: 0, dy: 0, dz: -BLOCK },
+  ];
+  let bestFace = null, bestDot = -Infinity;
+  for (const f of faces) {
+    const fx = best.pos.x + f.dx, fy = best.pos.y + f.dy, fz = best.pos.z + f.dz;
+    // Skip if occupied.
+    let occupied = false;
+    for (const b of lat) {
+      if (Math.abs(b.pos.x - fx) < T && Math.abs(b.pos.y - fy) < T && Math.abs(b.pos.z - fz) < T) { occupied = true; break; }
+    }
+    if (occupied) continue;
+    // Dot product: how well the face normal aligns with the ray direction.
+    const dot = f.dx * _debrisLocalDir.x + f.dy * _debrisLocalDir.y + f.dz * _debrisLocalDir.z;
+    if (dot > bestDot) { bestDot = dot; bestFace = f; }
   }
-  if (!hasFace) return null;
-  for (const b of lat) {
-    if (Math.abs(b.pos.x - v.x) < 0.01 && Math.abs(b.pos.y - v.y) < 0.01
-        && Math.abs(b.pos.z - v.z) < 0.01) return null;
-  }
-  return v.clone();
+  if (!bestFace) return null;
+  return debrisLocal.set(best.pos.x + bestFace.dx, best.pos.y + bestFace.dy, best.pos.z + bestFace.dz);
 }
 
 // Put a held block onto a fallen piece. The cube hangs off the piece's mesh in

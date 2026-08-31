@@ -1687,6 +1687,13 @@ function canBuildAt(i, j, lvl) {
   return topLvl[j * GEN_N + i] !== NO_COLUMN && lvl >= VOX_FLOOR;
 }
 
+// Does (i, j, lvl) share a face with (hi, hj, hlvl)?
+function isFaceAdjacent(i, j, lvl, hi, hj, hlvl) {
+  return (Math.abs(i - hi) === 1 && j === hj && lvl === hlvl) ||
+         (Math.abs(j - hj) === 1 && i === hi && lvl === hlvl) ||
+         (Math.abs(lvl - hlvl) === 1 && i === hi && j === hj);
+}
+
 // Does (i, j, lvl) share a face with at least one solid block?
 // A block can only attach to the world via a face, never a corner or edge.
 function hasFaceNeighbor(i, j, lvl) {
@@ -3754,10 +3761,12 @@ function shovelAim() {
   }
 
   // A place has to land in a cell the store can actually hold a block in, that
-  // is empty, face-adjacent to a solid block, and that the player is not standing in.
+  // is empty, face-adjacent to the block you're looking at, and not inside you.
   const s = shovel.spot;
+  const h = shovel.hit;
   if (s && (!canBuildAt(s.i, s.j, s.lvl) || voxelAt(s.i, s.j, s.lvl) !== AIR
-            || !hasFaceNeighbor(s.i, s.j, s.lvl) || spotBlocked(s.i, s.j, s.lvl))) shovel.spot = null;
+            || !h || !isFaceAdjacent(s.i, s.j, s.lvl, h.i, h.j, h.lvl)
+            || spotBlocked(s.i, s.j, s.lvl))) shovel.spot = null;
 }
 
 // ----- writing it back -----
@@ -4618,8 +4627,10 @@ function shovelPlace() {
   const { i, j, lvl } = shovel.spot;
   // Re-check rather than trusting the aim from earlier in the frame. Popping a
   // block off the stack for a write that then gets rejected would destroy it.
+  const h = shovel.hit;
   if (!canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR
-      || !hasFaceNeighbor(i, j, lvl) || spotBlocked(i, j, lvl)) return false;
+      || !h || !isFaceAdjacent(i, j, lvl, h.i, h.j, h.lvl)
+      || spotBlocked(i, j, lvl)) return false;
   editBlock(i, j, lvl, shovel.held.pop());
   refreshShovelUI();
   return true;

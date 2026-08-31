@@ -2903,6 +2903,9 @@ function rebuildFilletChunk(c) {
 // represent — dig sideways under a ledge and the collider will not follow you —
 // but it is exact for the one-block-at-a-time editing the shovel actually does.
 const HF_FLOOR = -3.2;         // where the field bottoms out under open water
+const DEBRIS_GROUP  = 1;     // pieces collide with each other and with everything else
+const PLAYER_GROUP = 2;     // player uses voxel collision, so skip cannon heightfield
+
 const hfShape = (() => {
   const data = [];
   for (let i = 0; i < GEN_N; i++) {
@@ -3868,8 +3871,7 @@ const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can t
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
-const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
-const PLAYER_GROUP  = 2;     // player uses voxel collision, so skip cannon's heightfield     // the default group — pieces collide with each other and with everything else
+
 const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 // White, because the colour of every cube comes in per instance.
 const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });

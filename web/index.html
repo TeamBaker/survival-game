@@ -3356,33 +3356,86 @@ function respawn() {
   state.pitch = 0;
 }
 
-// Voxel ground: the top of the highest solid block spanning the player's own
-// height, so an overhang is collided with where it actually is rather than at
-// the top of its column the way the heightfield reports it.
-function voxelGroundY(wx, wy, wz) {
-  const i = colI(wx), j = colJ(wz);
-  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return HF_FLOOR;
-  const k = j * GEN_N + i;
-  const top = sTop[k];
-  if (top === NO_COLUMN) return HF_FLOOR;
-  const o = voxOff[k] - VOX_FLOOR;
-  const headLvl = Math.floor((wy + 0.8) / BLOCK);
-  const footLvl = Math.floor((wy - 0.8) / BLOCK);
-  for (let lvl = Math.min(top, headLvl); lvl >= Math.max(VOX_FLOOR, footLvl); lvl--) {
-    const m = voxMat[o + lvl];
-    if (m !== AIR && m !== WATER) return (lvl + 1) * BLOCK;
+// Block-by-block collision: every solid voxel is a hard cube, so an overhang is
+// collided with where it actually is rather than at the top of its column the
+// way the heightfield reports it. The player is three stacked spheres standing
+// (one crouched); each sphere is pushed along the shortest way out of every
+// block it overlaps, walls included. Pushes are combined by keeping the deepest
+// one per direction rather than summing them, so resting on the seam between
+// four columns doesn't launch anyone.
+function voxelCollide(px, py, pz) {
+  const r = PLAYER.radius;
+  const centers = crouched
+    ? [px, py, pz]
+    : [px, py - 0.4, pz, px, py, pz, px, py + 0.4, pz];
+  let xp = 0, xn = 0, yp = 0, yn = 0, zp = 0, zn = 0;
+  for (let c = 0; c < centers.length; c += 3) {
+    const cx = centers[c], cy = centers[c + 1], cz = centers[c + 2];
+    const mi = colI(cx - r), xi = colI(cx + r);
+    const mj = colJ(cz - r), xj = colJ(cz + r);
+    const mlvl = Math.floor((cy - r) / BLOCK), xlvl = Math.floor((cy + r) / BLOCK);
+    for (let jj = mj; jj <= xj; jj++) {
+      for (let ii = mi; ii <= xi; ii++) {
+        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+        const k = jj * GEN_N + ii;
+        const top = sTop[k];
+        if (top === NO_COLUMN) continue;
+        const o = voxOff[k] - VOX_FLOOR;
+        const lo = Math.max(VOX_FLOOR, mlvl), hi = Math.min(top, xlvl);
+        const bx = colX(ii), bz = colZ(jj);
+        for (let lvl = lo; lvl <= hi; lvl++) {
+          const m = voxMat[o + lvl];
+          if (m === AIR || m === WATER) continue;
+          const bminY = lvl * BLOCK, bmaxY = bminY + BLOCK;
+          // Closest point on the block's box to this sphere centre.
+          const qx = Math.min(Math.max(cx, bx - HALF_BLOCK), bx + HALF_BLOCK);
+          const qy = Math.min(Math.max(cy, bminY), bmaxY);
+          const qz = Math.min(Math.max(cz, bz - HALF_BLOCK), bz + HALF_BLOCK);
+          const dx = cx - qx, dy = cy - qy, dz = cz - qz;
+          const d2 = dx * dx + dy * dy + dz * dz;
+          let nx = 0, ny = 0, nz = 0, overlap;
+          if (d2 > 1e-12) {
+            const d = Math.sqrt(d2);
+            if (d >= r) continue;
+            overlap = r - d;
+            nx = dx / d; ny = dy / d; nz = dz / d;
+          } else {
+            // Centre is buried in the block — leave through its nearest face.
+            const ex = Math.min(cx - bx + HALF_BLOCK, bx + HALF_BLOCK - cx);
+            const ey = Math.min(cy - bminY, bmaxY - cy);
+            const ez = Math.min(cz - bz + HALF_BLOCK, bz + HALF_BLOCK - cz);
+            if (ey <= ex && ey <= ez)  { ny = cy - bminY < bmaxY - cy ? -1 : 1; overlap = ey + r; }
+            else if (ex <= ez)         { nx = cx < bx ? -1 : 1;                 overlap = ex + r; }
+            else                       { nz = cz < bz ? -1 : 1;                 overlap = ez + r; }
+          }
+          const ox = nx * overlap, oy = ny * overlap, oz = nz * overlap;
+          if (ox > xp) xp = ox; else if (ox < xn) xn = ox;
+          if (oy > yp) yp = oy; else if (oy < yn) yn = oy;
+          if (oz > zp) zp = oz; else if (oz < zn) zn = oz;
+        }
+      }
+    }
   }
-  return HF_FLOOR;
+  return { x: xp + xn, y: yp + yn, z: zp + zn };
 }
 
 function updatePlayer(dt) {
   const p = playerBody.position, v = playerBody.velocity;
 
-  // Voxel override: the heightfield only knows the column top, so lift the
-  // player out of whatever solid block their feet are actually inside.
-  const groundY = voxelGroundY(p.x, p.y, p.z);
-  if (p.y - centerOffset() < groundY) {
-    p.y = groundY + centerOffset();
+  // Voxel override: the heightfield only knows the column top, so push the
+  // player out of whatever solid blocks they are actually inside — sideways as
+  // well as up, otherwise an overhang's column reads as a full-height wall.
+  const push = voxelCollide(p.x, p.y, p.z);
+  p.x += push.x;
+  p.y += push.y;
+  p.z += push.z;
+  if (push.y > 0.001) {
+    groundNy = 1.0;
+    if (v.y < 0) v.y = 0;
+  }
+  // Backstop under the open sea, where there are no voxels to stand on.
+  if (p.y - centerOffset() < HF_FLOOR) {
+    p.y = HF_FLOOR + centerOffset();
     if (v.y < 0) v.y = 0;
     groundNy = 1.0;
   }

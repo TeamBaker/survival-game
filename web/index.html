@@ -1807,6 +1807,23 @@ function solidTopAt(i, j) {
   return sTop[j * GEN_N + i];
 }
 
+// The ground surface at (i, j): the top of the solid stack rooted at bedrock,
+// stopping at the first air gap on the way up. sTop alone is the top of
+// whatever is highest in the column, floating debris included — a block
+// placed above a gap would otherwise read as ground all the way up, which is
+// what the heightfield collider needs this distinction for.
+function groundTopAt(i, j) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return NO_COLUMN;
+  const k = j * GEN_N + i;
+  const top = sTop[k];
+  if (top === NO_COLUMN) return NO_COLUMN;
+  const o = voxOff[k] - VOX_FLOOR;
+  for (let l = VOX_FLOOR; l <= top; l++) {
+    if (voxMat[o + l] === AIR) return l - 1;
+  }
+  return top;
+}
+
 // A whole column, for anyone who wants to read down it: a view onto the store
 // running from `base` upwards, one entry per level. It aliases the store, so
 // writes through setVoxel show up in a view already taken.
@@ -2925,8 +2942,9 @@ const hfShape = (() => {
     for (let jj = 0; jj < GEN_N; jj++) {
       // Tipping the body up sends the heightfield's local +y to world -z, so the
       // row index has to count back down the field.
-      const k = (GEN_N - 1 - jj) * GEN_N + i;
-      strip[jj] = sTop[k] === NO_COLUMN ? HF_FLOOR : (sTop[k] + 1) * BLOCK;
+      const j = GEN_N - 1 - jj;
+      const gTop = groundTopAt(i, j);
+      strip[jj] = gTop === NO_COLUMN ? HF_FLOOR : (gTop + 1) * BLOCK;
     }
     data.push(strip);
   }
@@ -2941,7 +2959,7 @@ world.addBody(hfBody);
 
 // One column of the collider, after the store under it changed.
 function patchCollider(i, j) {
-  const top = sTop[j * GEN_N + i];
+  const top = groundTopAt(i, j);
   const y = top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
   hfShape.setHeightValueAtIndex(i, GEN_N - 1 - j, y);
   // Only ever widened. Recomputing the true extremes means walking the whole

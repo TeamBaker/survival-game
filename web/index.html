@@ -2949,7 +2949,54 @@ function patchCollider(i, j) {
   // that is too tight drops contacts.
   if (y > hfShape.maxValue) { hfShape.maxValue = y; hfBody.updateAABB(); }
   if (y < hfShape.minValue) { hfShape.minValue = y; hfBody.updateAABB(); }
+  hfDebug.setHeight(i, GEN_N - 1 - j, y);
 }
+
+// A purely visual mirror of the heightfield above, in the same local grid
+// space (x = i*BLOCK, y = jj*BLOCK, z = height) and carrying the exact same
+// quaternion/position as hfBody, so its wireframe lands precisely on what the
+// physics engine is actually colliding with. Toggled with B; kept in sync by
+// patchCollider so it never drifts from the live collider.
+const hfDebug = (() => {
+  const n = GEN_N;
+  const positions = new Float32Array(n * n * 3);
+  const data = hfShape.data;
+  for (let jj = 0; jj < n; jj++) {
+    for (let i = 0; i < n; i++) {
+      const idx = (jj * n + i) * 3;
+      positions[idx] = i * BLOCK;
+      positions[idx + 1] = jj * BLOCK;
+      positions[idx + 2] = data[i][jj];
+    }
+  }
+  const indices = [];
+  for (let jj = 0; jj < n - 1; jj++) {
+    for (let i = 0; i < n - 1; i++) {
+      const a = jj * n + i, b = a + 1, c = a + n, d = c + 1;
+      indices.push(a, b, c, b, d, c);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0x00ffff, wireframe: true, transparent: true, opacity: 0.35, depthWrite: false,
+  }));
+  mesh.quaternion.copy(hfBody.quaternion);
+  mesh.position.copy(hfBody.position);
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  scene.add(mesh);
+  const posAttr = geo.attributes.position;
+  return {
+    mesh,
+    // (xi, yi) here are heightfield data indices, matching setHeightValueAtIndex.
+    setHeight(xi, yi, y) {
+      positions[(yi * n + xi) * 3 + 2] = y;
+      posAttr.needsUpdate = true;
+    },
+  };
+})();
 
 // Where the ground is, for anything that needs to ask — the top of the block you
 // would be standing on, or the sea floor where there is no block. It reads the
@@ -3021,6 +3068,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
   else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
   else if (e.code === 'KeyT') toggleChart();
+  else if (e.code === 'KeyB') hfDebug.mesh.visible = !hfDebug.mesh.visible;
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (typing(e)) return;

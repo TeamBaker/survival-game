@@ -2932,41 +2932,16 @@ const hfShape = (() => {
   }
   return new CANNON.Heightfield(data, { elementSize: BLOCK });
 })();
-// A heightfield is one height per column, so it cannot represent an overhang
-// or a hollow — fine for the player, who only ever stands on top of something,
-// but debris settles into gaps a single height can't describe and would drop
-// straight through them. Debris is kept off the heightfield (its filter mask
-// excludes this group) and collides with the real block data instead, in
-// resolveDebrisTerrain() below.
-const TERRAIN_GROUP = 2;
-const hfBody = new CANNON.Body({ mass: 0, material: physWorld, collisionFilterGroup: TERRAIN_GROUP });
+const hfBody = new CANNON.Body({ mass: 0, material: physWorld });
 hfBody.addShape(hfShape);
 hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
 hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
 hfBody.updateAABB();
 world.addBody(hfBody);
 
-// The top of a column's unbroken run of solid material starting at the world
-// floor — as opposed to sTop, which is just the highest block regardless of
-// what (if anything) is under it. A hole dug clean through a column leaves
-// debris or a beam sitting above open air; sTop would still report that
-// height, and the heightfield would then be solid all the way up from the
-// ground through the gap, trapping anything that ends up in it. Only the
-// collider needs this distinction, so it is not what solidTopAt answers.
-function groundTopAt(k) {
-  if (topLvl[k] === NO_COLUMN) return NO_COLUMN;
-  const o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
-  let t = NO_COLUMN;
-  for (let l = VOX_FLOOR; l <= cap; l++) {
-    if (voxMat[o + l] === AIR) break;
-    t = l;
-  }
-  return t;
-}
-
 // One column of the collider, after the store under it changed.
 function patchCollider(i, j) {
-  const top = groundTopAt(j * GEN_N + i);
+  const top = sTop[j * GEN_N + i];
   const y = top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
   hfShape.setHeightValueAtIndex(i, GEN_N - 1 - j, y);
   // Only ever widened. Recomputing the true extremes means walking the whole
@@ -2974,78 +2949,6 @@ function patchCollider(i, j) {
   // that is too tight drops contacts.
   if (y > hfShape.maxValue) { hfShape.maxValue = y; hfBody.updateAABB(); }
   if (y < hfShape.minValue) { hfShape.minValue = y; hfBody.updateAABB(); }
-}
-
-// ----- debris vs. terrain: manual per-block voxel collision -----
-// Run after each physics step, once per debris body. Checks every block the
-// piece is made of against the voxel cells it overlaps (usually one, up to
-// eight when straddling a grid line) and, for whichever cell is penetrated
-// least, shoves the body back out along that axis. Cheap and only exact to a
-// block, but unlike the heightfield it knows about overhangs and hollows
-// because it reads the same voxMat the terrain mesh is built from.
-const debrisLocalPos = new CANNON.Vec3(), debrisWorldPos = new CANNON.Vec3();
-function resolveDebrisBlock(body, wx, wy, wz) {
-  const h = HALF_BLOCK;
-  const i0 = colI(wx - h), i1 = colI(wx + h);
-  const j0 = colJ(wz - h), j1 = colJ(wz + h);
-  const l0 = lvlOfY(wy - h), l1 = lvlOfY(wy + h);
-  let bestOverlap = Infinity, bestAxis = -1, bestSign = 1;
-  for (let i = i0; i <= i1; i++) {
-    for (let j = j0; j <= j1; j++) {
-      for (let l = l0; l <= l1; l++) {
-        if (!filletSolid(i, j, l)) continue;
-        const cx = colX(i), cz = colZ(j), cy0 = l * BLOCK, cy1 = cy0 + BLOCK;
-        const ox = Math.min(wx + h, cx + HALF_BLOCK) - Math.max(wx - h, cx - HALF_BLOCK);
-        const oy = Math.min(wy + h, cy1) - Math.max(wy - h, cy0);
-        const oz = Math.min(wz + h, cz + HALF_BLOCK) - Math.max(wz - h, cz - HALF_BLOCK);
-        if (ox <= 0 || oy <= 0 || oz <= 0) continue;
-        let axis, overlap;
-        if (ox <= oy && ox <= oz) { axis = 0; overlap = ox; }
-        else if (oy <= oz) { axis = 1; overlap = oy; }
-        else { axis = 2; overlap = oz; }
-        if (overlap < bestOverlap) {
-          bestOverlap = overlap;
-          bestAxis = axis;
-          bestSign = axis === 0 ? (wx < cx ? -1 : 1)
-                   : axis === 1 ? (wy < (cy0 + cy1) / 2 ? -1 : 1)
-                                 : (wz < cz ? -1 : 1);
-        }
-      }
-    }
-  }
-  if (bestAxis < 0) return;
-  if (bestAxis === 0) {
-    body.position.x += bestSign * bestOverlap;
-    if (bestSign * body.velocity.x < 0) body.velocity.x = 0;
-  } else if (bestAxis === 1) {
-    body.position.y += bestSign * bestOverlap;
-    if (bestSign * body.velocity.y < 0) body.velocity.y = 0;
-  } else {
-    body.position.z += bestSign * bestOverlap;
-    if (bestSign * body.velocity.z < 0) body.velocity.z = 0;
-  }
-}
-
-// blocks: mesh.userData.blocks — each entry's pos is the block's centre in the
-// body's own local frame, the same offsets the body's shapes were built from.
-function resolveChunkTerrain(body, blocks) {
-  for (const b of blocks) {
-    debrisLocalPos.set(b.pos.x, b.pos.y, b.pos.z);
-    body.quaternion.vmult(debrisLocalPos, debrisWorldPos);
-    debrisWorldPos.vadd(body.position, debrisWorldPos);
-    resolveDebrisBlock(body, debrisWorldPos.x, debrisWorldPos.y, debrisWorldPos.z);
-  }
-}
-
-function resolveDebrisTerrain() {
-  for (let n = 0; n < fallingChunks.length; n++) {
-    const f = fallingChunks[n];
-    if (f.body.sleepState !== CANNON.Body.SLEEPING) resolveChunkTerrain(f.body, f.mesh.userData.blocks);
-  }
-  for (let n = 0; n < restedChunks.length; n++) {
-    const f = restedChunks[n];
-    if (f.body.sleepState !== CANNON.Body.SLEEPING) resolveChunkTerrain(f.body, f.mesh.userData.blocks);
-  }
 }
 
 // Where the ground is, for anything that needs to ask — the top of the block you
@@ -3991,13 +3894,12 @@ function spawnFallingChunk(unit) {
     material: physDebris,
     linearDamping: 0.02,
     angularDamping: 0.15,
-    // One group for everything, and a mask that lets all of it through except
-    // the heightfield, so a piece collides with props, with the player, and
-    // with the other pieces, which share this group. The debris-on-debris
-    // friction and bounce come from the physDebris/physDebris contact material
-    // up top; terrain collision is handled manually in resolveDebrisTerrain().
+    // One group for everything, and a mask that lets all of it through, so a
+    // piece collides with the level, with props, with the player — and with the
+    // other pieces, which share this group. The debris-on-debris friction and
+    // bounce come from the physDebris/physDebris contact material up top.
     collisionFilterGroup: DEBRIS_GROUP,
-    collisionFilterMask: ~TERRAIN_GROUP,
+    collisionFilterMask: -1,
   });
   const h = HALF_BLOCK;
   if (n <= FALL_SHAPE_CAP) {
@@ -4405,7 +4307,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     linearDamping: 0.02,
     angularDamping: 0.15,
     collisionFilterGroup: DEBRIS_GROUP,
-    collisionFilterMask: ~TERRAIN_GROUP,
+    collisionFilterMask: -1,
   });
   if (mesh.userData.perBlock) {
     for (const b of mesh.userData.blocks) {
@@ -5301,10 +5203,8 @@ function tick() {
   // --- physics: fixed 120 Hz steps, sub-stepped to catch up with the frame ---
   // Twice the old rate: a shorter step resolves the block-edge contacts before
   // they build into a shove, which is the one thing here that helps the walk.
-  // The solver's answer is the answer for everything on the heightfield; debris
-  // is off it and gets pushed clear of the real terrain voxels right after.
+  // Nothing touches the body afterwards — the solver's answer is the answer.
   world.step(PHYS_STEP, dt, 8);
-  for (let _iter = 0; _iter < 3; _iter++) resolveDebrisTerrain();
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);

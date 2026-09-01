@@ -2020,14 +2020,28 @@ function pushFace(m, f, cx, cy, cz, r, g, b) {
 }
 
 
-// Every exposed face of every visible block in column (i, j), pushed into the
-// scratch buffers. A block is visible when blockVisible says it has at least one
+// Greedy meshing scratch: grids[m][f] maps a "slice" — the layer along the
+// face's normal axis (a block level for top/bottom, a column index for the
+// other four) — to a 2D 'row,col' -> [r,g,b] grid of the faces sitting in that
+// slice. Cells are grouped by slice because faces on different slices are
+// never coplanar and must never be merged into the same quad.
+// FACE_TO_GRID reorders FACES' six directions (±x, ±y, ±z) into the grouping
+// greedyEmitMaterial expects: 0/1 top/bottom, 2/3 right/left, 4/5 north/south.
+const FACE_TO_GRID = [2, 3, 0, 1, 4, 5];
+const greedyGrids = Array.from({ length: N_MATS }, () => Array.from({ length: 6 }, () => new Map()));
+
+// Every exposed face of every visible block in column (i, j). Powder blocks
+// are drawn straight away with pushFace, since their faces are diced into
+// loose grain rather than flat quads and so can never be merged. Every other
+// block's faces are dropped into greedyGrids instead of being drawn, to be
+// merged into the fewest possible quads once the whole chunk has been
+// collected. A block is visible when blockVisible says it has at least one
 // face touching air — the array is the sole authority on visibility, so digging
 // never leaves a pillar and placing never leaves a ghost — and of a visible
 // block only the faces that touch air themselves are drawn, so the six-sided box
 // that used to stand in for every block is down to the one or two sides of it
 // anything could ever see. Returns the blocks it drew something for.
-function collectColumn(i, j) {
+function collectColumnGrid(i, j) {
   const k = j * GEN_N + i;
   const top = sTop[k];
   if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return 0;
@@ -2046,14 +2060,115 @@ function collectColumn(i, j) {
     const c = TERRAIN_MATS[m].color;
     const r = c.r * s, g = c.g * s, b = c.b * s;
     const cy = (lvl + 0.5) * BLOCK;
+    const powder = MAT_STATS[m]?.powder;
     for (let f = 0; f < 6; f++) {
       const F = FACES[f];
       if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
-      pushFace(m, F, cx, cy, cz, r, g, b);
+      if (powder) {
+        pushFace(m, F, cx, cy, cz, r, g, b);
+        continue;
+      }
+      const newF = FACE_TO_GRID[f];
+      let slice, row, col;
+      if (newF < 2)      { slice = lvl; row = i;   col = j;   }
+      else if (newF < 4) { slice = i;   row = j;   col = lvl; }
+      else               { slice = j;   row = i;   col = lvl; }
+      let sliceMap = greedyGrids[m][newF].get(slice);
+      if (!sliceMap) { sliceMap = new Map(); greedyGrids[m][newF].set(slice, sliceMap); }
+      sliceMap.set(row + ',' + col, [r, g, b]);
     }
     drawn++;
   }
   return drawn;
+}
+
+// Merges grid — the per-slice 'row,col' -> colour grids collected by
+// collectColumnGrid for one material and one of the six face directions —
+// into as few quads as possible, pushed straight into B. Every cell in grid
+// is already known to be the same material, so a rectangle only has to be
+// checked for existing (any two adjacent faces of the same material merge,
+// whichever colour either happens to carry) — the merged quad simply takes
+// the colour of its top-left corner.
+function greedyEmitMaterial(fIdx, grid, B) {
+  for (const [slice, cellMap] of grid) {
+    let rMax = -1, cMax = -1;
+    for (const key of cellMap.keys()) {
+      const comma = key.indexOf(',');
+      const r = +key.slice(0, comma), c = +key.slice(comma + 1);
+      if (r > rMax) rMax = r;
+      if (c > cMax) cMax = c;
+    }
+
+    const visited = new Set();
+    for (let r = 0; r <= rMax; r++) {
+      for (let c = 0; c <= cMax; c++) {
+        const key = r + ',' + c;
+        if (visited.has(key) || !cellMap.has(key)) continue;
+        const color = cellMap.get(key);
+
+        let c2 = c + 1;
+        while (c2 <= cMax && !visited.has(r + ',' + c2) && cellMap.has(r + ',' + c2)) c2++;
+
+        let r2 = r + 1;
+        rowLoop:
+        while (r2 <= rMax) {
+          for (let cc = c; cc < c2; cc++) {
+            const k2 = r2 + ',' + cc;
+            if (visited.has(k2) || !cellMap.has(k2)) break rowLoop;
+          }
+          r2++;
+        }
+
+        for (let rr = r; rr < r2; rr++) for (let cc = c; cc < c2; cc++) visited.add(rr + ',' + cc);
+
+        let corners, normal;
+        if (fIdx === 0) {                    // top, +y
+          const y = (slice + 1) * BLOCK;
+          const x0 = colX(r) - HALF_BLOCK, x1 = colX(r2 - 1) + HALF_BLOCK;
+          const z0 = colZ(c) - HALF_BLOCK, z1 = colZ(c2 - 1) + HALF_BLOCK;
+          corners = [x0, y, z1,  x1, y, z1,  x1, y, z0,  x0, y, z0];
+          normal = [0, 1, 0];
+        } else if (fIdx === 1) {             // bottom, -y
+          const y = slice * BLOCK;
+          const x0 = colX(r) - HALF_BLOCK, x1 = colX(r2 - 1) + HALF_BLOCK;
+          const z0 = colZ(c) - HALF_BLOCK, z1 = colZ(c2 - 1) + HALF_BLOCK;
+          corners = [x0, y, z0,  x1, y, z0,  x1, y, z1,  x0, y, z1];
+          normal = [0, -1, 0];
+        } else if (fIdx === 2) {             // right, +x
+          const x = colX(slice) + HALF_BLOCK;
+          const z0 = colZ(r) - HALF_BLOCK, z1 = colZ(r2 - 1) + HALF_BLOCK;
+          const y0 = c * BLOCK, y1 = c2 * BLOCK;
+          corners = [x, y0, z1,  x, y0, z0,  x, y1, z0,  x, y1, z1];
+          normal = [1, 0, 0];
+        } else if (fIdx === 3) {             // left, -x
+          const x = colX(slice) - HALF_BLOCK;
+          const z0 = colZ(r) - HALF_BLOCK, z1 = colZ(r2 - 1) + HALF_BLOCK;
+          const y0 = c * BLOCK, y1 = c2 * BLOCK;
+          corners = [x, y0, z0,  x, y0, z1,  x, y1, z1,  x, y1, z0];
+          normal = [-1, 0, 0];
+        } else if (fIdx === 4) {             // north, +z
+          const z = colZ(slice) + HALF_BLOCK;
+          const x0 = colX(r) - HALF_BLOCK, x1 = colX(r2 - 1) + HALF_BLOCK;
+          const y0 = c * BLOCK, y1 = c2 * BLOCK;
+          corners = [x0, y0, z,  x1, y0, z,  x1, y1, z,  x0, y1, z];
+          normal = [0, 0, 1];
+        } else {                              // south, -z
+          const z = colZ(slice) - HALF_BLOCK;
+          const x0 = colX(r) - HALF_BLOCK, x1 = colX(r2 - 1) + HALF_BLOCK;
+          const y0 = c * BLOCK, y1 = c2 * BLOCK;
+          corners = [x1, y0, z,  x0, y0, z,  x0, y1, z,  x1, y1, z];
+          normal = [0, 0, -1];
+        }
+
+        for (let q = 0; q < 4; q++) {
+          const o = q * 3;
+          B.pos.push(corners[o], corners[o + 1], corners[o + 2]);
+          B.nor.push(normal[0], normal[1], normal[2]);
+          B.col.push(color[0], color[1], color[2]);
+        }
+      }
+    }
+  }
 }
 
 // (Re)build one chunk's meshes from the store. Cheap enough to call from a tap:
@@ -2071,12 +2186,20 @@ function rebuildChunk(c) {
   for (let m = 0; m < N_MATS; m++) {
     const B = faceBuf[m];
     B.pos.length = 0; B.nor.length = 0; B.col.length = 0;
+    for (let f = 0; f < 6; f++) greedyGrids[m][f].clear();
   }
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   let blocks = 0;
-  for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) blocks += collectColumn(i, j);
+  for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) blocks += collectColumnGrid(i, j);
+
+  for (let m = 0; m < N_MATS; m++) {
+    for (let f = 0; f < 6; f++) {
+      const g = greedyGrids[m][f];
+      if (g.size) greedyEmitMaterial(f, g, faceBuf[m]);
+    }
+  }
 
   const meshes = new Array(N_MATS).fill(null);
   let faces = 0;
@@ -2929,98 +3052,130 @@ function rebuildFilletChunk(c) {
 // console; nothing in the game calls it.
 
 // ----- pass 4b: the collider -----
-// A cannon heightfield on the same grid, its vertices sitting on the centres of
-// the block tops. Between two columns one level apart it ramps rather than
-// steps, but the ramp is one block long against one block of rise — 45 degrees,
-// just inside maxSlope — and at 20 cm a block that ramp is well under the
-// player's own radius, so a hillside climbs as a walkable slope and never
-// catches on an edge. Two levels apart is 63 degrees, past maxSlope, and stays a
-// cliff — which is what a dug face or a bluff is made of.
+// One static body per chunk (same CHUNK grid the mesh uses), each holding one
+// box per column. A box's top sits exactly on the block surface with sharp
+// vertical sides, so two columns a level apart meet at a step, never a ramp —
+// unlike a heightfield, which interpolates a slope between vertices. Columns
+// with no terrain (open water past the island) get a box up to the virtual
+// sea floor instead, so there is always something to stand on.
 //
-// Baked from the store, and patched a column at a time by the shovel: a
-// heightfield only knows the top of each column, so a hole you dig lowers it and
-// a block you stack raises it. That is the whole of what a heightfield can
-// represent — dig sideways under a ledge and the collider will not follow you —
-// but it is exact for the one-block-at-a-time editing the shovel actually does.
-const HF_FLOOR = -3.2;         // where the field bottoms out under open water
-const hfShape = (() => {
-  const data = [];
-  for (let i = 0; i < GEN_N; i++) {
-    const strip = new Array(GEN_N);
-    for (let jj = 0; jj < GEN_N; jj++) {
-      // Tipping the body up sends the heightfield's local +y to world -z, so the
-      // row index has to count back down the field.
-      const k = (GEN_N - 1 - jj) * GEN_N + i;
-      strip[jj] = sTop[k] === NO_COLUMN ? HF_FLOOR : (sTop[k] + 1) * BLOCK;
-    }
-    data.push(strip);
-  }
-  return new CANNON.Heightfield(data, { elementSize: BLOCK });
-})();
-const hfBody = new CANNON.Body({ mass: 0, material: physWorld });
-hfBody.addShape(hfShape);
-hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
-hfBody.updateAABB();
-world.addBody(hfBody);
+// Splitting the boxes across per-chunk bodies (instead of one body carrying
+// every column) keeps each body's shape list short enough for the narrowphase
+// to be cheap; the world's SAP broadphase then does the real work of only
+// pairing the player against the handful of chunk bodies near it.
+//
+// Baked from the store, and patched a column at a time by the shovel: like the
+// heightfield it replaces, this only knows the top of each column, so a hole
+// you dig lowers it and a block you stack raises it — dig sideways under a
+// ledge and the collider will not follow you — but it is exact for the
+// one-block-at-a-time editing the shovel actually does.
+const HF_FLOOR = -3.2;         // where columns with no terrain bottom out, under open water
+const COLLIDE_FLOOR = -40;     // bottom of every collision box — well under VOX_FLOOR, so never reached
+const colliderBody = new Array(CHUNK_N * CHUNK_N);
+for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+  const body = new CANNON.Body({ mass: 0, material: physWorld });
+  world.addBody(body);
+  colliderBody[c] = body;
+}
+const colliderShape = new Array(GEN_N * GEN_N).fill(null);
 
-// One column of the collider, after the store under it changed.
+const colliderTopY = (k) => (sTop[k] === NO_COLUMN ? HF_FLOOR : (sTop[k] + 1) * BLOCK);
+
+// One column of the collider, after the store under it changed. Also used to
+// build the collider in the first place, but not in a loop over every column
+// at startup — addShape() recomputes the body's whole AABB on every call, and
+// doing that once per column of a 256-shape chunk body is the quadratic way
+// to build it; buildColliders() below does the same thing in one pass.
 function patchCollider(i, j) {
-  const top = sTop[j * GEN_N + i];
-  const y = top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
-  hfShape.setHeightValueAtIndex(i, GEN_N - 1 - j, y);
-  // Only ever widened. Recomputing the true extremes means walking the whole
-  // field, and a bound that is a little loose costs a broadphase test, where one
-  // that is too tight drops contacts.
-  if (y > hfShape.maxValue) { hfShape.maxValue = y; hfBody.updateAABB(); }
-  if (y < hfShape.minValue) { hfShape.minValue = y; hfBody.updateAABB(); }
-  hfDebug.setHeight(i, GEN_N - 1 - j, y);
+  const k = j * GEN_N + i;
+  const body = colliderBody[chunkOf(i, j)];
+  const old = colliderShape[k];
+  if (old) { body.removeShape(old); colliderShape[k] = null; }
+  const topY = colliderTopY(k);
+  const halfH = (topY - COLLIDE_FLOOR) / 2;
+  if (halfH > 0) {
+    const shape = new CANNON.Box(new CANNON.Vec3(HALF_BLOCK, halfH, HALF_BLOCK));
+    body.addShape(shape, new CANNON.Vec3(colX(i), topY - halfH, colZ(j)));
+    colliderShape[k] = shape;
+  }
+  hfDebug.setHeight(i, j, topY);
 }
 
-// A purely visual mirror of the heightfield above, in the same local grid
-// space (x = i*BLOCK, y = jj*BLOCK, z = height) and carrying the exact same
-// quaternion/position as hfBody, so its wireframe lands precisely on what the
-// physics engine is actually colliding with. Toggled with the COL button;
+// A purely visual mirror of the boxes above: one flat quad per column, sitting
+// exactly on its box's top face and not sharing vertices with its neighbours,
+// so the wireframe steps the same way the collider does instead of showing a
+// ramp between columns at different heights. Toggled with the COL button;
 // kept in sync by patchCollider so it never drifts from the live collider.
 const hfDebug = (() => {
   const n = GEN_N;
-  const positions = new Float32Array(n * n * 3);
-  const data = hfShape.data;
-  for (let jj = 0; jj < n; jj++) {
+  const cols = n * n;
+  const positions = new Float32Array(cols * 4 * 3);
+  const IndexArray = cols * 4 > 65535 ? Uint32Array : Uint16Array;
+  const indices = new IndexArray(cols * 6);
+  for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
-      const idx = (jj * n + i) * 3;
-      positions[idx] = i * BLOCK;
-      positions[idx + 1] = jj * BLOCK;
-      positions[idx + 2] = data[i][jj];
-    }
-  }
-  const indices = [];
-  for (let jj = 0; jj < n - 1; jj++) {
-    for (let i = 0; i < n - 1; i++) {
-      const a = jj * n + i, b = a + 1, c = a + n, d = c + 1;
-      indices.push(a, b, c, b, d, c);
+      const k = j * n + i;
+      const x0 = colX(i) - HALF_BLOCK, x1 = colX(i) + HALF_BLOCK;
+      const z0 = colZ(j) - HALF_BLOCK, z1 = colZ(j) + HALF_BLOCK;
+      const y = colliderTopY(k);
+      const pBase = k * 4 * 3;
+      positions[pBase + 0] = x0; positions[pBase + 1] = y; positions[pBase + 2] = z0;
+      positions[pBase + 3] = x1; positions[pBase + 4] = y; positions[pBase + 5] = z0;
+      positions[pBase + 6] = x0; positions[pBase + 7] = y; positions[pBase + 8] = z1;
+      positions[pBase + 9] = x1; positions[pBase + 10] = y; positions[pBase + 11] = z1;
+      const vBase = k * 4, iBase = k * 6;
+      indices[iBase] = vBase; indices[iBase + 1] = vBase + 1; indices[iBase + 2] = vBase + 2;
+      indices[iBase + 3] = vBase + 1; indices[iBase + 4] = vBase + 3; indices[iBase + 5] = vBase + 2;
     }
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setIndex(indices);
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
   const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
     color: 0x00ffff, wireframe: true, transparent: true, opacity: 0.35, depthWrite: false,
   }));
-  mesh.quaternion.copy(hfBody.quaternion);
-  mesh.position.copy(hfBody.position);
   mesh.frustumCulled = false;
   mesh.visible = false;
   scene.add(mesh);
   const posAttr = geo.attributes.position;
   return {
     mesh,
-    // (xi, yi) here are heightfield data indices, matching setHeightValueAtIndex.
-    setHeight(xi, yi, y) {
-      positions[(yi * n + xi) * 3 + 2] = y;
+    setHeight(i, j, y) {
+      const base = (j * n + i) * 4 * 3;
+      positions[base + 1] = y; positions[base + 4] = y; positions[base + 7] = y; positions[base + 10] = y;
       posAttr.needsUpdate = true;
     },
   };
+})();
+
+// Builds every column's box in one pass. Pushes shapes onto each chunk body
+// directly instead of going through addShape() (which is patchCollider's
+// job, for the rare single-column edit) so that a 480x480 field of columns
+// costs O(columns), not O(columns * shapes-per-chunk) from recomputing each
+// body's AABB after every one of its ~256 shapes goes in.
+(function buildColliders() {
+  for (let j = 0; j < GEN_N; j++) {
+    for (let i = 0; i < GEN_N; i++) {
+      const k = j * GEN_N + i;
+      const topY = colliderTopY(k);
+      const halfH = (topY - COLLIDE_FLOOR) / 2;
+      if (halfH > 0) {
+        const body = colliderBody[chunkOf(i, j)];
+        const shape = new CANNON.Box(new CANNON.Vec3(HALF_BLOCK, halfH, HALF_BLOCK));
+        body.shapes.push(shape);
+        body.shapeOffsets.push(new CANNON.Vec3(colX(i), topY - halfH, colZ(j)));
+        body.shapeOrientations.push(new CANNON.Quaternion());
+        shape.body = body;
+        colliderShape[k] = shape;
+      }
+      hfDebug.setHeight(i, j, topY);
+    }
+  }
+  for (const body of colliderBody) {
+    body.updateMassProperties();
+    body.updateBoundingRadius();
+    body.aabbNeedsUpdate = true;
+  }
 })();
 
 // Where the ground is, for anything that needs to ask — the top of the block you

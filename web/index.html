@@ -2929,98 +2929,130 @@ function rebuildFilletChunk(c) {
 // console; nothing in the game calls it.
 
 // ----- pass 4b: the collider -----
-// A cannon heightfield on the same grid, its vertices sitting on the centres of
-// the block tops. Between two columns one level apart it ramps rather than
-// steps, but the ramp is one block long against one block of rise — 45 degrees,
-// just inside maxSlope — and at 20 cm a block that ramp is well under the
-// player's own radius, so a hillside climbs as a walkable slope and never
-// catches on an edge. Two levels apart is 63 degrees, past maxSlope, and stays a
-// cliff — which is what a dug face or a bluff is made of.
+// One static body per chunk (same CHUNK grid the mesh uses), each holding one
+// box per column. A box's top sits exactly on the block surface with sharp
+// vertical sides, so two columns a level apart meet at a step, never a ramp —
+// unlike a heightfield, which interpolates a slope between vertices. Columns
+// with no terrain (open water past the island) get a box up to the virtual
+// sea floor instead, so there is always something to stand on.
 //
-// Baked from the store, and patched a column at a time by the shovel: a
-// heightfield only knows the top of each column, so a hole you dig lowers it and
-// a block you stack raises it. That is the whole of what a heightfield can
-// represent — dig sideways under a ledge and the collider will not follow you —
-// but it is exact for the one-block-at-a-time editing the shovel actually does.
-const HF_FLOOR = -3.2;         // where the field bottoms out under open water
-const hfShape = (() => {
-  const data = [];
-  for (let i = 0; i < GEN_N; i++) {
-    const strip = new Array(GEN_N);
-    for (let jj = 0; jj < GEN_N; jj++) {
-      // Tipping the body up sends the heightfield's local +y to world -z, so the
-      // row index has to count back down the field.
-      const k = (GEN_N - 1 - jj) * GEN_N + i;
-      strip[jj] = sTop[k] === NO_COLUMN ? HF_FLOOR : (sTop[k] + 1) * BLOCK;
-    }
-    data.push(strip);
-  }
-  return new CANNON.Heightfield(data, { elementSize: BLOCK });
-})();
-const hfBody = new CANNON.Body({ mass: 0, material: physWorld });
-hfBody.addShape(hfShape);
-hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
-hfBody.updateAABB();
-world.addBody(hfBody);
+// Splitting the boxes across per-chunk bodies (instead of one body carrying
+// every column) keeps each body's shape list short enough for the narrowphase
+// to be cheap; the world's SAP broadphase then does the real work of only
+// pairing the player against the handful of chunk bodies near it.
+//
+// Baked from the store, and patched a column at a time by the shovel: like the
+// heightfield it replaces, this only knows the top of each column, so a hole
+// you dig lowers it and a block you stack raises it — dig sideways under a
+// ledge and the collider will not follow you — but it is exact for the
+// one-block-at-a-time editing the shovel actually does.
+const HF_FLOOR = -3.2;         // where columns with no terrain bottom out, under open water
+const COLLIDE_FLOOR = -40;     // bottom of every collision box — well under VOX_FLOOR, so never reached
+const colliderBody = new Array(CHUNK_N * CHUNK_N);
+for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+  const body = new CANNON.Body({ mass: 0, material: physWorld });
+  world.addBody(body);
+  colliderBody[c] = body;
+}
+const colliderShape = new Array(GEN_N * GEN_N).fill(null);
 
-// One column of the collider, after the store under it changed.
+const colliderTopY = (k) => (sTop[k] === NO_COLUMN ? HF_FLOOR : (sTop[k] + 1) * BLOCK);
+
+// One column of the collider, after the store under it changed. Also used to
+// build the collider in the first place, but not in a loop over every column
+// at startup — addShape() recomputes the body's whole AABB on every call, and
+// doing that once per column of a 256-shape chunk body is the quadratic way
+// to build it; buildColliders() below does the same thing in one pass.
 function patchCollider(i, j) {
-  const top = sTop[j * GEN_N + i];
-  const y = top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
-  hfShape.setHeightValueAtIndex(i, GEN_N - 1 - j, y);
-  // Only ever widened. Recomputing the true extremes means walking the whole
-  // field, and a bound that is a little loose costs a broadphase test, where one
-  // that is too tight drops contacts.
-  if (y > hfShape.maxValue) { hfShape.maxValue = y; hfBody.updateAABB(); }
-  if (y < hfShape.minValue) { hfShape.minValue = y; hfBody.updateAABB(); }
-  hfDebug.setHeight(i, GEN_N - 1 - j, y);
+  const k = j * GEN_N + i;
+  const body = colliderBody[chunkOf(i, j)];
+  const old = colliderShape[k];
+  if (old) { body.removeShape(old); colliderShape[k] = null; }
+  const topY = colliderTopY(k);
+  const halfH = (topY - COLLIDE_FLOOR) / 2;
+  if (halfH > 0) {
+    const shape = new CANNON.Box(new CANNON.Vec3(HALF_BLOCK, halfH, HALF_BLOCK));
+    body.addShape(shape, new CANNON.Vec3(colX(i), topY - halfH, colZ(j)));
+    colliderShape[k] = shape;
+  }
+  hfDebug.setHeight(i, j, topY);
 }
 
-// A purely visual mirror of the heightfield above, in the same local grid
-// space (x = i*BLOCK, y = jj*BLOCK, z = height) and carrying the exact same
-// quaternion/position as hfBody, so its wireframe lands precisely on what the
-// physics engine is actually colliding with. Toggled with the COL button;
+// A purely visual mirror of the boxes above: one flat quad per column, sitting
+// exactly on its box's top face and not sharing vertices with its neighbours,
+// so the wireframe steps the same way the collider does instead of showing a
+// ramp between columns at different heights. Toggled with the COL button;
 // kept in sync by patchCollider so it never drifts from the live collider.
 const hfDebug = (() => {
   const n = GEN_N;
-  const positions = new Float32Array(n * n * 3);
-  const data = hfShape.data;
-  for (let jj = 0; jj < n; jj++) {
+  const cols = n * n;
+  const positions = new Float32Array(cols * 4 * 3);
+  const IndexArray = cols * 4 > 65535 ? Uint32Array : Uint16Array;
+  const indices = new IndexArray(cols * 6);
+  for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
-      const idx = (jj * n + i) * 3;
-      positions[idx] = i * BLOCK;
-      positions[idx + 1] = jj * BLOCK;
-      positions[idx + 2] = data[i][jj];
-    }
-  }
-  const indices = [];
-  for (let jj = 0; jj < n - 1; jj++) {
-    for (let i = 0; i < n - 1; i++) {
-      const a = jj * n + i, b = a + 1, c = a + n, d = c + 1;
-      indices.push(a, b, c, b, d, c);
+      const k = j * n + i;
+      const x0 = colX(i) - HALF_BLOCK, x1 = colX(i) + HALF_BLOCK;
+      const z0 = colZ(j) - HALF_BLOCK, z1 = colZ(j) + HALF_BLOCK;
+      const y = colliderTopY(k);
+      const pBase = k * 4 * 3;
+      positions[pBase + 0] = x0; positions[pBase + 1] = y; positions[pBase + 2] = z0;
+      positions[pBase + 3] = x1; positions[pBase + 4] = y; positions[pBase + 5] = z0;
+      positions[pBase + 6] = x0; positions[pBase + 7] = y; positions[pBase + 8] = z1;
+      positions[pBase + 9] = x1; positions[pBase + 10] = y; positions[pBase + 11] = z1;
+      const vBase = k * 4, iBase = k * 6;
+      indices[iBase] = vBase; indices[iBase + 1] = vBase + 1; indices[iBase + 2] = vBase + 2;
+      indices[iBase + 3] = vBase + 1; indices[iBase + 4] = vBase + 3; indices[iBase + 5] = vBase + 2;
     }
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setIndex(indices);
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
   const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
     color: 0x00ffff, wireframe: true, transparent: true, opacity: 0.35, depthWrite: false,
   }));
-  mesh.quaternion.copy(hfBody.quaternion);
-  mesh.position.copy(hfBody.position);
   mesh.frustumCulled = false;
   mesh.visible = false;
   scene.add(mesh);
   const posAttr = geo.attributes.position;
   return {
     mesh,
-    // (xi, yi) here are heightfield data indices, matching setHeightValueAtIndex.
-    setHeight(xi, yi, y) {
-      positions[(yi * n + xi) * 3 + 2] = y;
+    setHeight(i, j, y) {
+      const base = (j * n + i) * 4 * 3;
+      positions[base + 1] = y; positions[base + 4] = y; positions[base + 7] = y; positions[base + 10] = y;
       posAttr.needsUpdate = true;
     },
   };
+})();
+
+// Builds every column's box in one pass. Pushes shapes onto each chunk body
+// directly instead of going through addShape() (which is patchCollider's
+// job, for the rare single-column edit) so that a 480x480 field of columns
+// costs O(columns), not O(columns * shapes-per-chunk) from recomputing each
+// body's AABB after every one of its ~256 shapes goes in.
+(function buildColliders() {
+  for (let j = 0; j < GEN_N; j++) {
+    for (let i = 0; i < GEN_N; i++) {
+      const k = j * GEN_N + i;
+      const topY = colliderTopY(k);
+      const halfH = (topY - COLLIDE_FLOOR) / 2;
+      if (halfH > 0) {
+        const body = colliderBody[chunkOf(i, j)];
+        const shape = new CANNON.Box(new CANNON.Vec3(HALF_BLOCK, halfH, HALF_BLOCK));
+        body.shapes.push(shape);
+        body.shapeOffsets.push(new CANNON.Vec3(colX(i), topY - halfH, colZ(j)));
+        body.shapeOrientations.push(new CANNON.Quaternion());
+        shape.body = body;
+        colliderShape[k] = shape;
+      }
+      hfDebug.setHeight(i, j, topY);
+    }
+  }
+  for (const body of colliderBody) {
+    body.updateMassProperties();
+    body.updateBoundingRadius();
+    body.aabbNeedsUpdate = true;
+  }
 })();
 
 // Where the ground is, for anything that needs to ask — the top of the block you

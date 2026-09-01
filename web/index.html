@@ -589,6 +589,29 @@
   #btn-chart.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-chart:active { transform: translateY(1px); }
 
+  #btn-col {
+    position: fixed;
+    top: calc(248px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-col.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-col:active { transform: translateY(1px); }
+
   #chart-overlay {
     position: fixed;
     inset: 0;
@@ -705,6 +728,7 @@
 
   @media (max-width: 620px) {
     #btn-chart { top: calc(186px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-col { top: calc(220px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
     #chart-panel { padding: 12px; }
     #chart-grid { font-size: 10px; min-width: 460px; }
   }
@@ -851,6 +875,7 @@
 </div>
 
 <button id="btn-chart" class="ui-el">Chart</button>
+<button id="btn-col" class="ui-el">Col</button>
 
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
 <div id="chart-overlay" class="ui-el">
@@ -2955,8 +2980,8 @@ function patchCollider(i, j) {
 // A purely visual mirror of the heightfield above, in the same local grid
 // space (x = i*BLOCK, y = jj*BLOCK, z = height) and carrying the exact same
 // quaternion/position as hfBody, so its wireframe lands precisely on what the
-// physics engine is actually colliding with. Toggled with B; kept in sync by
-// patchCollider so it never drifts from the live collider.
+// physics engine is actually colliding with. Toggled with the COL button;
+// kept in sync by patchCollider so it never drifts from the live collider.
 const hfDebug = (() => {
   const n = GEN_N;
   const positions = new Float32Array(n * n * 3);
@@ -3068,7 +3093,6 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
   else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
   else if (e.code === 'KeyT') toggleChart();
-  else if (e.code === 'KeyB') hfDebug.mesh.visible = !hfDebug.mesh.visible;
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
   if (typing(e)) return;
@@ -5125,6 +5149,12 @@ function setChartUI(on) {
 function toggleChart() { setChartUI(!chartOpen); }
 bindTap(chartBtn, toggleChart);
 bindTap(document.getElementById('chart-close'), () => setChartUI(false));
+
+const colBtn = document.getElementById('btn-col');
+bindTap(colBtn, () => {
+  hfDebug.mesh.visible = !hfDebug.mesh.visible;
+  colBtn.classList.toggle('on', hfDebug.mesh.visible);
+});
 // The backdrop is the other way out, but a drag that scrolls the table must not
 // count as one — only a tap on the dimmed area itself closes.
 document.getElementById('chart-overlay').addEventListener('pointerdown', (e) => {

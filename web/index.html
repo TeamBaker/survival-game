@@ -589,6 +589,42 @@
   #btn-chart.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-chart:active { transform: translateY(1px); }
 
+  /* ---------- Debug collider toggle ---------- */
+  #btn-debug-colliders {
+    position: fixed;
+    right: calc(14px + env(safe-area-inset-right));
+    bottom: calc(320px + env(safe-area-inset-bottom));
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 16px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.72);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    min-height: 44px;
+    z-index: 30;
+  }
+  #btn-debug-colliders .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ff3b3b;
+    box-shadow: 0 0 6px #ff3b3b;
+  }
+  #btn-debug-colliders.on .dot { background: #3bff6e; box-shadow: 0 0 6px #3bff6e; }
+  #btn-debug-colliders.on { color: #fff; border-color: rgba(120, 255, 160, 0.6); }
+  #btn-debug-colliders:active { transform: translateY(1px); }
+
   #chart-overlay {
     position: fixed;
     inset: 0;
@@ -851,6 +887,7 @@
 </div>
 
 <button id="btn-chart" class="ui-el">Chart</button>
+<button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
 
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
 <div id="chart-overlay" class="ui-el">
@@ -1148,6 +1185,77 @@ world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physProp,  { fri
 world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physWorld, { friction: 0.6, restitution: 0.22 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physProp,  { friction: 0.5, restitution: 0.18 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physDebris,{ friction: 0.6, restitution: 0.15 }));
+
+// ---------------------------------------------------------------------------
+// Debug collider wireframes — toggled by the "Debug Colliders" button. Walks
+// world.bodies every frame it's on, so it stays correct as bodies are added
+// (debris, hammer pieces) and removed without hooking into those call sites.
+// ---------------------------------------------------------------------------
+const debugColliders = { on: false, group: new THREE.Group() };
+debugColliders.group.visible = false;
+scene.add(debugColliders.group);
+const debugDynamicMat = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true, depthTest: false });
+const debugStaticMat  = new THREE.MeshBasicMaterial({ color: 0x2288ff, wireframe: true, depthTest: false });
+const debugTmpOffset = new CANNON.Vec3();
+const debugTmpQuat = new THREE.Quaternion();
+
+function rebuildDebugColliders() {
+  const group = debugColliders.group;
+  for (const child of group.children) child.geometry.dispose();
+  group.clear();
+  for (const body of world.bodies) {
+    const mat = body.mass === 0 ? debugStaticMat : debugDynamicMat;
+    for (let i = 0; i < body.shapes.length; i++) {
+      const shape = body.shapes[i];
+      let geo;
+      if (shape.type === CANNON.Shape.types.BOX) {
+        geo = new THREE.BoxGeometry(shape.halfExtents.x * 2, shape.halfExtents.y * 2, shape.halfExtents.z * 2);
+      } else if (shape.type === CANNON.Shape.types.SPHERE) {
+        geo = new THREE.SphereGeometry(shape.radius, 10, 8);
+      } else if (shape.type === CANNON.Shape.types.PLANE) {
+        geo = new THREE.PlaneGeometry(60, 60);
+      } else {
+        // Heightfield and anything else not covered above — a bounding sphere
+        // still shows roughly where the body's collider sits.
+        geo = new THREE.SphereGeometry(shape.boundingSphereRadius || 0.5, 8, 6);
+      }
+      group.add(new THREE.Mesh(geo, mat));
+    }
+  }
+}
+
+function updateDebugColliders() {
+  if (!debugColliders.on) return;
+  let shapeCount = 0;
+  for (const body of world.bodies) shapeCount += body.shapes.length;
+  if (shapeCount !== debugColliders.group.children.length) rebuildDebugColliders();
+
+  const children = debugColliders.group.children;
+  let idx = 0;
+  for (const body of world.bodies) {
+    for (let i = 0; i < body.shapes.length; i++) {
+      const mesh = children[idx++];
+      body.quaternion.vmult(body.shapeOffsets[i], debugTmpOffset);
+      mesh.position.set(
+        body.position.x + debugTmpOffset.x,
+        body.position.y + debugTmpOffset.y,
+        body.position.z + debugTmpOffset.z,
+      );
+      const so = body.shapeOrientations[i];
+      debugTmpQuat.set(so.x, so.y, so.z, so.w);
+      mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w)
+        .multiply(debugTmpQuat);
+    }
+  }
+}
+
+const debugCollidersBtn = document.getElementById('btn-debug-colliders');
+debugCollidersBtn.addEventListener('click', () => {
+  debugColliders.on = !debugColliders.on;
+  debugCollidersBtn.classList.toggle('on', debugColliders.on);
+  debugColliders.group.visible = debugColliders.on;
+  if (debugColliders.on) rebuildDebugColliders();
+});
 
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
@@ -5243,6 +5351,8 @@ function tick() {
       p.y.toFixed(1).padStart(6, ' ') + ',' +
       p.z.toFixed(1).padStart(6, ' ');
   }
+
+  updateDebugColliders();
 
   renderer.render(scene, camera);
 }

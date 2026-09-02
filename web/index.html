@@ -1327,6 +1327,17 @@ function updateDebugColliders() {
 
 const debugCollidersBtn = document.getElementById('btn-debug-colliders');
 debugCollidersBtn.addEventListener('click', () => {
+  console.log('DEBUG BUTTON CLICKED');
+  console.log('world.bodies count:', world.bodies.length);
+  for (const body of world.bodies) {
+    console.log('  body:', body.mass, 'shapes:', body.shapes.length, 'type:', body.type);
+    for (const shape of body.shapes) {
+      console.log('    shape.type:', shape.type, '=== BOX:', shape.type === CANNON.Shape.types.BOX, '=== SPHERE:', shape.type === CANNON.Shape.types.SPHERE, '=== HEIGHTFIELD:', shape.type === CANNON.Shape.types.HEIGHTFIELD);
+    }
+  }
+  console.log('CANNON.Shape.types:', JSON.stringify(CANNON.Shape.types));
+  console.log('debugColliders.on:', debugColliders.on);
+  console.log('bodyGroup children:', debugColliders.bodyGroup.children.length);
   debugColliders.on = !debugColliders.on;
   debugCollidersBtn.classList.toggle('on', debugColliders.on);
   debugColliders.bodyGroup.visible = debugColliders.on;

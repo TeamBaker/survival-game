@@ -1211,16 +1211,17 @@ function rebuildDebug() {
         geo = new THREE.SphereGeometry(shape.radius, 8, 6);
       } else if (shape.type === CANNON.Shape.types.HEIGHTFIELD) {
         // Build a simple grid from heightfield data
+        // Heightfield local space: x = column, y = row, z = height
         const data = shape.data;
         const es = shape.elementSize;
         const nx = data.length, nz = data[0].length;
         const positions = [];
         const stride = Math.max(1, Math.floor(nx / 40));
-        for (let x = 0; x < nx; x += stride) {
-          for (let z = 0; z < nz; z += stride) {
-            const hx = x * es, hz = z * es, hy = data[x][z];
-            if (x + stride < nx) { positions.push(hx,hy,hz, (x+stride)*es,data[x+stride][z],hz); }
-            if (z + stride < nz) { positions.push(hx,hy,hz, hx,data[x][z+stride],(z+stride)*es); }
+        for (let i = 0; i < nx; i += stride) {
+          for (let j = 0; j < nz; j += stride) {
+            const px = i * es, py = j * es, pz = data[i][j];
+            if (i + stride < nx) { positions.push(px,py,pz, (i+stride)*es,py,data[i+stride][j]); }
+            if (j + stride < nz) { positions.push(px,py,pz, px,(j+stride)*es,data[i][j+stride]); }
           }
         }
         geo = new THREE.BufferGeometry();

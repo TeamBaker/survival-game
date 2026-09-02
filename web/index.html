@@ -593,36 +593,37 @@
   #btn-debug-colliders {
     position: fixed;
     right: calc(14px + env(safe-area-inset-right));
-    bottom: calc(320px + env(safe-area-inset-bottom));
+    top: calc(60px + env(safe-area-inset-top));
     display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 10px 16px;
+    gap: 5px;
+    padding: 6px 10px;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #cfe6ff;
-    background: rgba(20, 34, 54, 0.72);
-    border: 1px solid rgba(150, 195, 245, 0.4);
+    background: rgba(20, 34, 54, 0.55);
+    border: 1px solid rgba(150, 195, 245, 0.25);
     border-radius: 999px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    min-height: 44px;
+    min-height: 32px;
+    min-width: 32px;
     z-index: 30;
   }
   #btn-debug-colliders .dot {
-    width: 10px;
-    height: 10px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     background: #ff3b3b;
-    box-shadow: 0 0 6px #ff3b3b;
+    box-shadow: 0 0 4px #ff3b3b;
   }
-  #btn-debug-colliders.on .dot { background: #3bff6e; box-shadow: 0 0 6px #3bff6e; }
-  #btn-debug-colliders.on { color: #fff; border-color: rgba(120, 255, 160, 0.6); }
+  #btn-debug-colliders.on .dot { background: #3bff6e; box-shadow: 0 0 4px #3bff6e; }
+  #btn-debug-colliders.on { color: #fff; border-color: rgba(120, 255, 160, 0.4); }
   #btn-debug-colliders:active { transform: translateY(1px); }
 
   #chart-overlay {
@@ -1196,17 +1197,58 @@ debugColliders.group.visible = false;
 scene.add(debugColliders.group);
 const debugDynamicMat = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true, depthTest: false });
 const debugStaticMat  = new THREE.MeshBasicMaterial({ color: 0x2288ff, wireframe: true, depthTest: false });
+const debugDynamicLineMat = new THREE.LineBasicMaterial({ color: 0xff2222, depthTest: false });
+const debugStaticLineMat  = new THREE.LineBasicMaterial({ color: 0x2288ff, depthTest: false });
 const debugTmpOffset = new CANNON.Vec3();
 const debugTmpQuat = new THREE.Quaternion();
+
+// Heightfield shapes hold their data as data[i][j] = height, in the shape's
+// local space (x = i * elementSize, y = j * elementSize, z = height, before
+// the body's own rotation/position are applied). Sampled at a stride so a
+// 480x480 field doesn't turn into half a million line segments.
+function buildHeightfieldWireframe(shape) {
+  const data = shape.data;
+  const nx = data.length;
+  const nz = data[0].length;
+  const w = shape.elementSize;
+  const stride = Math.max(1, Math.ceil(Math.max(nx, nz) / 64));
+  const positions = [];
+  for (let i = 0; i < nx; i += stride) {
+    for (let j = 0; j < nz; j += stride) {
+      const y = data[i][j];
+      if (i + stride < nx) {
+        positions.push(i * w, j * w, y, (i + stride) * w, j * w, data[i + stride][j]);
+      }
+      if (j + stride < nz) {
+        positions.push(i * w, j * w, y, i * w, (j + stride) * w, data[i][j + stride]);
+      }
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  return geo;
+}
+
+function bodyTypeName(body) {
+  if (body.type === CANNON.Body.STATIC) return 'STATIC';
+  if (body.type === CANNON.Body.KINEMATIC) return 'KINEMATIC';
+  return 'DYNAMIC';
+}
 
 function rebuildDebugColliders() {
   const group = debugColliders.group;
   for (const child of group.children) child.geometry.dispose();
   group.clear();
+  let shapeTotal = 0;
   for (const body of world.bodies) {
     const mat = body.mass === 0 ? debugStaticMat : debugDynamicMat;
+    const lineMat = body.mass === 0 ? debugStaticLineMat : debugDynamicLineMat;
     for (let i = 0; i < body.shapes.length; i++) {
       const shape = body.shapes[i];
+      if (shape.type === CANNON.Shape.types.HEIGHTFIELD) {
+        group.add(new THREE.LineSegments(buildHeightfieldWireframe(shape), lineMat));
+        continue;
+      }
       let geo;
       if (shape.type === CANNON.Shape.types.BOX) {
         geo = new THREE.BoxGeometry(shape.halfExtents.x * 2, shape.halfExtents.y * 2, shape.halfExtents.z * 2);
@@ -1215,13 +1257,16 @@ function rebuildDebugColliders() {
       } else if (shape.type === CANNON.Shape.types.PLANE) {
         geo = new THREE.PlaneGeometry(60, 60);
       } else {
-        // Heightfield and anything else not covered above — a bounding sphere
-        // still shows roughly where the body's collider sits.
+        // Anything else not covered above — a bounding sphere still shows
+        // roughly where the body's collider sits.
         geo = new THREE.SphereGeometry(shape.boundingSphereRadius || 0.5, 8, 6);
       }
       group.add(new THREE.Mesh(geo, mat));
     }
+    shapeTotal += body.shapes.length;
+    console.log(`Debug colliders body: ${bodyTypeName(body)} pos=(${body.position.x.toFixed(2)}, ${body.position.y.toFixed(2)}, ${body.position.z.toFixed(2)}) shapes=${body.shapes.length}`);
   }
+  console.log(`Debug colliders: ${world.bodies.length} bodies, ${shapeTotal} shapes`);
 }
 
 function updateDebugColliders() {

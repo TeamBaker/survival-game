@@ -1190,14 +1190,16 @@ world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physDebris,{ fri
 // ---------------------------------------------------------------------------
 // Debug collider wireframes — toggled by the "Debug Colliders" button.
 //
-// TERRAIN: per-block wireframe outlines sampled from the voxel store. Each
-// solid block between bedrock and sTop gets a blue box outline so you can see
-// exactly which blocks the heightfield approximates. Rebuilt only when the
-// store changes (debugDirtyTerrain flag) or on first enable.
+// TERRAIN: a small solid box per nearby solid block, slightly shrunk so the
+// gaps between adjacent blocks stay visible. Rebuilt only when the voxel
+// store changes (debugDirtyTerrain flag, set by setVoxel) or on first enable.
 //
-// BODIES: red wireframe outlines for every shape on dynamic bodies (player,
+// BODIES: red wireframe box/sphere per shape on every dynamic body (player,
 // debris chunks, props). Rebuilt when the shape count changes (bodies added /
 // removed). Positions and quaternions sync every frame.
+//
+// Solid semi-transparent boxes are used instead of thin wireframe lines
+// because 1px LineSegments are effectively invisible at 0.2m block size.
 // ---------------------------------------------------------------------------
 let debugDirtyTerrain = true;   // setVoxel flips this on
 
@@ -1207,24 +1209,16 @@ debugColliders.bodyGroup.visible = false;
 scene.add(debugColliders.terrainGroup);
 scene.add(debugColliders.bodyGroup);
 
-const debugTerrainMat = new THREE.LineBasicMaterial({ color: 0x2288ff, depthTest: false });
-const debugBodyMat    = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true, depthTest: false });
-const debugTmpOffset  = new CANNON.Vec3();
-const debugTmpQuat    = new THREE.Quaternion();
-
-// Pre-computed unit cube wireframe edges (12 edges × 2 verts × 3 coords = 72 floats).
-const _unitCubeEdges = new Float32Array([
-  -0.5,-0.5,-0.5,  0.5,-0.5,-0.5,   0.5,-0.5,-0.5,  0.5, 0.5,-0.5,
-   0.5, 0.5,-0.5, -0.5, 0.5,-0.5,  -0.5, 0.5,-0.5, -0.5,-0.5,-0.5,
-  -0.5,-0.5, 0.5,  0.5,-0.5, 0.5,   0.5,-0.5, 0.5,  0.5, 0.5, 0.5,
-   0.5, 0.5, 0.5, -0.5, 0.5, 0.5,  -0.5, 0.5, 0.5, -0.5,-0.5, 0.5,
-  -0.5,-0.5,-0.5, -0.5,-0.5, 0.5,   0.5,-0.5,-0.5,  0.5,-0.5, 0.5,
-   0.5, 0.5,-0.5,  0.5, 0.5, 0.5,  -0.5, 0.5,-0.5, -0.5, 0.5, 0.5,
-]);
+const debugTerrainGeo = new THREE.BoxGeometry(0.18, 0.18, 0.18);
+const debugTerrainMat = new THREE.MeshBasicMaterial({
+  color: 0x00ff44, transparent: true, opacity: 0.35, depthTest: false, side: THREE.DoubleSide,
+});
+const debugBodyMat = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true, depthTest: false });
+const debugTmpOffset = new CANNON.Vec3();
+const debugTmpQuat   = new THREE.Quaternion();
 
 function rebuildDebugTerrain() {
   const group = debugColliders.terrainGroup;
-  for (const c of group.children) c.geometry.dispose();
   group.clear();
 
   const maxDist = 60;  // columns — 60 × 0.2 = 12 m around camera
@@ -1236,39 +1230,21 @@ function rebuildDebugTerrain() {
   const cj = Math.max(0, camJ - maxDist);
   const ej = Math.min(GEN_N - 1, camJ + maxDist);
 
-  console.log(`Debug terrain: cam=(${cx.toFixed(1)},${cz.toFixed(1)}) camGrid=(${camI},${camJ}) cols=[${ci}..${ei}] rows=[${cj}..${ej}]`);
-
-  const verts = [];
-  let blockCount = 0, colCount = 0, airCount = 0, skipCount = 0;
   for (let j = cj; j <= ej; j++) {
     for (let i = ci; i <= ei; i++) {
       const k = j * GEN_N + i;
-      if (sTop[k] === NO_COLUMN) { skipCount++; continue; }
-      colCount++;
+      if (sTop[k] === NO_COLUMN) continue;
       const bx = colX(i), bz = colZ(j);
       const bed = bedLvl[k] === NO_COLUMN ? VOX_FLOOR : bedLvl[k];
       for (let lvl = bed; lvl <= sTop[k]; lvl++) {
         const m = voxelAt(i, j, lvl);
-        if (m === AIR) { airCount++; continue; }
-        const by = (lvl + 0.5) * BLOCK;
-        blockCount++;
-        for (let v = 0; v < 72; v += 3) {
-          verts.push(
-            bx + _unitCubeEdges[v]     * BLOCK,
-            by + _unitCubeEdges[v + 1] * BLOCK,
-            bz + _unitCubeEdges[v + 2] * BLOCK,
-          );
-        }
+        if (m === AIR) continue;
+        const mesh = new THREE.Mesh(debugTerrainGeo, debugTerrainMat);
+        mesh.position.set(bx, (lvl + 0.5) * BLOCK, bz);
+        group.add(mesh);
       }
     }
   }
-
-  if (verts.length > 0) {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    group.add(new THREE.LineSegments(geo, debugTerrainMat));
-  }
-  console.log(`Debug terrain: ${blockCount} blocks, ${colCount} cols, ${airCount} air, ${skipCount} skipped, verts=${verts.length}`);
 }
 
 function rebuildDebugBodies() {
@@ -1296,7 +1272,7 @@ function rebuildDebugBodies() {
 function updateDebugColliders() {
   if (!debugColliders.on) return;
 
-  // Rebuild terrain wireframes when blocks change (setVoxel sets debugDirtyTerrain).
+  // Rebuild terrain boxes when blocks change (setVoxel sets debugDirtyTerrain).
   if (debugDirtyTerrain) { rebuildDebugTerrain(); debugDirtyTerrain = false; }
 
   // Rebuild body wireframes when bodies are added / removed.

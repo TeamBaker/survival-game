@@ -1209,16 +1209,58 @@ debugColliders.bodyGroup.visible = false;
 scene.add(debugColliders.terrainGroup);
 scene.add(debugColliders.bodyGroup);
 
-const debugTerrainGeo = new THREE.BoxGeometry(0.18, 0.18, 0.18);
 const debugTerrainMat = new THREE.MeshBasicMaterial({
-  color: 0x00ff44, transparent: true, opacity: 0.35, depthTest: false, side: THREE.DoubleSide,
+  color: 0x00ff44, transparent: true, opacity: 0.3, depthTest: false, wireframe: true,
 });
-const debugBodyMat = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true, depthTest: false });
+const debugBodyMatPlayer = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true, depthTest: false });
+const debugBodyMatProp   = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true, depthTest: false });
 const debugTmpOffset = new CANNON.Vec3();
 const debugTmpQuat   = new THREE.Quaternion();
 
+// A shape is "renderable" if it's a Box or Sphere. Planes and Heightfields are
+// skipped entirely (the heightfield's huge bounding sphere used to be the only
+// thing visible — the per-block terrain boxes already cover that ground).
+function debugShapeIsRenderable(shape) {
+  return shape.type === CANNON.Shape.types.BOX || shape.type === CANNON.Shape.types.SPHERE;
+}
+
+// Merge one BoxGeometry's vertices into a single BufferGeometry per instance,
+// offset by `centers` (flat [x0,y0,z0, x1,y1,z1, ...]). Far cheaper than one
+// THREE.Mesh per block.
+function buildBatchedBoxGeometry(centers, size) {
+  const box = new THREE.BoxGeometry(size, size, size);
+  const posAttr = box.attributes.position;
+  const idxAttr = box.index;
+  const vertsPerBox = posAttr.count;
+  const idxPerBox = idxAttr.count;
+  const n = centers.length / 3;
+  const positions = new Float32Array(n * vertsPerBox * 3);
+  const IndexArray = (n * vertsPerBox > 65535) ? Uint32Array : Uint16Array;
+  const indices = new IndexArray(n * idxPerBox);
+  for (let b = 0; b < n; b++) {
+    const cx = centers[b * 3], cy = centers[b * 3 + 1], cz = centers[b * 3 + 2];
+    const vOff = b * vertsPerBox * 3;
+    for (let v = 0; v < vertsPerBox; v++) {
+      positions[vOff + v * 3]     = posAttr.getX(v) + cx;
+      positions[vOff + v * 3 + 1] = posAttr.getY(v) + cy;
+      positions[vOff + v * 3 + 2] = posAttr.getZ(v) + cz;
+    }
+    const iOff = b * idxPerBox;
+    const vertBase = b * vertsPerBox;
+    for (let ii = 0; ii < idxPerBox; ii++) {
+      indices[iOff + ii] = idxAttr.getX(ii) + vertBase;
+    }
+  }
+  box.dispose();
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  return geo;
+}
+
 function rebuildDebugTerrain() {
   const group = debugColliders.terrainGroup;
+  for (const c of group.children) c.geometry.dispose();
   group.clear();
 
   const maxDist = 60;  // columns — 60 × 0.2 = 12 m around camera
@@ -1230,6 +1272,7 @@ function rebuildDebugTerrain() {
   const cj = Math.max(0, camJ - maxDist);
   const ej = Math.min(GEN_N - 1, camJ + maxDist);
 
+  const centers = [];
   for (let j = cj; j <= ej; j++) {
     for (let i = ci; i <= ei; i++) {
       const k = j * GEN_N + i;
@@ -1239,19 +1282,39 @@ function rebuildDebugTerrain() {
       for (let lvl = bed; lvl <= sTop[k]; lvl++) {
         const m = voxelAt(i, j, lvl);
         if (m === AIR) continue;
-        const mesh = new THREE.Mesh(debugTerrainGeo, debugTerrainMat);
-        mesh.position.set(bx, (lvl + 0.5) * BLOCK, bz);
-        group.add(mesh);
+        centers.push(bx, (lvl + 0.5) * BLOCK, bz);
       }
     }
   }
+  if (centers.length === 0) return;
+  const geo = buildBatchedBoxGeometry(centers, 0.18);
+  group.add(new THREE.Mesh(geo, debugTerrainMat));
 }
 
 function rebuildDebugBodies() {
   const group = debugColliders.bodyGroup;
   for (const c of group.children) c.geometry.dispose();
   group.clear();
+
+  console.log('[debugColliders] CANNON.Shape.types =', CANNON.Shape.types);
+  world.bodies.forEach((body, bi) => {
+    console.log(
+      `[debugColliders] body[${bi}] type=${body.type} mass=${body.mass} ` +
+      `pos=(${body.position.x.toFixed(2)}, ${body.position.y.toFixed(2)}, ${body.position.z.toFixed(2)}) ` +
+      `isPlayer=${body.material === physPlayer}`
+    );
+    body.shapes.forEach((shape, si) => {
+      const kind = shape.type === CANNON.Shape.types.BOX ? 'Box'
+        : shape.type === CANNON.Shape.types.SPHERE ? 'Sphere'
+        : shape.type === CANNON.Shape.types.PLANE ? 'Plane'
+        : shape.type === CANNON.Shape.types.HEIGHTFIELD ? 'Heightfield'
+        : 'Unknown';
+      console.log(`[debugColliders]   shape[${si}] type=${shape.type} (${kind})`);
+    });
+  });
+
   for (const body of world.bodies) {
+    const mat = body.material === physPlayer ? debugBodyMatPlayer : debugBodyMatProp;
     for (let i = 0; i < body.shapes.length; i++) {
       const shape = body.shapes[i];
       let geo;
@@ -1259,12 +1322,10 @@ function rebuildDebugBodies() {
         geo = new THREE.BoxGeometry(shape.halfExtents.x * 2, shape.halfExtents.y * 2, shape.halfExtents.z * 2);
       } else if (shape.type === CANNON.Shape.types.SPHERE) {
         geo = new THREE.SphereGeometry(shape.radius, 10, 8);
-      } else if (shape.type === CANNON.Shape.types.PLANE) {
-        geo = new THREE.PlaneGeometry(60, 60);
       } else {
-        geo = new THREE.SphereGeometry(shape.boundingSphereRadius || 0.5, 8, 6);
+        continue; // Plane / Heightfield — no bounding-sphere fallback
       }
-      group.add(new THREE.Mesh(geo, debugBodyMat));
+      group.add(new THREE.Mesh(geo, mat));
     }
   }
 }
@@ -1275,9 +1336,14 @@ function updateDebugColliders() {
   // Rebuild terrain boxes when blocks change (setVoxel sets debugDirtyTerrain).
   if (debugDirtyTerrain) { rebuildDebugTerrain(); debugDirtyTerrain = false; }
 
-  // Rebuild body wireframes when bodies are added / removed.
+  // Rebuild body wireframes when the renderable shape count changes (bodies
+  // added / removed). Must count only Box/Sphere shapes to match rebuildDebugBodies.
   let shapeCount = 0;
-  for (const body of world.bodies) shapeCount += body.shapes.length;
+  for (const body of world.bodies) {
+    for (const shape of body.shapes) {
+      if (debugShapeIsRenderable(shape)) shapeCount++;
+    }
+  }
   if (shapeCount !== debugColliders.bodyGroup.children.length) rebuildDebugBodies();
 
   // Sync body wireframe positions / quaternions.
@@ -1285,6 +1351,8 @@ function updateDebugColliders() {
   let idx = 0;
   for (const body of world.bodies) {
     for (let i = 0; i < body.shapes.length; i++) {
+      const shape = body.shapes[i];
+      if (!debugShapeIsRenderable(shape)) continue;
       const mesh = children[idx++];
       body.quaternion.vmult(body.shapeOffsets[i], debugTmpOffset);
       mesh.position.set(

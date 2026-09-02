@@ -1216,7 +1216,7 @@ function rebuildDebug() {
         const es = shape.elementSize;
         const nx = data.length, nz = data[0].length;
         const positions = [];
-        const stride = Math.max(1, Math.floor(nx / 40));
+        const stride = 1;
         for (let i = 0; i < nx; i += stride) {
           for (let j = 0; j < nz; j += stride) {
             const px = i * es, py = j * es, pz = data[i][j];

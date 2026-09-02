@@ -1190,105 +1190,74 @@ world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physDebris,{ fri
 // ---------------------------------------------------------------------------
 // Debug collider wireframes — toggled by the "Debug Colliders" button.
 //
-// TERRAIN: a small solid box per nearby solid block, slightly shrunk so the
-// gaps between adjacent blocks stay visible. Rebuilt only when the voxel
-// store changes (debugDirtyTerrain flag, set by setVoxel) or on first enable.
-//
-// BODIES: red wireframe box/sphere per shape on every dynamic body (player,
-// debris chunks, props). Rebuilt when the shape count changes (bodies added /
-// removed). Positions and quaternions sync every frame.
-//
-// Solid semi-transparent boxes are used instead of thin wireframe lines
-// because 1px LineSegments are effectively invisible at 0.2m block size.
+// Shows the ACTUAL physics shapes: yellow wireframe terrain mesh sampled from
+// the heightfield's own height data, green wireframe box/sphere for the
+// player, red wireframe box/sphere per shape on debris chunks and props.
+// Rebuilt when the shape count changes (bodies added / removed) or the
+// terrain is edited (debugDirtyTerrain flag, set by setVoxel — the
+// heightfield mesh needs resampling). Positions and quaternions sync every
+// frame.
 // ---------------------------------------------------------------------------
 let debugDirtyTerrain = true;   // setVoxel flips this on
 
-const debugColliders = { on: false, terrainGroup: new THREE.Group(), bodyGroup: new THREE.Group() };
-debugColliders.terrainGroup.visible = false;
+const debugColliders = { on: false, bodyGroup: new THREE.Group() };
 debugColliders.bodyGroup.visible = false;
-scene.add(debugColliders.terrainGroup);
 scene.add(debugColliders.bodyGroup);
 
-const debugTerrainMat = new THREE.MeshBasicMaterial({
-  color: 0x00ff44, transparent: true, opacity: 0.3, depthTest: false, wireframe: true,
-});
 const debugBodyMatPlayer = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true, depthTest: false });
 const debugBodyMatProp   = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true, depthTest: false });
+const debugBodyMatHeightfield = new THREE.MeshBasicMaterial({ color: 0xffff00, wireframe: true, depthTest: false });
 const debugTmpOffset = new CANNON.Vec3();
 const debugTmpQuat   = new THREE.Quaternion();
 
-// A shape is "renderable" if it's a Box or Sphere. Planes and Heightfields are
-// skipped entirely (the heightfield's huge bounding sphere used to be the only
-// thing visible — the per-block terrain boxes already cover that ground).
+// A shape is "renderable" if it's a Box, Sphere, or Heightfield (the only
+// shape kinds this game's physics actually uses).
 function debugShapeIsRenderable(shape) {
-  return shape.type === CANNON.Shape.types.BOX || shape.type === CANNON.Shape.types.SPHERE;
+  return shape.type === CANNON.Shape.types.BOX || shape.type === CANNON.Shape.types.SPHERE
+    || shape.type === CANNON.Shape.types.HEIGHTFIELD;
 }
 
-// Merge one BoxGeometry's vertices into a single BufferGeometry per instance,
-// offset by `centers` (flat [x0,y0,z0, x1,y1,z1, ...]). Far cheaper than one
-// THREE.Mesh per block.
-function buildBatchedBoxGeometry(centers, size) {
-  const box = new THREE.BoxGeometry(size, size, size);
-  const posAttr = box.attributes.position;
-  const idxAttr = box.index;
-  const vertsPerBox = posAttr.count;
-  const idxPerBox = idxAttr.count;
-  const n = centers.length / 3;
-  const positions = new Float32Array(n * vertsPerBox * 3);
-  const IndexArray = (n * vertsPerBox > 65535) ? Uint32Array : Uint16Array;
-  const indices = new IndexArray(n * idxPerBox);
-  for (let b = 0; b < n; b++) {
-    const cx = centers[b * 3], cy = centers[b * 3 + 1], cz = centers[b * 3 + 2];
-    const vOff = b * vertsPerBox * 3;
-    for (let v = 0; v < vertsPerBox; v++) {
-      positions[vOff + v * 3]     = posAttr.getX(v) + cx;
-      positions[vOff + v * 3 + 1] = posAttr.getY(v) + cy;
-      positions[vOff + v * 3 + 2] = posAttr.getZ(v) + cz;
-    }
-    const iOff = b * idxPerBox;
-    const vertBase = b * vertsPerBox;
-    for (let ii = 0; ii < idxPerBox; ii++) {
-      indices[iOff + ii] = idxAttr.getX(ii) + vertBase;
+// Wireframe grid built from the heightfield's own local data — the vertex
+// layout (x = i*elementSize, y = j*elementSize, z = data[i][j]) matches
+// cannon.js's internal heightfield geometry exactly, so the mesh only needs
+// the body's normal position/quaternion sync (below) to land on the actual
+// collision surface. Sampled at `stride` cells to keep the triangle count down.
+function buildDebugHeightfieldGeometry(shape, stride) {
+  const data = shape.data;
+  const elementSize = shape.elementSize;
+  const nx = data.length, ny = data[0].length;
+  const xs = [];
+  for (let i = 0; i < nx; i += stride) xs.push(i);
+  if (xs[xs.length - 1] !== nx - 1) xs.push(nx - 1);
+  const zs = [];
+  for (let j = 0; j < ny; j += stride) zs.push(j);
+  if (zs[zs.length - 1] !== ny - 1) zs.push(ny - 1);
+
+  const cols = xs.length, rows = zs.length;
+  const positions = new Float32Array(cols * rows * 3);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = xs[c], j = zs[r];
+      const idx = (r * cols + c) * 3;
+      positions[idx]     = i * elementSize;
+      positions[idx + 1] = j * elementSize;
+      positions[idx + 2] = data[i][j];
     }
   }
-  box.dispose();
+  const IndexArray = (cols * rows > 65535) ? Uint32Array : Uint16Array;
+  const indices = new IndexArray((cols - 1) * (rows - 1) * 6);
+  let ii = 0;
+  for (let r = 0; r < rows - 1; r++) {
+    for (let c = 0; c < cols - 1; c++) {
+      const a = r * cols + c, b = a + 1, d = a + cols, e = d + 1;
+      indices[ii++] = a; indices[ii++] = d; indices[ii++] = b;
+      indices[ii++] = b; indices[ii++] = d; indices[ii++] = e;
+    }
+  }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.setIndex(new THREE.BufferAttribute(indices, 1));
   return geo;
-}
-
-function rebuildDebugTerrain() {
-  const group = debugColliders.terrainGroup;
-  for (const c of group.children) c.geometry.dispose();
-  group.clear();
-
-  const maxDist = 60;  // columns — 60 × 0.2 = 12 m around camera
-  const cx = camera.position.x, cz = camera.position.z;
-  const camI = Math.floor((cx + GEN_R) / BLOCK);
-  const camJ = Math.floor((cz + GEN_R) / BLOCK);
-  const ci = Math.max(0, camI - maxDist);
-  const ei = Math.min(GEN_N - 1, camI + maxDist);
-  const cj = Math.max(0, camJ - maxDist);
-  const ej = Math.min(GEN_N - 1, camJ + maxDist);
-
-  const centers = [];
-  for (let j = cj; j <= ej; j++) {
-    for (let i = ci; i <= ei; i++) {
-      const k = j * GEN_N + i;
-      if (sTop[k] === NO_COLUMN) continue;
-      const bx = colX(i), bz = colZ(j);
-      const bed = bedLvl[k] === NO_COLUMN ? VOX_FLOOR : bedLvl[k];
-      for (let lvl = bed; lvl <= sTop[k]; lvl++) {
-        const m = voxelAt(i, j, lvl);
-        if (m === AIR) continue;
-        centers.push(bx, (lvl + 0.5) * BLOCK, bz);
-      }
-    }
-  }
-  if (centers.length === 0) return;
-  const geo = buildBatchedBoxGeometry(centers, 0.18);
-  group.add(new THREE.Mesh(geo, debugTerrainMat));
 }
 
 function rebuildDebugBodies() {
@@ -1296,34 +1265,21 @@ function rebuildDebugBodies() {
   for (const c of group.children) c.geometry.dispose();
   group.clear();
 
-  console.log('[debugColliders] CANNON.Shape.types =', CANNON.Shape.types);
-  world.bodies.forEach((body, bi) => {
-    console.log(
-      `[debugColliders] body[${bi}] type=${body.type} mass=${body.mass} ` +
-      `pos=(${body.position.x.toFixed(2)}, ${body.position.y.toFixed(2)}, ${body.position.z.toFixed(2)}) ` +
-      `isPlayer=${body.material === physPlayer}`
-    );
-    body.shapes.forEach((shape, si) => {
-      const kind = shape.type === CANNON.Shape.types.BOX ? 'Box'
-        : shape.type === CANNON.Shape.types.SPHERE ? 'Sphere'
-        : shape.type === CANNON.Shape.types.PLANE ? 'Plane'
-        : shape.type === CANNON.Shape.types.HEIGHTFIELD ? 'Heightfield'
-        : 'Unknown';
-      console.log(`[debugColliders]   shape[${si}] type=${shape.type} (${kind})`);
-    });
-  });
-
   for (const body of world.bodies) {
-    const mat = body.material === physPlayer ? debugBodyMatPlayer : debugBodyMatProp;
     for (let i = 0; i < body.shapes.length; i++) {
       const shape = body.shapes[i];
-      let geo;
+      let geo, mat;
       if (shape.type === CANNON.Shape.types.BOX) {
         geo = new THREE.BoxGeometry(shape.halfExtents.x * 2, shape.halfExtents.y * 2, shape.halfExtents.z * 2);
+        mat = body.material === physPlayer ? debugBodyMatPlayer : debugBodyMatProp;
       } else if (shape.type === CANNON.Shape.types.SPHERE) {
         geo = new THREE.SphereGeometry(shape.radius, 10, 8);
+        mat = body.material === physPlayer ? debugBodyMatPlayer : debugBodyMatProp;
+      } else if (shape.type === CANNON.Shape.types.HEIGHTFIELD) {
+        geo = buildDebugHeightfieldGeometry(shape, 3);
+        mat = debugBodyMatHeightfield;
       } else {
-        continue; // Plane / Heightfield — no bounding-sphere fallback
+        continue; // Plane — unused by this game's physics
       }
       group.add(new THREE.Mesh(geo, mat));
     }
@@ -1333,18 +1289,19 @@ function rebuildDebugBodies() {
 function updateDebugColliders() {
   if (!debugColliders.on) return;
 
-  // Rebuild terrain boxes when blocks change (setVoxel sets debugDirtyTerrain).
-  if (debugDirtyTerrain) { rebuildDebugTerrain(); debugDirtyTerrain = false; }
-
   // Rebuild body wireframes when the renderable shape count changes (bodies
-  // added / removed). Must count only Box/Sphere shapes to match rebuildDebugBodies.
+  // added / removed) or the terrain was edited (debugDirtyTerrain, set by
+  // setVoxel — the heightfield mesh needs resampling to match).
   let shapeCount = 0;
   for (const body of world.bodies) {
     for (const shape of body.shapes) {
       if (debugShapeIsRenderable(shape)) shapeCount++;
     }
   }
-  if (shapeCount !== debugColliders.bodyGroup.children.length) rebuildDebugBodies();
+  if (debugDirtyTerrain || shapeCount !== debugColliders.bodyGroup.children.length) {
+    rebuildDebugBodies();
+    debugDirtyTerrain = false;
+  }
 
   // Sync body wireframe positions / quaternions.
   const children = debugColliders.bodyGroup.children;
@@ -1372,9 +1329,8 @@ const debugCollidersBtn = document.getElementById('btn-debug-colliders');
 debugCollidersBtn.addEventListener('click', () => {
   debugColliders.on = !debugColliders.on;
   debugCollidersBtn.classList.toggle('on', debugColliders.on);
-  debugColliders.terrainGroup.visible = debugColliders.on;
   debugColliders.bodyGroup.visible = debugColliders.on;
-  if (debugColliders.on) { debugDirtyTerrain = true; rebuildDebugBodies(); }
+  if (debugColliders.on) { rebuildDebugBodies(); debugDirtyTerrain = false; }
 });
 
 // Meshes that need to follow their body every frame (dynamic + kinematic only —

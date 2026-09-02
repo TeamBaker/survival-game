@@ -1227,24 +1227,29 @@ function rebuildDebugTerrain() {
   for (const c of group.children) c.geometry.dispose();
   group.clear();
 
-  const H = BLOCK * 0.5;
   const maxDist = 60;  // columns — 60 × 0.2 = 12 m around camera
   const cx = camera.position.x, cz = camera.position.z;
-  const ci = Math.max(0, Math.floor((cx + GEN_R) / BLOCK) - maxDist);
-  const ei = Math.min(GEN_N - 1, Math.ceil((cx + GEN_R) / BLOCK) + maxDist);
-  const cj = Math.max(0, Math.floor((cz + GEN_R) / BLOCK) - maxDist);
-  const ej = Math.min(GEN_N - 1, Math.ceil((cz + GEN_R) / BLOCK) + maxDist);
+  const camI = Math.floor((cx + GEN_R) / BLOCK);
+  const camJ = Math.floor((cz + GEN_R) / BLOCK);
+  const ci = Math.max(0, camI - maxDist);
+  const ei = Math.min(GEN_N - 1, camI + maxDist);
+  const cj = Math.max(0, camJ - maxDist);
+  const ej = Math.min(GEN_N - 1, camJ + maxDist);
+
+  console.log(`Debug terrain: cam=(${cx.toFixed(1)},${cz.toFixed(1)}) camGrid=(${camI},${camJ}) cols=[${ci}..${ei}] rows=[${cj}..${ej}]`);
 
   const verts = [];
-  let blockCount = 0;
+  let blockCount = 0, colCount = 0, airCount = 0, skipCount = 0;
   for (let j = cj; j <= ej; j++) {
     for (let i = ci; i <= ei; i++) {
       const k = j * GEN_N + i;
-      if (sTop[k] === NO_COLUMN) continue;
+      if (sTop[k] === NO_COLUMN) { skipCount++; continue; }
+      colCount++;
       const bx = colX(i), bz = colZ(j);
       const bed = bedLvl[k] === NO_COLUMN ? VOX_FLOOR : bedLvl[k];
       for (let lvl = bed; lvl <= sTop[k]; lvl++) {
-        if (voxelAt(i, j, lvl) === AIR) continue;
+        const m = voxelAt(i, j, lvl);
+        if (m === AIR) { airCount++; continue; }
         const by = (lvl + 0.5) * BLOCK;
         blockCount++;
         for (let v = 0; v < 72; v += 3) {
@@ -1263,7 +1268,7 @@ function rebuildDebugTerrain() {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
     group.add(new THREE.LineSegments(geo, debugTerrainMat));
   }
-  console.log(`Debug terrain: ${blockCount} blocks rendered near camera`);
+  console.log(`Debug terrain: ${blockCount} blocks, ${colCount} cols, ${airCount} air, ${skipCount} skipped, verts=${verts.length}`);
 }
 
 function rebuildDebugBodies() {

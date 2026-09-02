@@ -1201,26 +1201,48 @@ function rebuildDebug() {
     debugColliders.group.remove(c);
   }
 
-  // One big green wireframe cube around the player
-  const playerGeo = new THREE.BoxGeometry(1, 2, 1);
-  const playerMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
-  const playerMesh = new THREE.Mesh(playerGeo, playerMat);
-  debugColliders.group.add(playerMesh);
-  debugColliders.playerMesh = playerMesh;
-
-  // One yellow wireframe cube at origin
-  const originGeo = new THREE.BoxGeometry(2, 2, 2);
-  const originMat = new THREE.MeshBasicMaterial({ color: 0xffff00, wireframe: true });
-  const originMesh = new THREE.Mesh(originGeo, originMat);
-  originMesh.position.set(0, 1, 0);
-  debugColliders.group.add(originMesh);
+  for (const body of world.bodies) {
+    for (let i = 0; i < body.shapes.length; i++) {
+      const shape = body.shapes[i];
+      let geo;
+      if (shape.type === CANNON.Shape.types.BOX) {
+        geo = new THREE.BoxGeometry(shape.halfExtents.x*2, shape.halfExtents.y*2, shape.halfExtents.z*2);
+      } else if (shape.type === CANNON.Shape.types.SPHERE) {
+        geo = new THREE.SphereGeometry(shape.radius, 8, 6);
+      } else if (shape.type === CANNON.Shape.types.HEIGHTFIELD) {
+        // Build a simple grid from heightfield data
+        const data = shape.data;
+        const es = shape.elementSize;
+        const nx = data.length, nz = data[0].length;
+        const positions = [];
+        const stride = Math.max(1, Math.floor(nx / 40));
+        for (let x = 0; x < nx; x += stride) {
+          for (let z = 0; z < nz; z += stride) {
+            const hx = x * es, hz = z * es, hy = data[x][z];
+            if (x + stride < nx) { positions.push(hx,hy,hz, (x+stride)*es,data[x+stride][z],hz); }
+            if (z + stride < nz) { positions.push(hx,hy,hz, hx,data[x][z+stride],(z+stride)*es); }
+          }
+        }
+        geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffff00 }));
+        mesh.position.copy(body.position);
+        mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
+        debugColliders.group.add(mesh);
+        continue;
+      } else {
+        continue;
+      }
+      const mat = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(body.position.x + (body.shapeOffsets[i]?.x||0), body.position.y + (body.shapeOffsets[i]?.y||0), body.position.z + (body.shapeOffsets[i]?.z||0));
+      debugColliders.group.add(mesh);
+    }
+  }
 }
 
 function updateDebug() {
-  if (!debugColliders.on) return;
-  if (debugColliders.playerMesh) {
-    debugColliders.playerMesh.position.copy(playerBody.position);
-  }
+  // Static bodies don't move, so nothing to sync per-frame.
 }
 
 document.getElementById('btn-debug-colliders').addEventListener('click', () => {

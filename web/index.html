@@ -3060,30 +3060,23 @@ function buildChunkColliderBoxes(c) {
   const w = i1 - i0, h = j1 - j0;
   if (w <= 0 || h <= 0) return [];
 
-  // Per column: its top, and how far down it has to be walked before the rest
-  // of the volume beneath it is walled in on every side and can be skipped.
   const top = new Int32Array(w * h).fill(NO_COLUMN);
   const floor = new Int32Array(w * h);
   let lo = Infinity, hi = -Infinity;
-  for (let j = j0; j < j1; j++) {
-    for (let i = i0; i < i1; i++) {
+  for (let jj = 0; jj < h; jj++) {
+    for (let ii = 0; ii < w; ii++) {
+      const i = i0 + ii, j = j0 + jj;
       const k = j * GEN_N + i;
       const t = sTop[k];
       if (t === NO_COLUMN) continue;
-      let low = t, dug = colDug[k] !== 0;
-      for (let e = 0; e < 4; e++) {
-        const g = FDIR[e < 2 ? e : e + 2];             // the four sideways steps
-        const ni = i + g.di, nj = j + g.dj;
-        if (ni < 0 || nj < 0 || ni >= GEN_N || nj >= GEN_N) { low = Math.min(low, t - RIM_DEPTH); continue; }
-        const nk = nj * GEN_N + ni;
-        const v = sTop[nk];
-        low = Math.min(low, v === NO_COLUMN ? t - RIM_DEPTH : v);
-        if (colDug[nk]) dug = true;
+      const base = voxOff[k] - VOX_FLOOR;
+      let floorLvl = t;
+      for (let lvl = t; lvl >= Math.max(VOX_FLOOR, t - MAX_DEPTH); lvl--) {
+        if (voxMat[base + lvl] !== AIR) floorLvl = lvl;
       }
-      const deepest = Math.max(VOX_FLOOR, t - MAX_DEPTH);
-      const idx = (j - j0) * w + (i - i0);
+      const idx = jj * w + ii;
       top[idx] = t;
-      floor[idx] = dug ? deepest : Math.max(deepest, Math.min(t, low + 1));
+      floor[idx] = floorLvl;
       if (floor[idx] < lo) lo = floor[idx];
       if (t > hi) hi = t;
     }

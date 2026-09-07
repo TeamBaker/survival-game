@@ -1229,6 +1229,7 @@ function rebuildDebug() {
         const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffff00 }));
         mesh.position.copy(body.position);
         mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
+        mesh.userData.body = body;
         debugColliders.group.add(mesh);
         continue;
       } else {
@@ -1237,13 +1238,20 @@ function rebuildDebug() {
       const mat = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(body.position.x + (body.shapeOffsets[i]?.x||0), body.position.y + (body.shapeOffsets[i]?.y||0), body.position.z + (body.shapeOffsets[i]?.z||0));
+      mesh.userData.body = body;
       debugColliders.group.add(mesh);
     }
   }
 }
 
 function updateDebug() {
-  // Static bodies don't move, so nothing to sync per-frame.
+  if (!debugColliders.on) return;
+  for (const mesh of debugColliders.group.children) {
+    const body = mesh.userData.body;
+    if (!body) continue;
+    mesh.position.copy(body.position);
+    mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
+  }
 }
 
 document.getElementById('btn-debug-colliders').addEventListener('click', () => {

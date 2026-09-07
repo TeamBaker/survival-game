@@ -4141,7 +4141,11 @@ function spawnFallingChunk(unit) {
     collisionFilterGroup: DEBRIS_GROUP,
     collisionFilterMask: -1,
   });
-  const h = HALF_BLOCK;
+  // Thickened the same way buildChunkColliderBoxes is (BLOCK*0.6 rather than
+  // BLOCK*0.5), so a fast-falling piece has as much vertical overlap with the
+  // terrain's boxes as the terrain gives it — thickening only one side of a
+  // discrete-collision contact still leaves it easy to tunnel through.
+  const h = BLOCK * 0.6;
   {
     // Greedy-merge the piece's own lattice into boxes, one level at a time —
     // same algorithm as buildChunkColliderBoxes, but over blocks we already
@@ -4460,7 +4464,9 @@ function recentreDebris(mesh, body) {
 // after a dig: a piece is a few dozen boxes at most, so building the shapes
 // again costs less than trying to patch the ones that are there.
 function rebuildDebrisBody(mesh, body) {
-  const lat = mesh.userData.blocks, h = HALF_BLOCK;
+  // See spawnFallingChunk: thickened to match buildChunkColliderBoxes so the
+  // rebuilt collider keeps the same tunnelling margin against the terrain.
+  const lat = mesh.userData.blocks, h = BLOCK * 0.6;
   body.shapes.length = 0;
   body.shapeOffsets.length = 0;
   body.shapeOrientations.length = 0;
@@ -4582,7 +4588,9 @@ function splitDebrisIfNeeded(mesh) {
 // drift apart instead of springing.
 const partQuat = new THREE.Quaternion();
 function spawnDebrisPart(parent, blocks, pbody) {
-  const n = blocks.length, h = HALF_BLOCK;
+  // hy thickened like spawnFallingChunk/rebuildDebrisBody — only the vertical
+  // extent, so pieces still fit together laterally at HALF_BLOCK.
+  const n = blocks.length, h = HALF_BLOCK, hy = BLOCK * 0.6;
   parent.updateWorldMatrix(true, false);
   const c = new THREE.Vector3();
   for (const b of blocks) c.add(b.pos);
@@ -4618,11 +4626,11 @@ function spawnDebrisPart(parent, blocks, pbody) {
   });
   if (mesh.userData.perBlock) {
     for (const b of mesh.userData.blocks) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+      body.addShape(new CANNON.Box(new CANNON.Vec3(h, hy, h)),
                     new CANNON.Vec3(b.pos.x, b.pos.y, b.pos.z));
     }
   } else {
-    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
+    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + hy, (z1 - z0) / 2 + h)),
                   new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
   }
   const w = c.applyMatrix4(parent.matrixWorld);

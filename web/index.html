@@ -4468,7 +4468,7 @@ function rebuildDebrisBody(mesh, body) {
     // instead of coming straight from the voxel store.
     const byLevel = new Map();  // lvl -> Map("gi,gj" -> true)
     for (const b of lat) {
-      const lvl = Math.round(b.pos.y / BLOCK);
+      const lvl = Math.floor(b.pos.y / BLOCK);
       let cells = byLevel.get(lvl);
       if (!cells) byLevel.set(lvl, cells = new Set());
       cells.add(Math.round(b.pos.x / BLOCK) + ',' + Math.round(b.pos.z / BLOCK));

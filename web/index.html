@@ -4096,15 +4096,10 @@ function spawnFallingChunk(unit) {
   const blocks = [...unit.values()];
   const n = blocks.length;
 
-  // Centre of the piece, and the box that encloses it, both in world units.
+  // Centre of the piece, in world units.
   let cx = 0, cy = 0, cz = 0;
-  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const b of blocks) {
-    const x = colX(b.i), y = (b.lvl + 0.5) * BLOCK, z = colZ(b.j);
-    cx += x; cy += y; cz += z;
-    if (x < x0) x0 = x; if (x > x1) x1 = x;
-    if (y < y0) y0 = y; if (y > y1) y1 = y;
-    if (z < z0) z0 = z; if (z > z1) z1 = z;
+    cx += colX(b.i); cy += (b.lvl + 0.5) * BLOCK; cz += colZ(b.j);
   }
   cx /= n; cy /= n; cz /= n;
 
@@ -4150,8 +4145,49 @@ function spawnFallingChunk(unit) {
                     new CANNON.Vec3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz));
     }
   } else {
-    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
-                  new CANNON.Vec3((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy, (z0 + z1) / 2 - cz));
+    // Too many blocks for one each: greedy-merge the piece's own lattice into
+    // boxes instead, one level at a time — same algorithm as
+    // buildChunkColliderBoxes, but over blocks we already know exist rather
+    // than the voxel store. i/j are grid indices, so unlike terrain this needs
+    // no quantizing.
+    let bi0 = Infinity, bi1 = -Infinity, bj0 = Infinity, bj1 = -Infinity;
+    for (const b of blocks) {
+      if (b.i < bi0) bi0 = b.i; if (b.i > bi1) bi1 = b.i;
+      if (b.j < bj0) bj0 = b.j; if (b.j > bj1) bj1 = b.j;
+    }
+    const w = bi1 - bi0 + 1, dep = bj1 - bj0 + 1;
+    const byLevel = new Map();  // lvl -> Uint8Array(w*dep), 1 where a block sits
+    for (const b of blocks) {
+      let grid = byLevel.get(b.lvl);
+      if (!grid) byLevel.set(b.lvl, grid = new Uint8Array(w * dep));
+      grid[(b.j - bj0) * w + (b.i - bi0)] = 1;
+    }
+    const visited = new Uint8Array(w * dep);
+    for (const [lvl, solid] of byLevel) {
+      visited.fill(0);
+      for (let jj = 0; jj < dep; jj++) {
+        for (let ii = 0; ii < w; ii++) {
+          const idx = jj * w + ii;
+          if (!solid[idx] || visited[idx]) continue;
+          let ii1 = ii + 1;
+          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
+          let jj1 = jj + 1;
+          for (;;) {
+            if (jj1 >= dep) break;
+            let full = true;
+            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
+            if (!full) break;
+            jj1++;
+          }
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+
+          const gi0 = bi0 + ii, gi1 = bi0 + ii1 - 1, gj0 = bj0 + jj, gj1 = bj0 + jj1 - 1;
+          body.addShape(
+            new CANNON.Box(new CANNON.Vec3((gi1 - gi0 + 1) * BLOCK * 0.5, h, (gj1 - gj0 + 1) * BLOCK * 0.5)),
+            new CANNON.Vec3((colX(gi0) + colX(gi1)) * 0.5 - cx, (lvl + 0.5) * BLOCK - cy, (colZ(gj0) + colZ(gj1)) * 0.5 - cz));
+        }
+      }
+    }
   }
   body.position.set(cx, cy, cz);
   // A nudge of spin, so a piece topples off the face it broke from instead of

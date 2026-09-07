@@ -4121,6 +4121,7 @@ function spawnFallingChunk(unit) {
   mesh.userData.blocks = blocks.map((b) => ({
     pos: new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz),
     mat: b.m,
+    lvl: b.lvl,
   }));
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
@@ -4468,7 +4469,7 @@ function rebuildDebrisBody(mesh, body) {
     // instead of coming straight from the voxel store.
     const byLevel = new Map();  // lvl -> Map("gi,gj" -> true)
     for (const b of lat) {
-      const lvl = Math.floor(b.pos.y / BLOCK);
+      const lvl = b.lvl;
       let cells = byLevel.get(lvl);
       if (!cells) byLevel.set(lvl, cells = new Set());
       cells.add(Math.round(b.pos.x / BLOCK) + ',' + Math.round(b.pos.z / BLOCK));
@@ -4598,7 +4599,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    return { pos: p, mat: b.mat };
+    return { pos: p, mat: b.mat, lvl: b.lvl };
   });
   mesh.instanceMatrix.needsUpdate = true;
   mesh.instanceColor.needsUpdate = true;
@@ -4723,7 +4724,12 @@ function placeOnDebris(mesh, local, m) {
   cube.castShadow = true;
   cube.receiveShadow = true;
   mesh.add(cube);
-  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube });
+  // local.y isn't a clean multiple of BLOCK once the mesh has been recentred,
+  // so the level is read off an existing block instead of quantized directly:
+  // every block in the lattice sits on the same grid, offset by a constant.
+  const ref = mesh.userData.blocks[0];
+  const lvl = ref.lvl + Math.round((local.y - ref.pos.y) / BLOCK);
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, lvl });
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it.

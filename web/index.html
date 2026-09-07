@@ -1237,8 +1237,10 @@ function rebuildDebug() {
       }
       const mat = new THREE.MeshBasicMaterial({ color: 0xff2222, wireframe: true });
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(body.position.x + (body.shapeOffsets[i]?.x||0), body.position.y + (body.shapeOffsets[i]?.y||0), body.position.z + (body.shapeOffsets[i]?.z||0));
+      const off = body.shapeOffsets[i] || null;
+      mesh.position.set(body.position.x + (off?.x||0), body.position.y + (off?.y||0), body.position.z + (off?.z||0));
       mesh.userData.body = body;
+      mesh.userData.shapeOffset = off;
       debugColliders.group.add(mesh);
     }
   }
@@ -1249,8 +1251,19 @@ function updateDebug() {
   for (const mesh of debugColliders.group.children) {
     const body = mesh.userData.body;
     if (!body) continue;
-    mesh.position.copy(body.position);
-    mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
+    const q = body.quaternion;
+    const off = mesh.userData.shapeOffset;
+    if (off) {
+      const ox = off.x, oy = off.y, oz = off.z;
+      mesh.position.set(
+        body.position.x + (q.w*q.w + q.x*q.x - q.y*q.y - q.z*q.z)*ox + 2*(q.x*q.y - q.w*q.z)*oy + 2*(q.x*q.z + q.w*q.y)*oz,
+        body.position.y + 2*(q.x*q.y + q.w*q.z)*ox + (q.w*q.w - q.x*q.x + q.y*q.y - q.z*q.z)*oy + 2*(q.y*q.z - q.w*q.x)*oz,
+        body.position.z + 2*(q.x*q.z - q.w*q.y)*ox + 2*(q.y*q.z + q.w*q.x)*oy + (q.w*q.w - q.x*q.x - q.y*q.y + q.z*q.z)*oz
+      );
+    } else {
+      mesh.position.copy(body.position);
+    }
+    mesh.quaternion.set(q.x, q.y, q.z, q.w);
   }
 }
 
@@ -4910,6 +4923,7 @@ function flushDirtyChunks() {
   for (const c of dirtyChunks) { rebuildChunk(c); rebuildChunkCollider(c); }
   dirtyChunks.clear();
   blocksHudEl.textContent = worldBlocks.toLocaleString();
+  if (debugColliders.on) rebuildDebug();
 }
 
 function shovelPickUp() {

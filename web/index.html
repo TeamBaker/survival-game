@@ -4140,17 +4140,11 @@ function spawnFallingChunk(unit) {
     collisionFilterMask: -1,
   });
   const h = HALF_BLOCK;
-  if (n <= FALL_SHAPE_CAP) {
-    for (const b of blocks) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
-                    new CANNON.Vec3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz));
-    }
-  } else {
-    // Too many blocks for one each: greedy-merge the piece's own lattice into
-    // boxes instead, one level at a time — same algorithm as
-    // buildChunkColliderBoxes, but over blocks we already know exist rather
-    // than the voxel store. i/j are grid indices, so unlike terrain this needs
-    // no quantizing.
+  {
+    // Greedy-merge the piece's own lattice into boxes, one level at a time —
+    // same algorithm as buildChunkColliderBoxes, but over blocks we already
+    // know exist rather than the voxel store. i/j are grid indices, so unlike
+    // terrain this needs no quantizing.
     let bi0 = Infinity, bi1 = -Infinity, bj0 = Infinity, bj1 = -Infinity;
     for (const b of blocks) {
       if (b.i < bi0) bi0 = b.i; if (b.i > bi1) bi1 = b.i;

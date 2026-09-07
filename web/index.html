@@ -4462,21 +4462,54 @@ function rebuildDebrisBody(mesh, body) {
   body.shapes.length = 0;
   body.shapeOffsets.length = 0;
   body.shapeOrientations.length = 0;
-  if (mesh.userData.perBlock) {
+  if (lat.length) {
+    // Same greedy merge as spawnFallChunk, but positions are already in the
+    // mesh's own local frame, so the grid indices are quantized from them
+    // instead of coming straight from the voxel store.
+    const byLevel = new Map();  // lvl -> Map("gi,gj" -> true)
     for (const b of lat) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
-                    new CANNON.Vec3(b.pos.x, b.pos.y, b.pos.z));
+      const lvl = Math.round(b.pos.y / BLOCK);
+      let cells = byLevel.get(lvl);
+      if (!cells) byLevel.set(lvl, cells = new Set());
+      cells.add(Math.round(b.pos.x / BLOCK) + ',' + Math.round(b.pos.z / BLOCK));
     }
-  } else {
-    // The big ones collide as the single box that encloses what is left.
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (const b of lat) {
-      if (b.pos.x < x0) x0 = b.pos.x; if (b.pos.x > x1) x1 = b.pos.x;
-      if (b.pos.y < y0) y0 = b.pos.y; if (b.pos.y > y1) y1 = b.pos.y;
-      if (b.pos.z < z0) z0 = b.pos.z; if (b.pos.z > z1) z1 = b.pos.z;
+    for (const [lvl, cells] of byLevel) {
+      let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity;
+      for (const key of cells) {
+        const [gi, gj] = key.split(',').map(Number);
+        if (gi < gi0) gi0 = gi; if (gi > gi1) gi1 = gi;
+        if (gj < gj0) gj0 = gj; if (gj > gj1) gj1 = gj;
+      }
+      const w = gi1 - gi0 + 1, dep = gj1 - gj0 + 1;
+      const solid = new Uint8Array(w * dep);
+      for (const key of cells) {
+        const [gi, gj] = key.split(',').map(Number);
+        solid[(gj - gj0) * w + (gi - gi0)] = 1;
+      }
+      const visited = new Uint8Array(w * dep);
+      for (let jj = 0; jj < dep; jj++) {
+        for (let ii = 0; ii < w; ii++) {
+          const idx = jj * w + ii;
+          if (!solid[idx] || visited[idx]) continue;
+          let ii1 = ii + 1;
+          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
+          let jj1 = jj + 1;
+          for (;;) {
+            if (jj1 >= dep) break;
+            let full = true;
+            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
+            if (!full) break;
+            jj1++;
+          }
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+
+          const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
+          body.addShape(
+            new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
+            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK, (lvl + 0.5) * BLOCK, ((mj0 + mj1) / 2) * BLOCK));
+        }
+      }
     }
-    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
-                  new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
   }
   recentreDebris(mesh, body);
   body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
@@ -4696,32 +4729,7 @@ function placeOnDebris(mesh, local, m) {
   // heavier, a collider round the new block, and shoved awake to feel it.
   const f = chunkOfMesh(mesh);
   if (!f) return;
-  const body = f.body, h = HALF_BLOCK;
-  if (mesh.userData.perBlock) {
-    body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
-                  new CANNON.Vec3(local.x, local.y, local.z));
-  } else {
-    // Pieces too big for a collider each collide as one box: grow it to take
-    // the new block in.
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (const b of mesh.userData.blocks) {
-      if (b.pos.x < x0) x0 = b.pos.x; if (b.pos.x > x1) x1 = b.pos.x;
-      if (b.pos.y < y0) y0 = b.pos.y; if (b.pos.y > y1) y1 = b.pos.y;
-      if (b.pos.z < z0) z0 = b.pos.z; if (b.pos.z > z1) z1 = b.pos.z;
-    }
-    const box = body.shapes[0];
-    box.halfExtents.set((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h);
-    box.updateConvexPolyhedronRepresentation();
-    box.updateBoundingSphereRadius();
-    body.shapeOffsets[0].set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
-    body.updateBoundingRadius();
-  }
-  recentreDebris(mesh, body);
-  body.updateBoundingRadius();
-  body.mass = Math.min(mesh.userData.blocks.length * 0.5, FALL_MASS_CAP);
-  body.updateMassProperties();
-  body.updateAABB();
-  body.wakeUp();
+  rebuildDebrisBody(mesh, f.body);
   f.still = 0;                  // it has been disturbed: let it settle again
 }
 

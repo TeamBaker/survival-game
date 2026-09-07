@@ -3051,6 +3051,7 @@ function rebuildFilletChunk(c) {
 // the whole field that is thousands of chunks, and nothing more than a couple
 // of dozen metres from the player can ever be touched.
 const HF_FLOOR = -3.2;         // where groundHeightAt bottoms out under open water
+const COLLISION_DEPTH = 5;     // max blocks deep collision reaches below each column top
 
 // The boxes one chunk's worth of solid blocks greedy-merge into, as plain
 // {hx,hy,hz,x,y,z} records — half-extents and centre, in world units.
@@ -3071,7 +3072,7 @@ function buildChunkColliderBoxes(c) {
       if (t === NO_COLUMN) continue;
       const base = voxOff[k] - VOX_FLOOR;
       let floorLvl = t;
-      for (let lvl = t; lvl >= Math.max(VOX_FLOOR, t - MAX_DEPTH); lvl--) {
+      for (let lvl = t; lvl >= Math.max(VOX_FLOOR, t - COLLISION_DEPTH); lvl--) {
         if (voxMat[base + lvl] !== AIR) floorLvl = lvl;
       }
       const idx = jj * w + ii;

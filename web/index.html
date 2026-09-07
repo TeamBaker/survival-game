@@ -4122,6 +4122,7 @@ function spawnFallingChunk(unit) {
     pos: new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz),
     mat: b.m,
     lvl: b.lvl,
+    gi: b.i,  gj: b.j,
   }));
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
@@ -4464,15 +4465,14 @@ function rebuildDebrisBody(mesh, body) {
   body.shapeOffsets.length = 0;
   body.shapeOrientations.length = 0;
   if (lat.length) {
-    // Same greedy merge as spawnFallChunk, but positions are already in the
-    // mesh's own local frame, so the grid indices are quantized from them
-    // instead of coming straight from the voxel store.
+    // Same greedy merge as spawnFallChunk. Grid indices are carried on each
+    // block since recentreDebris shifts b.pos by the (non-grid-aligned)
+    // centre of mass, so quantizing positions would give the wrong cells.
     const byLevel = new Map();  // lvl -> Map("gi,gj" -> true)
     for (const b of lat) {
-      const lvl = b.lvl;
-      let cells = byLevel.get(lvl);
-      if (!cells) byLevel.set(lvl, cells = new Set());
-      cells.add(Math.round(b.pos.x / BLOCK) + ',' + Math.round(b.pos.z / BLOCK));
+      let cells = byLevel.get(b.lvl);
+      if (!cells) byLevel.set(b.lvl, cells = new Set());
+      cells.add(b.gi + ',' + b.gj);
     }
     for (const [lvl, cells] of byLevel) {
       let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity;
@@ -4599,7 +4599,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    return { pos: p, mat: b.mat, lvl: b.lvl };
+    return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj };
   });
   mesh.instanceMatrix.needsUpdate = true;
   mesh.instanceColor.needsUpdate = true;
@@ -4724,12 +4724,19 @@ function placeOnDebris(mesh, local, m) {
   cube.castShadow = true;
   cube.receiveShadow = true;
   mesh.add(cube);
-  // local.y isn't a clean multiple of BLOCK once the mesh has been recentred,
-  // so the level is read off an existing block instead of quantized directly:
-  // every block in the lattice sits on the same grid, offset by a constant.
-  const ref = mesh.userData.blocks[0];
-  const lvl = ref.lvl + Math.round((local.y - ref.pos.y) / BLOCK);
-  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, lvl });
+  // local isn't a clean multiple of BLOCK once the mesh has been recentred,
+  // so gi/gj/lvl are read off the nearest existing block instead of quantized
+  // directly: every block in the lattice sits on the same grid, offset by a
+  // constant.
+  let bestDist = Infinity, bestRef = mesh.userData.blocks[0];
+  for (const rb of mesh.userData.blocks) {
+    const d = Math.abs(rb.pos.x - local.x) + Math.abs(rb.pos.y - local.y) + Math.abs(rb.pos.z - local.z);
+    if (d < bestDist) { bestDist = d; bestRef = rb; }
+  }
+  const gi = bestRef.gi + Math.round((local.x - bestRef.pos.x) / BLOCK);
+  const gj = bestRef.gj + Math.round((local.z - bestRef.pos.z) / BLOCK);
+  const lvl = bestRef.lvl + Math.round((local.y - bestRef.pos.y) / BLOCK);
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, lvl, gi, gj });
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it.

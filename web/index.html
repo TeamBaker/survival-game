@@ -1249,6 +1249,7 @@ function rebuildDebug() {
 
 function updateDebug() {
   if (!debugColliders.on) return;
+  rebuildDebug();
   for (const mesh of debugColliders.group.children) {
     const body = mesh.userData.body;
     if (!body) continue;

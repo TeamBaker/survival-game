@@ -3009,51 +3009,168 @@ function rebuildFilletChunk(c) {
 // console; nothing in the game calls it.
 
 // ----- pass 4b: the collider -----
-// A cannon heightfield on the same grid, its vertices sitting on the centres of
-// the block tops. Between two columns one level apart it ramps rather than
-// steps, but the ramp is one block long against one block of rise — 45 degrees,
-// just inside maxSlope — and at 20 cm a block that ramp is well under the
-// player's own radius, so a hillside climbs as a walkable slope and never
-// catches on an edge. Two levels apart is 63 degrees, past maxSlope, and stays a
-// cliff — which is what a dug face or a bluff is made of.
+// One static CANNON.Body per chunk, greedy-merged Box shapes rather than a
+// single heightfield: a heightfield only ever knows the top of a column, so it
+// cannot represent an overhang, a tunnel, or a floating block. Boxes can,
+// because they are built straight from the voxel store's actual solid cells.
 //
-// Baked from the store, and patched a column at a time by the shovel: a
-// heightfield only knows the top of each column, so a hole you dig lowers it and
-// a block you stack raises it. That is the whole of what a heightfield can
-// represent — dig sideways under a ledge and the collider will not follow you —
-// but it is exact for the one-block-at-a-time editing the shovel actually does.
-const HF_FLOOR = -3.2;         // where the field bottoms out under open water
-const hfShape = (() => {
-  const data = [];
-  for (let i = 0; i < GEN_N; i++) {
-    const strip = new Array(GEN_N);
-    for (let jj = 0; jj < GEN_N; jj++) {
-      // Tipping the body up sends the heightfield's local +y to world -z, so the
-      // row index has to count back down the field.
-      const k = (GEN_N - 1 - jj) * GEN_N + i;
-      strip[jj] = sTop[k] === NO_COLUMN ? HF_FLOOR : (sTop[k] + 1) * BLOCK;
-    }
-    data.push(strip);
-  }
-  return new CANNON.Heightfield(data, { elementSize: BLOCK });
-})();
-const hfBody = new CANNON.Body({ mass: 0, material: physWorld });
-hfBody.addShape(hfShape);
-hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
-hfBody.updateAABB();
-world.addBody(hfBody);
+// Per chunk, per Y level: a 2D grid of which columns are solid at that level,
+// greedily merged into the fewest rectangles that cover it. Levels are never
+// merged into each other — every level gets its own boxes — but that costs
+// nothing extra a stack of blocks does not already pay for, since they are
+// boxes butted together either way.
+//
+// The depth walked per column is bounded the same way the fillet skin bounds
+// it (see filletColumn): an untouched column is walled in below the lowest of
+// its four neighbours and stops there, so a plain hillside costs a handful of
+// levels, and only a dug-out column or shaft ever walks on down toward
+// VOX_FLOOR.
+//
+// Only chunks within COLLIDER_RADIUS of the player carry a live body — over
+// the whole field that is thousands of chunks, and nothing more than a couple
+// of dozen metres from the player can ever be touched.
+const HF_FLOOR = -3.2;         // where groundHeightAt bottoms out under open water
 
-// One column of the collider, after the store under it changed.
-function patchCollider(i, j) {
-  const top = sTop[j * GEN_N + i];
-  const y = top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
-  hfShape.setHeightValueAtIndex(i, GEN_N - 1 - j, y);
-  // Only ever widened. Recomputing the true extremes means walking the whole
-  // field, and a bound that is a little loose costs a broadphase test, where one
-  // that is too tight drops contacts.
-  if (y > hfShape.maxValue) { hfShape.maxValue = y; hfBody.updateAABB(); }
-  if (y < hfShape.minValue) { hfShape.minValue = y; hfBody.updateAABB(); }
+// The boxes one chunk's worth of solid blocks greedy-merge into, as plain
+// {hx,hy,hz,x,y,z} records — half-extents and centre, in world units.
+function buildChunkColliderBoxes(c) {
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+  const w = i1 - i0, h = j1 - j0;
+  if (w <= 0 || h <= 0) return [];
+
+  // Per column: its top, and how far down it has to be walked before the rest
+  // of the volume beneath it is walled in on every side and can be skipped.
+  const top = new Int32Array(w * h).fill(NO_COLUMN);
+  const floor = new Int32Array(w * h);
+  let lo = Infinity, hi = -Infinity;
+  for (let j = j0; j < j1; j++) {
+    for (let i = i0; i < i1; i++) {
+      const k = j * GEN_N + i;
+      const t = sTop[k];
+      if (t === NO_COLUMN) continue;
+      let low = t, dug = colDug[k] !== 0;
+      for (let e = 0; e < 4; e++) {
+        const g = FDIR[e < 2 ? e : e + 2];             // the four sideways steps
+        const ni = i + g.di, nj = j + g.dj;
+        if (ni < 0 || nj < 0 || ni >= GEN_N || nj >= GEN_N) { low = Math.min(low, t - RIM_DEPTH); continue; }
+        const nk = nj * GEN_N + ni;
+        const v = sTop[nk];
+        low = Math.min(low, v === NO_COLUMN ? t - RIM_DEPTH : v);
+        if (colDug[nk]) dug = true;
+      }
+      const deepest = Math.max(VOX_FLOOR, t - MAX_DEPTH);
+      const idx = (j - j0) * w + (i - i0);
+      top[idx] = t;
+      floor[idx] = dug ? deepest : Math.max(deepest, Math.min(t, low + 1));
+      if (floor[idx] < lo) lo = floor[idx];
+      if (t > hi) hi = t;
+    }
+  }
+  if (hi < lo) return [];
+
+  const boxes = [];
+  const solid = new Uint8Array(w * h);
+  const visited = new Uint8Array(w * h);
+  for (let lvl = hi; lvl >= lo; lvl--) {
+    solid.fill(0);
+    let any = false;
+    for (let jj = 0; jj < h; jj++) {
+      for (let ii = 0; ii < w; ii++) {
+        const idx = jj * w + ii;
+        if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) continue;
+        const k = (j0 + jj) * GEN_N + (i0 + ii);
+        if (voxMat[voxOff[k] - VOX_FLOOR + lvl] === AIR) continue;
+        solid[idx] = 1;
+        any = true;
+      }
+    }
+    if (!any) continue;
+
+    // Standard greedy rectangle merge: every unclaimed solid cell grows first
+    // along i, then as far along j as it can while the whole row it just grew
+    // stays solid and unclaimed.
+    visited.fill(0);
+    for (let jj = 0; jj < h; jj++) {
+      for (let ii = 0; ii < w; ii++) {
+        const idx = jj * w + ii;
+        if (!solid[idx] || visited[idx]) continue;
+        let ii1 = ii + 1;
+        while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
+        let jj1 = jj + 1;
+        for (;;) {
+          if (jj1 >= h) break;
+          let full = true;
+          for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
+          if (!full) break;
+          jj1++;
+        }
+        for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+
+        const bi0 = i0 + ii, bi1 = i0 + ii1 - 1, bj0 = j0 + jj, bj1 = j0 + jj1 - 1;
+        boxes.push({
+          hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: BLOCK * 0.5, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
+          x: (colX(bi0) + colX(bi1)) * 0.5, y: (lvl + 0.5) * BLOCK, z: (colZ(bj0) + colZ(bj1)) * 0.5,
+        });
+      }
+    }
+  }
+  return boxes;
+}
+
+// One collision body per chunk, live only while the chunk is within
+// COLLIDER_RADIUS of the player.
+const colliderBody = new Array(CHUNK_N * CHUNK_N).fill(null);
+const COLLIDER_RADIUS = 5;   // chunks kept live around the player
+
+function loadChunkCollider(c) {
+  if (colliderBody[c]) return;
+  const body = new CANNON.Body({ mass: 0, material: physWorld });
+  for (const b of buildChunkColliderBoxes(c)) {
+    body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+  }
+  body.updateAABB();
+  world.addBody(body);
+  colliderBody[c] = body;
+}
+
+function unloadChunkCollider(c) {
+  const body = colliderBody[c];
+  if (!body) return;
+  world.removeBody(body);
+  colliderBody[c] = null;
+}
+
+// After a dig or place touches chunk c, rebuild its collision body in place. A
+// chunk outside the load radius has no body to rebuild — it picks up the
+// change on its own the next time the player comes close enough to load it.
+function rebuildChunkCollider(c) {
+  if (!colliderBody[c]) return;
+  unloadChunkCollider(c);
+  loadChunkCollider(c);
+}
+
+// Which chunks are within COLLIDER_RADIUS of (x, z). Cheap to call every
+// frame: it does nothing until the player's own chunk changes, which is once
+// every CHUNK * BLOCK = 3.2 m of travel.
+let colliderCi = null, colliderCj = null;
+function updateChunkColliders(x, z) {
+  const ci = Math.floor(colI(x) / CHUNK), cj = Math.floor(colJ(z) / CHUNK);
+  if (ci === colliderCi && cj === colliderCj) return;
+  colliderCi = ci; colliderCj = cj;
+
+  const want = new Set();
+  for (let dj = -COLLIDER_RADIUS; dj <= COLLIDER_RADIUS; dj++) {
+    for (let di = -COLLIDER_RADIUS; di <= COLLIDER_RADIUS; di++) {
+      const cci = ci + di, ccj = cj + dj;
+      if (cci < 0 || ccj < 0 || cci >= CHUNK_N || ccj >= CHUNK_N) continue;
+      want.add(ccj * CHUNK_N + cci);
+    }
+  }
+  for (const c of want) loadChunkCollider(c);
+  for (let c = 0; c < colliderBody.length; c++) {
+    if (colliderBody[c] && !want.has(c)) unloadChunkCollider(c);
+  }
 }
 
 // Where the ground is, for anything that needs to ask — the top of the block you
@@ -3072,6 +3189,10 @@ const onLand = (x, z) => groundHeightAt(x, z) > SEA_Y;
 // player starts on the column there with their feet a couple of centimetres
 // clear of whichever block happens to be on top of it.
 SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
+// Load the ring of chunk colliders the player is about to spawn into, so the
+// ground is there for the first physics step rather than the first frame it
+// happens to walk into range.
+updateChunkColliders(SPAWN.x, SPAWN.z);
 
 // ---------------------------------------------------------------------------
 // There is no sea mesh. The WATER blocks in the voxel store are the whole of the
@@ -4630,7 +4751,6 @@ function breakOffAdrift(i, j, lvl) {
   }
   for (const k of cols) {
     const ci = k % GEN_N, cj = (k - ci) / GEN_N;
-    patchCollider(ci, cj);
     for (let dj = -1; dj <= 1; dj++) {
       for (let di = -1; di <= 1; di++) {
         const ii = ci + di, jj = cj + dj;
@@ -4661,7 +4781,6 @@ function editBlock(i, j, lvl, m) {
   colDug[k] = 1;
   if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
   powderDirty.add(k);   // anything loose in this column falls this frame, not on the next sweep
-  patchCollider(i, j);
   // Refresh visibility of the edited block and all six neighbours.
   refreshVisible(i, j, lvl);
   refreshVisible(i - 1, j, lvl);
@@ -4748,7 +4867,6 @@ function hammerStrike() {
   colDug[k] = 1;
   if (lvl < colDugLo[k]) colDugLo[k] = lvl;
   powderDirty.add(k);
-  patchCollider(i, j);
   refreshVisible(i, j, lvl);
   refreshVisible(i - 1, j, lvl);
   refreshVisible(i + 1, j, lvl);
@@ -4774,7 +4892,7 @@ function hammerStrike() {
 
 function flushDirtyChunks() {
   if (!dirtyChunks.size) return;
-  for (const c of dirtyChunks) rebuildChunk(c);
+  for (const c of dirtyChunks) { rebuildChunk(c); rebuildChunkCollider(c); }
   dirtyChunks.clear();
   blocksHudEl.textContent = worldBlocks.toLocaleString();
 }
@@ -5304,6 +5422,11 @@ function tick() {
   } else {
     updatePlayer(dt);
   }
+
+  // Keep the ring of live chunk colliders centred on the physical player body
+  // — not the free camera, which can roam anywhere while the body it left
+  // behind is still under gravity and still needs ground under it every step.
+  updateChunkColliders(playerBody.position.x, playerBody.position.z);
 
   // --- physics: fixed 120 Hz steps, sub-stepped to catch up with the frame ---
   // Twice the old rate: a shorter step resolves the block-edge contacts before

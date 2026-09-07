@@ -4760,6 +4760,13 @@ function breakOffAdrift(i, j, lvl) {
     }
   }
 
+  // Rebuild colliders for the now-empty chunks immediately, before the
+  // debris body spawns — otherwise it collides with the stale boxes for
+  // a frame (flushDirtyChunks() runs too late for this).
+  for (const k of cols) {
+    rebuildChunkCollider(chunkOf(k % GEN_N, (k - k % GEN_N) / GEN_N));
+  }
+
   spawnFallingChunk(unit);
 
   // Propagate: blocks next to the ones that fell might now be adrift too.

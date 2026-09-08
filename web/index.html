@@ -589,6 +589,29 @@
   #btn-chart.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-chart:active { transform: translateY(1px); }
 
+  #btn-debug-chunks {
+    position: fixed;
+    top: calc(256px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-debug-chunks.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-debug-chunks:active { transform: translateY(1px); }
+
   /* ---------- Debug collider toggle ---------- */
   #btn-debug-colliders {
     position: fixed;
@@ -742,6 +765,7 @@
 
   @media (max-width: 620px) {
     #btn-chart { top: calc(186px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-debug-chunks { top: calc(220px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
     #chart-panel { padding: 12px; }
     #chart-grid { font-size: 10px; min-width: 460px; }
   }
@@ -888,6 +912,7 @@
 </div>
 
 <button id="btn-chart" class="ui-el">Chart</button>
+<button id="btn-debug-chunks" class="ui-el">Debug Chunks</button>
 <button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
 
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
@@ -1962,6 +1987,10 @@ const CHUNK   = 16;                         // columns per chunk side (3.2 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 
+// A separate, coarser grid overlay used for LOD — not the mesh chunk grid above.
+const CHUNK_GRID = 20;                          // blocks per grid chunk side
+const GRID_N      = Math.ceil(GEN_N / CHUNK_GRID); // grid chunks per side
+
 // Sand light and dry, dirt brown, rock grey, water blue. Nothing green anywhere
 // — no grass on this island yet. Indexed by the material ids above.
 //
@@ -2293,6 +2322,37 @@ function rebuildChunk(c) {
 }
 
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
+
+// ---------------------------------------------------------------------------
+// Debug chunk grid — wireframe boxes over the 20x20-block LOD grid (separate
+// from the CHUNK mesh grid above). Built once; the button just toggles it.
+const debugChunkGrid = new THREE.Group();
+debugChunkGrid.visible = false;
+scene.add(debugChunkGrid);
+
+(function buildChunkGridWireframes() {
+  const mat = new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 1 });
+  const yMin = -2, yMax = 10;
+  for (let gj = 0; gj < GRID_N; gj++) {
+    for (let gi = 0; gi < GRID_N; gi++) {
+      const x0 = -GEN_R + gi * CHUNK_GRID * BLOCK;
+      const z0 = -GEN_R + gj * CHUNK_GRID * BLOCK;
+      const x1 = -GEN_R + Math.min((gi + 1) * CHUNK_GRID, GEN_N) * BLOCK;
+      const z1 = -GEN_R + Math.min((gj + 1) * CHUNK_GRID, GEN_N) * BLOCK;
+      const geo = new THREE.BoxGeometry(x1 - x0, yMax - yMin, z1 - z0);
+      const edges = new THREE.EdgesGeometry(geo);
+      geo.dispose();
+      const box = new THREE.LineSegments(edges, mat);
+      box.position.set((x0 + x1) / 2, (yMin + yMax) / 2, (z0 + z1) / 2);
+      debugChunkGrid.add(box);
+    }
+  }
+})();
+
+document.getElementById('btn-debug-chunks').addEventListener('click', () => {
+  debugChunkGrid.visible = !debugChunkGrid.visible;
+  document.getElementById('btn-debug-chunks').classList.toggle('on', debugChunkGrid.visible);
+});
 
 // ----- pass 3b: the fillet surface -----
 // The same terrain as one smooth skin instead of a field of cubes. It is not a

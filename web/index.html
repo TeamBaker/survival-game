@@ -1694,20 +1694,22 @@ function pickMaterial(h, slope, x, z) {
   // that's an even coin flip between the two materials; further out `scatter`
   // almost never crosses it, so the boundary is a scattered fringe of
   // individual blocks rather than a soft, blobby gradient.
-  const sandDist = (h - (1.2 + n * 0.5)) / BLEND_WIDTH; // negative = sand side, positive = dirt side
-  const sandThreshold = Math.max(-1, Math.min(1, sandDist));
-  if (sandThreshold < 1) {                         // the beach, up to knee height
+  const sandDist = (h - (1.2 + n * 0.5));            // distance from threshold in blocks
+  if (sandDist < BLEND_WIDTH) {                       // the beach, up to knee height
     const damp = v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
-    return scatter > sandThreshold ? damp : SAND;
+    // Only scatter individual blocks in a narrow fringe (0.4 blocks) right at the edge.
+    // Farther in, just pick the dominant material cleanly.
+    if (sandDist > -0.4 && sandDist < 0.4) return scatter > sandDist / 0.4 ? damp : SAND;
+    return sandDist < 0 ? damp : SAND;
   }
   // Just above the tide line the ground never dries out, so the damp variants
   // sit in a band there rather than anywhere on the island.
-  const dirtDist = (h - (3.0 + n)) / BLEND_WIDTH;
-  const dirtThreshold = Math.max(-1, Math.min(1, dirtDist));
-  if (dirtThreshold < 1) {
+  const dirtDist = (h - (3.0 + n));
+  if (dirtDist < BLEND_WIDTH) {
     const damp = v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
     const dry  = v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
-    return scatter > dirtThreshold ? dry : damp;
+    if (dirtDist > -0.4 && dirtDist < 0.4) return scatter > dirtDist / 0.4 ? dry : damp;
+    return dirtDist < 0 ? dry : damp;
   }
   // All the gentle ground above it: earth, with clay banks and loose topsoil
   // through it.

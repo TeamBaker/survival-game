@@ -2227,7 +2227,7 @@ function collectColumn(i, j, step = 1) {
       const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
       // Per-block dither so same-material, same-depth neighbours aren't flat-identical.
       const h = ((i * 7919 + j * 6271 + lvl * 3571) & 0xffff) / 0xffff;
-      const variation = 0.95 + h * 0.10;
+      const variation = 0.85 + h * 0.30;
       const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl)) * variation;
       const c = TERRAIN_MATS[m].color;
       const r = c.r * s, g = c.g * s, b = c.b * s;
@@ -4416,7 +4416,7 @@ function buildDebrisGeometry(mesh) {
     const t = tint[k] ?? 1;
     const band = (b.lvl >= (sTop[k] ?? 0) - SOIL_DEPTH) ? 0.94 : 0.86;
     const h = ((b.gi * 7919 + b.gj * 6271 + b.lvl * 3571) & 0xffff) / 0xffff;
-    const variation = 0.95 + h * 0.10;
+    const variation = 0.85 + h * 0.30;
     const s = t * band * shadeOf(shadeStep((sTop[k] ?? 0) - b.lvl)) * variation;
     const base = TERRAIN_MATS[b.mat].color;
     c.setRGB(base.r * s, base.g * s, base.b * s);

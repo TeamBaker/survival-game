@@ -1655,7 +1655,7 @@ const tint   = new Float32Array(GEN_N * GEN_N);
 const SLOPE_STEP = 6;
 // Width, in blocks, of the dithered zone `pickMaterial` blends across at each
 // height threshold instead of switching materials on a single row.
-const BLEND_WIDTH = 0.8;
+const BLEND_WIDTH = 1.0;
 
 // Minecraft-ish banding, except that the thresholds themselves wander: without
 // that the boundary between two materials is a contour line, and nothing in a
@@ -1675,27 +1675,39 @@ function pickMaterial(h, slope, x, z) {
   // bands themselves fall is still `n` alone, so the island's shape and its
   // beach line are exactly what they were.
   const v = vnoise2(x * 0.09 + 41.7, z * 0.09 - 17.3);
+  // A third field, sampled at individual-block scale (~0.67 m patches), used
+  // only to dither the boundary itself: `v` and `n` still say where a band
+  // and its variant fall, but this decides which of the two neighbouring
+  // materials any one block near that boundary actually gets — so the fringe
+  // scatters block by block instead of switching over in one broad blob.
+  const scatter = vnoise2(x * 1.5 + 99.3, z * 1.5 - 51.7);
   if (h <= SEA_Y) return WATER;                    // sea level and below: the water plane
   // Anything you could not stand on. Most of it is sound rock; the rest is the
   // crumbling face of it, which is softer to dig and lighter to carry.
   if (slope > 1.05 + n * 0.30) {
     return v > 0.45 ? BRITTLE_STONE : (v < -0.55 ? STONE_DUST : ROCK);
   }
-  // Rather than switching bands the instant h crosses a threshold, ramp across
-  // a BLEND_WIDTH zone and use `v` to dither each side in over that ramp, so
-  // the boundary is a soft mixed fringe instead of a single contour row.
-  const sandT = smooth((h - (1.2 + n * 0.5) + BLEND_WIDTH) / (2 * BLEND_WIDTH));
-  if (sandT < 1) {                                 // the beach, up to knee height
+  // Rather than switching bands the instant h crosses a threshold, dither a
+  // BLEND_WIDTH zone around it with the high-frequency `scatter` field:
+  // `dist` is how far h sits from the threshold in units of BLEND_WIDTH
+  // (negative on one side, positive on the other), clamped to -1..1. Near 0
+  // that's an even coin flip between the two materials; further out `scatter`
+  // almost never crosses it, so the boundary is a scattered fringe of
+  // individual blocks rather than a soft, blobby gradient.
+  const sandDist = (h - (1.2 + n * 0.5)) / BLEND_WIDTH; // negative = sand side, positive = dirt side
+  const sandThreshold = Math.max(-1, Math.min(1, sandDist));
+  if (sandThreshold < 1) {                         // the beach, up to knee height
     const damp = v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
-    return v < sandT * 2 - 1 ? damp : SAND;
+    return scatter > sandThreshold ? damp : SAND;
   }
   // Just above the tide line the ground never dries out, so the damp variants
   // sit in a band there rather than anywhere on the island.
-  const dirtT = smooth((h - (3.0 + n) + BLEND_WIDTH) / (2 * BLEND_WIDTH));
-  if (dirtT < 1) {
+  const dirtDist = (h - (3.0 + n)) / BLEND_WIDTH;
+  const dirtThreshold = Math.max(-1, Math.min(1, dirtDist));
+  if (dirtThreshold < 1) {
     const damp = v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
     const dry  = v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
-    return v < dirtT * 2 - 1 ? dry : damp;
+    return scatter > dirtThreshold ? dry : damp;
   }
   // All the gentle ground above it: earth, with clay banks and loose topsoil
   // through it.

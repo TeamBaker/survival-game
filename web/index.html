@@ -4147,12 +4147,13 @@ const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 
 // ----- loose chunks -----
 // A piece that has broken off is one merged, per-face-culled mesh (coloured by
-// each block's material) glued to one cannon body. Its collider is the same
-// greedy-merged face slabs as the terrain (buildFaceSlabs), over the piece's
-// own lattice rather than the voxel grid, so it costs the same whatever it is
-// made of.
+// each block's material) glued to one cannon body. Every block of it is a box
+// shape on that body while the piece is small enough for the solver to enjoy
+// it; past that it collides as the single box that encloses it, which still
+// falls and tumbles convincingly and costs the same whatever it is made of.
 const FALL_BODY_CAP  = 20;    // pieces under physics at once
 const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
+const FALL_SHAPE_CAP = 24;    // blocks that get a collider each, rather than one box round the lot
 const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
@@ -4272,6 +4273,7 @@ function spawnFallingChunk(unit) {
     gi: b.i,  gj: b.j,
   }));
   buildDebrisGeometry(mesh);
+  mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   debris.add(mesh);
@@ -4694,18 +4696,23 @@ function splitDebrisIfNeeded(mesh) {
 // drift apart instead of springing.
 const partQuat = new THREE.Quaternion();
 function spawnDebrisPart(parent, blocks, pbody, frozen) {
-  const n = blocks.length;
+  const n = blocks.length, h = HALF_BLOCK, hy = HALF_BLOCK;
   parent.updateWorldMatrix(true, false);
   const c = new THREE.Vector3();
   for (const b of blocks) c.add(b.pos);
   c.multiplyScalar(1 / n);
 
   const mesh = new THREE.Mesh(new THREE.BufferGeometry(), fallMat);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   mesh.userData.blocks = blocks.map((b) => {
     const p = b.pos.clone().sub(c);
+    if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+    if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+    if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
     return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj };
   });
   buildDebrisGeometry(mesh);
+  mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   debris.add(mesh);
@@ -4718,30 +4725,14 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
     collisionFilterGroup: DEBRIS_GROUP,
     collisionFilterMask: -1,
   });
-  {
-    // Same face-slab merge as spawnFallingChunk/rebuildDebrisBody, over this
-    // part's own lattice rather than one box per block or round the lot.
-    const ref = mesh.userData.blocks[0];
-    const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
-    const byLevel = new Map();
-    let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity, l0 = Infinity, l1 = -Infinity;
+  if (mesh.userData.perBlock) {
     for (const b of mesh.userData.blocks) {
-      let cells = byLevel.get(b.lvl);
-      if (!cells) byLevel.set(b.lvl, cells = new Set());
-      cells.add(b.gi + ',' + b.gj);
-      if (b.gi < gi0) gi0 = b.gi; if (b.gi > gi1) gi1 = b.gi;
-      if (b.gj < gj0) gj0 = b.gj; if (b.gj > gj1) gj1 = b.gj;
-      if (b.lvl < l0) l0 = b.lvl; if (b.lvl > l1) l1 = b.lvl;
+      body.addShape(new CANNON.Box(new CANNON.Vec3(h, hy, h)),
+                    new CANNON.Vec3(b.pos.x, b.pos.y, b.pos.z));
     }
-    const isBlock = (gi, gj, lvl) => {
-      const cells = byLevel.get(lvl);
-      return !!cells && cells.has(gi + ',' + gj);
-    };
-    const isOpen = (gi, gj, lvl) => !isBlock(gi, gj, lvl);
-    for (const s of buildFaceSlabs(gi0, gi1, gj0, gj1, l0, l1, isBlock, isOpen,
-        (gi) => gi * BLOCK + kx, (gj) => gj * BLOCK + kz, (lvl) => lvl * BLOCK + ky)) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(s.hx, s.hy, s.hz)), new CANNON.Vec3(s.x, s.y, s.z));
-    }
+  } else {
+    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + hy, (z1 - z0) / 2 + h)),
+                  new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
   }
   const w = c.applyMatrix4(parent.matrixWorld);
   body.position.set(w.x, w.y, w.z);

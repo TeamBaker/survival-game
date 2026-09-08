@@ -4625,7 +4625,8 @@ function rebuildDebrisBody(mesh, body) {
   body.updateMassProperties();
   body.updateBoundingRadius();
   body.updateAABB();
-  body.wakeUp();
+  const f = chunkOfMesh(mesh);
+  if (!f || !f.frozen) body.wakeUp();
 }
 
 // Take block `q` off a piece. A placed block is a child mesh; one of the piece's
@@ -4769,7 +4770,7 @@ function digDebrisBlock(mesh, inst, child) {
   splitDebrisIfNeeded(mesh);
 
   const f = chunkOfMesh(mesh);
-  if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }    // lighter, and disturbed
+  if (f) { rebuildDebrisBody(mesh, f.body); if (!f.frozen) f.still = 0; }    // lighter, and disturbed
   return true;
 }
 
@@ -4851,7 +4852,7 @@ function placeOnDebris(mesh, local, m) {
   const f = chunkOfMesh(mesh);
   if (!f) return;
   rebuildDebrisBody(mesh, f.body);
-  f.still = 0;                  // it has been disturbed: let it settle again
+  if (!f.frozen) f.still = 0;   // it has been disturbed: let it settle again
 }
 
 // The six face neighbours, with the one below last so a stack pops it first: a

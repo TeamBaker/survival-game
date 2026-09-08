@@ -4191,29 +4191,50 @@ function spawnFallingChunk(unit) {
       if (!grid) byLevel.set(b.lvl, grid = new Uint8Array(w * dep));
       grid[(b.j - bj0) * w + (b.i - bi0)] = 1;
     }
+    // Grow each level's rectangle straight down through lower levels whose
+    // footprint is fully solid there too — same as buildChunkColliderBoxes,
+    // except levels here can have gaps, so it's just "is there a byLevel
+    // entry" rather than a floor/lo bound.
+    function footprintSolidAt(ii0, ii1, jj0, jj1, lvl) {
+      const grid = byLevel.get(lvl);
+      if (!grid) return false;
+      for (let jj = jj0; jj < jj1; jj++)
+        for (let ii = ii0; ii < ii1; ii++)
+          if (!grid[jj * w + ii]) return false;
+      return true;
+    }
+    const levels = [...byLevel.keys()].sort((a, b) => b - a);
+    const consumedTo = new Float64Array(w * dep).fill(Infinity);
     const visited = new Uint8Array(w * dep);
-    for (const [lvl, solid] of byLevel) {
+    for (const lvl of levels) {
+      const solid = byLevel.get(lvl);
       visited.fill(0);
       for (let jj = 0; jj < dep; jj++) {
         for (let ii = 0; ii < w; ii++) {
           const idx = jj * w + ii;
-          if (!solid[idx] || visited[idx]) continue;
+          if (!solid[idx] || visited[idx] || lvl >= consumedTo[idx]) continue;
           let ii1 = ii + 1;
-          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
+          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1] && lvl < consumedTo[jj * w + ii1]) ii1++;
           let jj1 = jj + 1;
           for (;;) {
             if (jj1 >= dep) break;
             let full = true;
-            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
+            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x] || lvl >= consumedTo[jj1 * w + x]) { full = false; break; }
             if (!full) break;
             jj1++;
           }
           for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
 
+          let botLvl = lvl;
+          while (footprintSolidAt(ii, ii1, jj, jj1, botLvl - 1)) botLvl--;
+          if (botLvl < lvl) {
+            for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) consumedTo[y * w + x] = botLvl;
+          }
+
           const gi0 = bi0 + ii, gi1 = bi0 + ii1 - 1, gj0 = bj0 + jj, gj1 = bj0 + jj1 - 1;
           body.addShape(
-            new CANNON.Box(new CANNON.Vec3((gi1 - gi0 + 1) * BLOCK * 0.5, h, (gj1 - gj0 + 1) * BLOCK * 0.5)),
-            new CANNON.Vec3((colX(gi0) + colX(gi1)) * 0.5 - cx, (lvl + 0.5) * BLOCK - cy, (colZ(gj0) + colZ(gj1)) * 0.5 - cz));
+            new CANNON.Box(new CANNON.Vec3((gi1 - gi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (gj1 - gj0 + 1) * BLOCK * 0.5)),
+            new CANNON.Vec3((colX(gi0) + colX(gi1)) * 0.5 - cx, ((botLvl + lvl) / 2 + 0.5) * BLOCK - cy, (colZ(gj0) + colZ(gj1)) * 0.5 - cz));
         }
       }
     }
@@ -4513,7 +4534,21 @@ function rebuildDebrisBody(mesh, body) {
       if (!cells) byLevel.set(b.lvl, cells = new Set());
       cells.add(b.gi + ',' + b.gj);
     }
-    for (const [lvl, cells] of byLevel) {
+    // Same downward growth as spawnFallingChunk: a rectangle at one level
+    // extends into a taller box as long as the exact footprint is also solid
+    // (has a cell entry) at the level(s) below.
+    function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
+      const cellsAt = byLevel.get(lvl);
+      if (!cellsAt) return false;
+      for (let gj = mj0; gj <= mj1; gj++)
+        for (let gi = mi0; gi <= mi1; gi++)
+          if (!cellsAt.has(gi + ',' + gj)) return false;
+      return true;
+    }
+    const consumedTo = new Map();  // "gi,gj" -> lowest level a taller box above already reaches down to
+    const levels = [...byLevel.keys()].sort((a, b) => b - a);
+    for (const lvl of levels) {
+      const cells = byLevel.get(lvl);
       let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity;
       for (const key of cells) {
         const [gi, gj] = key.split(',').map(Number);
@@ -4523,6 +4558,8 @@ function rebuildDebrisBody(mesh, body) {
       const w = gi1 - gi0 + 1, dep = gj1 - gj0 + 1;
       const solid = new Uint8Array(w * dep);
       for (const key of cells) {
+        const th = consumedTo.get(key);
+        if (th !== undefined && lvl >= th) continue;
         const [gi, gj] = key.split(',').map(Number);
         solid[(gj - gj0) * w + (gi - gi0)] = 1;
       }
@@ -4544,9 +4581,15 @@ function rebuildDebrisBody(mesh, body) {
           for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
 
           const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
+          let botLvl = lvl;
+          while (footprintSolidAt(mi0, mi1, mj0, mj1, botLvl - 1)) botLvl--;
+          if (botLvl < lvl) {
+            for (let gj = mj0; gj <= mj1; gj++) for (let gi = mi0; gi <= mi1; gi++) consumedTo.set(gi + ',' + gj, botLvl);
+          }
+
           body.addShape(
-            new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
-            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, (lvl + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
+            new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
+            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
         }
       }
     }

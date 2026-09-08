@@ -2027,7 +2027,7 @@ const chunkStep = new Int8Array(CHUNK_N * CHUNK_N);
 // (lower step) neighbour adopts that neighbour's step. Detail bleeds outward
 // from whatever is near the camera until every pair of touching chunks
 // agrees, which is what keeps the seam between them gap-free.
-const LOD_NEAR = 25, LOD_FAR = 60;  // metres from camera
+const LOD_NEAR = 15, LOD_FAR = 40;  // metres from camera
 
 function rawLODStep(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
@@ -2040,10 +2040,12 @@ function rawLODStep(c) {
   const midI = i0 + (CHUNK >> 1), midJ = j0 + (CHUNK >> 1);
   const k = midJ * GEN_N + midI;
   const terrainY = (sTop[k] !== NO_COLUMN ? sTop[k] : SEA_LVL) * BLOCK;
-  const dx = ccx - camera.position.x, dy = terrainY - camera.position.y, dz = ccz - camera.position.z;
-  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (dist < LOD_NEAR) return 1;
-  if (dist < LOD_FAR) return 2;
+  const dx = ccx - camera.position.x, dz = ccz - camera.position.z;
+  const altitude = Math.max(0, camera.position.y - terrainY);
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  const effective_NEAR = LOD_NEAR + altitude, effective_FAR = LOD_FAR + altitude;
+  if (dist < effective_NEAR) return 1;
+  if (dist < effective_FAR) return 2;
   return 4;
 }
 

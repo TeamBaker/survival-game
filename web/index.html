@@ -2169,16 +2169,19 @@ function pushFace(m, f, cx, cy, cz, r, g, b, scale = 1) {
 // that used to stand in for every block is down to the one or two sides of it
 // anything could ever see. Returns the blocks it drew something for.
 //
-// `step` is the LOD footprint: at 1 (the default, and the only case the
-// collision mesh or debris ever use) this is exactly the per-block pass above.
-// Above 1, (i, j) is the corner of a step×step group of columns and this draws
-// one merged block standing in for the whole group instead of walking every
-// column and every level in it. That merge is only valid where the group's
-// terrain is flat enough to stand in for — a corner at height 3 next to one at
-// height 9 has no single slab that represents both without either burying the
-// low one or floating over it — so the footprint's height spread is checked
-// first, and anything over one level falls back to drawing the group at full
-// detail instead of guessing.
+// `step` is the LOD level: at 1 (the default, and the only case the collision
+// mesh or debris ever use) this is exactly the per-block pass above. Above 1,
+// (i, j) is the corner of a mergeSizeFor(step)³ cube of blocks and this draws
+// one merged block — sized to fill that whole cube — standing in for it,
+// instead of walking every column and every level in it. The merged block's
+// material is whichever non-air material is most common across the cube, and
+// its vertical extent runs from the footprint's highest surface down
+// mergeSizeFor(step) levels. That merge is only valid where the footprint is
+// flat enough for the cube to cover every column's own surface — a corner at
+// height 3 next to one at height 9 has no cube short enough to represent both
+// without either burying the low one or floating over it — so the footprint's
+// height spread is checked first, and anything the cube can't cover falls back
+// to drawing the group at full detail instead of guessing.
 function collectColumn(i, j, step = 1) {
   if (step === 1) {
     const k = j * GEN_N + i;
@@ -2209,12 +2212,13 @@ function collectColumn(i, j, step = 1) {
     return drawn;
   }
 
-  // LOD path: the tallest column in the footprint stands in for the whole
-  // group, so a group is only ever drawn shorter than its true high point when
-  // that point is a lone spike too thin to matter at this distance — provided
-  // the footprint is flat enough (see the variance check below) that a single
-  // slab is a fair stand-in for all of it.
-  const iMax = Math.min(i + step, GEN_N), jMax = Math.min(j + step, GEN_N);
+  // LOD path: the tallest column in the footprint anchors the merged cube, so
+  // a group is only ever drawn shorter than its true high point when that
+  // point is a lone spike too thin to matter at this distance — provided the
+  // footprint is flat enough (see the variance check below) that one cube is
+  // a fair stand-in for all of it.
+  const S = mergeSizeFor(step);
+  const iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
   let top = NO_COLUMN, bestK = -1;
   let minTop = Infinity, maxTop = -Infinity;
   for (let jj = j; jj < jMax; jj++) {
@@ -2229,10 +2233,10 @@ function collectColumn(i, j, step = 1) {
   }
   if (bestK < 0) return 0;
 
-  // Too much relief in this footprint for one slab to stand in for it without
-  // either burying or floating part of it — draw the group at full detail
-  // instead, column by column.
-  if (maxTop - minTop >= 1) {
+  // Too much relief in this footprint for one S-tall cube to cover every
+  // column's own surface without either burying or floating part of it —
+  // draw the group at full detail instead, column by column.
+  if (maxTop - minTop >= S) {
     let drawn = 0;
     for (let jj = j; jj < jMax; jj++)
       for (let ii = i; ii < iMax; ii++)
@@ -2240,19 +2244,43 @@ function collectColumn(i, j, step = 1) {
     return drawn;
   }
 
-  const m = voxMat[voxOff[bestK] - VOX_FLOOR + top];
-  if (m === AIR) return 0;
+  // The cube runs from the footprint's highest surface down S levels (clamped
+  // to bedrock) — every column's own top falls inside it, per the check above.
+  const bandBottom = Math.max(VOX_FLOOR, top - S + 1);
+
+  // Most common non-air material across the whole i×j×level cube stands in
+  // for it, same idea as picking one colour for a whole block face.
+  mergeMatCounts.fill(0);
+  for (let jj = j; jj < jMax; jj++)
+    for (let ii = i; ii < iMax; ii++)
+      for (let ll = bandBottom; ll <= top; ll++) {
+        const mm = voxelAt(ii, jj, ll);
+        if (mm !== AIR) mergeMatCounts[mm]++;
+      }
+  let m = -1, best = 0;
+  for (let mm = 0; mm < N_MATS; mm++) {
+    if (mergeMatCounts[mm] > best) { best = mergeMatCounts[mm]; m = mm; }
+  }
+  if (m < 0) return 0;
+
   // Depth-below-own-top is 0 for the block standing in for the group, same as
   // any column's own surface block, so the shading is just the soil-band tint.
   const s = tint[bestK] * 0.94;
   const c = TERRAIN_MATS[m].color;
   const r = c.r * s, g = c.g * s, b = c.b * s;
-  const cx = colX(i) + (step - 1) * HALF_BLOCK, cz = colZ(j) + (step - 1) * HALF_BLOCK;
-  const cy = (top + 0.5) * BLOCK;
+  const cx = colX(i) + (S - 1) * HALF_BLOCK, cz = colZ(j) + (S - 1) * HALF_BLOCK;
+  const cy = ((bandBottom + top) / 2 + 0.5) * BLOCK;
   for (let f = 0; f < 6; f++) {
     const F = FACES[f];
-    if (voxelAt(i + F.di * step, j + F.dj * step, top + F.dl) !== AIR) continue;
-    pushFace(m, F, cx, cy, cz, r, g, b, step);
+    // Same single-point visibility check as the un-merged path, just sampled
+    // a whole cube-width away (or a cube-height, for the top/bottom faces)
+    // instead of one block away.
+    let nb;
+    if (F.dl > 0) nb = voxelAt(i, j, top + 1);
+    else if (F.dl < 0) nb = voxelAt(i, j, bandBottom - 1);
+    else nb = voxelAt(i + F.di * S, j + F.dj * S, top);
+    if (nb !== AIR) continue;
+    pushFace(m, F, cx, cy, cz, r, g, b, S);
   }
   return 1;
 }
@@ -2260,24 +2288,34 @@ function collectColumn(i, j, step = 1) {
 // ---------------------------------------------------------------------------
 // LOD — concentric distance bands around the camera control how coarsely each
 // 20x20-block grid chunk is drawn. Innermost band is full detail; each band
-// out doubles the step (the block interval collectColumn samples at), so the
-// same island stays cheap to draw far away without popping right at the edge
-// of view.
+// out merges blocks into bigger cubes (see mergeSizeFor), so the same island
+// stays cheap to draw far away without popping right at the edge of view.
 const LOD_SPHERES = [
-  { radius: 30, color: 0x669d34 },  // green  — normal quality (step 1)
-  { radius: 50, color: 0xf5ec00 },  // yellow — middle quality (step 2)
-  { radius: 80, color: 0xb51a00 },  // red    — low quality    (step 4)
+  { radius: 30, color: 0x669d34 },  // green  — normal quality (step 1, no merge)
+  { radius: 50, color: 0xf5ec00 },  // yellow — middle quality (step 2, 2x2x2 merge)
+  { radius: 80, color: 0xb51a00 },  // red    — low quality    (step 3, 4x4x4 merge)
 ];
-// Everything outside every sphere: really low quality (step 8).
+// Everything outside every sphere: really low quality (step 4, 5x5x5 merge).
 
-// The innermost sphere (smallest radius) the distance still falls inside;
-// step doubles per band out, so index i is step 1 << i.
+// The innermost sphere (smallest radius) the distance still falls inside,
+// 1-indexed (band i's step is i + 1); mergeSizeFor turns that step into the
+// cube size collectColumn merges blocks into.
 function lodStepFor(dist) {
   for (let i = 0; i < LOD_SPHERES.length; i++) {
-    if (dist < LOD_SPHERES[i].radius) return 1 << i;
+    if (dist < LOD_SPHERES[i].radius) return i + 1;
   }
-  return 1 << LOD_SPHERES.length;
+  return LOD_SPHERES.length + 1;
 }
+
+// step 1 is full detail (no merging); steps 2-4 merge blocks into 2x2x2,
+// 4x4x4, and 5x5x5 cubes respectively.
+const MERGE_SIZE = [1, 2, 4, 5];
+const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
+
+// Scratch histogram collectColumn's LOD path reuses every call to find the
+// most common non-air material in a merged cube — sized for every material id
+// (AIR itself is never counted, so index N_MATS is never touched).
+const mergeMatCounts = new Uint32Array(N_MATS);
 
 // One grid cell (of the GRID_N x GRID_N, 20-block overlay) per CHUNK mesh
 // chunk, chosen by which cell the mesh chunk's own centre falls in. Built
@@ -2340,9 +2378,10 @@ function rebuildChunk(c) {
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
 
   const step = gridStep[chunkGridIdx[c]];
+  const stride = mergeSizeFor(step);
 
   let blocks = 0;
-  for (let j = j0; j < j1; j += step) for (let i = i0; i < i1; i += step) blocks += collectColumn(i, j, step);
+  for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
 
   const meshes = new Array(N_MATS).fill(null);
   let faces = 0;

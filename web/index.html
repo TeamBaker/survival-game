@@ -3170,7 +3170,7 @@ function buildChunkColliderBoxes(c) {
 // One collision body per chunk, live only while the chunk is within
 // COLLIDER_RADIUS of the player.
 const colliderBody = new Array(CHUNK_N * CHUNK_N).fill(null);
-const COLLIDER_RADIUS = 5;   // chunks kept live around the player
+const COLLIDER_RADIUS = 16;  // chunks kept live around the player
 
 function loadChunkCollider(c) {
   if (colliderBody[c]) return;
@@ -4344,9 +4344,33 @@ function checkTerrainPowder() {
   powderCursor = k % cols;
 }
 
+// Debris this far (world units) from the player is frozen rather than kept
+// under live physics — slightly inside the live collider ring, so a piece
+// never freezes while still standing on ground that has a body under it.
+const DEBRIS_FREEZE_DIST = (COLLIDER_RADIUS - 1) * CHUNK * BLOCK;
+
+// Freeze a piece the player has walked away from (zero it, sleep it, and
+// stop it colliding), or wake one the player has come back to.
+function updateDebrisFreeze(f, px, pz) {
+  const dx = f.body.position.x - px, dz = f.body.position.z - pz;
+  const far = dx * dx + dz * dz > DEBRIS_FREEZE_DIST * DEBRIS_FREEZE_DIST;
+  if (far && !f.frozen) {
+    f.frozen = true;
+    f.body.velocity.setZero();
+    f.body.angularVelocity.setZero();
+    f.body.sleep();
+    f.body.collisionResponse = false;
+  } else if (!far && f.frozen) {
+    f.frozen = false;
+    f.body.collisionResponse = true;
+    f.body.wakeUp();
+  }
+}
+
 // Called once a frame after the step: retire whatever has stopped moving, and
 // drop whatever has fallen out of the world altogether.
 function updateFallingChunks() {
+  const px = playerBody.position.x, pz = playerBody.position.z;
   for (let n = fallingChunks.length - 1; n >= 0; n--) {
     const f = fallingChunks[n];
     if (f.body.position.y < FALL_KILL_Y) {
@@ -4354,6 +4378,7 @@ function updateFallingChunks() {
       dropChunk(f);
       continue;
     }
+    updateDebrisFreeze(f, px, pz);
     const v = f.body.velocity, w = f.body.angularVelocity;
     const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
               && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
@@ -4365,6 +4390,7 @@ function updateFallingChunks() {
   for (let n = restedChunks.length - 1; n >= 0; n--) {
     const f = restedChunks[n];
     if (f.body.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); }
+    else updateDebrisFreeze(f, px, pz);
   }
 }
 

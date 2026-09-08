@@ -2312,8 +2312,8 @@ const gridStep = new Int8Array(GRID_N * GRID_N);
 function updateGridLOD() {
   const camPos = camera.position;
   for (let g = 0; g < GRID_N * GRID_N; g++) {
-    const dx = gridCenterX[g] - camPos.x, dz = gridCenterZ[g] - camPos.z, dy = -camPos.y;
-    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const dx = gridCenterX[g] - camPos.x, dz = gridCenterZ[g] - camPos.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
     gridStep[g] = lodStepFor(dist);
   }
 }
@@ -2406,13 +2406,24 @@ scene.add(debugChunkGrid);
 
 (function buildChunkGridWireframes() {
   const mat = new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 1 });
-  const yMin = -2, yMax = 10;
   for (let gj = 0; gj < GRID_N; gj++) {
     for (let gi = 0; gi < GRID_N; gi++) {
       const x0 = -GEN_R + gi * CHUNK_GRID * BLOCK;
       const z0 = -GEN_R + gj * CHUNK_GRID * BLOCK;
       const x1 = -GEN_R + Math.min((gi + 1) * CHUNK_GRID, GEN_N) * BLOCK;
       const z1 = -GEN_R + Math.min((gj + 1) * CHUNK_GRID, GEN_N) * BLOCK;
+
+      const i0 = gi * CHUNK_GRID, i1 = Math.min((gi + 1) * CHUNK_GRID, GEN_N);
+      const j0 = gj * CHUNK_GRID, j1 = Math.min((gj + 1) * CHUNK_GRID, GEN_N);
+      let lvlMin = Infinity, lvlMax = -Infinity;
+      for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
+        const t = sTop[j * GEN_N + i];
+        if (t === NO_COLUMN) continue;
+        if (t < lvlMin) lvlMin = t;
+        if (t > lvlMax) lvlMax = t;
+      }
+      if (lvlMin > lvlMax) continue; // no terrain columns in this grid chunk
+      const yMin = lvlMin * BLOCK - 1, yMax = (lvlMax + 1) * BLOCK + 1;
       const geo = new THREE.BoxGeometry(x1 - x0, yMax - yMin, z1 - z0);
       const edges = new THREE.EdgesGeometry(geo);
       geo.dispose();

@@ -3063,6 +3063,14 @@ function buildChunkColliderBoxes(c) {
   const w = i1 - i0, h = j1 - j0;
   if (w <= 0 || h <= 0) return [];
 
+  // A cell counts as solid for collision only if it also has an exposed face —
+  // fully buried blocks contribute no useful collision volume, so the boxes
+  // below only ever cover the surface layer of the terrain.
+  const solidVisible = (k, lvl) => {
+    const p = voxOff[k] - VOX_FLOOR + lvl;
+    return voxMat[p] !== AIR && blockVisible[p] === 1;
+  };
+
   const top = new Int32Array(w * h).fill(NO_COLUMN);
   const floor = new Int32Array(w * h);
   let lo = Infinity, hi = -Infinity;
@@ -3072,10 +3080,9 @@ function buildChunkColliderBoxes(c) {
       const k = j * GEN_N + i;
       const t = sTop[k];
       if (t === NO_COLUMN) continue;
-      const base = voxOff[k] - VOX_FLOOR;
       let floorLvl = t;
       for (let lvl = t; lvl >= Math.max(VOX_FLOOR, t - COLLISION_DEPTH); lvl--) {
-        if (voxMat[base + lvl] !== AIR) floorLvl = lvl;
+        if (solidVisible(k, lvl)) floorLvl = lvl;
       }
       const idx = jj * w + ii;
       top[idx] = t;
@@ -3102,7 +3109,7 @@ function buildChunkColliderBoxes(c) {
         const idx = jj * w + ii;
         if (lvl < floor[idx]) return false;
         const k = (j0 + jj) * GEN_N + (i0 + ii);
-        if (voxMat[voxOff[k] - VOX_FLOOR + lvl] === AIR) return false;
+        if (!solidVisible(k, lvl)) return false;
       }
     }
     return true;
@@ -3120,7 +3127,7 @@ function buildChunkColliderBoxes(c) {
         if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) continue;
         if (lvl >= consumedTo[idx]) continue;
         const k = (j0 + jj) * GEN_N + (i0 + ii);
-        if (voxMat[voxOff[k] - VOX_FLOOR + lvl] === AIR) continue;
+        if (!solidVisible(k, lvl)) continue;
         solid[idx] = 1;
         any = true;
       }
@@ -4222,8 +4229,15 @@ function spawnFallingChunk(unit) {
       if (b.j < bj0) bj0 = b.j; if (b.j > bj1) bj1 = b.j;
     }
     const w = bi1 - bi0 + 1, dep = bj1 - bj0 + 1;
-    const byLevel = new Map();  // lvl -> Uint8Array(w*dep), 1 where a block sits
+    // A block only contributes collision if at least one face isn't touching
+    // another block in this same piece — buried interior blocks are skipped.
+    const exposedInUnit = (b) =>
+      !unit.has(gravKey(b.i - 1, b.j, b.lvl)) || !unit.has(gravKey(b.i + 1, b.j, b.lvl)) ||
+      !unit.has(gravKey(b.i, b.j - 1, b.lvl)) || !unit.has(gravKey(b.i, b.j + 1, b.lvl)) ||
+      !unit.has(gravKey(b.i, b.j, b.lvl - 1)) || !unit.has(gravKey(b.i, b.j, b.lvl + 1));
+    const byLevel = new Map();  // lvl -> Uint8Array(w*dep), 1 where an exposed block sits
     for (const b of blocks) {
+      if (!exposedInUnit(b)) continue;
       let grid = byLevel.get(b.lvl);
       if (!grid) byLevel.set(b.lvl, grid = new Uint8Array(w * dep));
       grid[(b.j - bj0) * w + (b.i - bi0)] = 1;
@@ -4585,17 +4599,34 @@ function rebuildDebrisBody(mesh, body) {
     // GEN_R and every past recentre.
     const ref = lat[0];
     const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
-    const byLevel = new Map();  // lvl -> Map("gi,gj" -> true)
+    const byLevel = new Map();  // lvl -> Set("gi,gj") — the full lattice, for neighbour lookups
     for (const b of lat) {
       let cells = byLevel.get(b.lvl);
       if (!cells) byLevel.set(b.lvl, cells = new Set());
       cells.add(b.gi + ',' + b.gj);
     }
+    const hasCell = (gi, gj, lvl) => {
+      const cells = byLevel.get(lvl);
+      return !!cells && cells.has(gi + ',' + gj);
+    };
+    // Only cells with a face not touching another block in the lattice count
+    // for collision — buried interior blocks are skipped entirely.
+    const exposedByLevel = new Map();  // lvl -> Set("gi,gj"), exposed cells only
+    for (const [lvl, cells] of byLevel) {
+      const exp = new Set();
+      for (const key of cells) {
+        const [gi, gj] = key.split(',').map(Number);
+        if (!hasCell(gi - 1, gj, lvl) || !hasCell(gi + 1, gj, lvl) ||
+            !hasCell(gi, gj - 1, lvl) || !hasCell(gi, gj + 1, lvl) ||
+            !hasCell(gi, gj, lvl - 1) || !hasCell(gi, gj, lvl + 1)) exp.add(key);
+      }
+      if (exp.size) exposedByLevel.set(lvl, exp);
+    }
     // Same downward growth as spawnFallingChunk: a rectangle at one level
     // extends into a taller box as long as the exact footprint is also solid
-    // (has a cell entry) at the level(s) below.
+    // (has an exposed cell entry) at the level(s) below.
     function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
-      const cellsAt = byLevel.get(lvl);
+      const cellsAt = exposedByLevel.get(lvl);
       if (!cellsAt) return false;
       for (let gj = mj0; gj <= mj1; gj++)
         for (let gi = mi0; gi <= mi1; gi++)
@@ -4603,9 +4634,9 @@ function rebuildDebrisBody(mesh, body) {
       return true;
     }
     const consumedTo = new Map();  // "gi,gj" -> lowest level a taller box above already reaches down to
-    const levels = [...byLevel.keys()].sort((a, b) => b - a);
+    const levels = [...exposedByLevel.keys()].sort((a, b) => b - a);
     for (const lvl of levels) {
-      const cells = byLevel.get(lvl);
+      const cells = exposedByLevel.get(lvl);
       let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity;
       for (const key of cells) {
         const [gi, gj] = key.split(',').map(Number);

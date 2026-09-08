@@ -3053,7 +3053,7 @@ function rebuildFilletChunk(c) {
 // the whole field that is thousands of chunks, and nothing more than a couple
 // of dozen metres from the player can ever be touched.
 const HF_FLOOR = -3.2;         // where groundHeightAt bottoms out under open water
-const COLLISION_DEPTH = 20;     // max blocks deep collision reaches below each column top
+const COLLISION_DEPTH = 5;     // max blocks deep collision reaches below each column top
 
 // The boxes one chunk's worth of solid blocks greedy-merge into, as plain
 // {hx,hy,hz,x,y,z} records — half-extents and centre, in world units.
@@ -3126,7 +3126,7 @@ function buildChunkColliderBoxes(c) {
 
         const bi0 = i0 + ii, bi1 = i0 + ii1 - 1, bj0 = j0 + jj, bj1 = j0 + jj1 - 1;
         boxes.push({
-          hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: BLOCK * 0.6, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
+          hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: BLOCK * 0.5, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
           x: (colX(bi0) + colX(bi1)) * 0.5, y: (lvl + 0.5) * BLOCK, z: (colZ(bj0) + colZ(bj1)) * 0.5,
         });
       }
@@ -4141,11 +4141,7 @@ function spawnFallingChunk(unit) {
     collisionFilterGroup: DEBRIS_GROUP,
     collisionFilterMask: -1,
   });
-  // Thickened the same way buildChunkColliderBoxes is (BLOCK*0.6 rather than
-  // BLOCK*0.5), so a fast-falling piece has as much vertical overlap with the
-  // terrain's boxes as the terrain gives it — thickening only one side of a
-  // discrete-collision contact still leaves it easy to tunnel through.
-  const h = BLOCK * 0.6;
+  const h = HALF_BLOCK;
   {
     // Greedy-merge the piece's own lattice into boxes, one level at a time —
     // same algorithm as buildChunkColliderBoxes, but over blocks we already
@@ -4464,9 +4460,7 @@ function recentreDebris(mesh, body) {
 // after a dig: a piece is a few dozen boxes at most, so building the shapes
 // again costs less than trying to patch the ones that are there.
 function rebuildDebrisBody(mesh, body) {
-  // See spawnFallingChunk: thickened to match buildChunkColliderBoxes so the
-  // rebuilt collider keeps the same tunnelling margin against the terrain.
-  const lat = mesh.userData.blocks, h = BLOCK * 0.6;
+  const lat = mesh.userData.blocks, h = HALF_BLOCK;
   body.shapes.length = 0;
   body.shapeOffsets.length = 0;
   body.shapeOrientations.length = 0;
@@ -4595,9 +4589,7 @@ function splitDebrisIfNeeded(mesh) {
 // drift apart instead of springing.
 const partQuat = new THREE.Quaternion();
 function spawnDebrisPart(parent, blocks, pbody) {
-  // hy thickened like spawnFallingChunk/rebuildDebrisBody — only the vertical
-  // extent, so pieces still fit together laterally at HALF_BLOCK.
-  const n = blocks.length, h = HALF_BLOCK, hy = BLOCK * 0.6;
+  const n = blocks.length, h = HALF_BLOCK, hy = HALF_BLOCK;
   parent.updateWorldMatrix(true, false);
   const c = new THREE.Vector3();
   for (const b of blocks) c.add(b.pos);

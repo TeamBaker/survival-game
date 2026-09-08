@@ -1833,34 +1833,8 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   // earth or wet clay instead of more of the same.
   const soilMid = Math.max(soilLo, bed - (SOIL_DEPTH >> 1));
   voxMat.fill(ROCK, voxOff[k], o + soilLo);
-  // Per-block material assignment with 3-D scatter: each block picks its
-  // material based on its own height, with noise that varies in x/y/z so
-  // individual blocks fizzle independently in every direction.
-  const i = k % GEN_N, j = (k / GEN_N) | 0;
-  const cx = colX(i), cz = colZ(j);
-  const nCol = vnoise2(cx * 0.12, cz * 0.12);
-  const vCol = vnoise2(cx * 0.09 + 41.7, cz * 0.09 - 17.3);
-  for (let lvl = soilLo; lvl <= bed; lvl++) {
-    const py = (lvl + 0.5) * BLOCK;
-    const hb = py;  // block height
-    // 3-D scatter noise: block-scale in all axes, single-block fizzle
-    const sc = vnoise2(cx * 2.5 + 99.3 + py * 1.7, cz * 2.5 - 51.7 + py * 2.3);
-    let m;
-    if (hb < 1.2 + nCol * 0.5 + 1 && hb > 1.2 + nCol * 0.5 - 1) {
-      m = sc > 0 ? SAND : (vCol > 0.30 ? MUD : (vCol < -0.45 ? CLAY_MUD : DIRT));
-    } else if (hb < 1.2 + nCol * 0.5) {
-      m = SAND;
-    } else if (hb < 3.0 + nCol + 1 && hb > 3.0 + nCol - 1) {
-      const damp = vCol > 0.30 ? MUD : (vCol < -0.45 ? CLAY_MUD : DIRT);
-      const dry  = vCol > 0.40 ? CLAY : (vCol < -0.40 ? FINE_DIRT : DIRT);
-      m = sc > 0 ? dry : damp;
-    } else if (hb < 3.0 + nCol) {
-      m = vCol > 0.30 ? MUD : (vCol < -0.45 ? CLAY_MUD : DIRT);
-    } else {
-      m = vCol > 0.40 ? CLAY : (vCol < -0.40 ? FINE_DIRT : DIRT);
-    }
-    voxMat[o + lvl - VOX_FLOOR] = m;
-  }
+  voxMat.fill(DEEP_MAT[surf], o + soilLo, o + soilMid);
+  voxMat.fill(surf, o + soilMid, o + bed + 1);
   // Everything the bed leaves between itself and sea level is water — solid
   // blocks, so the sea is a flat plane of them and not a shader.
   if (bed < top) voxMat.fill(WATER, o + bed + 1, o + top + 1);

@@ -1665,7 +1665,7 @@ const BLEND_WIDTH = 1.0;
 // rock however high or low it is; under that, low ground is beach; everything
 // else — including the tops, which used to come out grey — is soil. The only
 // rock you can see from above is therefore a face you could not have stood on.
-function pickMaterial(h, slope, x, z) {
+function pickMaterial(h, slope, x, z, y) {
   // ~8 m patches, where it used to be ~3 m. Slower wander gives the material
   // boundaries the same broad scale as everything else on the island — at 3 m
   // they were a per-block speckle along every edge.
@@ -1680,7 +1680,9 @@ function pickMaterial(h, slope, x, z) {
   // and its variant fall, but this decides which of the two neighbouring
   // materials any one block near that boundary actually gets — so the fringe
   // scatters block by block instead of switching over in one broad blob.
-  const scatter = vnoise2(x * 1.5 + 99.3, z * 1.5 - 51.7);
+  // 3-D scatter: sampled at block scale in all three axes so individual blocks
+  // fizzle independently in every direction — no clumps.
+  // (y is passed as a separate argument, see callers below.)
   if (h <= SEA_Y) return WATER;                    // sea level and below: the water plane
   // Anything you could not stand on. Most of it is sound rock; the rest is the
   // crumbling face of it, which is softer to dig and lighter to carry.
@@ -1689,8 +1691,9 @@ function pickMaterial(h, slope, x, z) {
   }
   // The beach, up to knee height. Right at the boundary, scatter a few
   // blocks of the next band into this one so the edge is not a clean line.
+  const scatter3d = vnoise2(x * 2.5 + 99.3 + y * 1.7, z * 2.5 - 51.7 + y * 2.3);
   if (h < 1.2 + n * 0.5 + 1 && h > 1.2 + n * 0.5 - 1) {
-    return scatter > 0 ? SAND : (v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT));
+    return scatter3d > 0 ? SAND : (v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT));
   }
   if (h < 1.2 + n * 0.5) return SAND;
   // Just above the tide line the ground never dries out, so the damp variants
@@ -1699,7 +1702,7 @@ function pickMaterial(h, slope, x, z) {
   if (h < 3.0 + n + 1 && h > 3.0 + n - 1) {
     const damp = v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
     const dry  = v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
-    return scatter > 0 ? dry : damp;
+    return scatter3d > 0 ? dry : damp;
   }
   if (h < 3.0 + n) return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
   // All the gentle ground above it: earth, with clay banks and loose topsoil
@@ -1745,7 +1748,7 @@ const DEEP_MAT = [
       // |grad h| is the tangent of the slope.
       const dx = (fieldAt(i + SLOPE_STEP, j) - fieldAt(i - SLOPE_STEP, j)) / (2 * SLOPE_STEP * BLOCK);
       const dz = (fieldAt(i, j + SLOPE_STEP) - fieldAt(i, j - SLOPE_STEP)) / (2 * SLOPE_STEP * BLOCK);
-      const m = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j));
+      const m = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j), (gl + 0.5) * BLOCK);
       topMat[k] = m;
       if (m === WATER) {
         // Flooded: the column's own ground carries on down where it was, and
@@ -1830,8 +1833,33 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   // earth or wet clay instead of more of the same.
   const soilMid = Math.max(soilLo, bed - (SOIL_DEPTH >> 1));
   voxMat.fill(ROCK, voxOff[k], o + soilLo);
-  voxMat.fill(DEEP_MAT[surf], o + soilLo, o + soilMid);
-  voxMat.fill(surf, o + soilMid, o + bed + 1);
+  // Per-block material assignment with 3-D scatter: each block picks its
+  // material based on its own height, with noise that varies in x/y/z so
+  // individual blocks fizzle independently in every direction.
+  const cx = colX(i), cz = colZ(j);
+  const nCol = vnoise2(cx * 0.12, cz * 0.12);
+  const vCol = vnoise2(cx * 0.09 + 41.7, cz * 0.09 - 17.3);
+  for (let lvl = soilLo; lvl <= bed; lvl++) {
+    const py = (lvl + 0.5) * BLOCK;
+    const hb = py;  // block height
+    // 3-D scatter noise: block-scale in all axes, single-block fizzle
+    const sc = vnoise2(cx * 2.5 + 99.3 + py * 1.7, cz * 2.5 - 51.7 + py * 2.3);
+    let m;
+    if (hb < 1.2 + nCol * 0.5 + 1 && hb > 1.2 + nCol * 0.5 - 1) {
+      m = sc > 0 ? SAND : (vCol > 0.30 ? MUD : (vCol < -0.45 ? CLAY_MUD : DIRT));
+    } else if (hb < 1.2 + nCol * 0.5) {
+      m = SAND;
+    } else if (hb < 3.0 + nCol + 1 && hb > 3.0 + nCol - 1) {
+      const damp = vCol > 0.30 ? MUD : (vCol < -0.45 ? CLAY_MUD : DIRT);
+      const dry  = vCol > 0.40 ? CLAY : (vCol < -0.40 ? FINE_DIRT : DIRT);
+      m = sc > 0 ? dry : damp;
+    } else if (hb < 3.0 + nCol) {
+      m = vCol > 0.30 ? MUD : (vCol < -0.45 ? CLAY_MUD : DIRT);
+    } else {
+      m = vCol > 0.40 ? CLAY : (vCol < -0.40 ? FINE_DIRT : DIRT);
+    }
+    voxMat[o + lvl - VOX_FLOOR] = m;
+  }
   // Everything the bed leaves between itself and sea level is water — solid
   // blocks, so the sea is a flat plane of them and not a shader.
   if (bed < top) voxMat.fill(WATER, o + bed + 1, o + top + 1);

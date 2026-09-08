@@ -2042,7 +2042,7 @@ function lodStepForDist(distToChunk) {
 
 function chunkDistToCamera(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
-  const ccx = (i0 + CHUNK * 0.5) * BLOCK, ccz = (j0 + CHUNK * 0.5) * BLOCK;
+  const ccx = -GEN_R + (i0 + CHUNK * 0.5) * BLOCK, ccz = -GEN_R + (j0 + CHUNK * 0.5) * BLOCK;
   const dx = ccx - camera.position.x, dz = ccz - camera.position.z;
   return Math.sqrt(dx * dx + dz * dz);
 }
@@ -2060,7 +2060,7 @@ function getChunkLODStep(c) {
     // Step 4: snap to 4×4 super-chunk.
     const sci = Math.floor(ci / 4) * 4 + 2, scj = Math.floor(cj / 4) * 4 + 2;
     const si = (sci % CHUNK_N) * CHUNK, sj = (scj % CHUNK_N) * CHUNK;
-    const sx = (si + CHUNK * 0.5) * BLOCK, sz = (sj + CHUNK * 0.5) * BLOCK;
+    const sx = -GEN_R + (si + CHUNK * 0.5) * BLOCK, sz = -GEN_R + (sj + CHUNK * 0.5) * BLOCK;
     const sdx = sx - camera.position.x, sdz = sz - camera.position.z;
     const sdist = Math.sqrt(sdx * sdx + sdz * sdz);
     return lodStepForDist(Math.max(dist, sdist));
@@ -2069,7 +2069,7 @@ function getChunkLODStep(c) {
     // Step 2: snap to 2×2 super-chunk.
     const sci = Math.floor(ci / 2) * 2 + 1, scj = Math.floor(cj / 2) * 2 + 1;
     const si = (sci % CHUNK_N) * CHUNK, sj = (scj % CHUNK_N) * CHUNK;
-    const sx = (si + CHUNK * 0.5) * BLOCK, sz = (sj + CHUNK * 0.5) * BLOCK;
+    const sx = -GEN_R + (si + CHUNK * 0.5) * BLOCK, sz = -GEN_R + (sj + CHUNK * 0.5) * BLOCK;
     const sdx = sx - camera.position.x, sdz = sz - camera.position.z;
     const sdist = Math.sqrt(sdx * sdx + sdz * sdz);
     return lodStepForDist(Math.max(dist, sdist));
@@ -2264,7 +2264,7 @@ function collectColumn(i, j, step = 1) {
   // Too much relief in this footprint for one slab to stand in for it without
   // either burying or floating part of it — draw the group at full detail
   // instead, column by column.
-  if (maxTop - minTop > 1) {
+  if (maxTop - minTop >= 1) {
     let drawn = 0;
     for (let jj = j; jj < jMax; jj++)
       for (let ii = i; ii < iMax; ii++)

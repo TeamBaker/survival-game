@@ -4013,16 +4013,15 @@ function shovelAim() {
     // see, and from then on rides with it — the world grid does not come into it.
     const p = dHit.point;
     const dm = dHit.piece;
-    // Which block that is: an instance of the piece itself, or one of the cubes
-    // placed on it since, which hang off it as children. Its position is in the
-    // piece's frame, which is what the highlight and the dig both want.
-    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
-    const child = dHit.object !== dm ? dHit.object : null;
+    // Which block that is: the mesh is one merged buffer of quads, and
+    // faceBlock maps the triangle the ray hit back to the lattice index it
+    // came from. Its position is in the piece's frame, which is what the
+    // highlight and the dig both want.
+    const fb = dm.userData.faceBlock;
+    const idx = dHit.faceIndex != null && fb ? fb[Math.floor(dHit.faceIndex / 2)] : -1;
     const lat = dm.userData.blocks;
-    let blockLocal = null;
-    if (child) blockLocal = child.position;
-    else if (inst >= 0 && inst < lat.length) blockLocal = lat[inst].pos;
-    shovel.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), inst, child, blockLocal },
+    const blockLocal = idx >= 0 && idx < lat.length ? lat[idx].pos : null;
+    shovel.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), idx, blockLocal },
                                   cellOf(p.x, p.y, p.z));
   } else if (camMode !== CAM.FREE) {
     // Nothing under the crosshair. Fall back to what you are standing on, and to
@@ -4067,11 +4066,11 @@ const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AI
 const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 
 // ----- loose chunks -----
-// A piece that has broken off is one InstancedMesh (a cube per block, coloured
-// by its material) glued to one cannon body. Every block of it is a box shape on
-// that body while the piece is small enough for the solver to enjoy it; past
-// that it collides as the single box that encloses it, which still falls and
-// tumbles convincingly and costs the same whatever it is made of.
+// A piece that has broken off is one merged, per-face-culled mesh (coloured by
+// each block's material) glued to one cannon body. Every block of it is a box
+// shape on that body while the piece is small enough for the solver to enjoy
+// it; past that it collides as the single box that encloses it, which still
+// falls and tumbles convincingly and costs the same whatever it is made of.
 const FALL_BODY_CAP  = 20;    // pieces under physics at once
 const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
 const FALL_SHAPE_CAP = 24;    // blocks that get a collider each, rather than one box round the lot
@@ -4080,9 +4079,55 @@ const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
-const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
-// White, because the colour of every cube comes in per instance.
-const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
+// White, because the colour of every face comes in per vertex.
+const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45, vertexColors: true });
+
+// A debris piece is one merged buffer, not a cube per block: like a terrain
+// chunk, only the faces that touch air are worth drawing, so a solid lump of
+// rubble costs the one or two sides of it anything could ever see instead of
+// six per block. Rebuilt whenever the piece's own lattice changes — a block
+// dug off it, one placed on it, or its blocks re-centred on a new CoM.
+// faceBlock maps each drawn quad back to the lattice index it came from, so a
+// raycast hit (which only gives a triangle) can still say which block it hit.
+function buildDebrisGeometry(mesh) {
+  const lat = mesh.userData.blocks;
+  const old = mesh.geometry;
+  const at = new Map();
+  for (let q = 0; q < lat.length; q++) at.set(lat[q].gi + ',' + lat[q].gj + ',' + lat[q].lvl, q);
+  const pos = [], nor = [], col = [], faceBlock = [];
+  const c = new THREE.Color();
+  for (let q = 0; q < lat.length; q++) {
+    const b = lat[q];
+    c.copy(TERRAIN_MATS[b.mat].color);
+    for (let f = 0; f < 6; f++) {
+      const F = FACES[f];
+      if (at.has((b.gi + F.di) + ',' + (b.gj + F.dj) + ',' + (b.lvl + F.dl))) continue;
+      const v = F.v, n = F.n;
+      for (let k = 0; k < 4; k++) {
+        const o = k * 3;
+        pos.push(b.pos.x + v[o] * HALF_BLOCK, b.pos.y + v[o + 1] * HALF_BLOCK, b.pos.z + v[o + 2] * HALF_BLOCK);
+        nor.push(n[0], n[1], n[2]);
+        col.push(c.r, c.g, c.b);
+      }
+      faceBlock.push(q);
+    }
+  }
+  const nq = faceBlock.length;
+  const idx = nq * 4 > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
+  for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
+    idx[p] = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
+    idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nor), 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.computeBoundingSphere();
+  mesh.geometry = geo;
+  mesh.userData.faceBlock = faceBlock;
+  if (old) old.dispose();
+}
 // Its own group rather than `objects`: the camera boom raycasts that one to pull
 // itself in past props, and rubble lying around the player should not be tugging
 // the camera about.
@@ -4116,7 +4161,7 @@ function dropChunk(f) {
   const q = syncList.findIndex((e) => e.body === f.body);
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
-  f.mesh.dispose();  // the per-instance buffers only — geometry and material are shared
+  f.mesh.geometry.dispose();  // the merged buffers only — material is shared
 }
 
 // The entry for a piece, whether it is still being watched or has settled. A
@@ -4136,18 +4181,9 @@ function spawnFallingChunk(unit) {
   }
   cx /= n; cy /= n; cz /= n;
 
-  // The mesh: one cube per block, positioned relative to that centre so the
-  // whole thing rotates about it.
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
-  const m4 = new THREE.Matrix4(), col = new THREE.Color();
-  for (let q = 0; q < n; q++) {
-    const b = blocks[q];
-    m4.makeTranslation(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
-    mesh.setMatrixAt(q, m4);
-    mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.m].color));
-  }
-  mesh.instanceMatrix.needsUpdate = true;
-  mesh.instanceColor.needsUpdate = true;
+  // The mesh: one merged buffer of exposed faces, positioned relative to that
+  // centre so the whole thing rotates about it.
+  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), fallMat);
   // The piece's own lattice, in its own frame. Kept because a block placed
   // against the piece is snapped to this rather than to the world grid.
   mesh.userData.blocks = blocks.map((b) => ({
@@ -4156,6 +4192,7 @@ function spawnFallingChunk(unit) {
     lvl: b.lvl,
     gi: b.i,  gj: b.j,
   }));
+  buildDebrisGeometry(mesh);
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -4507,7 +4544,7 @@ function removeDebrisMesh(mesh) {
   const q = restedChunks.findIndex((f) => f.mesh === mesh);
   if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
-  mesh.dispose();
+  mesh.geometry.dispose();
 }
 
 // Cannon turns a body about its origin, so a piece's origin has to sit on its
@@ -4522,13 +4559,7 @@ function recentreDebris(mesh, body) {
   for (const b of lat) c.add(b.pos);
   c.multiplyScalar(1 / lat.length);
   if (c.lengthSq() < 1e-12) return;
-  const m4 = new THREE.Matrix4();
-  for (let q = 0; q < lat.length; q++) {
-    lat[q].pos.sub(c);
-    if (lat[q].child) lat[q].child.position.copy(lat[q].pos);
-    else mesh.setMatrixAt(q, m4.makeTranslation(lat[q].pos.x, lat[q].pos.y, lat[q].pos.z));
-  }
-  mesh.instanceMatrix.needsUpdate = true;
+  for (const b of lat) b.pos.sub(c);
   for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
   body.quaternion.vmult(debrisArm.set(c.x, c.y, c.z), debrisArm);
   body.position.vadd(debrisArm, body.position);
@@ -4621,6 +4652,7 @@ function rebuildDebrisBody(mesh, body) {
     }
   }
   recentreDebris(mesh, body);
+  buildDebrisGeometry(mesh);
   body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
   body.updateMassProperties();
   body.updateBoundingRadius();
@@ -4629,24 +4661,11 @@ function rebuildDebrisBody(mesh, body) {
   if (!f || !f.frozen) body.wakeUp();
 }
 
-// Take block `q` off a piece. A placed block is a child mesh; one of the piece's
-// own is an instance, and those sit at the front of the lattice in step with the
-// instance buffer, so the gap behind it has to be closed and one fewer drawn.
+// Take block `q` off a piece's lattice. The mesh is rebuilt from the lattice by
+// whatever caller finishes the edit (rebuildDebrisBody or removeDebrisMesh), so
+// this just has to keep the lattice itself right.
 function cutDebrisLat(mesh, q) {
-  const lat = mesh.userData.blocks;
-  if (lat[q].child) {
-    mesh.remove(lat[q].child);
-  } else {
-    const m4 = new THREE.Matrix4(), col = new THREE.Color();
-    for (let k = q + 1; k < mesh.count; k++) {
-      mesh.getMatrixAt(k, m4); mesh.setMatrixAt(k - 1, m4);
-      mesh.getColorAt(k, col); mesh.setColorAt(k - 1, col);
-    }
-    mesh.count -= 1;
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.instanceColor.needsUpdate = true;
-  }
-  lat.splice(q, 1);
+  mesh.userData.blocks.splice(q, 1);
 }
 
 // After blocks are cut from a debris piece, check if the remaining lattice
@@ -4697,21 +4716,16 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
   for (const b of blocks) c.add(b.pos);
   c.multiplyScalar(1 / n);
 
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
-  const m4 = new THREE.Matrix4(), col = new THREE.Color();
+  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), fallMat);
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-  mesh.userData.blocks = blocks.map((b, q) => {
+  mesh.userData.blocks = blocks.map((b) => {
     const p = b.pos.clone().sub(c);
-    m4.makeTranslation(p.x, p.y, p.z);
-    mesh.setMatrixAt(q, m4);
-    mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.mat].color));
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
     return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj };
   });
-  mesh.instanceMatrix.needsUpdate = true;
-  mesh.instanceColor.needsUpdate = true;
+  buildDebrisGeometry(mesh);
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -4765,14 +4779,11 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
 // the rest of it standing. Dig the last block out and the piece goes with it;
 // dig one out of the middle and what is left may be two pieces, in which case
 // the biggest part keeps the mesh and the rest are spawned on their own.
-function digDebrisBlock(mesh, inst, child) {
+function digDebrisBlock(mesh, idx) {
   const lat = mesh.userData.blocks;
-  let q = -1;
-  if (child) q = lat.findIndex((b) => b.child === child);
-  else if (inst >= 0 && inst < mesh.count) q = inst;
-  if (q < 0) return false;
+  if (idx < 0 || idx >= lat.length) return false;
 
-  cutDebrisLat(mesh, q);
+  cutDebrisLat(mesh, idx);
   if (!lat.length) { removeDebrisMesh(mesh); return true; }   // nothing left of it
   splitDebrisIfNeeded(mesh);
 
@@ -4835,11 +4846,6 @@ function debrisSpot(mesh, point, dir) {
 // local coordinates, so it turns and tumbles with it, and the body it is glued
 // to gets heavier and grows a collider to match.
 function placeOnDebris(mesh, local, m) {
-  const cube = new THREE.Mesh(fallGeo, TERRAIN_MATS[m]);
-  cube.position.copy(local);
-  cube.castShadow = true;
-  cube.receiveShadow = true;
-  mesh.add(cube);
   // local isn't a clean multiple of BLOCK once the mesh has been recentred,
   // so gi/gj/lvl are read off the nearest existing block instead of quantized
   // directly: every block in the lattice sits on the same grid, offset by a
@@ -4852,12 +4858,14 @@ function placeOnDebris(mesh, local, m) {
   const gi = bestRef.gi + Math.round((local.x - bestRef.pos.x) / BLOCK);
   const gj = bestRef.gj + Math.round((local.z - bestRef.pos.z) / BLOCK);
   const lvl = bestRef.lvl + Math.round((local.y - bestRef.pos.y) / BLOCK);
-  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, lvl, gi, gj });
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m, lvl, gi, gj });
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
-  // heavier, a collider round the new block, and shoved awake to feel it.
+  // heavier, a collider round the new block, and shoved awake to feel it. This
+  // also rebuilds the mesh, since a face buried by the new block needs to drop
+  // out and the new block's own exposed faces need to appear.
   const f = chunkOfMesh(mesh);
-  if (!f) return;
+  if (!f) { buildDebrisGeometry(mesh); return; }
   rebuildDebrisBody(mesh, f.body);
   if (!f.frozen) f.still = 0;   // it has been disturbed: let it settle again
 }
@@ -5040,7 +5048,7 @@ function hammerStrike() {
     // Spawn it as its own single-block falling piece.
     spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat }]]));
     // Remove from the original piece (may split it).
-    digDebrisBlock(mesh, idx, null);
+    digDebrisBlock(mesh, idx);
     hammer.hit = null;
     hammer.debris = null;
     return true;
@@ -5095,10 +5103,8 @@ function shovelPickUp() {
     // Rubble comes away a block at a time, into your hands like anything else.
     const d = shovel.debris;
     const lat = d.mesh.userData.blocks;
-    let mat = -1;
-    if (d.child) { const idx = lat.findIndex((b) => b.child === d.child); if (idx >= 0) mat = lat[idx].mat; }
-    else if (d.inst >= 0 && d.inst < d.mesh.count) mat = lat[d.inst].mat;
-    digDebrisBlock(d.mesh, d.inst, d.child);
+    const mat = d.idx >= 0 && d.idx < lat.length ? lat[d.idx].mat : -1;
+    digDebrisBlock(d.mesh, d.idx);
     if (mat >= 0 && shovel.held.length < SHOVEL_CAP) { shovel.held.push(mat); refreshShovelUI(); }
     shovel.debris = null;
     return true;
@@ -5257,16 +5263,10 @@ function hammerAim() {
   // Debris piece in the way — target the block on it.
   if (dHit) {
     const dm = dHit.piece;
-    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
-    const child = dHit.object !== dm ? dHit.object : null;
     const lat = dm.userData.blocks;
-    let idx = -1;
-    if (child) {
-      for (let q = 0; q < lat.length; q++) { if (lat[q].child === child) { idx = q; break; } }
-    } else if (inst >= 0 && inst < lat.length) {
-      idx = inst;
-    }
-    if (idx >= 0) {
+    const fb = dm.userData.faceBlock;
+    const idx = dHit.faceIndex != null && fb ? fb[Math.floor(dHit.faceIndex / 2)] : -1;
+    if (idx >= 0 && idx < lat.length) {
       hammer.debris = { mesh: dm, idx };
       // Store the actual world position for the highlight.
       hammer.debrisWp = new THREE.Vector3().copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);

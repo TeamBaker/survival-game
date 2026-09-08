@@ -3086,6 +3086,28 @@ function buildChunkColliderBoxes(c) {
   }
   if (hi < lo) return [];
 
+  // Levels already swallowed into a taller box that grew down from above (see
+  // below) are marked here so a later, shallower iteration of lvl doesn't
+  // re-emit a flat slab for the same footprint.
+  const consumedTo = new Float64Array(w * h).fill(Infinity);
+
+  // Is every cell of the given footprint still solid (and within the
+  // per-column collision floor) at a level below the box we just built?
+  // Checked directly against the voxel data rather than the per-level
+  // `solid` mask, since that mask is rebuilt fresh each iteration.
+  function footprintSolidAt(ii0, ii1, jj0, jj1, lvl) {
+    if (lvl < lo) return false;
+    for (let jj = jj0; jj < jj1; jj++) {
+      for (let ii = ii0; ii < ii1; ii++) {
+        const idx = jj * w + ii;
+        if (lvl < floor[idx]) return false;
+        const k = (j0 + jj) * GEN_N + (i0 + ii);
+        if (voxMat[voxOff[k] - VOX_FLOOR + lvl] === AIR) return false;
+      }
+    }
+    return true;
+  }
+
   const boxes = [];
   const solid = new Uint8Array(w * h);
   const visited = new Uint8Array(w * h);
@@ -3096,6 +3118,7 @@ function buildChunkColliderBoxes(c) {
       for (let ii = 0; ii < w; ii++) {
         const idx = jj * w + ii;
         if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) continue;
+        if (lvl >= consumedTo[idx]) continue;
         const k = (j0 + jj) * GEN_N + (i0 + ii);
         if (voxMat[voxOff[k] - VOX_FLOOR + lvl] === AIR) continue;
         solid[idx] = 1;
@@ -3124,10 +3147,19 @@ function buildChunkColliderBoxes(c) {
         }
         for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
 
+        // Grow this rectangle straight down through as many levels below as
+        // stay fully solid across the exact same footprint, turning stacked
+        // flat slabs into a single tall box.
+        let botLvl = lvl;
+        while (botLvl - 1 >= lo && footprintSolidAt(ii, ii1, jj, jj1, botLvl - 1)) botLvl--;
+        if (botLvl < lvl) {
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) consumedTo[y * w + x] = botLvl;
+        }
+
         const bi0 = i0 + ii, bi1 = i0 + ii1 - 1, bj0 = j0 + jj, bj1 = j0 + jj1 - 1;
         boxes.push({
-          hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: BLOCK * 0.5, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
-          x: (colX(bi0) + colX(bi1)) * 0.5, y: (lvl + 0.5) * BLOCK, z: (colZ(bj0) + colZ(bj1)) * 0.5,
+          hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: (lvl - botLvl + 1) * BLOCK * 0.5, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
+          x: (colX(bi0) + colX(bi1)) * 0.5, y: ((botLvl + lvl) / 2 + 0.5) * BLOCK, z: (colZ(bj0) + colZ(bj1)) * 0.5,
         });
       }
     }

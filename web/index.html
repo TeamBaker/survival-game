@@ -2062,7 +2062,8 @@ function getChunkLODStep(c) {
     const si = (sci % CHUNK_N) * CHUNK, sj = (scj % CHUNK_N) * CHUNK;
     const sx = (si + CHUNK * 0.5) * BLOCK, sz = (sj + CHUNK * 0.5) * BLOCK;
     const sdx = sx - camera.position.x, sdz = sz - camera.position.z;
-    return lodStepForDist(Math.sqrt(sdx * sdx + sdz * sdz));
+    const sdist = Math.sqrt(sdx * sdx + sdz * sdz);
+    return lodStepForDist(Math.max(dist, sdist));
   }
   if (dist >= LOD_NEAR) {
     // Step 2: snap to 2×2 super-chunk.
@@ -2070,7 +2071,8 @@ function getChunkLODStep(c) {
     const si = (sci % CHUNK_N) * CHUNK, sj = (scj % CHUNK_N) * CHUNK;
     const sx = (si + CHUNK * 0.5) * BLOCK, sz = (sj + CHUNK * 0.5) * BLOCK;
     const sdx = sx - camera.position.x, sdz = sz - camera.position.z;
-    return lodStepForDist(Math.sqrt(sdx * sdx + sdz * sdz));
+    const sdist = Math.sqrt(sdx * sdx + sdz * sdz);
+    return lodStepForDist(Math.max(dist, sdist));
   }
   return 1;
 }

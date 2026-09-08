@@ -2027,7 +2027,7 @@ const chunkStep = new Int8Array(CHUNK_N * CHUNK_N);
 // (lower step) neighbour adopts that neighbour's step. Detail bleeds outward
 // from whatever is near the camera until every pair of touching chunks
 // agrees, which is what keeps the seam between them gap-free.
-const LOD_NEAR = 25, LOD_FAR = 65;  // metres from camera (base at ground level)
+const LOD_NEAR = 15, LOD_FAR = 35;  // metres from camera (base at ground level)
 
 function rawLODStep(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;

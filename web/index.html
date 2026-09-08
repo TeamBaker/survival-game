@@ -3242,10 +3242,7 @@ function buildChunkColliderBoxes(c) {
     if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) return false;
     return solidVisible(j * GEN_N + i, lvl);
   };
-  // A neighbour cell is "open" for collision purposes if it's air, or if it's
-  // solid but not itself a visible surface block — matching isBlock's notion
-  // of solid so faces between two adjacent surface blocks don't get slabs.
-  const isOpen = (i, j, lvl) => !inVoxelRange(i, j, lvl) || !solidVisible(j * GEN_N + i, lvl);
+  const isOpen = (i, j, lvl) => voxelAt(i, j, lvl) === AIR;
 
   return buildFaceSlabs(i0, i1 - 1, j0, j1 - 1, lo, hi, isBlock, isOpen, colX, colZ, (lvl) => lvl * BLOCK);
 }

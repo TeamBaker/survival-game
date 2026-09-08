@@ -1812,6 +1812,33 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   worldBlocks += top - VOX_FLOOR + 1;
 }
 
+// Post-generation swap pass: occasionally trades the surface material of two
+// adjacent columns, so the boundary between materials is a ragged edge rather
+// than a clean polygon.
+for (let k = 0; k < GEN_N * GEN_N; k++) {
+  if (topLvl[k] === NO_COLUMN) continue;
+  const i = k % GEN_N, j = (k / GEN_N) | 0;
+  const neighbors = [];
+  if (i > 0) neighbors.push(k - 1);
+  if (i < GEN_N - 1) neighbors.push(k + 1);
+  if (j > 0) neighbors.push(k - GEN_N);
+  if (j < GEN_N - 1) neighbors.push(k + GEN_N);
+  for (const nb of neighbors) {
+    if (topLvl[nb] === NO_COLUMN) continue;
+    if (topMat[k] === topMat[nb]) continue;
+    const chance = nhash3(i, j, 0) * 0.5 + 0.5;
+    if (chance <= 0.85) continue;
+    const idxK = voxOff[k] + topLvl[k] - VOX_FLOOR;
+    const idxNb = voxOff[nb] + topLvl[nb] - VOX_FLOOR;
+    const tmpMat = topMat[k];
+    topMat[k] = topMat[nb];
+    topMat[nb] = tmpMat;
+    const tmpVox = voxMat[idxK];
+    voxMat[idxK] = voxMat[idxNb];
+    voxMat[idxNb] = tmpVox;
+  }
+}
+
 // The highest solid level in each column, cached rather than searched for. It
 // starts equal to topLvl and only setVoxel moves it. Everything that asks where
 // the ground is — the camera boom, the collider patch, the mesh rebuild, the

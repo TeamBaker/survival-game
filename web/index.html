@@ -1673,7 +1673,7 @@ function pickMaterial(h, slope, x, z) {
     return SAND;
   }
   if (h < 3.0 + n) {
-    return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
+    return v > 0.30 ? DIRT : (v < -0.45 ? CLAY_MUD : DIRT);
   }
   return v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
 }
@@ -1683,7 +1683,7 @@ function pickMaterial(h, slope, x, z) {
 // column is the packed or waterlogged version of whatever caps it. Indexed by
 // material id; WATER's entry is never read (a flooded column's bed is sand).
 const DEEP_MAT = [
-  MUD,            // SAND — wet sand under the beach
+  DIRT,            // SAND — wet sand under the beach
   HARD_DIRT,      // DIRT
   ROCK,           // ROCK
   WATER,          // WATER

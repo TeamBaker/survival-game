@@ -1836,6 +1836,7 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   // Per-block material assignment with 3-D scatter: each block picks its
   // material based on its own height, with noise that varies in x/y/z so
   // individual blocks fizzle independently in every direction.
+  const i = k % GEN_N, j = (k / GEN_N) | 0;
   const cx = colX(i), cz = colZ(j);
   const nCol = vnoise2(cx * 0.12, cz * 0.12);
   const vCol = vnoise2(cx * 0.09 + 41.7, cz * 0.09 - 17.3);

@@ -612,6 +612,28 @@
   #btn-debug-chunks.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-debug-chunks:active { transform: translateY(1px); }
 
+  #sel-lod-override {
+    position: fixed;
+    top: calc(300px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #sel-lod-override option { background: #14222f; color: #cfe6ff; }
+
   /* ---------- Debug collider toggle ---------- */
   #btn-debug-colliders {
     position: fixed;
@@ -766,6 +788,7 @@
   @media (max-width: 620px) {
     #btn-chart { top: calc(186px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
     #btn-debug-chunks { top: calc(220px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #sel-lod-override { top: calc(258px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
     #chart-panel { padding: 12px; }
     #chart-grid { font-size: 10px; min-width: 460px; }
   }
@@ -913,6 +936,13 @@
 
 <button id="btn-chart" class="ui-el">Chart</button>
 <button id="btn-debug-chunks" class="ui-el">Debug Chunks</button>
+<select id="sel-lod-override" class="ui-el">
+  <option value="auto">LOD: Auto</option>
+  <option value="1">LOD: Level 1</option>
+  <option value="2">LOD: Level 2</option>
+  <option value="3">LOD: Level 3</option>
+  <option value="4">LOD: Level 4</option>
+</select>
 <button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
 
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
@@ -2347,9 +2377,13 @@ for (let gj = 0; gj < GRID_N; gj++) {
 // each frame by updateGridLOD(). Seeded once with the camera's start position
 // so the very first rebuildChunk pass below already picks the right detail.
 const gridStep = new Int8Array(GRID_N * GRID_N);
+// Set by the "LOD: ..." dropdown to force every grid chunk to one step,
+// skipping the distance check below; null means normal auto behavior.
+let lodOverride = null;
 function updateGridLOD() {
   const camPos = camera.position;
   for (let g = 0; g < GRID_N * GRID_N; g++) {
+    if (lodOverride !== null) { gridStep[g] = lodOverride; continue; }
     const dx = gridCenterX[g] - camPos.x, dz = gridCenterZ[g] - camPos.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
     gridStep[g] = lodStepFor(dist);
@@ -2476,6 +2510,10 @@ scene.add(debugChunkGrid);
 document.getElementById('btn-debug-chunks').addEventListener('click', () => {
   debugChunkGrid.visible = !debugChunkGrid.visible;
   document.getElementById('btn-debug-chunks').classList.toggle('on', debugChunkGrid.visible);
+});
+
+document.getElementById('sel-lod-override').addEventListener('change', (e) => {
+  lodOverride = e.target.value === 'auto' ? null : Number(e.target.value);
 });
 
 // ----- pass 3b: the fillet surface -----

@@ -2033,7 +2033,14 @@ function rawLODStep(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const ccx = -GEN_R + (i0 + CHUNK * 0.5) * BLOCK;
   const ccz = -GEN_R + (j0 + CHUNK * 0.5) * BLOCK;
-  const dx = ccx - camera.position.x, dy = -camera.position.y, dz = ccz - camera.position.z;
+  // Y reference is the chunk's own terrain height, not the camera's — a uniform
+  // -camera.position.y offset would treat every chunk as if it sat at world Y 0,
+  // so a chunk directly underfoot only reads as "close" if the ground it stands
+  // on is actually near the camera.
+  const midI = i0 + (CHUNK >> 1), midJ = j0 + (CHUNK >> 1);
+  const k = midJ * GEN_N + midI;
+  const terrainY = (sTop[k] !== NO_COLUMN ? sTop[k] : SEA_LVL) * BLOCK;
+  const dx = ccx - camera.position.x, dy = terrainY - camera.position.y, dz = ccz - camera.position.z;
   const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
   if (dist < LOD_NEAR) return 1;
   if (dist < LOD_FAR) return 2;

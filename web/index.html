@@ -1673,7 +1673,7 @@ function pickMaterial(h, slope, x, z) {
     return SAND;
   }
   if (h < 3.0 + n) {
-    return v > 0.30 ? DIRT : (v < -0.45 ? CLAY_MUD : DIRT);
+    return DIRT;
   }
   return v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
 }

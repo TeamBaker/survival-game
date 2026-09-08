@@ -4347,7 +4347,7 @@ function checkTerrainPowder() {
 // Debris this far (world units) from the player is frozen rather than kept
 // under live physics — slightly inside the live collider ring, so a piece
 // never freezes while still standing on ground that has a body under it.
-const DEBRIS_FREEZE_DIST = 200;
+const DEBRIS_FREEZE_DIST = (COLLIDER_RADIUS - 1) * CHUNK * BLOCK;
 
 // Freeze a piece the player has walked away from (zero it, sleep it, and
 // stop it colliding), or wake one the player has come back to.

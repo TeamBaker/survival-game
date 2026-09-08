@@ -3170,7 +3170,7 @@ function buildChunkColliderBoxes(c) {
 // One collision body per chunk, live only while the chunk is within
 // COLLIDER_RADIUS of the player.
 const colliderBody = new Array(CHUNK_N * CHUNK_N).fill(null);
-const COLLIDER_RADIUS = 16;  // chunks kept live around the player
+const COLLIDER_RADIUS = 5;  // chunks kept live around the player
 
 function loadChunkCollider(c) {
   if (colliderBody[c]) return;

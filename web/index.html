@@ -4681,7 +4681,7 @@ function splitDebrisIfNeeded(mesh) {
   const f = chunkOfMesh(mesh);
   const parts = groups.slice(1).map((g) => g.map((k) => lat[k]));
   for (const k of groups.slice(1).flat().sort((x, y) => y - x)) cutDebrisLat(mesh, k);
-  for (const blocks of parts) spawnDebrisPart(mesh, blocks, f && f.body);
+  for (const blocks of parts) spawnDebrisPart(mesh, blocks, f && f.body, f && f.frozen);
 }
 
 // A part cut off an existing piece, spawned as a piece of its own. It is built
@@ -4690,7 +4690,7 @@ function splitDebrisIfNeeded(mesh) {
 // drawn, and it starts with the parent's motion at that point so the two parts
 // drift apart instead of springing.
 const partQuat = new THREE.Quaternion();
-function spawnDebrisPart(parent, blocks, pbody) {
+function spawnDebrisPart(parent, blocks, pbody, frozen) {
   const n = blocks.length, h = HALF_BLOCK, hy = HALF_BLOCK;
   parent.updateWorldMatrix(true, false);
   const c = new THREE.Vector3();
@@ -4749,9 +4749,16 @@ function spawnDebrisPart(parent, blocks, pbody) {
   body.angularVelocity.y += (Math.random() - 0.5) * 0.2;
   body.angularVelocity.z += (Math.random() - 0.5) * 0.4;
 
+  if (frozen) {
+    body.velocity.setZero();
+    body.angularVelocity.setZero();
+    body.sleep();
+    body.collisionResponse = false;
+  }
+
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);
-  fallingChunks.push({ mesh, body, still: 0 });
+  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen });
 }
 
 // Digging a loose piece takes off the one block under the crosshair and leaves

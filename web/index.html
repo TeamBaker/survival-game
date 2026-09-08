@@ -589,6 +589,43 @@
   #btn-chart.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-chart:active { transform: translateY(1px); }
 
+  /* ---------- Debug collider toggle ---------- */
+  #btn-debug-colliders {
+    position: fixed;
+    right: calc(14px + env(safe-area-inset-right));
+    top: calc(60px + env(safe-area-inset-top));
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 10px;
+    font-family: inherit;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.55);
+    border: 1px solid rgba(150, 195, 245, 0.25);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    min-height: 32px;
+    min-width: 32px;
+    z-index: 30;
+  }
+  #btn-debug-colliders .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #ff3b3b;
+    box-shadow: 0 0 4px #ff3b3b;
+  }
+  #btn-debug-colliders.on .dot { background: #3bff6e; box-shadow: 0 0 4px #3bff6e; }
+  #btn-debug-colliders.on { color: #fff; border-color: rgba(120, 255, 160, 0.4); }
+  #btn-debug-colliders:active { transform: translateY(1px); }
+
   #chart-overlay {
     position: fixed;
     inset: 0;
@@ -851,6 +888,7 @@
 </div>
 
 <button id="btn-chart" class="ui-el">Chart</button>
+<button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
 
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
 <div id="chart-overlay" class="ui-el">
@@ -1148,6 +1186,96 @@ world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physProp,  { fri
 world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physWorld, { friction: 0.6, restitution: 0.22 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physProp,  { friction: 0.5, restitution: 0.18 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physDebris,{ friction: 0.6, restitution: 0.15 }));
+
+// ---------------------------------------------------------------------------
+// Debug colliders — dead simple
+const debugColliders = { on: false, group: new THREE.Group() };
+debugColliders.group.visible = false;
+scene.add(debugColliders.group);
+
+function rebuildDebug() {
+  // Clear old
+  while (debugColliders.group.children.length) {
+    const c = debugColliders.group.children[0];
+    c.geometry.dispose();
+    debugColliders.group.remove(c);
+  }
+
+  for (const body of world.bodies) {
+    for (let i = 0; i < body.shapes.length; i++) {
+      const shape = body.shapes[i];
+      let geo;
+      if (shape.type === CANNON.Shape.types.BOX) {
+        geo = new THREE.BoxGeometry(shape.halfExtents.x*2, shape.halfExtents.y*2, shape.halfExtents.z*2);
+      } else if (shape.type === CANNON.Shape.types.SPHERE) {
+        geo = new THREE.SphereGeometry(shape.radius, 8, 6);
+      } else if (shape.type === CANNON.Shape.types.HEIGHTFIELD) {
+        // Build a simple grid from heightfield data
+        // Heightfield local space: x = column, y = row, z = height
+        const data = shape.data;
+        const es = shape.elementSize;
+        const nx = data.length, nz = data[0].length;
+        const positions = [];
+        const stride = 1;
+        for (let i = 0; i < nx; i += stride) {
+          for (let j = 0; j < nz; j += stride) {
+            const px = i * es, py = j * es, pz = data[i][j];
+            if (i + stride < nx) { positions.push(px,py,pz, (i+stride)*es,py,data[i+stride][j]); }
+            if (j + stride < nz) { positions.push(px,py,pz, px,(j+stride)*es,data[i][j+stride]); }
+          }
+        }
+        geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffff00 }));
+        mesh.position.copy(body.position);
+        mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
+        mesh.userData.body = body;
+        debugColliders.group.add(mesh);
+        continue;
+      } else {
+        continue;
+      }
+      const color = body.type === CANNON.Body.STATIC ? 0xff2222 : 0x4488ff;
+      const mat = new THREE.MeshBasicMaterial({ color, wireframe: true });
+      const mesh = new THREE.Mesh(geo, mat);
+      const off = body.shapeOffsets[i] || null;
+      mesh.position.set(body.position.x + (off?.x||0), body.position.y + (off?.y||0), body.position.z + (off?.z||0));
+      mesh.userData.body = body;
+      mesh.userData.shapeOffset = off;
+      debugColliders.group.add(mesh);
+    }
+  }
+}
+
+function updateDebug() {
+  if (!debugColliders.on) return;
+  rebuildDebug();
+  for (const mesh of debugColliders.group.children) {
+    const body = mesh.userData.body;
+    if (!body) continue;
+    const q = body.quaternion;
+    const off = mesh.userData.shapeOffset;
+    if (off) {
+      const ox = off.x, oy = off.y, oz = off.z;
+      mesh.position.set(
+        body.position.x + (q.w*q.w + q.x*q.x - q.y*q.y - q.z*q.z)*ox + 2*(q.x*q.y - q.w*q.z)*oy + 2*(q.x*q.z + q.w*q.y)*oz,
+        body.position.y + 2*(q.x*q.y + q.w*q.z)*ox + (q.w*q.w - q.x*q.x + q.y*q.y - q.z*q.z)*oy + 2*(q.y*q.z - q.w*q.x)*oz,
+        body.position.z + 2*(q.x*q.z - q.w*q.y)*ox + 2*(q.y*q.z + q.w*q.x)*oy + (q.w*q.w - q.x*q.x - q.y*q.y + q.z*q.z)*oz
+      );
+    } else {
+      mesh.position.copy(body.position);
+    }
+    mesh.quaternion.set(q.x, q.y, q.z, q.w);
+  }
+}
+
+document.getElementById('btn-debug-colliders').addEventListener('click', () => {
+  debugColliders.on = !debugColliders.on;
+  debugColliders.group.visible = debugColliders.on;
+  document.getElementById('btn-debug-colliders').classList.toggle('on', debugColliders.on);
+  if (debugColliders.on) rebuildDebug();
+  console.log('DEBUG TOGGLE:', debugColliders.on);
+});
 
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
@@ -2904,51 +3032,194 @@ function rebuildFilletChunk(c) {
 // console; nothing in the game calls it.
 
 // ----- pass 4b: the collider -----
-// A cannon heightfield on the same grid, its vertices sitting on the centres of
-// the block tops. Between two columns one level apart it ramps rather than
-// steps, but the ramp is one block long against one block of rise — 45 degrees,
-// just inside maxSlope — and at 20 cm a block that ramp is well under the
-// player's own radius, so a hillside climbs as a walkable slope and never
-// catches on an edge. Two levels apart is 63 degrees, past maxSlope, and stays a
-// cliff — which is what a dug face or a bluff is made of.
+// One static CANNON.Body per chunk, greedy-merged Box shapes rather than a
+// single heightfield: a heightfield only ever knows the top of a column, so it
+// cannot represent an overhang, a tunnel, or a floating block. Boxes can,
+// because they are built straight from the voxel store's actual solid cells.
 //
-// Baked from the store, and patched a column at a time by the shovel: a
-// heightfield only knows the top of each column, so a hole you dig lowers it and
-// a block you stack raises it. That is the whole of what a heightfield can
-// represent — dig sideways under a ledge and the collider will not follow you —
-// but it is exact for the one-block-at-a-time editing the shovel actually does.
-const HF_FLOOR = -3.2;         // where the field bottoms out under open water
-const hfShape = (() => {
-  const data = [];
-  for (let i = 0; i < GEN_N; i++) {
-    const strip = new Array(GEN_N);
-    for (let jj = 0; jj < GEN_N; jj++) {
-      // Tipping the body up sends the heightfield's local +y to world -z, so the
-      // row index has to count back down the field.
-      const k = (GEN_N - 1 - jj) * GEN_N + i;
-      strip[jj] = sTop[k] === NO_COLUMN ? HF_FLOOR : (sTop[k] + 1) * BLOCK;
-    }
-    data.push(strip);
-  }
-  return new CANNON.Heightfield(data, { elementSize: BLOCK });
-})();
-const hfBody = new CANNON.Body({ mass: 0, material: physWorld });
-hfBody.addShape(hfShape);
-hfBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-hfBody.position.set(colX(0), 0, colZ(GEN_N - 1));
-hfBody.updateAABB();
-world.addBody(hfBody);
+// Per chunk, per Y level: a 2D grid of which columns are solid at that level,
+// greedily merged into the fewest rectangles that cover it. Levels are never
+// merged into each other — every level gets its own boxes — but that costs
+// nothing extra a stack of blocks does not already pay for, since they are
+// boxes butted together either way.
+//
+// The depth walked per column is bounded the same way the fillet skin bounds
+// it (see filletColumn): an untouched column is walled in below the lowest of
+// its four neighbours and stops there, so a plain hillside costs a handful of
+// levels, and only a dug-out column or shaft ever walks on down toward
+// VOX_FLOOR.
+//
+// Only chunks within COLLIDER_RADIUS of the player carry a live body — over
+// the whole field that is thousands of chunks, and nothing more than a couple
+// of dozen metres from the player can ever be touched.
+const HF_FLOOR = -3.2;         // where groundHeightAt bottoms out under open water
+const COLLISION_DEPTH = 5;     // max blocks deep collision reaches below each column top
 
-// One column of the collider, after the store under it changed.
-function patchCollider(i, j) {
-  const top = sTop[j * GEN_N + i];
-  const y = top === NO_COLUMN ? HF_FLOOR : (top + 1) * BLOCK;
-  hfShape.setHeightValueAtIndex(i, GEN_N - 1 - j, y);
-  // Only ever widened. Recomputing the true extremes means walking the whole
-  // field, and a bound that is a little loose costs a broadphase test, where one
-  // that is too tight drops contacts.
-  if (y > hfShape.maxValue) { hfShape.maxValue = y; hfBody.updateAABB(); }
-  if (y < hfShape.minValue) { hfShape.minValue = y; hfBody.updateAABB(); }
+// The boxes one chunk's worth of solid blocks greedy-merge into, as plain
+// {hx,hy,hz,x,y,z} records — half-extents and centre, in world units.
+function buildChunkColliderBoxes(c) {
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+  const w = i1 - i0, h = j1 - j0;
+  if (w <= 0 || h <= 0) return [];
+
+  const top = new Int32Array(w * h).fill(NO_COLUMN);
+  const floor = new Int32Array(w * h);
+  let lo = Infinity, hi = -Infinity;
+  for (let jj = 0; jj < h; jj++) {
+    for (let ii = 0; ii < w; ii++) {
+      const i = i0 + ii, j = j0 + jj;
+      const k = j * GEN_N + i;
+      const t = sTop[k];
+      if (t === NO_COLUMN) continue;
+      const base = voxOff[k] - VOX_FLOOR;
+      let floorLvl = t;
+      for (let lvl = t; lvl >= Math.max(VOX_FLOOR, t - COLLISION_DEPTH); lvl--) {
+        if (voxMat[base + lvl] !== AIR) floorLvl = lvl;
+      }
+      const idx = jj * w + ii;
+      top[idx] = t;
+      floor[idx] = floorLvl;
+      if (floor[idx] < lo) lo = floor[idx];
+      if (t > hi) hi = t;
+    }
+  }
+  if (hi < lo) return [];
+
+  // Levels already swallowed into a taller box that grew down from above (see
+  // below) are marked here so a later, shallower iteration of lvl doesn't
+  // re-emit a flat slab for the same footprint.
+  const consumedTo = new Float64Array(w * h).fill(Infinity);
+
+  // Is every cell of the given footprint still solid (and within the
+  // per-column collision floor) at a level below the box we just built?
+  // Checked directly against the voxel data rather than the per-level
+  // `solid` mask, since that mask is rebuilt fresh each iteration.
+  function footprintSolidAt(ii0, ii1, jj0, jj1, lvl) {
+    if (lvl < lo) return false;
+    for (let jj = jj0; jj < jj1; jj++) {
+      for (let ii = ii0; ii < ii1; ii++) {
+        const idx = jj * w + ii;
+        if (lvl < floor[idx]) return false;
+        const k = (j0 + jj) * GEN_N + (i0 + ii);
+        if (voxMat[voxOff[k] - VOX_FLOOR + lvl] === AIR) return false;
+      }
+    }
+    return true;
+  }
+
+  const boxes = [];
+  const solid = new Uint8Array(w * h);
+  const visited = new Uint8Array(w * h);
+  for (let lvl = hi; lvl >= lo; lvl--) {
+    solid.fill(0);
+    let any = false;
+    for (let jj = 0; jj < h; jj++) {
+      for (let ii = 0; ii < w; ii++) {
+        const idx = jj * w + ii;
+        if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) continue;
+        if (lvl >= consumedTo[idx]) continue;
+        const k = (j0 + jj) * GEN_N + (i0 + ii);
+        if (voxMat[voxOff[k] - VOX_FLOOR + lvl] === AIR) continue;
+        solid[idx] = 1;
+        any = true;
+      }
+    }
+    if (!any) continue;
+
+    // Standard greedy rectangle merge: every unclaimed solid cell grows first
+    // along i, then as far along j as it can while the whole row it just grew
+    // stays solid and unclaimed.
+    visited.fill(0);
+    for (let jj = 0; jj < h; jj++) {
+      for (let ii = 0; ii < w; ii++) {
+        const idx = jj * w + ii;
+        if (!solid[idx] || visited[idx]) continue;
+        let ii1 = ii + 1;
+        while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
+        let jj1 = jj + 1;
+        for (;;) {
+          if (jj1 >= h) break;
+          let full = true;
+          for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
+          if (!full) break;
+          jj1++;
+        }
+        for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+
+        // Grow this rectangle straight down through as many levels below as
+        // stay fully solid across the exact same footprint, turning stacked
+        // flat slabs into a single tall box.
+        let botLvl = lvl;
+        while (botLvl - 1 >= lo && footprintSolidAt(ii, ii1, jj, jj1, botLvl - 1)) botLvl--;
+        if (botLvl < lvl) {
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) consumedTo[y * w + x] = botLvl;
+        }
+
+        const bi0 = i0 + ii, bi1 = i0 + ii1 - 1, bj0 = j0 + jj, bj1 = j0 + jj1 - 1;
+        boxes.push({
+          hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: (lvl - botLvl + 1) * BLOCK * 0.5, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
+          x: (colX(bi0) + colX(bi1)) * 0.5, y: ((botLvl + lvl) / 2 + 0.5) * BLOCK, z: (colZ(bj0) + colZ(bj1)) * 0.5,
+        });
+      }
+    }
+  }
+  return boxes;
+}
+
+// One collision body per chunk, live only while the chunk is within
+// COLLIDER_RADIUS of the player.
+const colliderBody = new Array(CHUNK_N * CHUNK_N).fill(null);
+const COLLIDER_RADIUS = 5;  // chunks kept live around the player
+
+function loadChunkCollider(c) {
+  if (colliderBody[c]) return;
+  const body = new CANNON.Body({ mass: 0, material: physWorld });
+  for (const b of buildChunkColliderBoxes(c)) {
+    body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+  }
+  body.updateAABB();
+  world.addBody(body);
+  colliderBody[c] = body;
+}
+
+function unloadChunkCollider(c) {
+  const body = colliderBody[c];
+  if (!body) return;
+  world.removeBody(body);
+  colliderBody[c] = null;
+}
+
+// After a dig or place touches chunk c, rebuild its collision body in place. A
+// chunk outside the load radius has no body to rebuild — it picks up the
+// change on its own the next time the player comes close enough to load it.
+function rebuildChunkCollider(c) {
+  if (!colliderBody[c]) return;
+  unloadChunkCollider(c);
+  loadChunkCollider(c);
+}
+
+// Which chunks are within COLLIDER_RADIUS of (x, z). Cheap to call every
+// frame: it does nothing until the player's own chunk changes, which is once
+// every CHUNK * BLOCK = 3.2 m of travel.
+let colliderCi = null, colliderCj = null;
+function updateChunkColliders(x, z) {
+  const ci = Math.floor(colI(x) / CHUNK), cj = Math.floor(colJ(z) / CHUNK);
+  if (ci === colliderCi && cj === colliderCj) return;
+  colliderCi = ci; colliderCj = cj;
+
+  const want = new Set();
+  for (let dj = -COLLIDER_RADIUS; dj <= COLLIDER_RADIUS; dj++) {
+    for (let di = -COLLIDER_RADIUS; di <= COLLIDER_RADIUS; di++) {
+      const cci = ci + di, ccj = cj + dj;
+      if (cci < 0 || ccj < 0 || cci >= CHUNK_N || ccj >= CHUNK_N) continue;
+      want.add(ccj * CHUNK_N + cci);
+    }
+  }
+  for (const c of want) loadChunkCollider(c);
+  for (let c = 0; c < colliderBody.length; c++) {
+    if (colliderBody[c] && !want.has(c)) unloadChunkCollider(c);
+  }
 }
 
 // Where the ground is, for anything that needs to ask — the top of the block you
@@ -2967,6 +3238,10 @@ const onLand = (x, z) => groundHeightAt(x, z) > SEA_Y;
 // player starts on the column there with their feet a couple of centimetres
 // clear of whichever block happens to be on top of it.
 SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
+// Load the ring of chunk colliders the player is about to spawn into, so the
+// ground is there for the first physics step rather than the first frame it
+// happens to walk into range.
+updateChunkColliders(SPAWN.x, SPAWN.z);
 
 // ---------------------------------------------------------------------------
 // There is no sea mesh. The WATER blocks in the voxel store are the whole of the
@@ -3854,15 +4129,10 @@ function spawnFallingChunk(unit) {
   const blocks = [...unit.values()];
   const n = blocks.length;
 
-  // Centre of the piece, and the box that encloses it, both in world units.
+  // Centre of the piece, in world units.
   let cx = 0, cy = 0, cz = 0;
-  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const b of blocks) {
-    const x = colX(b.i), y = (b.lvl + 0.5) * BLOCK, z = colZ(b.j);
-    cx += x; cy += y; cz += z;
-    if (x < x0) x0 = x; if (x > x1) x1 = x;
-    if (y < y0) y0 = y; if (y > y1) y1 = y;
-    if (z < z0) z0 = z; if (z > z1) z1 = z;
+    cx += colX(b.i); cy += (b.lvl + 0.5) * BLOCK; cz += colZ(b.j);
   }
   cx /= n; cy /= n; cz /= n;
 
@@ -3883,6 +4153,8 @@ function spawnFallingChunk(unit) {
   mesh.userData.blocks = blocks.map((b) => ({
     pos: new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz),
     mat: b.m,
+    lvl: b.lvl,
+    gi: b.i,  gj: b.j,
   }));
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
@@ -3902,14 +4174,70 @@ function spawnFallingChunk(unit) {
     collisionFilterMask: -1,
   });
   const h = HALF_BLOCK;
-  if (n <= FALL_SHAPE_CAP) {
+  {
+    // Greedy-merge the piece's own lattice into boxes, one level at a time —
+    // same algorithm as buildChunkColliderBoxes, but over blocks we already
+    // know exist rather than the voxel store. i/j are grid indices, so unlike
+    // terrain this needs no quantizing.
+    let bi0 = Infinity, bi1 = -Infinity, bj0 = Infinity, bj1 = -Infinity;
     for (const b of blocks) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
-                    new CANNON.Vec3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz));
+      if (b.i < bi0) bi0 = b.i; if (b.i > bi1) bi1 = b.i;
+      if (b.j < bj0) bj0 = b.j; if (b.j > bj1) bj1 = b.j;
     }
-  } else {
-    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
-                  new CANNON.Vec3((x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy, (z0 + z1) / 2 - cz));
+    const w = bi1 - bi0 + 1, dep = bj1 - bj0 + 1;
+    const byLevel = new Map();  // lvl -> Uint8Array(w*dep), 1 where a block sits
+    for (const b of blocks) {
+      let grid = byLevel.get(b.lvl);
+      if (!grid) byLevel.set(b.lvl, grid = new Uint8Array(w * dep));
+      grid[(b.j - bj0) * w + (b.i - bi0)] = 1;
+    }
+    // Grow each level's rectangle straight down through lower levels whose
+    // footprint is fully solid there too — same as buildChunkColliderBoxes,
+    // except levels here can have gaps, so it's just "is there a byLevel
+    // entry" rather than a floor/lo bound.
+    function footprintSolidAt(ii0, ii1, jj0, jj1, lvl) {
+      const grid = byLevel.get(lvl);
+      if (!grid) return false;
+      for (let jj = jj0; jj < jj1; jj++)
+        for (let ii = ii0; ii < ii1; ii++)
+          if (!grid[jj * w + ii]) return false;
+      return true;
+    }
+    const levels = [...byLevel.keys()].sort((a, b) => b - a);
+    const consumedTo = new Float64Array(w * dep).fill(Infinity);
+    const visited = new Uint8Array(w * dep);
+    for (const lvl of levels) {
+      const solid = byLevel.get(lvl);
+      visited.fill(0);
+      for (let jj = 0; jj < dep; jj++) {
+        for (let ii = 0; ii < w; ii++) {
+          const idx = jj * w + ii;
+          if (!solid[idx] || visited[idx] || lvl >= consumedTo[idx]) continue;
+          let ii1 = ii + 1;
+          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1] && lvl < consumedTo[jj * w + ii1]) ii1++;
+          let jj1 = jj + 1;
+          for (;;) {
+            if (jj1 >= dep) break;
+            let full = true;
+            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x] || lvl >= consumedTo[jj1 * w + x]) { full = false; break; }
+            if (!full) break;
+            jj1++;
+          }
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+
+          let botLvl = lvl;
+          while (footprintSolidAt(ii, ii1, jj, jj1, botLvl - 1)) botLvl--;
+          if (botLvl < lvl) {
+            for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) consumedTo[y * w + x] = botLvl;
+          }
+
+          const gi0 = bi0 + ii, gi1 = bi0 + ii1 - 1, gj0 = bj0 + jj, gj1 = bj0 + jj1 - 1;
+          body.addShape(
+            new CANNON.Box(new CANNON.Vec3((gi1 - gi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (gj1 - gj0 + 1) * BLOCK * 0.5)),
+            new CANNON.Vec3((colX(gi0) + colX(gi1)) * 0.5 - cx, ((botLvl + lvl) / 2 + 0.5) * BLOCK - cy, (colZ(gj0) + colZ(gj1)) * 0.5 - cz));
+        }
+      }
+    }
   }
   body.position.set(cx, cy, cz);
   // A nudge of spin, so a piece topples off the face it broke from instead of
@@ -4016,9 +4344,33 @@ function checkTerrainPowder() {
   powderCursor = k % cols;
 }
 
+// Debris this far (world units) from the player is frozen rather than kept
+// under live physics — slightly inside the live collider ring, so a piece
+// never freezes while still standing on ground that has a body under it.
+const DEBRIS_FREEZE_DIST = (COLLIDER_RADIUS - 1) * CHUNK * BLOCK;
+
+// Freeze a piece the player has walked away from (zero it, sleep it, and
+// stop it colliding), or wake one the player has come back to.
+function updateDebrisFreeze(f, px, pz) {
+  const dx = f.body.position.x - px, dz = f.body.position.z - pz;
+  const far = dx * dx + dz * dz > DEBRIS_FREEZE_DIST * DEBRIS_FREEZE_DIST;
+  if (far && !f.frozen) {
+    f.frozen = true;
+    f.body.velocity.setZero();
+    f.body.angularVelocity.setZero();
+    f.body.sleep();
+    f.body.collisionResponse = false;
+  } else if (!far && f.frozen) {
+    f.frozen = false;
+    f.body.collisionResponse = true;
+    f.body.wakeUp();
+  }
+}
+
 // Called once a frame after the step: retire whatever has stopped moving, and
 // drop whatever has fallen out of the world altogether.
 function updateFallingChunks() {
+  const px = playerBody.position.x, pz = playerBody.position.z;
   for (let n = fallingChunks.length - 1; n >= 0; n--) {
     const f = fallingChunks[n];
     if (f.body.position.y < FALL_KILL_Y) {
@@ -4026,6 +4378,7 @@ function updateFallingChunks() {
       dropChunk(f);
       continue;
     }
+    updateDebrisFreeze(f, px, pz);
     const v = f.body.velocity, w = f.body.angularVelocity;
     const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
               && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
@@ -4037,6 +4390,7 @@ function updateFallingChunks() {
   for (let n = restedChunks.length - 1; n >= 0; n--) {
     const f = restedChunks[n];
     if (f.body.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); }
+    else updateDebrisFreeze(f, px, pz);
   }
 }
 
@@ -4189,28 +4543,90 @@ function rebuildDebrisBody(mesh, body) {
   body.shapes.length = 0;
   body.shapeOffsets.length = 0;
   body.shapeOrientations.length = 0;
-  if (mesh.userData.perBlock) {
+  if (lat.length) {
+    // Same greedy merge as spawnFallChunk. Grid indices are carried on each
+    // block since recentreDebris shifts b.pos by the (non-grid-aligned)
+    // centre of mass, so quantizing positions would give the wrong cells.
+    // pos and (gi,gj,lvl) differ by a fixed offset per axis (world-to-local
+    // shift plus whatever centre of mass has been subtracted so far) — read
+    // it off one block so merged shape offsets land in the same local frame
+    // as the lattice instead of raw grid*BLOCK, which drifted from it by
+    // GEN_R and every past recentre.
+    const ref = lat[0];
+    const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
+    const byLevel = new Map();  // lvl -> Map("gi,gj" -> true)
     for (const b of lat) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
-                    new CANNON.Vec3(b.pos.x, b.pos.y, b.pos.z));
+      let cells = byLevel.get(b.lvl);
+      if (!cells) byLevel.set(b.lvl, cells = new Set());
+      cells.add(b.gi + ',' + b.gj);
     }
-  } else {
-    // The big ones collide as the single box that encloses what is left.
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (const b of lat) {
-      if (b.pos.x < x0) x0 = b.pos.x; if (b.pos.x > x1) x1 = b.pos.x;
-      if (b.pos.y < y0) y0 = b.pos.y; if (b.pos.y > y1) y1 = b.pos.y;
-      if (b.pos.z < z0) z0 = b.pos.z; if (b.pos.z > z1) z1 = b.pos.z;
+    // Same downward growth as spawnFallingChunk: a rectangle at one level
+    // extends into a taller box as long as the exact footprint is also solid
+    // (has a cell entry) at the level(s) below.
+    function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
+      const cellsAt = byLevel.get(lvl);
+      if (!cellsAt) return false;
+      for (let gj = mj0; gj <= mj1; gj++)
+        for (let gi = mi0; gi <= mi1; gi++)
+          if (!cellsAt.has(gi + ',' + gj)) return false;
+      return true;
     }
-    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
-                  new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
+    const consumedTo = new Map();  // "gi,gj" -> lowest level a taller box above already reaches down to
+    const levels = [...byLevel.keys()].sort((a, b) => b - a);
+    for (const lvl of levels) {
+      const cells = byLevel.get(lvl);
+      let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity;
+      for (const key of cells) {
+        const [gi, gj] = key.split(',').map(Number);
+        if (gi < gi0) gi0 = gi; if (gi > gi1) gi1 = gi;
+        if (gj < gj0) gj0 = gj; if (gj > gj1) gj1 = gj;
+      }
+      const w = gi1 - gi0 + 1, dep = gj1 - gj0 + 1;
+      const solid = new Uint8Array(w * dep);
+      for (const key of cells) {
+        const th = consumedTo.get(key);
+        if (th !== undefined && lvl >= th) continue;
+        const [gi, gj] = key.split(',').map(Number);
+        solid[(gj - gj0) * w + (gi - gi0)] = 1;
+      }
+      const visited = new Uint8Array(w * dep);
+      for (let jj = 0; jj < dep; jj++) {
+        for (let ii = 0; ii < w; ii++) {
+          const idx = jj * w + ii;
+          if (!solid[idx] || visited[idx]) continue;
+          let ii1 = ii + 1;
+          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
+          let jj1 = jj + 1;
+          for (;;) {
+            if (jj1 >= dep) break;
+            let full = true;
+            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
+            if (!full) break;
+            jj1++;
+          }
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+
+          const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
+          let botLvl = lvl;
+          while (footprintSolidAt(mi0, mi1, mj0, mj1, botLvl - 1)) botLvl--;
+          if (botLvl < lvl) {
+            for (let gj = mj0; gj <= mj1; gj++) for (let gi = mi0; gi <= mi1; gi++) consumedTo.set(gi + ',' + gj, botLvl);
+          }
+
+          body.addShape(
+            new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
+            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
+        }
+      }
+    }
   }
   recentreDebris(mesh, body);
   body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
   body.updateMassProperties();
   body.updateBoundingRadius();
   body.updateAABB();
-  body.wakeUp();
+  const f = chunkOfMesh(mesh);
+  if (!f || !f.frozen) body.wakeUp();
 }
 
 // Take block `q` off a piece. A placed block is a child mesh; one of the piece's
@@ -4265,7 +4681,7 @@ function splitDebrisIfNeeded(mesh) {
   const f = chunkOfMesh(mesh);
   const parts = groups.slice(1).map((g) => g.map((k) => lat[k]));
   for (const k of groups.slice(1).flat().sort((x, y) => y - x)) cutDebrisLat(mesh, k);
-  for (const blocks of parts) spawnDebrisPart(mesh, blocks, f && f.body);
+  for (const blocks of parts) spawnDebrisPart(mesh, blocks, f && f.body, f && f.frozen);
 }
 
 // A part cut off an existing piece, spawned as a piece of its own. It is built
@@ -4274,8 +4690,8 @@ function splitDebrisIfNeeded(mesh) {
 // drawn, and it starts with the parent's motion at that point so the two parts
 // drift apart instead of springing.
 const partQuat = new THREE.Quaternion();
-function spawnDebrisPart(parent, blocks, pbody) {
-  const n = blocks.length, h = HALF_BLOCK;
+function spawnDebrisPart(parent, blocks, pbody, frozen) {
+  const n = blocks.length, h = HALF_BLOCK, hy = HALF_BLOCK;
   parent.updateWorldMatrix(true, false);
   const c = new THREE.Vector3();
   for (const b of blocks) c.add(b.pos);
@@ -4292,7 +4708,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    return { pos: p, mat: b.mat };
+    return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj };
   });
   mesh.instanceMatrix.needsUpdate = true;
   mesh.instanceColor.needsUpdate = true;
@@ -4311,11 +4727,11 @@ function spawnDebrisPart(parent, blocks, pbody) {
   });
   if (mesh.userData.perBlock) {
     for (const b of mesh.userData.blocks) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
+      body.addShape(new CANNON.Box(new CANNON.Vec3(h, hy, h)),
                     new CANNON.Vec3(b.pos.x, b.pos.y, b.pos.z));
     }
   } else {
-    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h)),
+    body.addShape(new CANNON.Box(new CANNON.Vec3((x1 - x0) / 2 + h, (y1 - y0) / 2 + hy, (z1 - z0) / 2 + h)),
                   new CANNON.Vec3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
   }
   const w = c.applyMatrix4(parent.matrixWorld);
@@ -4333,9 +4749,16 @@ function spawnDebrisPart(parent, blocks, pbody) {
   body.angularVelocity.y += (Math.random() - 0.5) * 0.2;
   body.angularVelocity.z += (Math.random() - 0.5) * 0.4;
 
+  if (frozen) {
+    body.velocity.setZero();
+    body.angularVelocity.setZero();
+    body.sleep();
+    body.collisionResponse = false;
+  }
+
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);
-  fallingChunks.push({ mesh, body, still: 0 });
+  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen });
 }
 
 // Digging a loose piece takes off the one block under the crosshair and leaves
@@ -4354,7 +4777,7 @@ function digDebrisBlock(mesh, inst, child) {
   splitDebrisIfNeeded(mesh);
 
   const f = chunkOfMesh(mesh);
-  if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }    // lighter, and disturbed
+  if (f) { rebuildDebrisBody(mesh, f.body); if (!f.frozen) f.still = 0; }    // lighter, and disturbed
   return true;
 }
 
@@ -4417,39 +4840,26 @@ function placeOnDebris(mesh, local, m) {
   cube.castShadow = true;
   cube.receiveShadow = true;
   mesh.add(cube);
-  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube });
+  // local isn't a clean multiple of BLOCK once the mesh has been recentred,
+  // so gi/gj/lvl are read off the nearest existing block instead of quantized
+  // directly: every block in the lattice sits on the same grid, offset by a
+  // constant.
+  let bestDist = Infinity, bestRef = mesh.userData.blocks[0];
+  for (const rb of mesh.userData.blocks) {
+    const d = Math.abs(rb.pos.x - local.x) + Math.abs(rb.pos.y - local.y) + Math.abs(rb.pos.z - local.z);
+    if (d < bestDist) { bestDist = d; bestRef = rb; }
+  }
+  const gi = bestRef.gi + Math.round((local.x - bestRef.pos.x) / BLOCK);
+  const gj = bestRef.gj + Math.round((local.z - bestRef.pos.z) / BLOCK);
+  const lvl = bestRef.lvl + Math.round((local.y - bestRef.pos.y) / BLOCK);
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, lvl, gi, gj });
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it.
   const f = chunkOfMesh(mesh);
   if (!f) return;
-  const body = f.body, h = HALF_BLOCK;
-  if (mesh.userData.perBlock) {
-    body.addShape(new CANNON.Box(new CANNON.Vec3(h, h, h)),
-                  new CANNON.Vec3(local.x, local.y, local.z));
-  } else {
-    // Pieces too big for a collider each collide as one box: grow it to take
-    // the new block in.
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (const b of mesh.userData.blocks) {
-      if (b.pos.x < x0) x0 = b.pos.x; if (b.pos.x > x1) x1 = b.pos.x;
-      if (b.pos.y < y0) y0 = b.pos.y; if (b.pos.y > y1) y1 = b.pos.y;
-      if (b.pos.z < z0) z0 = b.pos.z; if (b.pos.z > z1) z1 = b.pos.z;
-    }
-    const box = body.shapes[0];
-    box.halfExtents.set((x1 - x0) / 2 + h, (y1 - y0) / 2 + h, (z1 - z0) / 2 + h);
-    box.updateConvexPolyhedronRepresentation();
-    box.updateBoundingSphereRadius();
-    body.shapeOffsets[0].set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
-    body.updateBoundingRadius();
-  }
-  recentreDebris(mesh, body);
-  body.updateBoundingRadius();
-  body.mass = Math.min(mesh.userData.blocks.length * 0.5, FALL_MASS_CAP);
-  body.updateMassProperties();
-  body.updateAABB();
-  body.wakeUp();
-  f.still = 0;                  // it has been disturbed: let it settle again
+  rebuildDebrisBody(mesh, f.body);
+  if (!f.frozen) f.still = 0;   // it has been disturbed: let it settle again
 }
 
 // The six face neighbours, with the one below last so a stack pops it first: a
@@ -4525,7 +4935,6 @@ function breakOffAdrift(i, j, lvl) {
   }
   for (const k of cols) {
     const ci = k % GEN_N, cj = (k - ci) / GEN_N;
-    patchCollider(ci, cj);
     for (let dj = -1; dj <= 1; dj++) {
       for (let di = -1; di <= 1; di++) {
         const ii = ci + di, jj = cj + dj;
@@ -4533,6 +4942,13 @@ function breakOffAdrift(i, j, lvl) {
         dirtyChunks.add(chunkOf(ii, jj));
       }
     }
+  }
+
+  // Rebuild colliders for the now-empty chunks immediately, before the
+  // debris body spawns — otherwise it collides with the stale boxes for
+  // a frame (flushDirtyChunks() runs too late for this).
+  for (const k of cols) {
+    rebuildChunkCollider(chunkOf(k % GEN_N, (k - k % GEN_N) / GEN_N));
   }
 
   spawnFallingChunk(unit);
@@ -4556,7 +4972,6 @@ function editBlock(i, j, lvl, m) {
   colDug[k] = 1;
   if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
   powderDirty.add(k);   // anything loose in this column falls this frame, not on the next sweep
-  patchCollider(i, j);
   // Refresh visibility of the edited block and all six neighbours.
   refreshVisible(i, j, lvl);
   refreshVisible(i - 1, j, lvl);
@@ -4643,7 +5058,6 @@ function hammerStrike() {
   colDug[k] = 1;
   if (lvl < colDugLo[k]) colDugLo[k] = lvl;
   powderDirty.add(k);
-  patchCollider(i, j);
   refreshVisible(i, j, lvl);
   refreshVisible(i - 1, j, lvl);
   refreshVisible(i + 1, j, lvl);
@@ -4669,9 +5083,10 @@ function hammerStrike() {
 
 function flushDirtyChunks() {
   if (!dirtyChunks.size) return;
-  for (const c of dirtyChunks) rebuildChunk(c);
+  for (const c of dirtyChunks) { rebuildChunk(c); rebuildChunkCollider(c); }
   dirtyChunks.clear();
   blocksHudEl.textContent = worldBlocks.toLocaleString();
+  if (debugColliders.on) rebuildDebug();
 }
 
 function shovelPickUp() {
@@ -5200,6 +5615,11 @@ function tick() {
     updatePlayer(dt);
   }
 
+  // Keep the ring of live chunk colliders centred on the physical player body
+  // — not the free camera, which can roam anywhere while the body it left
+  // behind is still under gravity and still needs ground under it every step.
+  updateChunkColliders(playerBody.position.x, playerBody.position.z);
+
   // --- physics: fixed 120 Hz steps, sub-stepped to catch up with the frame ---
   // Twice the old rate: a shorter step resolves the block-edge contacts before
   // they build into a shove, which is the one thing here that helps the walk.
@@ -5243,6 +5663,8 @@ function tick() {
       p.y.toFixed(1).padStart(6, ' ') + ',' +
       p.z.toFixed(1).padStart(6, ' ');
   }
+
+  updateDebug();
 
   renderer.render(scene, camera);
 }

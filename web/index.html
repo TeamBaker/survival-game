@@ -2043,6 +2043,14 @@ function rawLODStep(c) {
   // far chunks go low detail first, chunks directly below stay high detail.
   const scale = 1 + altitude / 10;
   const effective_NEAR = LOD_NEAR / scale, effective_FAR = LOD_FAR / scale;
+  let step;
+  if (dist < effective_NEAR) step = 1;
+  else if (dist < effective_FAR) step = 2;
+  else step = 4;
+  rawLODStep._callCount = (rawLODStep._callCount || 0) + 1;
+  if (rawLODStep._callCount % 60 === 0 || c === 0 || c === CHUNK_N * CHUNK_N - 1) {
+    console.log('[rawLODStep]', 'c=', c, 'cam=', camera.position.x, camera.position.y, camera.position.z, 'ccx=', ccx, 'ccz=', ccz, 'dist=', dist, 'altitude=', altitude, 'scale=', scale, 'effective_NEAR=', effective_NEAR, 'effective_FAR=', effective_FAR, 'step=', step);
+  }
   if (dist < effective_NEAR) return 1;
   if (dist < effective_FAR) return 2;
   return 4;
@@ -2358,12 +2366,20 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 // boundaries, then rebuilds whatever came out different from last time —
 // which, since neighbours are always brought into agreement, is never a
 // chunk without also being every chunk it touches.
+let _lodDebugCall = 0;
 function updateChunkLOD() {
   const prev = chunkStep.slice();
   propagateLOD();
+  const _lodDebug = (_lodDebugCall++ % 60) === 0;
+  let _lodRebuilt = 0;
   for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
-    if (chunkMesh[c] && chunkStep[c] !== prev[c]) rebuildChunk(c);
+    if (chunkMesh[c] && chunkStep[c] !== prev[c]) {
+      if (_lodDebug) console.log(`[LOD] chunk ${c}: step ${prev[c]} -> ${chunkStep[c]}`);
+      rebuildChunk(c);
+      _lodRebuilt++;
+    }
   }
+  if (_lodDebug) console.log(`[LOD] rebuilt ${_lodRebuilt} chunks, unique steps: ${[...new Set(chunkStep)].sort((a, b) => a - b)}`);
 }
 
 // ----- pass 3b: the fillet surface -----

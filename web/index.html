@@ -1669,33 +1669,11 @@ function pickMaterial(h, slope, x, z) {
   if (slope > 1.05 + n * 0.30) {
     return v > 0.45 ? BRITTLE_STONE : (v < -0.55 ? STONE_DUST : ROCK);
   }
-  // Small scattered clumps of an alternative material poke through the base
-  // soil, with a 1-block dithered edge so the boundary isn't a hard line.
-  const s = vnoise2(x * 0.50 + 77.1, z * 0.50 - 33.9);
-  const sv = (s + 1) * 0.5;
   if (h < 1.2 + n * 0.5) {
-    if (sv > 0.5) {
-      const clumpMat = v > 0 ? MUD : DIRT;
-      if (sv > 0.6) return clumpMat;
-      const edge = vnoise2(x * 3.0 + 11.7, z * 3.0 - 29.3);
-      if (edge > 0) return clumpMat;
-    }
     return SAND;
   }
   if (h < 3.0 + n) {
-    if (sv > 0.5) {
-      const clumpMat = v > 0 ? SAND : CLAY;
-      if (sv > 0.6) return clumpMat;
-      const edge = vnoise2(x * 3.0 + 11.7, z * 3.0 - 29.3);
-      if (edge > 0) return clumpMat;
-    }
     return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
-  }
-  if (sv > 0.5) {
-    const clumpMat = v > 0 ? MUD : FINE_DIRT;
-    if (sv > 0.6) return clumpMat;
-    const edge = vnoise2(x * 3.0 + 11.7, z * 3.0 - 29.3);
-    if (edge > 0) return clumpMat;
   }
   return v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
 }

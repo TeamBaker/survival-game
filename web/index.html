@@ -3055,150 +3055,6 @@ function rebuildFilletChunk(c) {
 const HF_FLOOR = -3.2;         // where groundHeightAt bottoms out under open water
 const COLLISION_DEPTH = 5;     // max blocks deep collision reaches below each column top
 
-// Greedy rectangle cover of a dense boolean grid: every set cell not yet
-// claimed grows first along a, then as far along b as the row it just grew
-// stays fully set and unclaimed. Returns {a0,a1,b0,b1} rects, inclusive.
-function greedyRectMerge(mask, w, h) {
-  const visited = new Uint8Array(w * h);
-  const rects = [];
-  for (let b = 0; b < h; b++) {
-    for (let a = 0; a < w; a++) {
-      const idx = b * w + a;
-      if (!mask[idx] || visited[idx]) continue;
-      let a1 = a + 1;
-      while (a1 < w && mask[b * w + a1] && !visited[b * w + a1]) a1++;
-      let b1 = b + 1;
-      for (;;) {
-        if (b1 >= h) break;
-        let full = true;
-        for (let x = a; x < a1; x++) if (!mask[b1 * w + x] || visited[b1 * w + x]) { full = false; break; }
-        if (!full) break;
-        b1++;
-      }
-      for (let y = b; y < b1; y++) for (let x = a; x < a1; x++) visited[y * w + x] = 1;
-      rects.push({ a0: a, a1: a1 - 1, b0: b, b1: b1 - 1 });
-    }
-  }
-  return rects;
-}
-
-const FACE_SLAB_THICK = BLOCK * 0.15;  // thin enough to be cheap, thick enough not to tunnel through
-
-// Collision as thin slabs at each exposed face rather than full block boxes.
-// isBlock(i,j,lvl) says whether that cell counts as solid at all; isOpen says
-// whether the neighbour one step over is empty (air, or simply not part of
-// whatever population isBlock draws from) — a face is only given a slab when
-// isOpen holds for the cell just past it. Coplanar slabs (same normal, same
-// level or column) are then greedy-merged, same shape as the old whole-block
-// merge but one plane at a time instead of stacking full boxes downward.
-// cellX/cellZ/levelY translate grid indices into whatever frame the caller's
-// shapes live in — world space for terrain, local space for a debris body —
-// so one implementation serves buildChunkColliderBoxes, spawnFallingChunk,
-// and rebuildDebrisBody alike.
-function buildFaceSlabs(i0, i1, j0, j1, lvlLo, lvlHi, isBlock, isOpen, cellX, cellZ, levelY) {
-  const out = [];
-  const w = i1 - i0 + 1, dep = j1 - j0 + 1, lv = lvlHi - lvlLo + 1;
-  if (w <= 0 || dep <= 0 || lv <= 0) return out;
-  const hb = FACE_SLAB_THICK * 0.5;
-
-  // +Y / -Y: one (i,j) plane per level.
-  const topMask = new Uint8Array(w * dep), botMask = new Uint8Array(w * dep);
-  for (let lvl = lvlLo; lvl <= lvlHi; lvl++) {
-    topMask.fill(0); botMask.fill(0);
-    let any = false;
-    for (let jj = 0; jj < dep; jj++) {
-      for (let ii = 0; ii < w; ii++) {
-        const i = i0 + ii, j = j0 + jj;
-        if (!isBlock(i, j, lvl)) continue;
-        if (isOpen(i, j, lvl + 1)) { topMask[jj * w + ii] = 1; any = true; }
-        if (isOpen(i, j, lvl - 1)) { botMask[jj * w + ii] = 1; any = true; }
-      }
-    }
-    if (!any) continue;
-    const y1 = levelY(lvl + 1), y0 = levelY(lvl);
-    for (const r of greedyRectMerge(topMask, w, dep)) {
-      out.push({
-        hx: (r.a1 - r.a0 + 1) * BLOCK * 0.5, hy: hb, hz: (r.b1 - r.b0 + 1) * BLOCK * 0.5,
-        x: (cellX(i0 + r.a0) + cellX(i0 + r.a1)) * 0.5, y: y1, z: (cellZ(j0 + r.b0) + cellZ(j0 + r.b1)) * 0.5,
-      });
-    }
-    for (const r of greedyRectMerge(botMask, w, dep)) {
-      out.push({
-        hx: (r.a1 - r.a0 + 1) * BLOCK * 0.5, hy: hb, hz: (r.b1 - r.b0 + 1) * BLOCK * 0.5,
-        x: (cellX(i0 + r.a0) + cellX(i0 + r.a1)) * 0.5, y: y0, z: (cellZ(j0 + r.b0) + cellZ(j0 + r.b1)) * 0.5,
-      });
-    }
-  }
-
-  // +X / -X: one (j,lvl) plane per column.
-  const posXMask = new Uint8Array(dep * lv), negXMask = new Uint8Array(dep * lv);
-  for (let ii = 0; ii < w; ii++) {
-    posXMask.fill(0); negXMask.fill(0);
-    let any = false;
-    const i = i0 + ii;
-    for (let ll = 0; ll < lv; ll++) {
-      const lvl = lvlLo + ll;
-      for (let jj = 0; jj < dep; jj++) {
-        const j = j0 + jj;
-        if (!isBlock(i, j, lvl)) continue;
-        if (isOpen(i + 1, j, lvl)) { posXMask[ll * dep + jj] = 1; any = true; }
-        if (isOpen(i - 1, j, lvl)) { negXMask[ll * dep + jj] = 1; any = true; }
-      }
-    }
-    if (!any) continue;
-    const xPos = cellX(i) + BLOCK * 0.5, xNeg = cellX(i) - BLOCK * 0.5;
-    for (const r of greedyRectMerge(posXMask, dep, lv)) {
-      const y0 = levelY(lvlLo + r.b0), y1 = levelY(lvlLo + r.b1 + 1);
-      out.push({
-        hx: hb, hy: (y1 - y0) * 0.5, hz: (r.a1 - r.a0 + 1) * BLOCK * 0.5,
-        x: xPos, y: (y0 + y1) * 0.5, z: (cellZ(j0 + r.a0) + cellZ(j0 + r.a1)) * 0.5,
-      });
-    }
-    for (const r of greedyRectMerge(negXMask, dep, lv)) {
-      const y0 = levelY(lvlLo + r.b0), y1 = levelY(lvlLo + r.b1 + 1);
-      out.push({
-        hx: hb, hy: (y1 - y0) * 0.5, hz: (r.a1 - r.a0 + 1) * BLOCK * 0.5,
-        x: xNeg, y: (y0 + y1) * 0.5, z: (cellZ(j0 + r.a0) + cellZ(j0 + r.a1)) * 0.5,
-      });
-    }
-  }
-
-  // +Z / -Z: one (i,lvl) plane per row.
-  const posZMask = new Uint8Array(w * lv), negZMask = new Uint8Array(w * lv);
-  for (let jj = 0; jj < dep; jj++) {
-    posZMask.fill(0); negZMask.fill(0);
-    let any = false;
-    const j = j0 + jj;
-    for (let ll = 0; ll < lv; ll++) {
-      const lvl = lvlLo + ll;
-      for (let ii = 0; ii < w; ii++) {
-        const i = i0 + ii;
-        if (!isBlock(i, j, lvl)) continue;
-        if (isOpen(i, j + 1, lvl)) { posZMask[ll * w + ii] = 1; any = true; }
-        if (isOpen(i, j - 1, lvl)) { negZMask[ll * w + ii] = 1; any = true; }
-      }
-    }
-    if (!any) continue;
-    const zPos = cellZ(j) + BLOCK * 0.5, zNeg = cellZ(j) - BLOCK * 0.5;
-    for (const r of greedyRectMerge(posZMask, w, lv)) {
-      const y0 = levelY(lvlLo + r.b0), y1 = levelY(lvlLo + r.b1 + 1);
-      out.push({
-        hx: (r.a1 - r.a0 + 1) * BLOCK * 0.5, hy: (y1 - y0) * 0.5, hz: hb,
-        x: (cellX(i0 + r.a0) + cellX(i0 + r.a1)) * 0.5, y: (y0 + y1) * 0.5, z: zPos,
-      });
-    }
-    for (const r of greedyRectMerge(negZMask, w, lv)) {
-      const y0 = levelY(lvlLo + r.b0), y1 = levelY(lvlLo + r.b1 + 1);
-      out.push({
-        hx: (r.a1 - r.a0 + 1) * BLOCK * 0.5, hy: (y1 - y0) * 0.5, hz: hb,
-        x: (cellX(i0 + r.a0) + cellX(i0 + r.a1)) * 0.5, y: (y0 + y1) * 0.5, z: zNeg,
-      });
-    }
-  }
-
-  return out;
-}
-
 // The boxes one chunk's worth of solid blocks greedy-merge into, as plain
 // {hx,hy,hz,x,y,z} records — half-extents and centre, in world units.
 function buildChunkColliderBoxes(c) {
@@ -3237,14 +3093,85 @@ function buildChunkColliderBoxes(c) {
   }
   if (hi < lo) return [];
 
-  const isBlock = (i, j, lvl) => {
-    const idx = (j - j0) * w + (i - i0);
-    if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) return false;
-    return solidVisible(j * GEN_N + i, lvl);
-  };
-  const isOpen = (i, j, lvl) => voxelAt(i, j, lvl) === AIR;
+  // Levels already swallowed into a taller box that grew down from above (see
+  // below) are marked here so a later, shallower iteration of lvl doesn't
+  // re-emit a flat slab for the same footprint.
+  const consumedTo = new Float64Array(w * h).fill(Infinity);
 
-  return buildFaceSlabs(i0, i1 - 1, j0, j1 - 1, lo, hi, isBlock, isOpen, colX, colZ, (lvl) => lvl * BLOCK);
+  // Is every cell of the given footprint still solid (and within the
+  // per-column collision floor) at a level below the box we just built?
+  // Checked directly against the voxel data rather than the per-level
+  // `solid` mask, since that mask is rebuilt fresh each iteration.
+  function footprintSolidAt(ii0, ii1, jj0, jj1, lvl) {
+    if (lvl < lo) return false;
+    for (let jj = jj0; jj < jj1; jj++) {
+      for (let ii = ii0; ii < ii1; ii++) {
+        const idx = jj * w + ii;
+        if (lvl < floor[idx]) return false;
+        const k = (j0 + jj) * GEN_N + (i0 + ii);
+        if (!solidVisible(k, lvl)) return false;
+      }
+    }
+    return true;
+  }
+
+  const boxes = [];
+  const solid = new Uint8Array(w * h);
+  const visited = new Uint8Array(w * h);
+  for (let lvl = hi; lvl >= lo; lvl--) {
+    solid.fill(0);
+    let any = false;
+    for (let jj = 0; jj < h; jj++) {
+      for (let ii = 0; ii < w; ii++) {
+        const idx = jj * w + ii;
+        if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) continue;
+        if (lvl >= consumedTo[idx]) continue;
+        const k = (j0 + jj) * GEN_N + (i0 + ii);
+        if (!solidVisible(k, lvl)) continue;
+        solid[idx] = 1;
+        any = true;
+      }
+    }
+    if (!any) continue;
+
+    // Standard greedy rectangle merge: every unclaimed solid cell grows first
+    // along i, then as far along j as it can while the whole row it just grew
+    // stays solid and unclaimed.
+    visited.fill(0);
+    for (let jj = 0; jj < h; jj++) {
+      for (let ii = 0; ii < w; ii++) {
+        const idx = jj * w + ii;
+        if (!solid[idx] || visited[idx]) continue;
+        let ii1 = ii + 1;
+        while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
+        let jj1 = jj + 1;
+        for (;;) {
+          if (jj1 >= h) break;
+          let full = true;
+          for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
+          if (!full) break;
+          jj1++;
+        }
+        for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+
+        // Grow this rectangle straight down through as many levels below as
+        // stay fully solid across the exact same footprint, turning stacked
+        // flat slabs into a single tall box.
+        let botLvl = lvl;
+        while (botLvl - 1 >= lo && footprintSolidAt(ii, ii1, jj, jj1, botLvl - 1)) botLvl--;
+        if (botLvl < lvl) {
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) consumedTo[y * w + x] = botLvl;
+        }
+
+        const bi0 = i0 + ii, bi1 = i0 + ii1 - 1, bj0 = j0 + jj, bj1 = j0 + jj1 - 1;
+        boxes.push({
+          hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: (lvl - botLvl + 1) * BLOCK * 0.5, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
+          x: (colX(bi0) + colX(bi1)) * 0.5, y: ((botLvl + lvl) / 2 + 0.5) * BLOCK, z: (colZ(bj0) + colZ(bj1)) * 0.5,
+        });
+      }
+    }
+  }
+  return boxes;
 }
 
 // One collision body per chunk, live only while the chunk is within
@@ -4290,22 +4217,77 @@ function spawnFallingChunk(unit) {
     collisionFilterGroup: DEBRIS_GROUP,
     collisionFilterMask: -1,
   });
+  const h = HALF_BLOCK;
   {
-    // Greedy-merge the piece's own exposed faces into thin slabs — same
-    // algorithm as buildChunkColliderBoxes, but "open" just means "not part
-    // of this piece" rather than "air in the voxel store", and i/j are grid
-    // indices, so unlike terrain this needs no quantizing.
-    let bi0 = Infinity, bi1 = -Infinity, bj0 = Infinity, bj1 = -Infinity, bl0 = Infinity, bl1 = -Infinity;
+    // Greedy-merge the piece's own lattice into boxes, one level at a time —
+    // same algorithm as buildChunkColliderBoxes, but over blocks we already
+    // know exist rather than the voxel store. i/j are grid indices, so unlike
+    // terrain this needs no quantizing.
+    let bi0 = Infinity, bi1 = -Infinity, bj0 = Infinity, bj1 = -Infinity;
     for (const b of blocks) {
       if (b.i < bi0) bi0 = b.i; if (b.i > bi1) bi1 = b.i;
       if (b.j < bj0) bj0 = b.j; if (b.j > bj1) bj1 = b.j;
-      if (b.lvl < bl0) bl0 = b.lvl; if (b.lvl > bl1) bl1 = b.lvl;
     }
-    const isBlock = (i, j, lvl) => unit.has(gravKey(i, j, lvl));
-    const isOpen = (i, j, lvl) => !unit.has(gravKey(i, j, lvl));
-    for (const s of buildFaceSlabs(bi0, bi1, bj0, bj1, bl0, bl1, isBlock, isOpen,
-        (i) => colX(i) - cx, (j) => colZ(j) - cz, (lvl) => lvl * BLOCK - cy)) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(s.hx, s.hy, s.hz)), new CANNON.Vec3(s.x, s.y, s.z));
+    const w = bi1 - bi0 + 1, dep = bj1 - bj0 + 1;
+    // A block only contributes collision if at least one face isn't touching
+    // another block in this same piece — buried interior blocks are skipped.
+    const exposedInUnit = (b) =>
+      !unit.has(gravKey(b.i - 1, b.j, b.lvl)) || !unit.has(gravKey(b.i + 1, b.j, b.lvl)) ||
+      !unit.has(gravKey(b.i, b.j - 1, b.lvl)) || !unit.has(gravKey(b.i, b.j + 1, b.lvl)) ||
+      !unit.has(gravKey(b.i, b.j, b.lvl - 1)) || !unit.has(gravKey(b.i, b.j, b.lvl + 1));
+    const byLevel = new Map();  // lvl -> Uint8Array(w*dep), 1 where an exposed block sits
+    for (const b of blocks) {
+      if (!exposedInUnit(b)) continue;
+      let grid = byLevel.get(b.lvl);
+      if (!grid) byLevel.set(b.lvl, grid = new Uint8Array(w * dep));
+      grid[(b.j - bj0) * w + (b.i - bi0)] = 1;
+    }
+    // Grow each level's rectangle straight down through lower levels whose
+    // footprint is fully solid there too — same as buildChunkColliderBoxes,
+    // except levels here can have gaps, so it's just "is there a byLevel
+    // entry" rather than a floor/lo bound.
+    function footprintSolidAt(ii0, ii1, jj0, jj1, lvl) {
+      const grid = byLevel.get(lvl);
+      if (!grid) return false;
+      for (let jj = jj0; jj < jj1; jj++)
+        for (let ii = ii0; ii < ii1; ii++)
+          if (!grid[jj * w + ii]) return false;
+      return true;
+    }
+    const levels = [...byLevel.keys()].sort((a, b) => b - a);
+    const consumedTo = new Float64Array(w * dep).fill(Infinity);
+    const visited = new Uint8Array(w * dep);
+    for (const lvl of levels) {
+      const solid = byLevel.get(lvl);
+      visited.fill(0);
+      for (let jj = 0; jj < dep; jj++) {
+        for (let ii = 0; ii < w; ii++) {
+          const idx = jj * w + ii;
+          if (!solid[idx] || visited[idx] || lvl >= consumedTo[idx]) continue;
+          let ii1 = ii + 1;
+          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1] && lvl < consumedTo[jj * w + ii1]) ii1++;
+          let jj1 = jj + 1;
+          for (;;) {
+            if (jj1 >= dep) break;
+            let full = true;
+            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x] || lvl >= consumedTo[jj1 * w + x]) { full = false; break; }
+            if (!full) break;
+            jj1++;
+          }
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+
+          let botLvl = lvl;
+          while (footprintSolidAt(ii, ii1, jj, jj1, botLvl - 1)) botLvl--;
+          if (botLvl < lvl) {
+            for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) consumedTo[y * w + x] = botLvl;
+          }
+
+          const gi0 = bi0 + ii, gi1 = bi0 + ii1 - 1, gj0 = bj0 + jj, gj1 = bj0 + jj1 - 1;
+          body.addShape(
+            new CANNON.Box(new CANNON.Vec3((gi1 - gi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (gj1 - gj0 + 1) * BLOCK * 0.5)),
+            new CANNON.Vec3((colX(gi0) + colX(gi1)) * 0.5 - cx, ((botLvl + lvl) / 2 + 0.5) * BLOCK - cy, (colZ(gj0) + colZ(gj1)) * 0.5 - cz));
+        }
+      }
     }
   }
   body.position.set(cx, cy, cz);
@@ -4602,13 +4584,13 @@ function recentreDebris(mesh, body) {
 // after a dig: a piece is a few dozen boxes at most, so building the shapes
 // again costs less than trying to patch the ones that are there.
 function rebuildDebrisBody(mesh, body) {
-  const lat = mesh.userData.blocks;
+  const lat = mesh.userData.blocks, h = HALF_BLOCK;
   body.shapes.length = 0;
   body.shapeOffsets.length = 0;
   body.shapeOrientations.length = 0;
   if (lat.length) {
-    // Same face-slab merge as spawnFallingChunk. Grid indices are carried on
-    // each block since recentreDebris shifts b.pos by the (non-grid-aligned)
+    // Same greedy merge as spawnFallChunk. Grid indices are carried on each
+    // block since recentreDebris shifts b.pos by the (non-grid-aligned)
     // centre of mass, so quantizing positions would give the wrong cells.
     // pos and (gi,gj,lvl) differ by a fixed offset per axis (world-to-local
     // shift plus whatever centre of mass has been subtracted so far) — read
@@ -4618,23 +4600,86 @@ function rebuildDebrisBody(mesh, body) {
     const ref = lat[0];
     const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
     const byLevel = new Map();  // lvl -> Set("gi,gj") — the full lattice, for neighbour lookups
-    let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity, l0 = Infinity, l1 = -Infinity;
     for (const b of lat) {
       let cells = byLevel.get(b.lvl);
       if (!cells) byLevel.set(b.lvl, cells = new Set());
       cells.add(b.gi + ',' + b.gj);
-      if (b.gi < gi0) gi0 = b.gi; if (b.gi > gi1) gi1 = b.gi;
-      if (b.gj < gj0) gj0 = b.gj; if (b.gj > gj1) gj1 = b.gj;
-      if (b.lvl < l0) l0 = b.lvl; if (b.lvl > l1) l1 = b.lvl;
     }
-    const isBlock = (gi, gj, lvl) => {
+    const hasCell = (gi, gj, lvl) => {
       const cells = byLevel.get(lvl);
       return !!cells && cells.has(gi + ',' + gj);
     };
-    const isOpen = (gi, gj, lvl) => !isBlock(gi, gj, lvl);
-    for (const s of buildFaceSlabs(gi0, gi1, gj0, gj1, l0, l1, isBlock, isOpen,
-        (gi) => gi * BLOCK + kx, (gj) => gj * BLOCK + kz, (lvl) => lvl * BLOCK + ky)) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(s.hx, s.hy, s.hz)), new CANNON.Vec3(s.x, s.y, s.z));
+    // Only cells with a face not touching another block in the lattice count
+    // for collision — buried interior blocks are skipped entirely.
+    const exposedByLevel = new Map();  // lvl -> Set("gi,gj"), exposed cells only
+    for (const [lvl, cells] of byLevel) {
+      const exp = new Set();
+      for (const key of cells) {
+        const [gi, gj] = key.split(',').map(Number);
+        if (!hasCell(gi - 1, gj, lvl) || !hasCell(gi + 1, gj, lvl) ||
+            !hasCell(gi, gj - 1, lvl) || !hasCell(gi, gj + 1, lvl) ||
+            !hasCell(gi, gj, lvl - 1) || !hasCell(gi, gj, lvl + 1)) exp.add(key);
+      }
+      if (exp.size) exposedByLevel.set(lvl, exp);
+    }
+    // Same downward growth as spawnFallingChunk: a rectangle at one level
+    // extends into a taller box as long as the exact footprint is also solid
+    // (has an exposed cell entry) at the level(s) below.
+    function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
+      const cellsAt = exposedByLevel.get(lvl);
+      if (!cellsAt) return false;
+      for (let gj = mj0; gj <= mj1; gj++)
+        for (let gi = mi0; gi <= mi1; gi++)
+          if (!cellsAt.has(gi + ',' + gj)) return false;
+      return true;
+    }
+    const consumedTo = new Map();  // "gi,gj" -> lowest level a taller box above already reaches down to
+    const levels = [...exposedByLevel.keys()].sort((a, b) => b - a);
+    for (const lvl of levels) {
+      const cells = exposedByLevel.get(lvl);
+      let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity;
+      for (const key of cells) {
+        const [gi, gj] = key.split(',').map(Number);
+        if (gi < gi0) gi0 = gi; if (gi > gi1) gi1 = gi;
+        if (gj < gj0) gj0 = gj; if (gj > gj1) gj1 = gj;
+      }
+      const w = gi1 - gi0 + 1, dep = gj1 - gj0 + 1;
+      const solid = new Uint8Array(w * dep);
+      for (const key of cells) {
+        const th = consumedTo.get(key);
+        if (th !== undefined && lvl >= th) continue;
+        const [gi, gj] = key.split(',').map(Number);
+        solid[(gj - gj0) * w + (gi - gi0)] = 1;
+      }
+      const visited = new Uint8Array(w * dep);
+      for (let jj = 0; jj < dep; jj++) {
+        for (let ii = 0; ii < w; ii++) {
+          const idx = jj * w + ii;
+          if (!solid[idx] || visited[idx]) continue;
+          let ii1 = ii + 1;
+          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
+          let jj1 = jj + 1;
+          for (;;) {
+            if (jj1 >= dep) break;
+            let full = true;
+            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
+            if (!full) break;
+            jj1++;
+          }
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+
+          const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
+          let botLvl = lvl;
+          while (footprintSolidAt(mi0, mi1, mj0, mj1, botLvl - 1)) botLvl--;
+          if (botLvl < lvl) {
+            for (let gj = mj0; gj <= mj1; gj++) for (let gi = mi0; gi <= mi1; gi++) consumedTo.set(gi + ',' + gj, botLvl);
+          }
+
+          body.addShape(
+            new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
+            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
+        }
+      }
     }
   }
   recentreDebris(mesh, body);

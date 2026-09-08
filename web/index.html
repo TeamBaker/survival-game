@@ -4360,13 +4360,38 @@ const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 const FALL_BODY_CAP  = 20;    // pieces under physics at once
 const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
 const FALL_SHAPE_CAP = 24;    // blocks that get a collider each, rather than one box round the lot
-const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
+const FALL_MASS_CAP  = 120;   // a cliff face weighs as much as the solver can take, not as much as it is
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
 // White, because the colour of every face comes in per vertex.
 const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45, vertexColors: true });
+
+// A block's contribution to a piece's mass and centre of mass is its material's
+// weight (MAT_STATS), not a flat count — a rock block should drag and balance a
+// falling piece more than a sand block. Blocks come in two shapes here: the raw
+// lattice from a gravity flood-fill (.i/.j/.lvl/.m) and the settled debris
+// lattice (.pos/.mat) — both are handled so the same helpers cover every site.
+const blockWeight = (b) => MAT_STATS[b.mat !== undefined ? b.mat : b.m]?.weight ?? 1;
+function debrisMass(blocks) {
+  let m = 0;
+  for (const b of blocks) m += blockWeight(b);
+  return m;
+}
+function debrisWeightedCenter(blocks, out) {
+  out.set(0, 0, 0);
+  let totalW = 0;
+  for (const b of blocks) {
+    const w = blockWeight(b);
+    out.x += (b.pos ? b.pos.x : colX(b.i)) * w;
+    out.y += (b.pos ? b.pos.y : (b.lvl + 0.5) * BLOCK) * w;
+    out.z += (b.pos ? b.pos.z : colZ(b.j)) * w;
+    totalW += w;
+  }
+  if (totalW > 0) out.multiplyScalar(1 / totalW);
+  return out;
+}
 
 // A debris piece is one merged buffer, not a cube per block: like a terrain
 // chunk, only the faces that touch air are worth drawing, so a solid lump of
@@ -4456,16 +4481,14 @@ function dropChunk(f) {
 const chunkOfMesh = (mesh) => fallingChunks.find((e) => e.mesh === mesh)
                           || restedChunks.find((e) => e.mesh === mesh);
 
+const chunkCoM = new THREE.Vector3();
 function spawnFallingChunk(unit) {
   const blocks = [...unit.values()];
   const n = blocks.length;
 
-  // Centre of the piece, in world units.
-  let cx = 0, cy = 0, cz = 0;
-  for (const b of blocks) {
-    cx += colX(b.i); cy += (b.lvl + 0.5) * BLOCK; cz += colZ(b.j);
-  }
-  cx /= n; cy /= n; cz /= n;
+  // Weighted centre of the piece, in world units — a piece of mixed materials
+  // balances toward its heavier blocks, not its geometric middle.
+  const { x: cx, y: cy, z: cz } = debrisWeightedCenter(blocks, chunkCoM);
 
   // The mesh: one merged buffer of exposed faces, positioned relative to that
   // centre so the whole thing rotates about it.
@@ -4485,7 +4508,7 @@ function spawnFallingChunk(unit) {
   debris.add(mesh);
 
   const body = new CANNON.Body({
-    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    mass: Math.min(debrisMass(blocks), FALL_MASS_CAP),
     material: physDebris,
     linearDamping: 0.02,
     angularDamping: 0.15,
@@ -4848,9 +4871,7 @@ const debrisCoM = new THREE.Vector3(), debrisArm = new CANNON.Vec3();
 function recentreDebris(mesh, body) {
   const lat = mesh.userData.blocks;
   if (!lat.length) return;
-  const c = debrisCoM.set(0, 0, 0);
-  for (const b of lat) c.add(b.pos);
-  c.multiplyScalar(1 / lat.length);
+  const c = debrisWeightedCenter(lat, debrisCoM);
   if (c.lengthSq() < 1e-12) return;
   for (const b of lat) b.pos.sub(c);
   for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
@@ -4963,7 +4984,7 @@ function rebuildDebrisBody(mesh, body) {
   }
   recentreDebris(mesh, body);
   buildDebrisGeometry(mesh);
-  body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
+  body.mass = Math.min(debrisMass(lat), FALL_MASS_CAP);
   body.updateMassProperties();
   body.updateBoundingRadius();
   body.updateAABB();
@@ -5022,9 +5043,7 @@ const partQuat = new THREE.Quaternion();
 function spawnDebrisPart(parent, blocks, pbody, frozen) {
   const n = blocks.length, h = HALF_BLOCK, hy = HALF_BLOCK;
   parent.updateWorldMatrix(true, false);
-  const c = new THREE.Vector3();
-  for (const b of blocks) c.add(b.pos);
-  c.multiplyScalar(1 / n);
+  const c = debrisWeightedCenter(blocks, new THREE.Vector3());
 
   const mesh = new THREE.Mesh(new THREE.BufferGeometry(), fallMat);
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -5042,7 +5061,7 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
   debris.add(mesh);
 
   const body = new CANNON.Body({
-    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    mass: Math.min(debrisMass(blocks), FALL_MASS_CAP),
     material: physDebris,
     linearDamping: 0.02,
     angularDamping: 0.15,

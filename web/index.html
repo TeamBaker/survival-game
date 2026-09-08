@@ -649,6 +649,87 @@
   #btn-debug-colliders.on { color: #fff; border-color: rgba(120, 255, 160, 0.4); }
   #btn-debug-colliders:active { transform: translateY(1px); }
 
+  /* ---------- LOD sphere prototyping panel ---------- */
+  #lod-panel {
+    position: fixed;
+    top: calc(360px + env(safe-area-inset-top));
+    right: calc(14px + env(safe-area-inset-right));
+    width: 210px;
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 10px 11px;
+    font-family: inherit;
+    font-size: 11px;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.78);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 12px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 14;
+  }
+  #lod-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  #lod-panel-head .title {
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #9ecbff;
+  }
+  #lod-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 10px;
+  }
+  .lod-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .lod-row .lod-radius { flex: 1; min-width: 0; }
+  .lod-row .lod-radius-val { width: 24px; text-align: right; color: #9ecbff; font-size: 10px; }
+  .lod-row .lod-color { width: 22px; height: 20px; padding: 0; border: none; background: none; cursor: pointer; }
+  .lod-row .lod-del {
+    width: 18px; height: 18px;
+    line-height: 16px;
+    padding: 0;
+    border: 1px solid rgba(255, 150, 150, 0.4);
+    border-radius: 4px;
+    background: rgba(255, 80, 80, 0.15);
+    color: #ffb3b3;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  #lod-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  #lod-actions button {
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(150, 195, 245, 0.14);
+    border: 1px solid rgba(150, 195, 245, 0.35);
+    border-radius: 7px;
+    padding: 6px 8px;
+    cursor: pointer;
+  }
+  #lod-actions button:active { transform: translateY(1px); }
+
   #chart-overlay {
     position: fixed;
     inset: 0;
@@ -914,6 +995,21 @@
 <button id="btn-chart" class="ui-el">Chart</button>
 <button id="btn-debug-chunks" class="ui-el">Debug Chunks</button>
 <button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
+
+<!-- Prototyping tool: concentric LOD spheres around the camera, coloured by
+     distance band, so the radii/colours can be tuned live before they get
+     hardcoded into a real LOD system. -->
+<div id="lod-panel" class="ui-el">
+  <div id="lod-panel-head">
+    <span class="title">LOD Spheres</span>
+    <label id="lod-toggle-label"><input type="checkbox" id="lod-toggle"> Show</label>
+  </div>
+  <div id="lod-rows"></div>
+  <div id="lod-actions">
+    <button id="lod-add">+ Add Sphere</button>
+    <button id="lod-copy">Copy Config</button>
+  </div>
+</div>
 
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
 <div id="chart-overlay" class="ui-el">
@@ -2352,6 +2448,195 @@ scene.add(debugChunkGrid);
 document.getElementById('btn-debug-chunks').addEventListener('click', () => {
   debugChunkGrid.visible = !debugChunkGrid.visible;
   document.getElementById('btn-debug-chunks').classList.toggle('on', debugChunkGrid.visible);
+});
+
+// ---------------------------------------------------------------------------
+// LOD sphere prototyping tool — concentric spheres around the camera, used to
+// design distance bands visually before hardcoding a real LOD system. Every
+// 20x20-block grid chunk (the same GRID_N/CHUNK_GRID overlay the debug wireframe
+// above draws) is coloured by which sphere its centre falls inside; chunks
+// outside every sphere keep their normal terrain colour. Not the final LOD
+// system — just a dial to turn while looking at the island.
+let lodSpheres = [
+  { radius: 20, color: 0x00ff00 },
+  { radius: 40, color: 0xffff00 },
+  { radius: 60, color: 0xff0000 },
+];
+let lodEnabled = false;
+
+// One grid cell (of the GRID_N x GRID_N overlay) per CHUNK mesh chunk, chosen
+// by which cell the mesh chunk's own centre falls in. Built once: neither grid
+// moves after the island is generated.
+const lodChunkGrid = new Int32Array(CHUNK_N * CHUNK_N);
+for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  const cx = colX(i0 + CHUNK / 2), cz = colZ(j0 + CHUNK / 2);
+  const gi = Math.min(GRID_N - 1, Math.max(0, Math.floor((cx + GEN_R) / (CHUNK_GRID * BLOCK))));
+  const gj = Math.min(GRID_N - 1, Math.max(0, Math.floor((cz + GEN_R) / (CHUNK_GRID * BLOCK))));
+  lodChunkGrid[c] = gj * GRID_N + gi;
+}
+// World-space centre of every grid cell, precomputed alongside the mapping above.
+const lodGridCenterX = new Float32Array(GRID_N * GRID_N);
+const lodGridCenterZ = new Float32Array(GRID_N * GRID_N);
+for (let gj = 0; gj < GRID_N; gj++) {
+  for (let gi = 0; gi < GRID_N; gi++) {
+    const x0 = -GEN_R + gi * CHUNK_GRID * BLOCK;
+    const z0 = -GEN_R + gj * CHUNK_GRID * BLOCK;
+    const x1 = -GEN_R + Math.min((gi + 1) * CHUNK_GRID, GEN_N) * BLOCK;
+    const z1 = -GEN_R + Math.min((gj + 1) * CHUNK_GRID, GEN_N) * BLOCK;
+    const g = gj * GRID_N + gi;
+    lodGridCenterX[g] = (x0 + x1) / 2;
+    lodGridCenterZ[g] = (z0 + z1) / 2;
+  }
+}
+
+// Per (material, sphere) coloured material, cloned from the shared white
+// vertex-coloured original so setting .color tints only chunks in that sphere
+// — the original TERRAIN_FACE_MATS stay untouched for chunks outside every
+// sphere (and for when the tool is off).
+let lodMatCache = [];
+function rebuildLodMatCache() {
+  for (const row of lodMatCache) for (const m of row) if (m) m.dispose();
+  lodMatCache = TERRAIN_FACE_MATS.map((base) => lodSpheres.map((s) => {
+    const m = base.clone();
+    m.color.setHex(s.color);
+    return m;
+  }));
+}
+rebuildLodMatCache();
+
+// The sphere wireframes themselves, so the bands are visible, not just their
+// effect on the terrain. Rebuilt whenever the sphere list changes; repositioned
+// on the camera every frame while the tool is on.
+const lodSphereGroup = new THREE.Group();
+lodSphereGroup.visible = false;
+scene.add(lodSphereGroup);
+function rebuildLodWireframes() {
+  for (const c of lodSphereGroup.children) { c.geometry.dispose(); c.material.dispose(); }
+  lodSphereGroup.clear();
+  for (const s of lodSpheres) {
+    const geo = new THREE.SphereGeometry(s.radius, 24, 16);
+    const edges = new THREE.EdgesGeometry(geo);
+    geo.dispose();
+    const wire = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({
+      color: s.color, transparent: true, opacity: 0.35,
+    }));
+    lodSphereGroup.add(wire);
+  }
+}
+rebuildLodWireframes();
+
+// The innermost (smallest-radius, highest-detail) sphere that still reaches
+// this distance; -1 if it is past all of them. Picks by radius rather than
+// array position, so it is correct however the rows have been reordered or
+// edited in the panel.
+function lodSphereIndexFor(dist) {
+  let best = -1, bestRadius = Infinity;
+  for (let i = 0; i < lodSpheres.length; i++) {
+    const r = lodSpheres[i].radius;
+    if (r > dist && r < bestRadius) { best = i; bestRadius = r; }
+  }
+  return best;
+}
+
+function updateSphereLOD() {
+  lodSphereGroup.visible = lodEnabled;
+  if (!lodEnabled) return;
+  lodSphereGroup.position.copy(camera.position);
+
+  const camPos = camera.position;
+  const gridSphere = new Int8Array(GRID_N * GRID_N);
+  for (let g = 0; g < GRID_N * GRID_N; g++) {
+    const dx = lodGridCenterX[g] - camPos.x, dz = lodGridCenterZ[g] - camPos.z, dy = -camPos.y;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    gridSphere[g] = lodSphereIndexFor(dist);
+  }
+
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+    const meshes = chunkMesh[c];
+    if (!meshes) continue;
+    const si = gridSphere[lodChunkGrid[c]];
+    for (let m = 0; m < N_MATS; m++) {
+      const me = meshes[m];
+      if (!me) continue;
+      me.material = si >= 0 ? lodMatCache[m][si] : TERRAIN_FACE_MATS[m];
+    }
+  }
+}
+
+// Reverts every chunk mesh currently showing a sphere colour back to its
+// normal terrain material — called once on toggle-off rather than every frame.
+function clearSphereLOD() {
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+    const meshes = chunkMesh[c];
+    if (!meshes) continue;
+    for (let m = 0; m < N_MATS; m++) {
+      if (meshes[m]) meshes[m].material = TERRAIN_FACE_MATS[m];
+    }
+  }
+}
+
+// ----- LOD panel UI -----
+const lodRowsEl   = document.getElementById('lod-rows');
+const lodToggleEl = document.getElementById('lod-toggle');
+
+function renderLodRows() {
+  lodRowsEl.innerHTML = '';
+  lodSpheres.forEach((s, idx) => {
+    const row = document.createElement('div');
+    row.className = 'lod-row';
+    row.innerHTML =
+      '<input type="range" class="lod-radius" min="5" max="100" step="1" value="' + s.radius + '">' +
+      '<span class="lod-radius-val">' + s.radius + '</span>' +
+      '<input type="color" class="lod-color" value="#' + s.color.toString(16).padStart(6, '0') + '">' +
+      '<button class="lod-del">&times;</button>';
+
+    const radiusInput = row.querySelector('.lod-radius');
+    const radiusVal    = row.querySelector('.lod-radius-val');
+    const colorInput  = row.querySelector('.lod-color');
+    const delBtn      = row.querySelector('.lod-del');
+
+    radiusInput.addEventListener('input', () => {
+      s.radius = Number(radiusInput.value);
+      radiusVal.textContent = s.radius;
+      rebuildLodWireframes();
+    });
+    colorInput.addEventListener('input', () => {
+      s.color = parseInt(colorInput.value.slice(1), 16);
+      rebuildLodMatCache();
+      rebuildLodWireframes();
+    });
+    delBtn.addEventListener('click', () => {
+      lodSpheres.splice(idx, 1);
+      rebuildLodMatCache();
+      rebuildLodWireframes();
+      renderLodRows();
+    });
+
+    lodRowsEl.appendChild(row);
+  });
+}
+renderLodRows();
+
+document.getElementById('lod-add').addEventListener('click', () => {
+  lodSpheres.push({ radius: 30, color: 0xffffff });
+  rebuildLodMatCache();
+  rebuildLodWireframes();
+  renderLodRows();
+});
+
+document.getElementById('lod-copy').addEventListener('click', () => {
+  // Not strict JSON — a JS array literal, so it can be pasted straight in as
+  // the hardcoded sphere config (colours as 0xRRGGBB, same as the source).
+  const body = lodSpheres
+    .map((s) => '  { radius: ' + s.radius + ', color: 0x' + s.color.toString(16).padStart(6, '0') + ' },')
+    .join('\n');
+  navigator.clipboard.writeText('[\n' + body + '\n]').catch(() => {});
+});
+
+lodToggleEl.addEventListener('change', () => {
+  lodEnabled = lodToggleEl.checked;
+  if (!lodEnabled) clearSphereLOD();
 });
 
 // ----- pass 3b: the fillet surface -----
@@ -5798,6 +6083,7 @@ function tick() {
   checkTerrainPowder();
 
   updateCamera(dt);
+  updateSphereLOD();
   // After the camera, since the aim is taken down the view direction, and before
   // the render so the highlight boxes are in the right place this frame.
   if (shovel.on) updateShovel();

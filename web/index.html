@@ -2018,19 +2018,53 @@ let blockCount = 0, faceCount = 0;
 
 // Visual LOD only — the collider (buildChunkColliderBoxes) and debris always
 // build at full detail, so digging and physics never see anything coarser
-// than a real block. chunkStep remembers what step each chunk was last drawn
-// at, purely for bookkeeping (blockCount/faceCount deltas in rebuildChunk);
-// the step itself is decided globally, not per chunk — see globalLODStep.
+// than a real block. chunkStep holds the step each chunk is actually drawn
+// at, decided per-chunk below (see propagateLOD) rather than globally.
 const chunkStep = new Int8Array(CHUNK_N * CHUNK_N);
 
-// Global LOD: one step for all chunks, based on camera distance from
-// world centre. All chunks agree → no boundary gaps.
-const LOD_CLOSE = 20, LOD_FAR = 50;  // metres from world centre
-let globalLODStep = 1;
-function updateGlobalLOD() {
-  const dx = camera.position.x, dz = camera.position.z;
+// Per-chunk LOD, Distant-Horizons style: each chunk first picks a step from
+// its own distance to the camera, then a chunk bordering a higher-detail
+// (lower step) neighbour adopts that neighbour's step. Detail bleeds outward
+// from whatever is near the camera until every pair of touching chunks
+// agrees, which is what keeps the seam between them gap-free.
+const LOD_NEAR = 25, LOD_FAR = 60;  // metres from camera
+
+function rawLODStep(c) {
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  const ccx = -GEN_R + (i0 + CHUNK * 0.5) * BLOCK;
+  const ccz = -GEN_R + (j0 + CHUNK * 0.5) * BLOCK;
+  const dx = ccx - camera.position.x, dz = ccz - camera.position.z;
   const dist = Math.sqrt(dx * dx + dz * dz);
-  globalLODStep = dist < LOD_CLOSE ? 1 : dist < LOD_FAR ? 2 : 4;
+  if (dist < LOD_NEAR) return 1;
+  if (dist < LOD_FAR) return 2;
+  return 4;
+}
+
+function propagateLOD() {
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) chunkStep[c] = rawLODStep(c);
+  // Repeat until stable — one pass moves each finer step one chunk further
+  // out, and the grid is at most CHUNK_N chunks across.
+  for (let pass = 0; pass < 10; pass++) {
+    let changed = false;
+    for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+      const ci = c % CHUNK_N, cj = (c / CHUNK_N) | 0;
+      const myStep = chunkStep[c];
+      const neighbors = [
+        ci > 0 ? c - 1 : -1,
+        ci < CHUNK_N - 1 ? c + 1 : -1,
+        cj > 0 ? c - CHUNK_N : -1,
+        cj < CHUNK_N - 1 ? c + CHUNK_N : -1
+      ];
+      for (const n of neighbors) {
+        if (n >= 0 && chunkStep[n] < myStep) {
+          chunkStep[c] = chunkStep[n];
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (!changed) break;
+  }
 }
 
 // Cubes are the only terrain surface. The smooth fillet skin of pass 3b still
@@ -2265,8 +2299,7 @@ function rebuildChunk(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
 
-  const step = globalLODStep;
-  chunkStep[c] = step;
+  const step = chunkStep[c];
 
   let blocks = 0;
   for (let j = j0; j < j1; j += step) for (let i = i0; i < i1; i += step) blocks += collectColumn(i, j, step);
@@ -2310,17 +2343,18 @@ function rebuildChunk(c) {
   chunkFaces[c]  = faces;
 }
 
+propagateLOD();
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 
-// Re-checks the single global LOD step against the camera; when it changes,
-// every loaded chunk is out of step and gets rebuilt so they all agree again.
+// Re-derives every chunk's step from the camera and cascades detail across
+// boundaries, then rebuilds whatever came out different from last time —
+// which, since neighbours are always brought into agreement, is never a
+// chunk without also being every chunk it touches.
 function updateChunkLOD() {
-  const prevStep = globalLODStep;
-  updateGlobalLOD();
-  if (globalLODStep !== prevStep) {
-    for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
-      if (chunkMesh[c]) rebuildChunk(c);
-    }
+  const prev = chunkStep.slice();
+  propagateLOD();
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+    if (chunkMesh[c] && chunkStep[c] !== prev[c]) rebuildChunk(c);
   }
 }
 

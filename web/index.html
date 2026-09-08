@@ -2346,16 +2346,40 @@ function rebuildChunk(c) {
 propagateLOD();
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
 
-// Re-derives every chunk's step from the camera and cascades detail across
-// boundaries, then rebuilds whatever came out different from last time —
-// which, since neighbours are always brought into agreement, is never a
-// chunk without also being every chunk it touches.
+// Budget-limited LOD rebuild: at most REBUILD_BUDGET chunks per frame,
+// closest to camera first. Spreads cost over many frames instead of one
+// giant lag spike when the player crosses a LOD boundary.
+const REBUILD_BUDGET = 4;
+let pendingRebuilds = [];
+
 function updateChunkLOD() {
   const prev = chunkStep.slice();
   propagateLOD();
-  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
-    if (chunkMesh[c] && chunkStep[c] !== prev[c]) rebuildChunk(c);
+
+  // Collect chunks that need rebuild, sorted by distance to camera
+  if (pendingRebuilds.length === 0) {
+    const needsRebuild = [];
+    for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+      if (chunkMesh[c] && chunkStep[c] !== prev[c]) needsRebuild.push(c);
+    }
+    // Sort by camera distance (closest first)
+    const camX = camera.position.x, camZ = camera.position.z;
+    needsRebuild.sort((a, b) => {
+      const ai = (a % CHUNK_N) * CHUNK, aj = ((a / CHUNK_N) | 0) * CHUNK;
+      const bi = (b % CHUNK_N) * CHUNK, bj = ((b / CHUNK_N) | 0) * CHUNK;
+      const adx = -GEN_R + (ai + CHUNK * 0.5) * BLOCK - camX;
+      const adz = -GEN_R + (aj + CHUNK * 0.5) * BLOCK - camZ;
+      const bdx = -GEN_R + (bi + CHUNK * 0.5) * BLOCK - camX;
+      const bdz = -GEN_R + (bj + CHUNK * 0.5) * BLOCK - camZ;
+      return (adx * adx + adz * adz) - (bdx * bdx + bdz * bdz);
+    });
+    pendingRebuilds = needsRebuild;
   }
+
+  // Rebuild at most BUDGET chunks this frame
+  const end = Math.min(REBUILD_BUDGET, pendingRebuilds.length);
+  for (let i = 0; i < end; i++) rebuildChunk(pendingRebuilds[i]);
+  pendingRebuilds.splice(0, end);
 }
 
 // ----- pass 3b: the fillet surface -----

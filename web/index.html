@@ -2016,16 +2016,6 @@ const chunkBlocks = new Int32Array(CHUNK_N * CHUNK_N);
 const chunkFaces  = new Int32Array(CHUNK_N * CHUNK_N);
 let blockCount = 0, faceCount = 0;
 
-// Visual LOD only — the collider (buildChunkColliderBoxes) and debris always
-// build at full detail, so digging and physics never see anything coarser
-// than a real block. Distance bands in metres, from the camera to the chunk
-// centre; chunkStep remembers what each chunk was last drawn at so
-// updateChunkLOD (below rebuildChunk) only pays for a rebuild when a chunk's
-// band actually changes, not every frame.
-const LOD_NEAR = 10, LOD_MID = 20;
-const lodStepFor = (dist) => dist < LOD_NEAR ? 1 : dist < LOD_MID ? 2 : 4;
-const chunkStep = new Int8Array(CHUNK_N * CHUNK_N);
-
 // Cubes are the only terrain surface. The smooth fillet skin of pass 3b still
 // exists in this file but is never built, so nothing ever covers the blocks and
 // every chunk's cubes stay visible. Declared up here because rebuildChunk() calls
@@ -2080,23 +2070,14 @@ const GRAIN_PIXEL = 0.06;
 const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
 
 // One face of the block centred on (cx, cy, cz), in the one colour that block
-// is — except powder, which is diced into flat-shaded pixels. `scale` widens
-// the face to stand in for a scale×scale group of blocks (LOD, see
-// collectColumn): it only stretches the two axes the face spans, not the one
-// its normal points along, so a wide face still sits flush on the real block
-// boundary instead of floating by (scale-1) blocks. Grain-dicing is skipped
-// above scale 1 — a distant LOD face is exactly the case where the extra
-// triangles it buys are not worth paying for.
-function pushFace(m, f, cx, cy, cz, r, g, b, scale = 1) {
+// is — except powder, which is diced into flat-shaded pixels.
+function pushFace(m, f, cx, cy, cz, r, g, b) {
   const B = faceBuf[m], v = f.v, n = f.n;
 
-  if (scale !== 1 || !MAT_STATS[m]?.powder) {
-    const sx = (n[0] === 0 ? scale : 1) * HALF_BLOCK;
-    const sy = (n[1] === 0 ? scale : 1) * HALF_BLOCK;
-    const sz = (n[2] === 0 ? scale : 1) * HALF_BLOCK;
+  if (!MAT_STATS[m]?.powder) {
     for (let q = 0; q < 4; q++) {
       const o = q * 3;
-      B.pos.push(cx + v[o] * sx, cy + v[o + 1] * sy, cz + v[o + 2] * sz);
+      B.pos.push(cx + v[o] * HALF_BLOCK, cy + v[o + 1] * HALF_BLOCK, cz + v[o + 2] * HALF_BLOCK);
       B.nor.push(n[0], n[1], n[2]);
       B.col.push(r, g, b);
     }
@@ -2149,74 +2130,33 @@ function pushFace(m, f, cx, cy, cz, r, g, b, scale = 1) {
 // block only the faces that touch air themselves are drawn, so the six-sided box
 // that used to stand in for every block is down to the one or two sides of it
 // anything could ever see. Returns the blocks it drew something for.
-//
-// `step` is the LOD footprint: at 1 (the default, and the only case the
-// collision mesh or debris ever use) this is exactly the per-block pass above.
-// Above 1, (i, j) is the corner of a step×step group of columns and this draws
-// one merged top face for the whole group instead of walking every column and
-// every level in it — cliffs, overhangs and side faces below the surface are
-// the detail that buys, and it is precisely the detail a chunk this far off is
-// too small on screen to spend triangles on.
-function collectColumn(i, j, step = 1) {
-  if (step === 1) {
-    const k = j * GEN_N + i;
-    const top = sTop[k];
-    if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return 0;
-    const t = tint[k], o = voxOff[k] - VOX_FLOOR;
-    const cx = colX(i), cz = colZ(j);
-    let drawn = 0;
-    for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
-      const m = voxMat[o + lvl];
-      if (m === AIR || !blockVisible[o + lvl]) continue;
-      // The one colour the whole block is drawn in — its material, the column's
-      // own tint, whether it is still in the soil band, and how far below the top
-      // of the column it sits — baked in here because the mesh carries a colour
-      // per vertex and the material itself is plain white.
-      const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
-      const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl));
-      const c = TERRAIN_MATS[m].color;
-      const r = c.r * s, g = c.g * s, b = c.b * s;
-      const cy = (lvl + 0.5) * BLOCK;
-      for (let f = 0; f < 6; f++) {
-        const F = FACES[f];
-        if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
-        pushFace(m, F, cx, cy, cz, r, g, b);
-      }
-      drawn++;
+function collectColumn(i, j) {
+  const k = j * GEN_N + i;
+  const top = sTop[k];
+  if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return 0;
+  const t = tint[k], o = voxOff[k] - VOX_FLOOR;
+  const cx = colX(i), cz = colZ(j);
+  let drawn = 0;
+  for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
+    const m = voxMat[o + lvl];
+    if (m === AIR || !blockVisible[o + lvl]) continue;
+    // The one colour the whole block is drawn in — its material, the column's
+    // own tint, whether it is still in the soil band, and how far below the top
+    // of the column it sits — baked in here because the mesh carries a colour
+    // per vertex and the material itself is plain white.
+    const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
+    const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl));
+    const c = TERRAIN_MATS[m].color;
+    const r = c.r * s, g = c.g * s, b = c.b * s;
+    const cy = (lvl + 0.5) * BLOCK;
+    for (let f = 0; f < 6; f++) {
+      const F = FACES[f];
+      if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
+      pushFace(m, F, cx, cy, cz, r, g, b);
     }
-    return drawn;
+    drawn++;
   }
-
-  // LOD path: the tallest column in the footprint stands in for the whole
-  // group, so a group is only ever drawn shorter than its true high point when
-  // that point is a lone spike too thin to matter at this distance.
-  const iMax = Math.min(i + step, GEN_N), jMax = Math.min(j + step, GEN_N);
-  let top = NO_COLUMN, bestK = -1;
-  for (let jj = j; jj < jMax; jj++) {
-    for (let ii = i; ii < iMax; ii++) {
-      const kk = jj * GEN_N + ii;
-      const ct = sTop[kk];
-      if (ct === NO_COLUMN || topLvl[kk] === NO_COLUMN) continue;
-      if (ct > top) { top = ct; bestK = kk; }
-    }
-  }
-  if (bestK < 0) return 0;
-
-  const m = voxMat[voxOff[bestK] - VOX_FLOOR + top];
-  if (m === AIR) return 0;
-  // Depth-below-own-top is 0 for the block standing in for the group, same as
-  // any column's own surface block, so the shading is just the soil-band tint.
-  const s = tint[bestK] * 0.94;
-  const c = TERRAIN_MATS[m].color;
-  const r = c.r * s, g = c.g * s, b = c.b * s;
-  const cx = colX(i) + (step - 1) * HALF_BLOCK, cz = colZ(j) + (step - 1) * HALF_BLOCK;
-  const cy = (top + 0.5) * BLOCK;
-  for (let f = 0; f < 6; f++) {
-    const F = FACES[f];
-    if (voxelAt(i + F.di * step, j + F.dj * step, top + F.dl) !== AIR) continue;
-    pushFace(m, F, cx, cy, cz, r, g, b, step);
-  }
-  return 1;
+  return drawn;
 }
 
 // (Re)build one chunk's meshes from the store. Cheap enough to call from a tap:
@@ -2239,13 +2179,8 @@ function rebuildChunk(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
 
-  const ccx = (i0 + CHUNK * 0.5) * BLOCK, ccz = (j0 + CHUNK * 0.5) * BLOCK;
-  const cdx = ccx - camera.position.x, cdz = ccz - camera.position.z;
-  const step = lodStepFor(Math.sqrt(cdx * cdx + cdz * cdz));
-  chunkStep[c] = step;
-
   let blocks = 0;
-  for (let j = j0; j < j1; j += step) for (let i = i0; i < i1; i += step) blocks += collectColumn(i, j, step);
+  for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) blocks += collectColumn(i, j);
 
   const meshes = new Array(N_MATS).fill(null);
   let faces = 0;
@@ -2287,26 +2222,6 @@ function rebuildChunk(c) {
 }
 
 for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
-
-// Re-checks every chunk's LOD band against the camera and rebuilds the ones
-// that have crossed into a new one. Gated the same way as
-// updateChunkColliders: it does nothing until the camera has crossed into a
-// new chunk cell, which is every CHUNK * BLOCK = 3.2 m of travel, so sitting
-// still or moving within a chunk costs nothing.
-let lodCi = null, lodCj = null;
-function updateChunkLOD() {
-  const ci = Math.floor(colI(camera.position.x) / CHUNK), cj = Math.floor(colJ(camera.position.z) / CHUNK);
-  if (ci === lodCi && cj === lodCj) return;
-  lodCi = ci; lodCj = cj;
-
-  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
-    const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
-    const ccx = (i0 + CHUNK * 0.5) * BLOCK, ccz = (j0 + CHUNK * 0.5) * BLOCK;
-    const cdx = ccx - camera.position.x, cdz = ccz - camera.position.z;
-    const step = lodStepFor(Math.sqrt(cdx * cdx + cdz * cdz));
-    if (step !== chunkStep[c]) rebuildChunk(c);
-  }
-}
 
 // ----- pass 3b: the fillet surface -----
 // The same terrain as one smooth skin instead of a field of cubes. It is not a
@@ -5757,7 +5672,6 @@ function tick() {
   if (shovel.on) updateShovel();
   if (hammer.on) updateHammer();
   flushDirtyChunks();
-  updateChunkLOD();
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
 

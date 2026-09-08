@@ -1653,9 +1653,6 @@ const tint   = new Float32Array(GEN_N * GEN_N);
 // enough that the stencil reads the hillside rather than the one-block jitter
 // quantisation leaves on it, narrow enough to still find the face of a bluff.
 const SLOPE_STEP = 6;
-// Width, in blocks, of the dithered zone `pickMaterial` blends across at each
-// height threshold instead of switching materials on a single row.
-const BLEND_WIDTH = 1.0;
 
 // Minecraft-ish banding, except that the thresholds themselves wander: without
 // that the boundary between two materials is a contour line, and nothing in a
@@ -1665,48 +1662,15 @@ const BLEND_WIDTH = 1.0;
 // rock however high or low it is; under that, low ground is beach; everything
 // else — including the tops, which used to come out grey — is soil. The only
 // rock you can see from above is therefore a face you could not have stood on.
-function pickMaterial(h, slope, x, z, y) {
-  // ~8 m patches, where it used to be ~3 m. Slower wander gives the material
-  // boundaries the same broad scale as everything else on the island — at 3 m
-  // they were a per-block speckle along every edge.
-  const n = vnoise2(x * 0.12, z * 0.12);           // -1 .. 1
-  // A second field, independent of the first and on the same broad scale, which
-  // only ever chooses *which variant* of a band a patch is made of. Where the
-  // bands themselves fall is still `n` alone, so the island's shape and its
-  // beach line are exactly what they were.
+function pickMaterial(h, slope, x, z) {
+  const n = vnoise2(x * 0.12, z * 0.12);
   const v = vnoise2(x * 0.09 + 41.7, z * 0.09 - 17.3);
-  // A third field, sampled at individual-block scale (~0.67 m patches), used
-  // only to dither the boundary itself: `v` and `n` still say where a band
-  // and its variant fall, but this decides which of the two neighbouring
-  // materials any one block near that boundary actually gets — so the fringe
-  // scatters block by block instead of switching over in one broad blob.
-  // 3-D scatter: sampled at block scale in all three axes so individual blocks
-  // fizzle independently in every direction — no clumps.
-  // (y is passed as a separate argument, see callers below.)
-  if (h <= SEA_Y) return WATER;                    // sea level and below: the water plane
-  // Anything you could not stand on. Most of it is sound rock; the rest is the
-  // crumbling face of it, which is softer to dig and lighter to carry.
+  if (h <= SEA_Y) return WATER;
   if (slope > 1.05 + n * 0.30) {
     return v > 0.45 ? BRITTLE_STONE : (v < -0.55 ? STONE_DUST : ROCK);
   }
-  // The beach, up to knee height. Right at the boundary, scatter a few
-  // blocks of the next band into this one so the edge is not a clean line.
-  const scatter3d = vnoise2(x * 2.5 + 99.3 + y * 1.7, z * 2.5 - 51.7 + y * 2.3);
-  if (h < 1.2 + n * 0.5 + 0.5 && h > 1.2 + n * 0.5 - 0.5) {
-    return scatter3d > 0.5 ? SAND : (v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT));
-  }
   if (h < 1.2 + n * 0.5) return SAND;
-  // Just above the tide line the ground never dries out, so the damp variants
-  // sit in a band there rather than anywhere on the island.
-  // Same idea at the damp-to-dry boundary.
-  if (h < 3.0 + n + 0.5 && h > 3.0 + n - 0.5) {
-    const damp = v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
-    const dry  = v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
-    return scatter3d > 0.5 ? dry : damp;
-  }
   if (h < 3.0 + n) return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
-  // All the gentle ground above it: earth, with clay banks and loose topsoil
-  // through it.
   return v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
 }
 
@@ -1748,7 +1712,7 @@ const DEEP_MAT = [
       // |grad h| is the tangent of the slope.
       const dx = (fieldAt(i + SLOPE_STEP, j) - fieldAt(i - SLOPE_STEP, j)) / (2 * SLOPE_STEP * BLOCK);
       const dz = (fieldAt(i, j + SLOPE_STEP) - fieldAt(i, j - SLOPE_STEP)) / (2 * SLOPE_STEP * BLOCK);
-      const m = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j), (gl + 0.5) * BLOCK);
+      const m = pickMaterial(h, Math.hypot(dx, dz), colX(i), colZ(j));
       topMat[k] = m;
       if (m === WATER) {
         // Flooded: the column's own ground carries on down where it was, and

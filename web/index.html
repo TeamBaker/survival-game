@@ -1687,30 +1687,21 @@ function pickMaterial(h, slope, x, z) {
   if (slope > 1.05 + n * 0.30) {
     return v > 0.45 ? BRITTLE_STONE : (v < -0.55 ? STONE_DUST : ROCK);
   }
-  // Rather than switching bands the instant h crosses a threshold, dither a
-  // BLEND_WIDTH zone around it with the high-frequency `scatter` field:
-  // `dist` is how far h sits from the threshold in units of BLEND_WIDTH
-  // (negative on one side, positive on the other), clamped to -1..1. Near 0
-  // that's an even coin flip between the two materials; further out `scatter`
-  // almost never crosses it, so the boundary is a scattered fringe of
-  // individual blocks rather than a soft, blobby gradient.
-  const sandDist = (h - (1.2 + n * 0.5));            // distance from threshold in blocks
-  if (sandDist < BLEND_WIDTH) {                       // the beach, up to knee height
-    const damp = v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
-    // Only scatter individual blocks in a narrow fringe (0.4 blocks) right at the edge.
-    // Farther in, just pick the dominant material cleanly.
-    if (sandDist > -0.4 && sandDist < 0.4) return scatter > sandDist / 0.4 ? damp : SAND;
-    return sandDist < 0 ? damp : SAND;
+  // The beach, up to knee height. Right at the boundary, scatter a few
+  // blocks of the next band into this one so the edge is not a clean line.
+  if (h < 1.2 + n * 0.5 + 1 && h > 1.2 + n * 0.5 - 1) {
+    return scatter > 0 ? SAND : (v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT));
   }
+  if (h < 1.2 + n * 0.5) return SAND;
   // Just above the tide line the ground never dries out, so the damp variants
   // sit in a band there rather than anywhere on the island.
-  const dirtDist = (h - (3.0 + n));
-  if (dirtDist < BLEND_WIDTH) {
+  // Same idea at the damp-to-dry boundary.
+  if (h < 3.0 + n + 1 && h > 3.0 + n - 1) {
     const damp = v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
     const dry  = v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
-    if (dirtDist > -0.4 && dirtDist < 0.4) return scatter > dirtDist / 0.4 ? dry : damp;
-    return dirtDist < 0 ? dry : damp;
+    return scatter > 0 ? dry : damp;
   }
+  if (h < 3.0 + n) return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
   // All the gentle ground above it: earth, with clay banks and loose topsoil
   // through it.
   return v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);

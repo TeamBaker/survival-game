@@ -2033,8 +2033,8 @@ function rawLODStep(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const ccx = -GEN_R + (i0 + CHUNK * 0.5) * BLOCK;
   const ccz = -GEN_R + (j0 + CHUNK * 0.5) * BLOCK;
-  const dx = ccx - camera.position.x, dz = ccz - camera.position.z;
-  const dist = Math.sqrt(dx * dx + dz * dz);
+  const dx = ccx - camera.position.x, dy = -camera.position.y, dz = ccz - camera.position.z;
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
   if (dist < LOD_NEAR) return 1;
   if (dist < LOD_FAR) return 2;
   return 4;

@@ -2211,7 +2211,11 @@ function collectColumn(i, j, step = 1) {
   const r = c.r * s, g = c.g * s, b = c.b * s;
   const cx = colX(i) + (step - 1) * HALF_BLOCK, cz = colZ(j) + (step - 1) * HALF_BLOCK;
   const cy = (top + 0.5) * BLOCK;
-  pushFace(m, FACES[2], cx, cy, cz, r, g, b, step);
+  for (let f = 0; f < 6; f++) {
+    const F = FACES[f];
+    if (voxelAt(i + F.di * step, j + F.dj * step, top + F.dl) !== AIR) continue;
+    pushFace(m, F, cx, cy, cz, r, g, b, step);
+  }
   return 1;
 }
 

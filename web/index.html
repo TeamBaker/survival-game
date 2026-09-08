@@ -2130,19 +2130,20 @@ const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
 
 // One face of the block centred on (cx, cy, cz), in the one colour that block
 // is — except powder, which is diced into flat-shaded pixels. `scale` widens
-// the face to stand in for a scale×scale group of blocks (LOD, see
-// collectColumn): it only stretches the two axes the face spans, not the one
-// its normal points along, so a wide face still sits flush on the real block
-// boundary instead of floating by (scale-1) blocks. Grain-dicing is skipped
+// the face to stand in for a scale×scale×scale group of blocks (LOD, see
+// collectColumn), whose centre (cx, cy, cz) is the true geometric centre of
+// that whole cube — so every axis, including the one the face's normal points
+// along, scales by it alike, or the face would sit short of the cube's real
+// boundary by (scale-1) half-blocks and leave a gap. Grain-dicing is skipped
 // above scale 1 — a distant LOD face is exactly the case where the extra
 // triangles it buys are not worth paying for.
 function pushFace(m, f, cx, cy, cz, r, g, b, scale = 1) {
   const B = faceBuf[m], v = f.v, n = f.n;
 
   if (scale !== 1 || !MAT_STATS[m]?.powder) {
-    const sx = (n[0] === 0 ? scale : 1) * HALF_BLOCK;
-    const sy = (n[1] === 0 ? scale : 1) * HALF_BLOCK;
-    const sz = (n[2] === 0 ? scale : 1) * HALF_BLOCK;
+    const sx = scale * HALF_BLOCK;
+    const sy = scale * HALF_BLOCK;
+    const sz = scale * HALF_BLOCK;
     for (let q = 0; q < 4; q++) {
       const o = q * 3;
       B.pos.push(cx + v[o] * sx, cy + v[o + 1] * sy, cz + v[o + 2] * sz);
@@ -2206,12 +2207,8 @@ function pushFace(m, f, cx, cy, cz, r, g, b, scale = 1) {
 // instead of walking every column and every level in it. The merged block's
 // material is whichever non-air material is most common across the cube, and
 // its vertical extent runs from the footprint's highest surface down
-// mergeSizeFor(step) levels. That merge is only valid where the footprint is
-// flat enough for the cube to cover every column's own surface — a corner at
-// height 3 next to one at height 9 has no cube short enough to represent both
-// without either burying the low one or floating over it — so the footprint's
-// height spread is checked first, and anything the cube can't cover falls back
-// to drawing the group at full detail instead of guessing.
+// mergeSizeFor(step) levels, so it sits flush with the tallest column in the
+// footprint and buries any shorter ones rather than leaving a gap over them.
 function collectColumn(i, j, step = 1) {
   if (step === 1) {
     const k = j * GEN_N + i;
@@ -2243,39 +2240,26 @@ function collectColumn(i, j, step = 1) {
   }
 
   // LOD path: the tallest column in the footprint anchors the merged cube, so
-  // a group is only ever drawn shorter than its true high point when that
-  // point is a lone spike too thin to matter at this distance — provided the
-  // footprint is flat enough (see the variance check below) that one cube is
-  // a fair stand-in for all of it.
+  // it sits flush with the highest surface and simply runs downward from
+  // there — shorter columns in the same footprint end up buried rather than
+  // leaving a gap, which is the right trade at the distance this only ever
+  // draws at.
   const S = mergeSizeFor(step);
   const iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
   let top = NO_COLUMN, bestK = -1;
-  let minTop = Infinity, maxTop = -Infinity;
   for (let jj = j; jj < jMax; jj++) {
     for (let ii = i; ii < iMax; ii++) {
       const kk = jj * GEN_N + ii;
       const ct = sTop[kk];
       if (ct === NO_COLUMN || topLvl[kk] === NO_COLUMN) continue;
       if (ct > top) { top = ct; bestK = kk; }
-      if (ct < minTop) minTop = ct;
-      if (ct > maxTop) maxTop = ct;
     }
   }
   if (bestK < 0) return 0;
+  const bestI = bestK % GEN_N, bestJ = (bestK / GEN_N) | 0;
 
-  // Too much relief in this footprint for one S-tall cube to cover every
-  // column's own surface without either burying or floating part of it —
-  // draw the group at full detail instead, column by column.
-  if (maxTop - minTop >= S) {
-    let drawn = 0;
-    for (let jj = j; jj < jMax; jj++)
-      for (let ii = i; ii < iMax; ii++)
-        drawn += collectColumn(ii, jj, 1);
-    return drawn;
-  }
-
-  // The cube runs from the footprint's highest surface down S levels (clamped
-  // to bedrock) — every column's own top falls inside it, per the check above.
+  // The cube runs from the footprint's highest surface down S levels, clamped
+  // to bedrock.
   const bandBottom = Math.max(VOX_FLOOR, top - S + 1);
 
   // Most common non-air material across the whole i×j×level cube stands in
@@ -2304,10 +2288,11 @@ function collectColumn(i, j, step = 1) {
     const F = FACES[f];
     // Same single-point visibility check as the un-merged path, just sampled
     // a whole cube-width away (or a cube-height, for the top/bottom faces)
-    // instead of one block away.
+    // instead of one block away. Top/bottom sample at the tallest column's
+    // own position — that's where `top` and `bandBottom` actually apply.
     let nb;
-    if (F.dl > 0) nb = voxelAt(i, j, top + 1);
-    else if (F.dl < 0) nb = voxelAt(i, j, bandBottom - 1);
+    if (F.dl > 0) nb = voxelAt(bestI, bestJ, top + 1);
+    else if (F.dl < 0) nb = voxelAt(bestI, bestJ, bandBottom - 1);
     else nb = voxelAt(i + F.di * S, j + F.dj * S, top);
     if (nb !== AIR) continue;
     pushFace(m, F, cx, cy, cz, r, g, b, S);

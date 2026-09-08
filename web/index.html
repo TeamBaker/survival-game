@@ -4474,6 +4474,13 @@ function rebuildDebrisBody(mesh, body) {
     // Same greedy merge as spawnFallChunk. Grid indices are carried on each
     // block since recentreDebris shifts b.pos by the (non-grid-aligned)
     // centre of mass, so quantizing positions would give the wrong cells.
+    // pos and (gi,gj,lvl) differ by a fixed offset per axis (world-to-local
+    // shift plus whatever centre of mass has been subtracted so far) — read
+    // it off one block so merged shape offsets land in the same local frame
+    // as the lattice instead of raw grid*BLOCK, which drifted from it by
+    // GEN_R and every past recentre.
+    const ref = lat[0];
+    const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
     const byLevel = new Map();  // lvl -> Map("gi,gj" -> true)
     for (const b of lat) {
       let cells = byLevel.get(b.lvl);
@@ -4513,7 +4520,7 @@ function rebuildDebrisBody(mesh, body) {
           const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
           body.addShape(
             new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
-            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK, (lvl + 0.5) * BLOCK, ((mj0 + mj1) / 2) * BLOCK));
+            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, (lvl + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
         }
       }
     }

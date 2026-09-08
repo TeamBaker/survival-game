@@ -1692,17 +1692,17 @@ function pickMaterial(h, slope, x, z, y) {
   // The beach, up to knee height. Right at the boundary, scatter a few
   // blocks of the next band into this one so the edge is not a clean line.
   const scatter3d = vnoise2(x * 2.5 + 99.3 + y * 1.7, z * 2.5 - 51.7 + y * 2.3);
-  if (h < 1.2 + n * 0.5 + 1 && h > 1.2 + n * 0.5 - 1) {
-    return scatter3d > 0 ? SAND : (v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT));
+  if (h < 1.2 + n * 0.5 + 0.5 && h > 1.2 + n * 0.5 - 0.5) {
+    return scatter3d > 0.5 ? SAND : (v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT));
   }
   if (h < 1.2 + n * 0.5) return SAND;
   // Just above the tide line the ground never dries out, so the damp variants
   // sit in a band there rather than anywhere on the island.
   // Same idea at the damp-to-dry boundary.
-  if (h < 3.0 + n + 1 && h > 3.0 + n - 1) {
+  if (h < 3.0 + n + 0.5 && h > 3.0 + n - 0.5) {
     const damp = v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
     const dry  = v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
-    return scatter3d > 0 ? dry : damp;
+    return scatter3d > 0.5 ? dry : damp;
   }
   if (h < 3.0 + n) return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
   // All the gentle ground above it: earth, with clay banks and loose topsoil

@@ -229,11 +229,33 @@
   }
   #btn-sprint.down { background: rgba(255, 168, 60, 0.5); border-color: rgba(255, 210, 150, 0.9); color: #fff; }
 
-  /* ---------- Mode UI ---------- */
-  #mode-btn {
+  /* ---------- Menu button (opens the menu overlay) ---------- */
+  #btn-menu {
     position: fixed;
     top: calc(10px + env(safe-area-inset-top));
     right: calc(10px + env(safe-area-inset-right));
+    width: 40px;
+    height: 40px;
+    font-family: inherit;
+    font-size: 17px;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    /* Above the pause overlay (50): releasing the mouse pops that overlay up, and
+       a menu button you cannot reach while paused is a menu button that "does not
+       always work". */
+    z-index: 60;
+  }
+  #btn-menu.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-menu:active { transform: translateY(1px); }
+
+  /* ---------- Mode UI ---------- */
+  #mode-btn {
     padding: 11px 18px;
     font-family: inherit;
     font-size: 13px;
@@ -247,10 +269,6 @@
     box-shadow: 0 4px 18px rgba(90, 150, 220, 0.35);
     cursor: pointer;
     touch-action: manipulation;
-    /* Above the pause overlay (50): releasing the mouse pops that overlay up, and
-       a mode button you cannot reach while paused is a mode button that "does not
-       always work". */
-    z-index: 60;
   }
   #mode-btn.game { background: linear-gradient(180deg, #ffd9a8, #f0a054); }
   #mode-btn:active { transform: translateY(1px); }
@@ -276,11 +294,9 @@
   }
 
   #instructions {
-    position: fixed;
-    top: calc(58px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
-    width: 216px;
-    max-width: 46vw;
+    width: 100%;
+    max-width: 320px;
+    margin-top: 12px;
     padding: 9px 11px;
     font-size: 11px;
     line-height: 1.45;
@@ -289,8 +305,6 @@
     border-radius: 8px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    pointer-events: none;
-    z-index: 10;
   }
   #instructions .title {
     display: block;
@@ -305,9 +319,10 @@
   #instructions span { color: #b9c9dc; text-align: right; }
 
   @media (max-width: 620px) {
-    #mode-btn { font-size: 11px; padding: 9px 14px; }
+    #btn-menu { font-size: 15px; width: 36px; height: 36px; }
     #cam-mode { top: calc(52px + env(safe-area-inset-top)); font-size: 10px; }
-    #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
+    #mode-btn { font-size: 11px; padding: 9px 14px; }
+    #instructions { font-size: 10px; padding: 7px 9px; }
   }
 
   /* ---------- Materials panel ---------- */
@@ -377,9 +392,6 @@
   body.touch #mat-foot .key { display: none; }
 
   #btn-materials {
-    position: fixed;
-    top: calc(176px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -394,14 +406,12 @@
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    z-index: 14;
   }
   #btn-materials.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-materials:active { transform: translateY(1px); }
 
   @media (max-width: 620px) {
     #materials-ui { font-size: 12px; }
-    #btn-materials { top: calc(152px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
   }
 
   /* ---------- Shovel (temporary block-moving tool) ---------- */
@@ -567,9 +577,6 @@
   /* A reference card, not a takeover: the backdrop dims the world and eats the
      clicks, and the panel itself stays a bounded box you can scroll on a phone. */
   #btn-chart {
-    position: fixed;
-    top: calc(212px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -584,15 +591,11 @@
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    z-index: 14;
   }
   #btn-chart.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-chart:active { transform: translateY(1px); }
 
   #btn-debug-chunks {
-    position: fixed;
-    top: calc(256px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -607,15 +610,11 @@
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    z-index: 14;
   }
   #btn-debug-chunks.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-debug-chunks:active { transform: translateY(1px); }
 
   #sel-lod-override {
-    position: fixed;
-    top: calc(300px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 12px;
     font-family: inherit;
     font-size: 11px;
@@ -630,15 +629,11 @@
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    z-index: 14;
   }
   #sel-lod-override option { background: #14222f; color: #cfe6ff; }
 
   /* ---------- Debug collider toggle ---------- */
   #btn-debug-colliders {
-    position: fixed;
-    right: calc(14px + env(safe-area-inset-right));
-    top: calc(60px + env(safe-area-inset-top));
     display: flex;
     align-items: center;
     gap: 5px;
@@ -658,7 +653,6 @@
     touch-action: manipulation;
     min-height: 32px;
     min-width: 32px;
-    z-index: 30;
   }
   #btn-debug-colliders .dot {
     width: 7px;
@@ -786,12 +780,87 @@
   #chart-foot { margin-top: 10px; color: #62819f; font-size: 10px; }
 
   @media (max-width: 620px) {
-    #btn-chart { top: calc(186px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
-    #btn-debug-chunks { top: calc(220px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
-    #sel-lod-override { top: calc(258px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-chart, #btn-debug-chunks, #sel-lod-override { font-size: 10px; padding: 7px 12px; }
     #chart-panel { padding: 12px; }
     #chart-grid { font-size: 10px; min-width: 460px; }
   }
+
+  /* ---------- Menu overlay (game mode, mats/chart, debug tools) ---------- */
+  #menu-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.menu-open #menu-overlay { display: flex; }
+
+  #menu-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: min(420px, 100%);
+    max-height: 100%;
+    padding: 20px;
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #menu-panel .title {
+    display: block;
+    margin: 0 34px 16px 0;
+    align-self: flex-start;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+  .menu-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-bottom: 22px;
+  }
+  .menu-section:last-child { margin-bottom: 0; }
+  .menu-row { display: flex; gap: 10px; justify-content: center; }
+  .menu-label {
+    align-self: flex-start;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+
+  #menu-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #menu-close:active { transform: translateY(1px); }
 
   /* ---------- Start / pause overlay ---------- */
   #overlay {
@@ -895,9 +964,7 @@
 <span class="k" style="color:#ff0">v10-voxel</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
-<div id="instructions"></div>
-<button id="mode-btn" class="ui-el">Game Mode</button>
-<button id="btn-materials">Mats</button>
+<button id="btn-menu" aria-label="Menu">&#9881;</button>
 
 <!-- Filled in from TERRAIN_MATS so the swatches are the colours actually used. -->
 <div id="materials-ui" class="ui-el">
@@ -934,17 +1001,6 @@
   <button class="sv-btn" id="btn-strike"><span class="glyph">&#128296;</span>STRIKE</button>
 </div>
 
-<button id="btn-chart" class="ui-el">Chart</button>
-<button id="btn-debug-chunks" class="ui-el">Debug Chunks</button>
-<select id="sel-lod-override" class="ui-el">
-  <option value="auto">LOD: Auto</option>
-  <option value="1">LOD: Level 1</option>
-  <option value="2">LOD: Level 2</option>
-  <option value="3">LOD: Level 3</option>
-  <option value="4">LOD: Level 4</option>
-</select>
-<button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
-
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
 <div id="chart-overlay" class="ui-el">
   <div id="chart-panel">
@@ -952,6 +1008,38 @@
     <span class="title">Material Interactions</span>
     <div id="chart-scroll"><div id="chart-grid"></div></div>
     <div id="chart-foot">50% = random chance on break</div>
+  </div>
+</div>
+
+<div id="menu-overlay">
+  <div id="menu-panel">
+    <button id="menu-close" aria-label="Close">&times;</button>
+    <span class="title">Menu</span>
+
+    <div class="menu-section">
+      <button id="mode-btn" class="ui-el">Game Mode</button>
+    </div>
+
+    <div class="menu-section">
+      <div class="menu-row">
+        <button id="btn-materials">Mats</button>
+        <button id="btn-chart" class="ui-el">Chart</button>
+      </div>
+      <div id="instructions"></div>
+    </div>
+
+    <div class="menu-section menu-debug">
+      <span class="menu-label">Debug</span>
+      <button id="btn-debug-chunks" class="ui-el">Debug Chunks</button>
+      <select id="sel-lod-override" class="ui-el">
+        <option value="auto">LOD: Auto</option>
+        <option value="1">LOD: Level 1</option>
+        <option value="2">LOD: Level 2</option>
+        <option value="3">LOD: Level 3</option>
+        <option value="4">LOD: Level 4</option>
+      </select>
+      <button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
+    </div>
   </div>
 </div>
 
@@ -1469,6 +1557,13 @@ function nhash(ix, iy) {
   n = (Math.imul(n, Math.imul(Math.imul(n, n), 15731) + 789221) + 1376312589) & 0x7fffffff;
   return 1 - n / 1073741824;                       // -1 .. 1
 }
+// 3-D variant for per-block dithering
+function nhash3(ix, iy, iz) {
+  let n = (Math.imul(ix, 1619) + Math.imul(iy, 31337) + Math.imul(iz, 6971) + Math.imul(SEED | 0, 1013)) | 0;
+  n = (n << 13) ^ n;
+  n = (Math.imul(n, Math.imul(Math.imul(n, n), 15731) + 789221) + 1376312589) & 0x7fffffff;
+  return n / 0x7fffffff;                             // 0 .. 1
+}
 // Quintic fade rather than the cubic the sea shader uses: the material rules
 // below read the *slope* of this field, and a cubic fade leaves the lattice
 // visible in it as a grid of creases.
@@ -1656,28 +1751,19 @@ const SLOPE_STEP = 6;
 // else — including the tops, which used to come out grey — is soil. The only
 // rock you can see from above is therefore a face you could not have stood on.
 function pickMaterial(h, slope, x, z) {
-  // ~8 m patches, where it used to be ~3 m. Slower wander gives the material
-  // boundaries the same broad scale as everything else on the island — at 3 m
-  // they were a per-block speckle along every edge.
-  const n = vnoise2(x * 0.12, z * 0.12);           // -1 .. 1
-  // A second field, independent of the first and on the same broad scale, which
-  // only ever chooses *which variant* of a band a patch is made of. Where the
-  // bands themselves fall is still `n` alone, so the island's shape and its
-  // beach line are exactly what they were.
+  const n = vnoise2(x * 0.12, z * 0.12);
   const v = vnoise2(x * 0.09 + 41.7, z * 0.09 - 17.3);
-  if (h <= SEA_Y) return WATER;                    // sea level and below: the water plane
-  // Anything you could not stand on. Most of it is sound rock; the rest is the
-  // crumbling face of it, which is softer to dig and lighter to carry.
+  if (h <= SEA_Y) return WATER;
   if (slope > 1.05 + n * 0.30) {
     return v > 0.45 ? BRITTLE_STONE : (v < -0.55 ? STONE_DUST : ROCK);
   }
-  if (h < 1.2 + n * 0.5) return SAND;              // the beach, up to knee height
-  // Just above the tide line the ground never dries out, so the damp variants
-  // sit in a band there rather than anywhere on the island.
-  if (h < 3.0 + n) return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
-  // All the gentle ground above it: earth, with clay banks and loose topsoil
-  // through it.
-  return v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
+  if (h < 1.2 + n * 0.5) {
+    return SAND;
+  }
+  if (h < 3.0 + n) {
+    return DIRT;
+  }
+  return v > 0.65 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
 }
 
 // What each surface material becomes further down its own band. Digging is meant
@@ -1685,7 +1771,7 @@ function pickMaterial(h, slope, x, z) {
 // column is the packed or waterlogged version of whatever caps it. Indexed by
 // material id; WATER's entry is never read (a flooded column's bed is sand).
 const DEEP_MAT = [
-  MUD,            // SAND — wet sand under the beach
+  DIRT,            // SAND — wet sand under the beach
   HARD_DIRT,      // DIRT
   ROCK,           // ROCK
   WATER,          // WATER
@@ -1756,7 +1842,7 @@ const VOX_FLOOR = Math.round(-24 / BLOCK);  // level -120: bedrock, under the de
 // holes it had already dug. Generous headroom for building: at 20 cm a block
 // that is forty metres over the generated surface, so a tower goes up until you
 // run out of blocks rather than until the store runs out of room.
-const VOX_HEAD = 200;
+const VOX_HEAD = 400;
 // Blocks of surface material before it turns to rock — a metre and a half of
 // soil, so a gentle hillside is dirt the whole way through anything you would dig
 // by hand, and the face of a bluff shows a band of earth over stone rather than
@@ -1812,6 +1898,33 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   // of, so it has to be written rather than left alone.
   voxMat.fill(AIR, o + top + 1, o + voxCap(k) + 1);
   worldBlocks += top - VOX_FLOOR + 1;
+}
+
+// Post-generation swap pass: occasionally trades the surface material of two
+// adjacent columns, so the boundary between materials is a ragged edge rather
+// than a clean polygon.
+for (let k = 0; k < GEN_N * GEN_N; k++) {
+  if (topLvl[k] === NO_COLUMN) continue;
+  const i = k % GEN_N, j = (k / GEN_N) | 0;
+  const neighbors = [];
+  if (i > 0) neighbors.push(k - 1);
+  if (i < GEN_N - 1) neighbors.push(k + 1);
+  if (j > 0) neighbors.push(k - GEN_N);
+  if (j < GEN_N - 1) neighbors.push(k + GEN_N);
+  for (const nb of neighbors) {
+    if (topLvl[nb] === NO_COLUMN) continue;
+    if (topMat[k] === topMat[nb]) continue;
+    const chance = nhash3(i, j, 0) * 0.5 + 0.5;
+    if (chance <= 0.85) continue;
+    const idxK = voxOff[k] + topLvl[k] - VOX_FLOOR;
+    const idxNb = voxOff[nb] + topLvl[nb] - VOX_FLOOR;
+    const tmpMat = topMat[k];
+    topMat[k] = topMat[nb];
+    topMat[nb] = tmpMat;
+    const tmpVox = voxMat[idxK];
+    voxMat[idxK] = voxMat[idxNb];
+    voxMat[idxNb] = tmpVox;
+  }
 }
 
 // The highest solid level in each column, cached rather than searched for. It
@@ -2047,9 +2160,9 @@ const TERRAIN_MATS = [
   mat(0x6a7078, 0.85, 0.02, { envMapIntensity: 0.50 }),   // STONE_MUD
   mat(0x909898, 0.94, 0.01, { envMapIntensity: 0.50 }),   // BRITTLE_STONE
   // The clay family — tan, and the least rough of the dry materials.
-  mat(0xc4a882, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
-  mat(0x8a7a60, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
-  mat(0xb09070, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
+  mat(0xa88060, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
+  mat(0x947858, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
+  mat(0xba8a64, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
   // The sand family, either side of SAND: damp is darker, packed is warmer.
   mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
   mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
@@ -2065,6 +2178,70 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
   f.vertexColors = true;
   return f;
 });
+// A falling powder grain's own box, vertex-coloured like a tiny slice of
+// terrain instead of one flat material colour: each of the cube's 6 faces is
+// diced into a GRAIN_GRID x GRAIN_GRID grid, same as the terrain powder path
+// (pushFace) below, and each cell gets its own hashed shade — wide enough to
+// read as speckle on a face this small, where a per-face-only shade would be
+// nearly invisible. Built fresh every call rather than cached: the geometry
+// is tiny (6 faces x GRAIN_GRID² cells) and grainGeo is only called a
+// handful of times a frame.
+function grainGeo(m) {
+  const base = TERRAIN_MATS[m].color;
+  const nq = 6 * GRAIN_GRID * GRAIN_GRID;
+  const pos = new Float32Array(nq * 4 * 3);
+  const nor = new Float32Array(nq * 4 * 3);
+  const col = new Float32Array(nq * 4 * 3);
+  const idx = new Uint16Array(nq * 6);
+  let vi = 0, ii = 0;
+
+  for (let f = 0; f < 6; f++) {
+    const F = FACES[f], v = F.v, n = F.n;
+    // Same du/dv walk as pushFace's powder-dicing path, just over the unit
+    // (-1..1) face offsets FACES stores rather than a full block's corners.
+    const dux = v[3] - v[0], duy = v[4] - v[1], duz = v[5] - v[2];
+    const dvx = v[9] - v[0], dvy = v[10] - v[1], dvz = v[11] - v[2];
+
+    for (let row = 0; row < GRAIN_GRID; row++) {
+      const w0 = row / GRAIN_GRID, w1 = (row + 1) / GRAIN_GRID;
+      for (let col2 = 0; col2 < GRAIN_GRID; col2++) {
+        const u0 = col2 / GRAIN_GRID, u1 = (col2 + 1) / GRAIN_GRID;
+
+        // Cell hash keyed only on face/row/col — these are tiny falling
+        // grains with no fixed world position, so all that matters is a
+        // stable, visibly wide per-cell spread.
+        const h = nhash3(0, 0, f * 100 + row * 10 + col2);
+        const s = 0.7 + h * 0.6;
+        const r = clamp01(base.r * s), g = clamp01(base.g * s), b = clamp01(base.b * s);
+
+        const v0 = vi / 3;
+        for (let q = 0; q < 4; q++) {
+          const u = q === 0 || q === 3 ? u0 : u1;
+          const w = q < 2 ? w0 : w1;
+          // FACES' v[] runs -1..1 over a full block; halve it to fit the
+          // unit box grainGeo builds on (boxGeo is scaled up to BLOCK size
+          // by the mesh, same as the cached geo this replaces).
+          pos[vi]     = (v[0] + u * dux + w * dvx) * 0.5;
+          pos[vi + 1] = (v[1] + u * duy + w * dvy) * 0.5;
+          pos[vi + 2] = (v[2] + u * duz + w * dvz) * 0.5;
+          nor[vi] = n[0]; nor[vi + 1] = n[1]; nor[vi + 2] = n[2];
+          col[vi] = r; col[vi + 1] = g; col[vi + 2] = b;
+          vi += 3;
+        }
+        idx[ii] = v0; idx[ii + 1] = v0 + 1; idx[ii + 2] = v0 + 2;
+        idx[ii + 3] = v0; idx[ii + 4] = v0 + 2; idx[ii + 5] = v0 + 3;
+        ii += 6;
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  return geo;
+}
 const terrain = new THREE.Group();
 scene.add(terrain);
 
@@ -2225,7 +2402,10 @@ function collectColumn(i, j, step = 1) {
       // of the column it sits — baked in here because the mesh carries a colour
       // per vertex and the material itself is plain white.
       const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
-      const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl));
+      // Per-block dither so same-material, same-depth neighbours aren't flat-identical.
+      const h = nhash3(i, j, lvl);
+      const variation = 0.85 + h * 0.30;
+      const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl)) * variation;
       const c = TERRAIN_MATS[m].color;
       const r = c.r * s, g = c.g * s, b = c.b * s;
       const cy = (lvl + 0.5) * BLOCK;
@@ -4299,11 +4479,12 @@ function shovelAim() {
     // see, and from then on rides with it — the world grid does not come into it.
     const p = dHit.point;
     const dm = dHit.piece;
-    // Which block that is: the mesh is one merged buffer of quads, and
-    // faceBlock maps the triangle the ray hit back to the lattice index it
-    // came from. Its position is in the piece's frame, which is what the
+    // Which block that is: each sub-mesh of the piece is one merged buffer of
+    // quads for a single material, and its own faceBlock maps the triangle the
+    // ray hit back to the lattice index it came from (into the piece's shared
+    // blocks array). Its position is in the piece's frame, which is what the
     // highlight and the dig both want.
-    const fb = dm.userData.faceBlock;
+    const fb = dHit.object.userData.faceBlock;
     const idx = dHit.faceIndex != null && fb ? fb[Math.floor(dHit.faceIndex / 2)] : -1;
     const lat = dm.userData.blocks;
     const blockLocal = idx >= 0 && idx < lat.length ? lat[idx].pos : null;
@@ -4360,59 +4541,133 @@ const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 const FALL_BODY_CAP  = 20;    // pieces under physics at once
 const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
 const FALL_SHAPE_CAP = 24;    // blocks that get a collider each, rather than one box round the lot
-const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
+const FALL_MASS_CAP  = 120;   // a cliff face weighs as much as the solver can take, not as much as it is
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
-// White, because the colour of every face comes in per vertex.
-const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45, vertexColors: true });
 
-// A debris piece is one merged buffer, not a cube per block: like a terrain
-// chunk, only the faces that touch air are worth drawing, so a solid lump of
-// rubble costs the one or two sides of it anything could ever see instead of
-// six per block. Rebuilt whenever the piece's own lattice changes — a block
-// dug off it, one placed on it, or its blocks re-centred on a new CoM.
-// faceBlock maps each drawn quad back to the lattice index it came from, so a
-// raycast hit (which only gives a triangle) can still say which block it hit.
-function buildDebrisGeometry(mesh) {
-  const lat = mesh.userData.blocks;
-  const old = mesh.geometry;
+// A block's contribution to a piece's mass and centre of mass is its material's
+// weight (MAT_STATS), not a flat count — a rock block should drag and balance a
+// falling piece more than a sand block. Blocks come in two shapes here: the raw
+// lattice from a gravity flood-fill (.i/.j/.lvl/.m) and the settled debris
+// lattice (.pos/.mat) — both are handled so the same helpers cover every site.
+const blockWeight = (b) => MAT_STATS[b.mat !== undefined ? b.mat : b.m]?.weight ?? 1;
+function debrisMass(blocks) {
+  let m = 0;
+  for (const b of blocks) m += blockWeight(b);
+  return m;
+}
+function debrisWeightedCenter(blocks, out) {
+  out.set(0, 0, 0);
+  let totalW = 0;
+  for (const b of blocks) {
+    const w = blockWeight(b);
+    out.x += (b.pos ? b.pos.x : colX(b.i)) * w;
+    out.y += (b.pos ? b.pos.y : (b.lvl + 0.5) * BLOCK) * w;
+    out.z += (b.pos ? b.pos.z : colZ(b.j)) * w;
+    totalW += w;
+  }
+  if (totalW > 0) out.multiplyScalar(1 / totalW);
+  return out;
+}
+
+// A debris piece is a group of one merged buffer per material — like a terrain
+// chunk, split by TERRAIN_FACE_MATS so each material keeps its own roughness/
+// metalness/envMapIntensity instead of sharing one flat look. Only the faces
+// that touch air are worth drawing, so a solid lump of rubble costs the one or
+// two sides of it anything could ever see instead of six per block. Rebuilt
+// whenever the piece's own lattice changes — a block dug off it, one placed on
+// it, or its blocks re-centred on a new CoM. Each sub-mesh's own faceBlock maps
+// its drawn quads back to indices into the group's shared blocks array, so a
+// raycast hit (which only gives a triangle on one sub-mesh) can still say which
+// block it hit.
+function buildDebrisGeometry(group) {
+  const lat = group.userData.blocks;
   const at = new Map();
   for (let q = 0; q < lat.length; q++) at.set(lat[q].gi + ',' + lat[q].gj + ',' + lat[q].lvl, q);
-  const pos = [], nor = [], col = [], faceBlock = [];
+  const buckets = new Array(N_MATS).fill(null);   // per material, like a chunk's faceBuf[m]
   const c = new THREE.Color();
   for (let q = 0; q < lat.length; q++) {
     const b = lat[q];
-    c.copy(TERRAIN_MATS[b.mat].color);
+    const k = b.gj * GEN_N + b.gi;
+    const t = tint[k] ?? 1;
+    const band = (b.lvl >= (b.top ?? 0) - SOIL_DEPTH) ? 0.94 : 0.86;
+    const h = nhash3(b.gi, b.gj, b.lvl);
+    const variation = 0.85 + h * 0.30;
+    const s = t * band * shadeOf(shadeStep((b.top ?? 0) - b.lvl)) * variation;
+    const base = TERRAIN_MATS[b.mat].color;
+    c.setRGB(base.r * s, base.g * s, base.b * s);
+    let B = buckets[b.mat];
+    if (!B) buckets[b.mat] = B = { pos: [], nor: [], col: [], faceBlock: [] };
     for (let f = 0; f < 6; f++) {
       const F = FACES[f];
       if (at.has((b.gi + F.di) + ',' + (b.gj + F.dj) + ',' + (b.lvl + F.dl))) continue;
       const v = F.v, n = F.n;
-      for (let k = 0; k < 4; k++) {
-        const o = k * 3;
-        pos.push(b.pos.x + v[o] * HALF_BLOCK, b.pos.y + v[o + 1] * HALF_BLOCK, b.pos.z + v[o + 2] * HALF_BLOCK);
-        nor.push(n[0], n[1], n[2]);
-        col.push(c.r, c.g, c.b);
+      if (!MAT_STATS[b.mat]?.powder) {
+        for (let vi = 0; vi < 4; vi++) {
+          const o = vi * 3;
+          B.pos.push(b.pos.x + v[o] * HALF_BLOCK, b.pos.y + v[o + 1] * HALF_BLOCK, b.pos.z + v[o + 2] * HALF_BLOCK);
+          B.nor.push(n[0], n[1], n[2]);
+          B.col.push(c.r, c.g, c.b);
+        }
+        B.faceBlock.push(q);
+        continue;
       }
-      faceBlock.push(q);
+      // Powder debris gets the same per-cell grain speckle as powder terrain
+      // faces (see pushFace) instead of one flat colour across the whole face.
+      const dux = v[3] - v[0], duy = v[4] - v[1], duz = v[5] - v[2];
+      const dvx = v[9] - v[0], dvy = v[10] - v[1], dvz = v[11] - v[2];
+      for (let row = 0; row < GRAIN_GRID; row++) {
+        const w0 = row / GRAIN_GRID, w1 = (row + 1) / GRAIN_GRID;
+        for (let col = 0; col < GRAIN_GRID; col++) {
+          const u0 = col / GRAIN_GRID, u1 = (col + 1) / GRAIN_GRID;
+          const tintPalette = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
+          const ti = (Math.sin(b.gi * 99.1 + b.gj * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
+          const gs = tintPalette[Math.abs(ti) % tintPalette.length];
+          const cr = clamp01(c.r * gs), cg = clamp01(c.g * gs), cb = clamp01(c.b * gs);
+          for (let vi = 0; vi < 4; vi++) {
+            const u = vi === 0 || vi === 3 ? u0 : u1;
+            const w = vi < 2 ? w0 : w1;
+            B.pos.push(b.pos.x + (v[0] + u * dux + w * dvx) * HALF_BLOCK,
+                       b.pos.y + (v[1] + u * duy + w * dvy) * HALF_BLOCK,
+                       b.pos.z + (v[2] + u * duz + w * dvz) * HALF_BLOCK);
+            B.nor.push(n[0], n[1], n[2]);
+            B.col.push(cr, cg, cb);
+          }
+          B.faceBlock.push(q);
+        }
+      }
     }
   }
-  const nq = faceBlock.length;
-  const idx = nq * 4 > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
-  for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
-    idx[p] = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
-    idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
+  for (const child of group.children) child.geometry.dispose();
+  group.clear();
+  const faceBlock = [];
+  for (let m = 0; m < N_MATS; m++) {
+    const B = buckets[m];
+    if (!B) continue;
+    const nq = B.faceBlock.length;
+    const idx = nq * 4 > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
+    for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
+      idx[p] = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
+      idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(B.pos), 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(B.nor), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(B.col), 3));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.computeBoundingSphere();
+    const child = new THREE.Mesh(geo, TERRAIN_FACE_MATS[m]);
+    child.castShadow = true;
+    child.receiveShadow = true;
+    child.userData.faceBlock = B.faceBlock;
+    group.add(child);
+    faceBlock.push(...B.faceBlock);
   }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nor), 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1));
-  geo.computeBoundingSphere();
-  mesh.geometry = geo;
-  mesh.userData.faceBlock = faceBlock;
-  if (old) old.dispose();
+  // Aggregated for reference; raycasting reads a hit sub-mesh's own faceBlock
+  // (its faceIndex is local to that sub-mesh's geometry, not this group).
+  group.userData.faceBlock = faceBlock;
 }
 // Its own group rather than `objects`: the camera boom raycasts that one to pull
 // itself in past props, and rubble lying around the player should not be tugging
@@ -4447,7 +4702,7 @@ function dropChunk(f) {
   const q = syncList.findIndex((e) => e.body === f.body);
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
-  f.mesh.geometry.dispose();  // the merged buffers only — material is shared
+  for (const child of f.mesh.children) child.geometry.dispose();  // the merged buffers only — material is shared
 }
 
 // The entry for a piece, whether it is still being watched or has settled. A
@@ -4456,20 +4711,18 @@ function dropChunk(f) {
 const chunkOfMesh = (mesh) => fallingChunks.find((e) => e.mesh === mesh)
                           || restedChunks.find((e) => e.mesh === mesh);
 
+const chunkCoM = new THREE.Vector3();
 function spawnFallingChunk(unit) {
   const blocks = [...unit.values()];
   const n = blocks.length;
 
-  // Centre of the piece, in world units.
-  let cx = 0, cy = 0, cz = 0;
-  for (const b of blocks) {
-    cx += colX(b.i); cy += (b.lvl + 0.5) * BLOCK; cz += colZ(b.j);
-  }
-  cx /= n; cy /= n; cz /= n;
+  // Weighted centre of the piece, in world units — a piece of mixed materials
+  // balances toward its heavier blocks, not its geometric middle.
+  const { x: cx, y: cy, z: cz } = debrisWeightedCenter(blocks, chunkCoM);
 
-  // The mesh: one merged buffer of exposed faces, positioned relative to that
-  // centre so the whole thing rotates about it.
-  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), fallMat);
+  // The mesh: a group of one merged buffer per material, positioned relative
+  // to that centre so the whole thing rotates about it.
+  const mesh = new THREE.Group();
   // The piece's own lattice, in its own frame. Kept because a block placed
   // against the piece is snapped to this rather than to the world grid.
   mesh.userData.blocks = blocks.map((b) => ({
@@ -4477,15 +4730,14 @@ function spawnFallingChunk(unit) {
     mat: b.m,
     lvl: b.lvl,
     gi: b.i,  gj: b.j,
+    top: sTop[b.j * GEN_N + b.i] ?? 0,
   }));
   buildDebrisGeometry(mesh);
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
   debris.add(mesh);
 
   const body = new CANNON.Body({
-    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    mass: Math.min(debrisMass(blocks), FALL_MASS_CAP),
     material: physDebris,
     linearDamping: 0.02,
     angularDamping: 0.15,
@@ -4620,7 +4872,7 @@ function shedColumn(c, budget) {
     }
     // It is not gone, it is falling: hand it to the same grain path the rubble uses.
     const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
-    g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[m]);   // boxGeo is a unit cube: scale it to block size
+    g.mesh = new THREE.Mesh(grainGeo(m), TERRAIN_FACE_MATS[m]);   // boxGeo is a unit cube: scale it to block size
     g.mesh.scale.setScalar(BLOCK);
     g.mesh.position.copy(g.pos);
     scene.add(g.mesh);
@@ -4639,7 +4891,7 @@ function checkTerrainPowder() {
     if (mat === AIR || !MAT_STATS[mat]?.powder) continue;
     if (qLvl - 1 >= VOX_FLOOR && voxelAt(i, j, qLvl - 1) !== AIR) continue;
     editBlock(i, j, qLvl, AIR);
-    const grain = new THREE.Mesh(boxGeo, TERRAIN_MATS[mat]);   // boxGeo is a unit cube: scale it to block size
+    const grain = new THREE.Mesh(grainGeo(mat), TERRAIN_FACE_MATS[mat]);   // boxGeo is a unit cube: scale it to block size
     grain.scale.setScalar(BLOCK);
     grain.position.set(colX(i), (qLvl + 0.5) * BLOCK, colZ(j));
     scene.add(grain);
@@ -4759,7 +5011,7 @@ function shedPowder() {
         if (lat.some((u) => Math.abs(u.pos.x - nx) < 0.01 && Math.abs(u.pos.y - ny) < 0.01
                                                           && Math.abs(u.pos.z - nz) < 0.01)) continue;
         const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
-        g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[b.mat]);   // boxGeo is a unit cube: scale it to block size
+        g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);   // boxGeo is a unit cube: scale it to block size
         g.mesh.scale.setScalar(BLOCK);
         g.mesh.position.copy(g.pos);
         scene.add(g.mesh);
@@ -4786,7 +5038,7 @@ function catchPowder(dt) {
     p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
     p.pos.y -= p.v * dt;
     if (p.mesh) p.mesh.position.copy(p.pos);
-    if (p.pos.y < FALL_KILL_Y) { if (p.mesh) scene.remove(p.mesh); powderFalling.splice(n, 1); continue; }
+    if (p.pos.y < FALL_KILL_Y) { if (p.mesh) { scene.remove(p.mesh); p.mesh.geometry.dispose(); } powderFalling.splice(n, 1); continue; }
     if (voxelAtWorld(p.pos.x, p.pos.y, p.pos.z) !== AIR) {
       const i = colI(p.pos.x), j = colJ(p.pos.z);
       let lvl = lvlOfY(p.pos.y);
@@ -4798,7 +5050,7 @@ function catchPowder(dt) {
           && (aboveLvl - 1 < VOX_FLOOR || voxelAt(i, j, aboveLvl - 1) === AIR)) {
         powderQueue.push({ i, j, lvl: aboveLvl });
       }
-      if (p.mesh) scene.remove(p.mesh);
+      if (p.mesh) { scene.remove(p.mesh); p.mesh.geometry.dispose(); }
       powderFalling.splice(n, 1);
       continue;
     }
@@ -4817,7 +5069,7 @@ function catchPowder(dt) {
       }
       if (!local) continue;
       placeOnDebris(mesh, local, p.mat);
-      if (p.mesh) scene.remove(p.mesh);
+      if (p.mesh) { scene.remove(p.mesh); p.mesh.geometry.dispose(); }
       powderFalling.splice(n, 1);
       break;
     }
@@ -4837,7 +5089,7 @@ function removeDebrisMesh(mesh) {
   const q = restedChunks.findIndex((f) => f.mesh === mesh);
   if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
-  mesh.geometry.dispose();
+  for (const child of mesh.children) child.geometry.dispose();
 }
 
 // Cannon turns a body about its origin, so a piece's origin has to sit on its
@@ -4848,9 +5100,7 @@ const debrisCoM = new THREE.Vector3(), debrisArm = new CANNON.Vec3();
 function recentreDebris(mesh, body) {
   const lat = mesh.userData.blocks;
   if (!lat.length) return;
-  const c = debrisCoM.set(0, 0, 0);
-  for (const b of lat) c.add(b.pos);
-  c.multiplyScalar(1 / lat.length);
+  const c = debrisWeightedCenter(lat, debrisCoM);
   if (c.lengthSq() < 1e-12) return;
   for (const b of lat) b.pos.sub(c);
   for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
@@ -4963,7 +5213,7 @@ function rebuildDebrisBody(mesh, body) {
   }
   recentreDebris(mesh, body);
   buildDebrisGeometry(mesh);
-  body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
+  body.mass = Math.min(debrisMass(lat), FALL_MASS_CAP);
   body.updateMassProperties();
   body.updateBoundingRadius();
   body.updateAABB();
@@ -5022,27 +5272,23 @@ const partQuat = new THREE.Quaternion();
 function spawnDebrisPart(parent, blocks, pbody, frozen) {
   const n = blocks.length, h = HALF_BLOCK, hy = HALF_BLOCK;
   parent.updateWorldMatrix(true, false);
-  const c = new THREE.Vector3();
-  for (const b of blocks) c.add(b.pos);
-  c.multiplyScalar(1 / n);
+  const c = debrisWeightedCenter(blocks, new THREE.Vector3());
 
-  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), fallMat);
+  const mesh = new THREE.Group();
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   mesh.userData.blocks = blocks.map((b) => {
     const p = b.pos.clone().sub(c);
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj };
+    return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj, top: b.top };
   });
   buildDebrisGeometry(mesh);
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
   debris.add(mesh);
 
   const body = new CANNON.Body({
-    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    mass: Math.min(debrisMass(blocks), FALL_MASS_CAP),
     material: physDebris,
     linearDamping: 0.02,
     angularDamping: 0.15,
@@ -5098,7 +5344,11 @@ function digDebrisBlock(mesh, idx) {
   splitDebrisIfNeeded(mesh);
 
   const f = chunkOfMesh(mesh);
-  if (f) { rebuildDebrisBody(mesh, f.body); if (!f.frozen) f.still = 0; }    // lighter, and disturbed
+  if (f) {
+    if (f.frozen) { f.frozen = false; f.body.collisionResponse = true; f.body.wakeUp(); }
+    rebuildDebrisBody(mesh, f.body);
+    f.still = 0;    // lighter, and disturbed
+  }
   return true;
 }
 
@@ -5168,7 +5418,7 @@ function placeOnDebris(mesh, local, m) {
   const gi = bestRef.gi + Math.round((local.x - bestRef.pos.x) / BLOCK);
   const gj = bestRef.gj + Math.round((local.z - bestRef.pos.z) / BLOCK);
   const lvl = bestRef.lvl + Math.round((local.y - bestRef.pos.y) / BLOCK);
-  mesh.userData.blocks.push({ pos: local.clone(), mat: m, lvl, gi, gj });
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m, lvl, gi, gj, top: bestRef.top });
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it. This
@@ -5176,8 +5426,11 @@ function placeOnDebris(mesh, local, m) {
   // out and the new block's own exposed faces need to appear.
   const f = chunkOfMesh(mesh);
   if (!f) { buildDebrisGeometry(mesh); return; }
+  // Player interaction wakes a frozen piece — unfreeze, re-enable collision,
+  // and let it settle again so the new block participates in physics.
+  if (f.frozen) { f.frozen = false; f.body.collisionResponse = true; f.body.wakeUp(); }
   rebuildDebrisBody(mesh, f.body);
-  if (!f.frozen) f.still = 0;   // it has been disturbed: let it settle again
+  f.still = 0;   // it has been disturbed: let it settle again
 }
 
 // The six face neighbours, with the one below last so a stack pops it first: a
@@ -5574,7 +5827,7 @@ function hammerAim() {
   if (dHit) {
     const dm = dHit.piece;
     const lat = dm.userData.blocks;
-    const fb = dm.userData.faceBlock;
+    const fb = dHit.object.userData.faceBlock;
     const idx = dHit.faceIndex != null && fb ? fb[Math.floor(dHit.faceIndex / 2)] : -1;
     if (idx >= 0 && idx < lat.length) {
       hammer.debris = { mesh: dm, idx };
@@ -5806,6 +6059,28 @@ bindTap(document.getElementById('chart-close'), () => setChartUI(false));
 // count as one — only a tap on the dimmed area itself closes.
 document.getElementById('chart-overlay').addEventListener('pointerdown', (e) => {
   if (e.target.id === 'chart-overlay') setChartUI(false);
+  e.stopPropagation();
+});
+
+// ---------------------------------------------------------------------------
+// Menu overlay (game mode, mats/chart shortcuts, debug tools)
+// ---------------------------------------------------------------------------
+const menuBtn = document.getElementById('btn-menu');
+
+let menuOpen = false;
+function setMenuUI(on) {
+  menuOpen = on;
+  document.body.classList.toggle('menu-open', on);
+  menuBtn.classList.toggle('on', on);
+  // Same deal as the materials panel and chart: with the pointer locked there is
+  // no cursor to hit the X with, and mouse look would keep running underneath.
+  if (on && document.pointerLockElement) document.exitPointerLock();
+}
+function toggleMenu() { setMenuUI(!menuOpen); }
+bindTap(menuBtn, toggleMenu);
+bindTap(document.getElementById('menu-close'), () => setMenuUI(false));
+document.getElementById('menu-overlay').addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'menu-overlay') setMenuUI(false);
   e.stopPropagation();
 });
 

@@ -280,10 +280,11 @@ document.getElementById('btn-sim').onclick=()=>{
 // This is a flood-fill from ground, not a per-block strength check, so a
 // single step never cascades: only blocks with NO path to support at all
 // (genuinely floating islands) are removed.
-function computeSupported(){
+function doStep(){
   const R=rows,C=cols;
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
-  const supported=grid.map(row=>row.map(()=>false));
+  const supported=[];
+  for(let r=0;r<R;r++)supported.push(new Array(C).fill(false));
   const queue=[];
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     const bl=bAt(r,c);if(!bl||!bl.ground)continue;
@@ -299,13 +300,8 @@ function computeSupported(){
       if(nb&&!nb.ground&&!supported[nr][nc]){supported[nr][nc]=true;queue.push([nr,nc]);}
     }
   }
-  return supported;
-}
-
-function doStep(){
-  const supported=computeSupported();
   const toRemove=[];
-  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     const bl=grid[r]&&grid[r][c];if(!bl||bl.ground)continue;
     if(!supported[r][c])toRemove.push([r,c]);
   }

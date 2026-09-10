@@ -4592,10 +4592,10 @@ function buildDebrisGeometry(group) {
     const b = lat[q];
     const k = b.gj * GEN_N + b.gi;
     const t = tint[k] ?? 1;
-    const band = (b.lvl >= (sTop[k] ?? 0) - SOIL_DEPTH) ? 0.94 : 0.86;
+    const band = (b.lvl >= (b.top ?? 0) - SOIL_DEPTH) ? 0.94 : 0.86;
     const h = nhash3(b.gi, b.gj, b.lvl);
     const variation = 0.85 + h * 0.30;
-    const s = t * band * shadeOf(shadeStep((sTop[k] ?? 0) - b.lvl)) * variation;
+    const s = t * band * shadeOf(shadeStep((b.top ?? 0) - b.lvl)) * variation;
     const base = TERRAIN_MATS[b.mat].color;
     c.setRGB(base.r * s, base.g * s, base.b * s);
     let B = buckets[b.mat];
@@ -4730,6 +4730,7 @@ function spawnFallingChunk(unit) {
     mat: b.m,
     lvl: b.lvl,
     gi: b.i,  gj: b.j,
+    top: sTop[b.j * GEN_N + b.i] ?? 0,
   }));
   buildDebrisGeometry(mesh);
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
@@ -5280,7 +5281,7 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj };
+    return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj, top: b.top };
   });
   buildDebrisGeometry(mesh);
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
@@ -5413,7 +5414,7 @@ function placeOnDebris(mesh, local, m) {
   const gi = bestRef.gi + Math.round((local.x - bestRef.pos.x) / BLOCK);
   const gj = bestRef.gj + Math.round((local.z - bestRef.pos.z) / BLOCK);
   const lvl = bestRef.lvl + Math.round((local.y - bestRef.pos.y) / BLOCK);
-  mesh.userData.blocks.push({ pos: local.clone(), mat: m, lvl, gi, gj });
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m, lvl, gi, gj, top: bestRef.top });
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it. This

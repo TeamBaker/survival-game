@@ -88,15 +88,18 @@ function calcGrid(){
  * on any of its edges (a tower on ground is entirely tension-free).
  *
  * A block with nothing directly below it (or resting on another unsupported
- * block) is "hanging" — it only stays up via its other connections. For an
- * edge into an unsupported neighbor:
- *   1. Flood-fill from the neighbor, excluding the direction back to us, and
- *      excluding traversal into ground or into independently-supported
- *      blocks (they're anchors, not part of the falling cluster).
- *   2. Tension = cluster_weight / min(strength_of_both_blocks).
+ * block) is "hanging" — it only stays up via its other connections. Tension
+ * lives on the CONNECTION between two blocks, not on either block's edge
+ * individually:
+ *   1. Flood-fill from whichever side of the connection is unsupported,
+ *      excluding the direction back across this connection, and excluding
+ *      traversal into ground or into independently-supported blocks
+ *      (they're anchors, not part of the falling cluster).
+ *   2. connStrength = average of the two blocks' strengths.
+ *   3. Tension = falling_cluster_weight / connStrength.
  *
- * Ground edges and edges into a supported neighbor: tension = 0.
- * Ground blocks themselves never show tension.
+ * Ground connections: tension = 0. If both sides are independently
+ * supported, nothing is hanging on the connection: tension = 0.
  */
 function computeStress(){
   const R=rows,C=cols,result={};
@@ -131,27 +134,26 @@ function computeStress(){
     memo.set(key,total);return total;
   }
 
-  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
-    const bl=bAt(r,c);if(!bl||bl.ground)continue;
-    const mat=GRIDS[bl.m]||CUSTOM;const myStr=mat.strength||1;
-    const edges={};let any=false;
-
-    for(const[dr,dc,name,exDir]of[[0,-1,'left',-1],[0,1,'right',1],[-1,0,'top',-2],[1,0,'bottom',2]]){
-      const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);
-      if(!nb)continue; // nothing there = no edge
-      if(nb.ground)continue; // ground edge = no tension
-      if(supported[nr][nc])continue; // neighbor has its own support, nothing hangs on us
-
-      // Falling cluster weight on neighbor's side (excluding back toward us)
-      const wNeighbor=clusterW(nr,nc,-exDir);
-      if(wNeighbor<=0)continue;
-
-      const nbMat=GRIDS[nb.m]||CUSTOM;const nbStr=nbMat.strength||1;
-      const connStr=Math.min(myStr,nbStr);
-      const ratio=wNeighbor/connStr;
-      if(ratio>0.05){edges[name]=Math.min(1.5,ratio);any=true;}
+  // One shared tension value per connection between two adjacent non-ground blocks.
+  function addConn(r1,c1,r2,c2,dirAB){
+    const a=bAt(r1,c1),b=bAt(r2,c2);
+    if(!a||!b||a.ground||b.ground)return;
+    const wA=supported[r1][c1]?0:clusterW(r1,c1,dirAB);
+    const wB=supported[r2][c2]?0:clusterW(r2,c2,-dirAB);
+    const clusterWeight=Math.max(wA,wB);
+    if(clusterWeight<=0)return;
+    const strA=(GRIDS[a.m]||CUSTOM).strength||1;
+    const strB=(GRIDS[b.m]||CUSTOM).strength||1;
+    const connStr=(strA+strB)/2;
+    const ratio=clusterWeight/connStr;
+    if(ratio>0.05){
+      result[`${r1},${c1}-${r2},${c2}`]={tension:Math.min(1.5,ratio),r1,c1,r2,c2,horizontal:r1===r2};
     }
-    if(any)result[`${r},${c}`]=edges;
+  }
+
+  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+    addConn(r,c,r,c+1,1);  // connection to the right (dir 'right'=1)
+    addConn(r,c,r+1,c,2);  // connection below (dir 'down'=2)
   }
   return result;
 }
@@ -172,18 +174,24 @@ function draw(){
       continue;
     }
     ctx.fillStyle=(GRIDS[bl.m]||CUSTOM).color;ctx.fillRect(x+1,y+1,cell-2,cell-2);
-    const edges=stress[`${r},${c}`];
-    if(edges){
-      const lw=Math.max(2.5,cell*0.15);ctx.lineWidth=lw;ctx.lineCap='round';
-      if(edges.top!=null){ctx.strokeStyle=stressColor(edges.top);
-        ctx.beginPath();ctx.moveTo(x+2,y+2);ctx.lineTo(x+cell-2,y+2);ctx.stroke();}
-      if(edges.bottom!=null){ctx.strokeStyle=stressColor(edges.bottom);
-        ctx.beginPath();ctx.moveTo(x+2,y+cell-2);ctx.lineTo(x+cell-2,y+cell-2);ctx.stroke();}
-      if(edges.left!=null){ctx.strokeStyle=stressColor(edges.left);
-        ctx.beginPath();ctx.moveTo(x+2,y+2);ctx.lineTo(x+2,y+cell-2);ctx.stroke();}
-      if(edges.right!=null){ctx.strokeStyle=stressColor(edges.right);
-        ctx.beginPath();ctx.moveTo(x+cell-2,y+2);ctx.lineTo(x+cell-2,y+cell-2);ctx.stroke();}
+  }
+
+  // Shared connection edges: one line drawn AT the boundary between two blocks.
+  const lw=Math.max(2.5,cell*0.15);ctx.lineWidth=lw;ctx.lineCap='round';
+  for(const key in stress){
+    const e=stress[key];
+    ctx.strokeStyle=stressColor(e.tension);
+    ctx.beginPath();
+    if(e.horizontal){
+      // e.c2 = e.c1+1, boundary is the vertical line between them
+      const bx=e.c2*cell,y=e.r1*cell;
+      ctx.moveTo(bx,y+2);ctx.lineTo(bx,y+cell-2);
+    }else{
+      // e.r2 = e.r1+1, boundary is the horizontal line between them
+      const by=e.r2*cell,x=e.c1*cell;
+      ctx.moveTo(x+2,by);ctx.lineTo(x+cell-2,by);
     }
+    ctx.stroke();
   }
 }
 

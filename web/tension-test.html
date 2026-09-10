@@ -127,16 +127,18 @@ function computeStress(){
     }
   }
 
-  // Flood-fill from (r,c) NOT going through direction exDir. Never traverses
-  // into ground or independently-supported blocks — hitting one just marks
-  // the whole flood as anchored (it stops the fall) without adding its weight.
+  // Flood-fill from (r,c) NOT going through direction exDir. Traverses into
+  // all connected blocks. Ground, empty, and independently-supported blocks
+  // mark the flood as anchored (they stop the fall) without adding weight.
   const memo=new Map();
+  const COMPUTING={weight:0,anchored:false}; // cycle sentinel
   function clusterInfo(r,c,exDir){
     const key=r*10000+c*10+(exDir+2);
-    if(memo.has(key))return memo.get(key);
+    const cached=memo.get(key);
+    if(cached&&cached!==COMPUTING)return cached;
     const bl=bAt(r,c);if(!bl||bl.ground)return{weight:0,anchored:true};
     const w=(GRIDS[bl.m]||CUSTOM).weight||1;
-    memo.set(key,{weight:w,anchored:false}); // cycle guard: seed before recursing
+    memo.set(key,COMPUTING); // cycle guard: mark as in-progress
     let total=w,anchored=false;
     for(const[dr,dc,dir]of[[-1,0,-2],[1,0,2],[0,-1,-1],[0,1,1]]){
       if(dir===exDir)continue;

@@ -1,337 +1,391 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Tension Sandbox</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; background: #131722; color: #dbe2ef; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; overflow: hidden; }
-  body { display: flex; flex-direction: column; }
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#151d2b;color:#c8d0dc;font-family:-apple-system,sans-serif;
+  display:flex;flex-direction:column;height:100dvh;overflow:hidden;touch-action:none}
 
-  /* --- top toolbar --- */
-  #toolbar {
-    display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px;
-    background: #1a1f2b; border-bottom: 1px solid #2c3444; align-items: center;
-  }
-  #toolbar .sep { width: 1px; height: 24px; background: #2c3444; margin: 0 4px; }
-  .tbtn {
-    padding: 5px 10px; border-radius: 6px; border: 1px solid #2c3444;
-    background: #232838; color: #b0bcd0; font-size: 12px; cursor: pointer;
-    -webkit-tap-highlight-color: transparent; user-select: none;
-  }
-  .tbtn:active { transform: scale(0.95); }
-  .tbtn.on { background: #2e5a3a; border-color: #3ecf6a; color: #fff; }
-  .tbtn.red { background: #5a2e2e; border-color: #e0463e; color: #fff; }
+/* Top bar */
+.top-bar{display:flex;align-items:center;gap:6px;padding:6px 8px;flex-wrap:wrap}
+.mswatch{width:32px;height:32px;border-radius:8px;border:2px solid transparent;cursor:pointer}
+.mswatch.on{border-color:#fff}
+.mswatch.ground{border:2px dashed #666}
 
-  /* material swatches */
-  .sw {
-    width: 28px; height: 28px; border-radius: 6px; border: 2px solid #2c3444;
-    cursor: pointer; flex-shrink: 0;
-  }
-  .sw.active { border-color: #fff; box-shadow: 0 0 6px rgba(255,255,255,0.4); }
+.btn{padding:4px 12px;border:1px solid rgba(255,255,255,.25);background:rgba(20,34,54,.62);
+  color:#c8d0dc;border-radius:999px;cursor:pointer;font-size:12px;-webkit-tap-highlight-color:transparent}
+.btn.on{background:rgba(102,181,244,.25);border-color:#66b5f4}
+.btn.red{border-color:rgba(255,100,80,.5)}
 
-  /* --- info bar --- */
-  #info {
-    padding: 4px 10px; background: #161b26; font-size: 11px; color: #6b7891;
-    border-bottom: 1px solid #1c2130; display: flex; gap: 12px; align-items: center;
-  }
-  #info b { color: #b0bcd0; }
+/* Stats bar */
+.stats{padding:4px 8px;font-size:11px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.stats .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
 
-  /* --- canvas area --- */
-  #wrap {
-    flex: 1; display: flex; align-items: center; justify-content: center;
-    overflow: hidden; padding: 4px;
-  }
-  canvas { display: block; touch-action: none; }
-
-  /* legend row */
-  .legend { display: flex; gap: 8px; font-size: 10px; color: #6b7891; }
-  .legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
-  .legend .lg::before { background: #3ecf6a; }
-  .legend .ly::before { background: #e0c93e; }
-  .legend .lr::before { background: #e0463e; }
-  .legend .lp::before { background: #ff2222; }
-
-  /* custom inputs */
-  #customRow { display: none; gap: 4px; align-items: center; }
-  #customRow.show { display: flex; }
-  #customRow input { width: 50px; padding: 3px 5px; border-radius: 4px; border: 1px solid #2c3444; background: #0d1017; color: #dbe2ef; font-size: 11px; }
-  #customRow label { font-size: 10px; color: #6b7891; }
+/* Canvas */
+#cv{flex:1;touch-action:none}
 </style>
 </head>
 <body>
 
-<div id="toolbar">
-  <!-- material swatches filled by JS -->
-  <div id="swatches"></div>
-  <div id="customRow">
-    <label>W</label><input id="cW" type="number" step="0.1" value="1">
-    <label>S</label><input id="cS" type="number" step="0.1" value="1">
-    <input id="cC" type="color" value="#cc66ff" style="width:28px;height:24px;padding:0;border:1px solid #2c3444;">
-  </div>
-  <div class="sep"></div>
-  <button class="tbtn on" id="btnPlace">Place</button>
-  <button class="tbtn" id="btnRemove">Remove</button>
-  <div class="sep"></div>
-  <button class="tbtn" id="btnStep">Step</button>
-  <button class="tbtn" id="btnSim">Simulate</button>
-  <button class="tbtn red" id="btnReset">Reset</button>
+<div class="top-bar" id="toolbar">
+  <div class="mswatch ground" id="sw-ground" title="Ground (immune)"></div>
+  <div class="mswatch" id="sw-0"></div>
+  <div class="mswatch" id="sw-1"></div>
+  <div class="mswatch" id="sw-2"></div>
+  <div class="mswatch" id="sw-3"></div>
+  <div class="mswatch" id="sw-4"></div>
+  <div class="mswatch" id="sw-custom" title="Custom"></div>
+  <button class="btn" id="btn-place">Place</button>
+  <button class="btn" id="btn-remove">Remove</button>
+  <button class="btn" id="btn-step">Step</button>
+  <button class="btn red" id="btn-sim">Simulate</button>
+  <button class="btn red" id="btn-reset">Reset</button>
 </div>
-
-<div id="info">
-  <span>Blocks: <b id="statTotal">0</b></span>
-  <span>Broken: <b id="statBroken">0</b></span>
-  <div class="legend">
-    <span class="lg">strong</span>
-    <span class="ly">ok</span>
-    <span class="lr">weak</span>
-    <span class="lp">free</span>
-  </div>
-</div>
-
-<div id="wrap"><canvas id="cv"></canvas></div>
+<div class="stats" id="stats"></div>
+<canvas id="cv"></canvas>
 
 <script>
-(function () {
-  "use strict";
+/* ===== TENSION SANDBOX v2 — edges, ground, top-down weight ===== */
 
-  const MATS = [
-    { name: "Sand",  w: 1.1, s: 0.5, c: "#d9c07c" },
-    { name: "Dirt",  w: 1.0, s: 1.0, c: "#8b5a2b" },
-    { name: "Rock",  w: 3.0, s: 7.0, c: "#8a8f99" },
-    { name: "Clay",  w: 1.2, s: 1.2, c: "#b5651d" },
-    { name: "Iron",  w: 5.0, s: 10., c: "#5a6070" },
-  ];
+const GRIDS=[
+  {label:'Ground',color:'#444',ground:true},
+  {label:'Sand',color:'#c8b464',weight:1.1,strength:0.5},
+  {label:'Dirt',color:'#8b6914',weight:1.0,strength:1.0},
+  {label:'Rock',color:'#9e9e9e',weight:3.0,strength:7.0},
+  {label:'Clay',color:'#cd7f32',weight:1.2,strength:1.2},
+  {label:'Iron',color:'#5c7a8a',weight:4.0,strength:5.0},
+];
+const CUSTOM={label:'Custom',color:'#c080ff',weight:1,strength:1};
+const GROUND_COL='#3a3a3a';
+const GROUND_EDGE='#2a2a2a';
 
-  // --- state ---
-  let sel = 0;           // selected material index
-  let mode = "place";    // place | remove
-  const ROWS = 20, COLS = 24;
-  let grid = [];         // grid[r][c] = null | { w, s, c, broken, grip, stress }
-  function mkGrid() { grid = Array.from({length:ROWS}, ()=> Array(COLS).fill(null)); }
-  mkGrid();
+const cv=document.getElementById('cv');
+const ctx=cv.getContext('2d');
+let W,H,rows,cols,cell;
+let grid=[];   // 2D: null | {m,ground}
+let sel=1, mode='place';
+let simming=false, simInterval=null;
+let dragging=false, dragErase=false;
+let stats={};
 
-  // --- canvas sizing ---
-  const cv = document.getElementById("cv");
-  const ctx = cv.getContext("2d");
-  let CELL = 30;
-
-  function resize() {
-    const wrap = document.getElementById("wrap");
-    const maxW = wrap.clientWidth - 8;
-    const maxH = wrap.clientHeight - 8;
-    CELL = Math.floor(Math.min(maxW / COLS, maxH / ROWS));
-    CELL = Math.max(CELL, 14);
-    const dpr = window.devicePixelRatio || 1;
-    cv.width = COLS * CELL * dpr;
-    cv.height = ROWS * CELL * dpr;
-    cv.style.width = (COLS * CELL) + "px";
-    cv.style.height = (ROWS * CELL) + "px";
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+// Stress edge colors: green→yellow→red based on stress ratio
+function stressColor(ratio){
+  ratio=Math.min(1,Math.max(0,ratio));
+  if(ratio<0.5){
+    // green→yellow
+    const t=ratio*2;
+    const r=Math.round(80+175*t), g=Math.round(200+55*t), b=Math.round(80-80*t);
+    return `rgb(${r},${g},${b})`;
+  } else {
+    // yellow→red
+    const t=(ratio-0.5)*2;
+    const r=Math.round(255), g=Math.round(255-200*t), b=Math.round(0);
+    return `rgb(${r},${g},${b})`;
   }
-  window.addEventListener("resize", resize);
-  resize();
+}
 
-  // --- material swatches ---
-  const swEl = document.getElementById("swatches");
-  const customRow = document.getElementById("customRow");
-  const swatches = [];
-  MATS.forEach((m, i) => {
-    const d = document.createElement("div");
-    d.className = "sw" + (i === 0 ? " active" : "");
-    d.style.background = m.c;
-    d.title = m.name;
-    d.addEventListener("click", () => pickMat(i));
-    swEl.appendChild(d);
-    swatches.push(d);
-  });
-  // custom swatch
-  const cSw = document.createElement("div");
-  cSw.className = "sw";
-  cSw.style.background = "#cc66ff";
-  cSw.title = "Custom";
-  cSw.addEventListener("click", () => pickMat(-1));
-  swEl.appendChild(cSw);
-  swatches.push(cSw);
-
-  function getMat(i) {
-    if (i >= 0) return MATS[i];
-    return { name: "Custom", w: parseFloat(document.getElementById("cW").value)||1, s: parseFloat(document.getElementById("cS").value)||1, c: document.getElementById("cC").value };
+function resize(){
+  const r=cv.getBoundingClientRect();
+  cv.width=r.width*devicePixelRatio;
+  cv.height=r.height*devicePixelRatio;
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  W=r.width; H=r.height;
+  calcGrid();
+  draw();
+}
+function calcGrid(){
+  // Leave room for ground at bottom
+  const groundRows=1;
+  const availH=H-10;
+  cell=Math.floor(Math.min(W/48, availH/28));
+  if(cell<4)cell=4;
+  cols=Math.floor(W/cell);
+  rows=Math.floor(H/cell);
+  // Extend grid if needed
+  while(grid.length<rows){
+    grid.push(new Array(cols).fill(null));
   }
-
-  function pickMat(i) {
-    sel = i;
-    swatches.forEach((s,idx) => s.classList.toggle("active", idx === (i < 0 ? swatches.length-1 : i)));
-    customRow.classList.toggle("show", i < 0);
+  while(grid[0]&&grid[0].length<cols){
+    for(let r=0;r<grid.length;r++) grid[r].push(null);
   }
-
-  // --- mode ---
-  const btnP = document.getElementById("btnPlace");
-  const btnR = document.getElementById("btnRemove");
-  btnP.addEventListener("click", ()=>{ mode="place"; btnP.classList.add("on"); btnR.classList.remove("on"); });
-  btnR.addEventListener("click", ()=>{ mode="remove"; btnR.classList.add("on"); btnP.classList.remove("on"); });
-
-  // --- interaction ---
-  function cellFromXY(clientX, clientY) {
-    const r = cv.getBoundingClientRect();
-    const x = (clientX - r.left) / (r.width / (COLS * CELL));
-    const y = (clientY - r.top) / (r.height / (ROWS * CELL));
-    const c = Math.floor(x / CELL), row = Math.floor(y / CELL);
-    if (row < 0 || row >= ROWS || c < 0 || c >= COLS) return null;
-    return { row, col: c };
+  // Init ground row at bottom
+  for(let c=0;c<cols;c++){
+    if(!grid[rows-1][c]) grid[rows-1][c]={m:0,ground:true};
   }
+  buildStats();
+}
 
-  function placeOrRemove(cx) {
-    if (!cx) return;
-    const { row, col } = cx;
-    if (mode === "place") {
-      if (!grid[row][col]) {
-        const m = getMat(sel);
-        grid[row][col] = { w: m.w, s: m.s, c: m.c, broken: false, grip: 0, stress: 0 };
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // Compute stress edges via top-down weight
+  const stress=computeStressEdges();
+
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const b=grid[r][c];
+      if(!b)continue;
+      const x=c*cell, y=r*cell;
+      const isGround=b.ground;
+
+      if(isGround){
+        // Ground: solid dark block with subtle grid
+        ctx.fillStyle=GROUND_COL;
+        ctx.fillRect(x,y,cell,cell);
+        ctx.strokeStyle=GROUND_EDGE;
+        ctx.lineWidth=1;
+        ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
+      } else {
+        // Normal block: colored fill
+        const mat=GRIDS[b.m]||CUSTOM;
+        ctx.fillStyle=mat.color;
+        ctx.fillRect(x+1,y+1,cell-2,cell-2);
+
+        // Draw stressed edges
+        const key=`${r},${c}`;
+        const edges=stress[key];
+        if(edges){
+          ctx.lineWidth=Math.max(2,cell*0.15);
+          ctx.lineCap='round';
+          // edges = {top,left,right,bottom} each = stress ratio or null
+          if(edges.top!=null){
+            ctx.strokeStyle=stressColor(edges.top);
+            ctx.beginPath();ctx.moveTo(x+2,y+2);ctx.lineTo(x+cell-2,y+2);ctx.stroke();
+          }
+          if(edges.bottom!=null){
+            ctx.strokeStyle=stressColor(edges.bottom);
+            ctx.beginPath();ctx.moveTo(x+2,y+cell-2);ctx.lineTo(x+cell-2,y+cell-2);ctx.stroke();
+          }
+          if(edges.left!=null){
+            ctx.strokeStyle=stressColor(edges.left);
+            ctx.beginPath();ctx.moveTo(x+2,y+2);ctx.lineTo(x+2,y+cell-2);ctx.stroke();
+          }
+          if(edges.right!=null){
+            ctx.strokeStyle=stressColor(edges.right);
+            ctx.beginPath();ctx.moveTo(x+cell-2,y+2);ctx.lineTo(x+cell-2,y+cell-2);ctx.stroke();
+          }
+        }
       }
+    }
+  }
+}
+
+/*
+ * Top-down weight stress:
+ * For each non-ground block, the weight pressing DOWN through it is the
+ * sum of weights of all blocks above it in the same column (or supported
+ * by it). Then we find which edge(s) bear that load.
+ *
+ * Simplified model: each block has a "load" = total weight above it.
+ * The edge under most tension is the BOTTOM edge (bearing weight from above),
+ * unless the block is on the side of an overhang — then SIDE edges bear load.
+ */
+function computeStressEdges(){
+  const result={};
+
+  // First: compute column loads (weight above each block in same column)
+  for(let c=0;c<cols;c++){
+    let loadAbove=0;
+    for(let r=0;r<rows;r++){
+      const b=grid[r][c];
+      if(!b)continue;
+      if(b.ground)continue; // ground bears nothing, supports everything
+
+      // This block bears everything above it
+      const load=loadAbove;
+      // After this block, add its own weight to what's above
+      const mat=GRIDS[b.m]||CUSTOM;
+      loadAbove+=mat.weight||1;
+
+      if(load<=0)continue; // no tension
+
+      // Find the support: which edge(s) hold this block up?
+      // The block is supported by what's BELOW it, and connected to LEFT/RIGHT.
+      // Tension is on edges that connect to the support structure.
+      const key=`${r},${c}`;
+      const edges={};
+
+      // Compute total strength of connections
+      let bottomStrength=0;
+      const below=grid[r+1]&&grid[r+1][c];
+      if(below&&!below.ground){
+        const bm=GRIDS[below.m]||CUSTOM;
+        bottomStrength=bm.strength||1;
+      } else if(below&&below.ground){
+        bottomStrength=999; // ground is infinitely strong
+      }
+
+      let leftSupport=0,rightSupport=0;
+      if(c>0){const l=grid[r][c-1];if(l)leftSupport=(GRIDS[l.m]||CUSTOM).strength||1;}
+      if(c<cols-1){const ri=grid[r][c+1];if(ri)rightSupport=(GRIDS[ri.m]||CUSTOM).strength||1;}
+
+      const totalSupport=bottomStrength+leftSupport+rightSupport;
+      if(totalSupport===0)continue;
+
+      // Stress ratio: how much of the support capacity is being used
+      const totalStrength=(GRIDS[b.m]||CUSTOM).strength||1;
+      const stressRatio=Math.min(1.5, load/totalStrength);
+
+      if(stressRatio<0.05)continue; // negligible
+
+      // Bottom edge always stressed (bearing weight from above)
+      edges.bottom=stressRatio;
+
+      // Side edges stressed proportionally if there are horizontal connections
+      if(leftSupport>0){
+        edges.left=stressRatio*0.6;
+      }
+      if(rightSupport>0){
+        edges.right=stressRatio*0.6;
+      }
+
+      // Top edge stressed if this block is supporting stuff below (rare, only for compression)
+      // Skip for now — top tension not relevant for hanging blocks
+
+      result[key]=edges;
+    }
+  }
+  return result;
+}
+
+function buildStats(){
+  let total=0,ground=0,matCount={};
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const b=grid[r][c];if(!b)continue;
+      total++;
+      if(b.ground){ground++;continue;}
+      matCount[b.m]=(matCount[b.m]||0)+1;
+    }
+  }
+  const el=document.getElementById('stats');
+  let s=`<span>Blocks: <b>${total}</b></span> <span>Ground: <b>${ground}</b></span>`;
+  // Load/Strength ratio for selected blocks
+  for(let m=1;m<GRIDS.length;m++){
+    if(matCount[m]){
+      const mat=GRIDS[m];
+      s+=`<span style="color:${mat.color}">■</span> ${mat.label}: ${matCount[m]} (w=${mat.weight} s=${mat.strength})`;
+    }
+  }
+  el.innerHTML=s;
+}
+
+/* ===== INPUT ===== */
+function getCellFromEvent(e){
+  const r=cv.getBoundingClientRect();
+  const x=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
+  const y=(e.touches?e.touches[0].clientY:e.clientY)-r.top;
+  const c=Math.floor(x/cell), row=Math.floor(y/cell);
+  if(row>=0&&row<rows&&c>=0&&c<cols) return {r:row,c};
+  return null;
+}
+function placeOrRemove(cell){
+  if(!cell)return;
+  if(mode==='remove'){
+    if(!grid[cell.r][cell.c])return;
+    grid[cell.r][cell.c]=null;
+  } else {
+    if(grid[cell.r][cell.c])return;
+    if(sel===0){
+      grid[cell.r][cell.c]={m:0,ground:true};
     } else {
-      grid[row][col] = null;
+      grid[cell.r][cell.c]={m:sel,ground:false};
     }
-    computeStats();
   }
+  buildStats();
+  draw();
+}
+cv.addEventListener('mousedown',e=>{dragging=true;
+  const c=getCellFromEvent(e);if(!c)return;
+  dragErase=!!grid[c.r][c.c]&&mode==='place';
+  if(dragErase){mode='remove';ui_syncMode();}
+  placeOrRemove(c);});
+cv.addEventListener('mousemove',e=>{if(!dragging)return;placeOrRemove(getCellFromEvent(e));});
+cv.addEventListener('mouseup',()=>{if(dragErase){mode='place';ui_syncMode();}dragging=false;});
+cv.addEventListener('mouseleave',()=>{if(dragErase){mode='place';ui_syncMode();}dragging=false;});
 
-  // mouse
-  let drawing = false;
-  cv.addEventListener("mousedown", (e) => { drawing = true; placeOrRemove(cellFromXY(e.clientX, e.clientY)); });
-  cv.addEventListener("mousemove", (e) => { if (drawing) placeOrRemove(cellFromXY(e.clientX, e.clientY)); });
-  cv.addEventListener("mouseup", () => drawing = false);
-  cv.addEventListener("mouseleave", () => drawing = false);
-  cv.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    const cx = cellFromXY(e.clientX, e.clientY);
-    if (cx && grid[cx.row][cx.col]) {
-      const m = getMat(sel);
-      Object.assign(grid[cx.row][cx.col], { w: m.w, s: m.s, c: m.c });
-      computeStats();
-    }
-  });
+cv.addEventListener('touchstart',e=>{e.preventDefault();dragging=true;
+  const c=getCellFromEvent(e);if(!c)return;
+  dragErase=!!grid[c.r][c.c]&&mode==='place';
+  if(dragErase){mode='remove';ui_syncMode();}
+  placeOrRemove(c);},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();if(!dragging)return;
+  placeOrRemove(getCellFromEvent(e));},{passive:false});
+cv.addEventListener('touchend',()=>{if(dragErase){mode='place';ui_syncMode();}dragging=false;});
 
-  // touch
-  cv.addEventListener("touchstart", (e) => { e.preventDefault(); drawing = true; const t=e.touches[0]; placeOrRemove(cellFromXY(t.clientX, t.clientY)); }, {passive:false});
-  cv.addEventListener("touchmove", (e) => { e.preventDefault(); const t=e.touches[0]; placeOrRemove(cellFromXY(t.clientX, t.clientY)); }, {passive:false});
-  cv.addEventListener("touchend", () => drawing = false);
+/* ===== BUTTONS ===== */
+function ui_syncMode(){
+  document.getElementById('btn-place').classList.toggle('on',mode==='place');
+  document.getElementById('btn-remove').classList.toggle('on',mode==='remove');
+}
+document.getElementById('btn-place').onclick=()=>{mode='place';ui_syncMode();};
+document.getElementById('btn-remove').onclick=()=>{mode='remove';ui_syncMode();};
+document.getElementById('btn-reset').onclick=()=>{grid=[];simming=false;
+  if(simInterval){clearInterval(simInterval);simInterval=null;}
+  document.getElementById('btn-sim').classList.remove('on');
+  calcGrid();draw();};
+document.getElementById('btn-step').onclick=()=>{doStep();draw();};
+document.getElementById('btn-sim').onclick=()=>{
+  simming=!simming;
+  document.getElementById('btn-sim').classList.toggle('on',simming);
+  if(simming){simInterval=setInterval(()=>{doStep();draw();},200);}
+  else if(simInterval){clearInterval(simInterval);simInterval=null;}
+};
 
-  // --- tension ---
-  function computeStats() {
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        const cell = grid[r][c];
-        if (!cell) continue;
-        let grip = 0;
-        // side + above neighbors (not below)
-        const nb = [[r,c-1],[r,c+1],[r-1,c]];
-        for (const [nr,nc] of nb) {
-          if (nr<0||nr>=ROWS||nc<0||nc>=COLS) continue;
-          const n = grid[nr][nc];
-          if (n && !n.broken) grip += Math.min(cell.s, n.s);
-        }
-        cell.grip = grip;
-        cell.stress = cell.w > 0 ? grip / cell.w : 999;
+/* ===== SIMULATION ===== */
+function doStep(){
+  // Simple: remove blocks where load exceeds strength
+  const toRemove=[];
+  for(let c=0;c<cols;c++){
+    let loadAbove=0;
+    for(let r=0;r<rows;r++){
+      const b=grid[r][c];if(!b)continue;
+      if(b.ground){loadAbove=0;continue;} // ground resets load
+      const mat=GRIDS[b.m]||CUSTOM;
+      const strength=mat.strength||1;
+      if(loadAbove>strength){
+        toRemove.push([r,c]);
       }
+      loadAbove+=mat.weight||1;
     }
-    updateStats();
   }
+  for(const [r,c] of toRemove) grid[r][c]=null;
+  buildStats();
+}
 
-  function dropCell(r, c) {
-    const cell = grid[r][c];
-    grid[r][c] = null;
-    let lr = r;
-    for (let rr = r+1; rr < ROWS; rr++) { if (grid[rr][c]) break; lr = rr; }
-    grid[lr][c] = cell;
-  }
-
-  function step() {
-    computeStats();
-    const brk = [];
-    for (let r = 0; r < ROWS; r++)
-      for (let c = 0; c < COLS; c++)
-        if (grid[r][c] && !grid[r][c].broken && grid[r][c].w > grid[r][c].grip)
-          brk.push([r,c]);
-    if (!brk.length) return false;
-    brk.forEach(([r,c]) => grid[r][c].broken = true);
-    brk.slice().sort((a,b)=>b[0]-a[0]).forEach(([r,c])=>dropCell(r,c));
-    computeStats();
-    return true;
-  }
-
-  document.getElementById("btnStep").addEventListener("click", ()=>{ step(); });
-  document.getElementById("btnSim").addEventListener("click", ()=>{
-    let n=0, ch=true;
-    while(ch && n<10){ ch=step(); n++; }
+/* ===== MATERIAL SWATCHES ===== */
+function selM(m){
+  sel=m; mode='place'; ui_syncMode();
+  document.querySelectorAll('.mswatch').forEach((e,i)=>{
+    e.classList.toggle('on',i===m);
   });
-  document.getElementById("btnReset").addEventListener("click", ()=>{ mkGrid(); computeStats(); });
-
-  function updateStats() {
-    let t=0, b=0;
-    for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++) if(grid[r][c]){ t++; if(grid[r][c].broken) b++; }
-    document.getElementById("statTotal").textContent = t;
-    document.getElementById("statBroken").textContent = b;
-  }
-
-  // --- render ---
-  function draw() {
-    ctx.fillStyle = "#0d1017";
-    ctx.fillRect(0, 0, COLS*CELL, ROWS*CELL);
-    const t = performance.now();
-    const pulse = 0.5 + 0.5 * Math.sin(t / 200);
-
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        const x = c*CELL, y = r*CELL;
-        // grid line
-        ctx.strokeStyle = "#1c2130"; ctx.lineWidth = 1;
-        ctx.strokeRect(x+.5, y+.5, CELL-1, CELL-1);
-        const cell = grid[r][c];
-        if (!cell) continue;
-        // fill
-        ctx.save();
-        ctx.globalAlpha = cell.broken ? 0.35 : 1;
-        ctx.fillStyle = cell.c;
-        ctx.fillRect(x+2, y+2, CELL-4, CELL-4);
-        ctx.restore();
-        // stress border
-        ctx.save();
-        ctx.lineWidth = Math.max(2, CELL * 0.08);
-        if (cell.broken) {
-          ctx.setLineDash([3,2]); ctx.strokeStyle = "#555";
-          ctx.strokeRect(x+3, y+3, CELL-6, CELL-6);
-        } else if (cell.grip === 0) {
-          ctx.setLineDash([]);
-          ctx.strokeStyle = `rgba(255,34,34,${0.5+0.5*pulse})`;
-          ctx.lineWidth = 2 + 2*pulse;
-          ctx.strokeRect(x+3, y+3, CELL-6, CELL-6);
-        } else {
-          ctx.setLineDash([]);
-          ctx.strokeStyle = cell.stress>3 ? "#3ecf6a" : cell.stress>1 ? "#e0c93e" : "#e0463e";
-          ctx.strokeRect(x+3, y+3, CELL-6, CELL-6);
-        }
-        ctx.restore();
-        // text
-        if (CELL >= 22) {
-          ctx.save();
-          ctx.globalAlpha = cell.broken ? 0.5 : 0.85;
-          ctx.fillStyle = "#000";
-          const fs = Math.max(8, Math.floor(CELL * 0.28));
-          ctx.font = `${fs}px monospace`;
-          ctx.textAlign = "center"; ctx.textBaseline = "middle";
-          ctx.fillText(`g${cell.grip.toFixed(1)}`, x+CELL/2, y+CELL*0.35);
-          ctx.fillText(`w${cell.w.toFixed(1)}`, x+CELL/2, y+CELL*0.65);
-          ctx.restore();
-        }
-      }
-    }
-    requestAnimationFrame(draw);
-  }
-
-  computeStats();
-  requestAnimationFrame(draw);
-})();
+}
+for(let i=0;i<GRIDS.length;i++){
+  const el=document.getElementById('sw-'+i);
+  if(!el)continue;
+  el.style.background=GRIDS[i].color;
+  el.title=GRIDS[i].label;
+  el.onclick=()=>selM(i);
+}
+const customEl=document.getElementById('sw-custom');
+customEl.onclick=()=>{
+  const w=prompt('Weight (lower = lighter, breaks easier):',CUSTOM.weight);
+  if(w===null)return;
+  const s=prompt('Strength (higher = holds more):',CUSTOM.strength);
+  if(s===null)return;
+  const c=prompt('Color:',CUSTOM.color);
+  CUSTOM.weight=parseFloat(w)||1;
+  CUSTOM.strength=parseFloat(s)||1;
+  CUSTOM.color=c||CUSTOM.color;
+  customEl.style.background=CUSTOM.color;
+  selM(5);
+};
+selM(1);
+ui_syncMode();
+window.addEventListener('resize',resize);
+resize();
 </script>
 </body>
 </html>

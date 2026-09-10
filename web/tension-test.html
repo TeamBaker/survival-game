@@ -272,19 +272,39 @@ document.getElementById('btn-sim').onclick=()=>{
   else if(simInterval){clearInterval(simInterval);simInterval=null;}
 };
 
+// A block is supported if it's in an unbroken vertical stack down to ground,
+// OR if it's connected (through any side/vertical chain) to a block that is.
+// This is a flood-fill from ground, not a per-block strength check, so a
+// single step never cascades: only blocks with NO path to support at all
+// (genuinely floating islands) are removed.
+function computeSupported(){
+  const R=rows,C=cols;
+  const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
+  const supported=grid.map(row=>row.map(()=>false));
+  const queue=[];
+  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+    const bl=bAt(r,c);if(!bl||!bl.ground)continue;
+    for(const[dr,dc]of[[-1,0],[1,0],[0,-1],[0,1]]){
+      const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);
+      if(nb&&!nb.ground&&!supported[nr][nc]){supported[nr][nc]=true;queue.push([nr,nc]);}
+    }
+  }
+  while(queue.length){
+    const[r,c]=queue.pop();
+    for(const[dr,dc]of[[-1,0],[1,0],[0,-1],[0,1]]){
+      const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);
+      if(nb&&!nb.ground&&!supported[nr][nc]){supported[nr][nc]=true;queue.push([nr,nc]);}
+    }
+  }
+  return supported;
+}
+
 function doStep(){
+  const supported=computeSupported();
   const toRemove=[];
-  const bAt=(r,c)=>(r>=0&&r<rows&&c>=0&&c<cols&&grid[r])?grid[r][c]:null;
   for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
-    const bl=bAt(r,c);if(!bl||bl.ground)continue;
-    const mat=GRIDS[bl.m]||CUSTOM;
-    const below=bAt(r+1,c);
-    const supported=below&&(below.ground||(GRIDS[below.m]||CUSTOM).strength>=mat.weight);
-    let sideStrength=0;
-    if(c>0){const l=bAt(r,c-1);if(l)sideStrength+=(GRIDS[l.m]||CUSTOM).strength;}
-    if(c<cols-1){const ri=bAt(r,c+1);if(ri)sideStrength+=(GRIDS[ri.m]||CUSTOM).strength;}
-    const totalSupport=(below?(below.ground?1e9:(GRIDS[below.m]||CUSTOM).strength):0)+sideStrength;
-    if(totalSupport<mat.weight)toRemove.push([r,c]);
+    const bl=grid[r]&&grid[r][c];if(!bl||bl.ground)continue;
+    if(!supported[r][c])toRemove.push([r,c]);
   }
   for(const[r,c]of toRemove)grid[r][c]=null;
   buildStats();

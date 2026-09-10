@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Tension Sandbox</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #131722; color: #dbe2ef; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; overflow: hidden; }
+  body { display: flex; flex-direction: column; }
+
+  /* --- top toolbar --- */
+  #toolbar {
+    display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px;
+    background: #1a1f2b; border-bottom: 1px solid #2c3444; align-items: center;
+  }
+  #toolbar .sep { width: 1px; height: 24px; background: #2c3444; margin: 0 4px; }
+  .tbtn {
+    padding: 5px 10px; border-radius: 6px; border: 1px solid #2c3444;
+    background: #232838; color: #b0bcd0; font-size: 12px; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; user-select: none;
+  }
+  .tbtn:active { transform: scale(0.95); }
+  .tbtn.on { background: #2e5a3a; border-color: #3ecf6a; color: #fff; }
+  .tbtn.red { background: #5a2e2e; border-color: #e0463e; color: #fff; }
+
+  /* material swatches */
+  .sw {
+    width: 28px; height: 28px; border-radius: 6px; border: 2px solid #2c3444;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .sw.active { border-color: #fff; box-shadow: 0 0 6px rgba(255,255,255,0.4); }
+
+  /* --- info bar --- */
+  #info {
+    padding: 4px 10px; background: #161b26; font-size: 11px; color: #6b7891;
+    border-bottom: 1px solid #1c2130; display: flex; gap: 12px; align-items: center;
+  }
+  #info b { color: #b0bcd0; }
+
+  /* --- canvas area --- */
+  #wrap {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    overflow: hidden; padding: 4px;
+  }
+  canvas { display: block; touch-action: none; }
+
+  /* legend row */
+  .legend { display: flex; gap: 8px; font-size: 10px; color: #6b7891; }
+  .legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
+  .legend .lg::before { background: #3ecf6a; }
+  .legend .ly::before { background: #e0c93e; }
+  .legend .lr::before { background: #e0463e; }
+  .legend .lp::before { background: #ff2222; }
+
+  /* custom inputs */
+  #customRow { display: none; gap: 4px; align-items: center; }
+  #customRow.show { display: flex; }
+  #customRow input { width: 50px; padding: 3px 5px; border-radius: 4px; border: 1px solid #2c3444; background: #0d1017; color: #dbe2ef; font-size: 11px; }
+  #customRow label { font-size: 10px; color: #6b7891; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <!-- material swatches filled by JS -->
+  <div id="swatches"></div>
+  <div id="customRow">
+    <label>W</label><input id="cW" type="number" step="0.1" value="1">
+    <label>S</label><input id="cS" type="number" step="0.1" value="1">
+    <input id="cC" type="color" value="#cc66ff" style="width:28px;height:24px;padding:0;border:1px solid #2c3444;">
+  </div>
+  <div class="sep"></div>
+  <button class="tbtn on" id="btnPlace">Place</button>
+  <button class="tbtn" id="btnRemove">Remove</button>
+  <div class="sep"></div>
+  <button class="tbtn" id="btnStep">Step</button>
+  <button class="tbtn" id="btnSim">Simulate</button>
+  <button class="tbtn red" id="btnReset">Reset</button>
+</div>
+
+<div id="info">
+  <span>Blocks: <b id="statTotal">0</b></span>
+  <span>Broken: <b id="statBroken">0</b></span>
+  <div class="legend">
+    <span class="lg">strong</span>
+    <span class="ly">ok</span>
+    <span class="lr">weak</span>
+    <span class="lp">free</span>
+  </div>
+</div>
+
+<div id="wrap"><canvas id="cv"></canvas></div>
+
+<script>
+(function () {
+  "use strict";
+
+  const MATS = [
+    { name: "Sand",  w: 1.1, s: 0.5, c: "#d9c07c" },
+    { name: "Dirt",  w: 1.0, s: 1.0, c: "#8b5a2b" },
+    { name: "Rock",  w: 3.0, s: 7.0, c: "#8a8f99" },
+    { name: "Clay",  w: 1.2, s: 1.2, c: "#b5651d" },
+    { name: "Iron",  w: 5.0, s: 10., c: "#5a6070" },
+  ];
+
+  // --- state ---
+  let sel = 0;           // selected material index
+  let mode = "place";    // place | remove
+  const ROWS = 20, COLS = 24;
+  let grid = [];         // grid[r][c] = null | { w, s, c, broken, grip, stress }
+  function mkGrid() { grid = Array.from({length:ROWS}, ()=> Array(COLS).fill(null)); }
+  mkGrid();
+
+  // --- canvas sizing ---
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  let CELL = 30;
+
+  function resize() {
+    const wrap = document.getElementById("wrap");
+    const maxW = wrap.clientWidth - 8;
+    const maxH = wrap.clientHeight - 8;
+    CELL = Math.floor(Math.min(maxW / COLS, maxH / ROWS));
+    CELL = Math.max(CELL, 14);
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = COLS * CELL * dpr;
+    cv.height = ROWS * CELL * dpr;
+    cv.style.width = (COLS * CELL) + "px";
+    cv.style.height = (ROWS * CELL) + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // --- material swatches ---
+  const swEl = document.getElementById("swatches");
+  const customRow = document.getElementById("customRow");
+  const swatches = [];
+  MATS.forEach((m, i) => {
+    const d = document.createElement("div");
+    d.className = "sw" + (i === 0 ? " active" : "");
+    d.style.background = m.c;
+    d.title = m.name;
+    d.addEventListener("click", () => pickMat(i));
+    swEl.appendChild(d);
+    swatches.push(d);
+  });
+  // custom swatch
+  const cSw = document.createElement("div");
+  cSw.className = "sw";
+  cSw.style.background = "#cc66ff";
+  cSw.title = "Custom";
+  cSw.addEventListener("click", () => pickMat(-1));
+  swEl.appendChild(cSw);
+  swatches.push(cSw);
+
+  function getMat(i) {
+    if (i >= 0) return MATS[i];
+    return { name: "Custom", w: parseFloat(document.getElementById("cW").value)||1, s: parseFloat(document.getElementById("cS").value)||1, c: document.getElementById("cC").value };
+  }
+
+  function pickMat(i) {
+    sel = i;
+    swatches.forEach((s,idx) => s.classList.toggle("active", idx === (i < 0 ? swatches.length-1 : i)));
+    customRow.classList.toggle("show", i < 0);
+  }
+
+  // --- mode ---
+  const btnP = document.getElementById("btnPlace");
+  const btnR = document.getElementById("btnRemove");
+  btnP.addEventListener("click", ()=>{ mode="place"; btnP.classList.add("on"); btnR.classList.remove("on"); });
+  btnR.addEventListener("click", ()=>{ mode="remove"; btnR.classList.add("on"); btnP.classList.remove("on"); });
+
+  // --- interaction ---
+  function cellFromXY(clientX, clientY) {
+    const r = cv.getBoundingClientRect();
+    const x = (clientX - r.left) / (r.width / (COLS * CELL));
+    const y = (clientY - r.top) / (r.height / (ROWS * CELL));
+    const c = Math.floor(x / CELL), row = Math.floor(y / CELL);
+    if (row < 0 || row >= ROWS || c < 0 || c >= COLS) return null;
+    return { row, col: c };
+  }
+
+  function placeOrRemove(cx) {
+    if (!cx) return;
+    const { row, col } = cx;
+    if (mode === "place") {
+      if (!grid[row][col]) {
+        const m = getMat(sel);
+        grid[row][col] = { w: m.w, s: m.s, c: m.c, broken: false, grip: 0, stress: 0 };
+      }
+    } else {
+      grid[row][col] = null;
+    }
+    computeStats();
+  }
+
+  // mouse
+  let drawing = false;
+  cv.addEventListener("mousedown", (e) => { drawing = true; placeOrRemove(cellFromXY(e.clientX, e.clientY)); });
+  cv.addEventListener("mousemove", (e) => { if (drawing) placeOrRemove(cellFromXY(e.clientX, e.clientY)); });
+  cv.addEventListener("mouseup", () => drawing = false);
+  cv.addEventListener("mouseleave", () => drawing = false);
+  cv.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    const cx = cellFromXY(e.clientX, e.clientY);
+    if (cx && grid[cx.row][cx.col]) {
+      const m = getMat(sel);
+      Object.assign(grid[cx.row][cx.col], { w: m.w, s: m.s, c: m.c });
+      computeStats();
+    }
+  });
+
+  // touch
+  cv.addEventListener("touchstart", (e) => { e.preventDefault(); drawing = true; const t=e.touches[0]; placeOrRemove(cellFromXY(t.clientX, t.clientY)); }, {passive:false});
+  cv.addEventListener("touchmove", (e) => { e.preventDefault(); const t=e.touches[0]; placeOrRemove(cellFromXY(t.clientX, t.clientY)); }, {passive:false});
+  cv.addEventListener("touchend", () => drawing = false);
+
+  // --- tension ---
+  function computeStats() {
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const cell = grid[r][c];
+        if (!cell) continue;
+        let grip = 0;
+        // side + above neighbors (not below)
+        const nb = [[r,c-1],[r,c+1],[r-1,c]];
+        for (const [nr,nc] of nb) {
+          if (nr<0||nr>=ROWS||nc<0||nc>=COLS) continue;
+          const n = grid[nr][nc];
+          if (n && !n.broken) grip += Math.min(cell.s, n.s);
+        }
+        cell.grip = grip;
+        cell.stress = cell.w > 0 ? grip / cell.w : 999;
+      }
+    }
+    updateStats();
+  }
+
+  function dropCell(r, c) {
+    const cell = grid[r][c];
+    grid[r][c] = null;
+    let lr = r;
+    for (let rr = r+1; rr < ROWS; rr++) { if (grid[rr][c]) break; lr = rr; }
+    grid[lr][c] = cell;
+  }
+
+  function step() {
+    computeStats();
+    const brk = [];
+    for (let r = 0; r < ROWS; r++)
+      for (let c = 0; c < COLS; c++)
+        if (grid[r][c] && !grid[r][c].broken && grid[r][c].w > grid[r][c].grip)
+          brk.push([r,c]);
+    if (!brk.length) return false;
+    brk.forEach(([r,c]) => grid[r][c].broken = true);
+    brk.slice().sort((a,b)=>b[0]-a[0]).forEach(([r,c])=>dropCell(r,c));
+    computeStats();
+    return true;
+  }
+
+  document.getElementById("btnStep").addEventListener("click", ()=>{ step(); });
+  document.getElementById("btnSim").addEventListener("click", ()=>{
+    let n=0, ch=true;
+    while(ch && n<10){ ch=step(); n++; }
+  });
+  document.getElementById("btnReset").addEventListener("click", ()=>{ mkGrid(); computeStats(); });
+
+  function updateStats() {
+    let t=0, b=0;
+    for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++) if(grid[r][c]){ t++; if(grid[r][c].broken) b++; }
+    document.getElementById("statTotal").textContent = t;
+    document.getElementById("statBroken").textContent = b;
+  }
+
+  // --- render ---
+  function draw() {
+    ctx.fillStyle = "#0d1017";
+    ctx.fillRect(0, 0, COLS*CELL, ROWS*CELL);
+    const t = performance.now();
+    const pulse = 0.5 + 0.5 * Math.sin(t / 200);
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const x = c*CELL, y = r*CELL;
+        // grid line
+        ctx.strokeStyle = "#1c2130"; ctx.lineWidth = 1;
+        ctx.strokeRect(x+.5, y+.5, CELL-1, CELL-1);
+        const cell = grid[r][c];
+        if (!cell) continue;
+        // fill
+        ctx.save();
+        ctx.globalAlpha = cell.broken ? 0.35 : 1;
+        ctx.fillStyle = cell.c;
+        ctx.fillRect(x+2, y+2, CELL-4, CELL-4);
+        ctx.restore();
+        // stress border
+        ctx.save();
+        ctx.lineWidth = Math.max(2, CELL * 0.08);
+        if (cell.broken) {
+          ctx.setLineDash([3,2]); ctx.strokeStyle = "#555";
+          ctx.strokeRect(x+3, y+3, CELL-6, CELL-6);
+        } else if (cell.grip === 0) {
+          ctx.setLineDash([]);
+          ctx.strokeStyle = `rgba(255,34,34,${0.5+0.5*pulse})`;
+          ctx.lineWidth = 2 + 2*pulse;
+          ctx.strokeRect(x+3, y+3, CELL-6, CELL-6);
+        } else {
+          ctx.setLineDash([]);
+          ctx.strokeStyle = cell.stress>3 ? "#3ecf6a" : cell.stress>1 ? "#e0c93e" : "#e0463e";
+          ctx.strokeRect(x+3, y+3, CELL-6, CELL-6);
+        }
+        ctx.restore();
+        // text
+        if (CELL >= 22) {
+          ctx.save();
+          ctx.globalAlpha = cell.broken ? 0.5 : 0.85;
+          ctx.fillStyle = "#000";
+          const fs = Math.max(8, Math.floor(CELL * 0.28));
+          ctx.font = `${fs}px monospace`;
+          ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          ctx.fillText(`g${cell.grip.toFixed(1)}`, x+CELL/2, y+CELL*0.35);
+          ctx.fillText(`w${cell.w.toFixed(1)}`, x+CELL/2, y+CELL*0.65);
+          ctx.restore();
+        }
+      }
+    }
+    requestAnimationFrame(draw);
+  }
+
+  computeStats();
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

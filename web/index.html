@@ -2179,28 +2179,67 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
   return f;
 });
 // A falling powder grain's own box, vertex-coloured like a tiny slice of
-// terrain instead of one flat material colour: each of the cube's 6 faces
-// gets a slightly different shade baked in, so the grain reads as a little
-// cube rather than a flat-shaded speck. boxGeo is shared and unit-sized, so
-// this makes (and caches) one small per-material clone the grains can share.
-const grainGeoCache = new Array(N_MATS).fill(null);
-const GRAIN_FACE_SHADES = [0.92, 0.96, 1.0, 1.04, 0.88, 1.08];
+// terrain instead of one flat material colour: each of the cube's 6 faces is
+// diced into a GRAIN_GRID x GRAIN_GRID grid, same as the terrain powder path
+// (pushFace) below, and each cell gets its own hashed shade — wide enough to
+// read as speckle on a face this small, where a per-face-only shade would be
+// nearly invisible. Built fresh every call rather than cached: the geometry
+// is tiny (6 faces x GRAIN_GRID² cells) and grainGeo is only called a
+// handful of times a frame.
 function grainGeo(m) {
-  let geo = grainGeoCache[m];
-  if (geo) return geo;
-  geo = boxGeo.clone();
   const base = TERRAIN_MATS[m].color;
-  const col = new Float32Array(24 * 3);
+  const nq = 6 * GRAIN_GRID * GRAIN_GRID;
+  const pos = new Float32Array(nq * 4 * 3);
+  const nor = new Float32Array(nq * 4 * 3);
+  const col = new Float32Array(nq * 4 * 3);
+  const idx = new Uint16Array(nq * 6);
+  let vi = 0, ii = 0;
+
   for (let f = 0; f < 6; f++) {
-    const s = GRAIN_FACE_SHADES[f];
-    const r = clamp01(base.r * s), g = clamp01(base.g * s), b = clamp01(base.b * s);
-    for (let vi = 0; vi < 4; vi++) {
-      const o = (f * 4 + vi) * 3;
-      col[o] = r; col[o + 1] = g; col[o + 2] = b;
+    const F = FACES[f], v = F.v, n = F.n;
+    // Same du/dv walk as pushFace's powder-dicing path, just over the unit
+    // (-1..1) face offsets FACES stores rather than a full block's corners.
+    const dux = v[3] - v[0], duy = v[4] - v[1], duz = v[5] - v[2];
+    const dvx = v[9] - v[0], dvy = v[10] - v[1], dvz = v[11] - v[2];
+
+    for (let row = 0; row < GRAIN_GRID; row++) {
+      const w0 = row / GRAIN_GRID, w1 = (row + 1) / GRAIN_GRID;
+      for (let col2 = 0; col2 < GRAIN_GRID; col2++) {
+        const u0 = col2 / GRAIN_GRID, u1 = (col2 + 1) / GRAIN_GRID;
+
+        // Cell hash keyed only on face/row/col — these are tiny falling
+        // grains with no fixed world position, so all that matters is a
+        // stable, visibly wide per-cell spread.
+        const h = nhash3(0, 0, f * 100 + row * 10 + col2);
+        const s = 0.7 + h * 0.6;
+        const r = clamp01(base.r * s), g = clamp01(base.g * s), b = clamp01(base.b * s);
+
+        const v0 = vi / 3;
+        for (let q = 0; q < 4; q++) {
+          const u = q === 0 || q === 3 ? u0 : u1;
+          const w = q < 2 ? w0 : w1;
+          // FACES' v[] runs -1..1 over a full block; halve it to fit the
+          // unit box grainGeo builds on (boxGeo is scaled up to BLOCK size
+          // by the mesh, same as the cached geo this replaces).
+          pos[vi]     = (v[0] + u * dux + w * dvx) * 0.5;
+          pos[vi + 1] = (v[1] + u * duy + w * dvy) * 0.5;
+          pos[vi + 2] = (v[2] + u * duz + w * dvz) * 0.5;
+          nor[vi] = n[0]; nor[vi + 1] = n[1]; nor[vi + 2] = n[2];
+          col[vi] = r; col[vi + 1] = g; col[vi + 2] = b;
+          vi += 3;
+        }
+        idx[ii] = v0; idx[ii + 1] = v0 + 1; idx[ii + 2] = v0 + 2;
+        idx[ii + 3] = v0; idx[ii + 4] = v0 + 2; idx[ii + 5] = v0 + 3;
+        ii += 6;
+      }
     }
   }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  grainGeoCache[m] = geo;
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
   return geo;
 }
 const terrain = new THREE.Group();
@@ -4998,7 +5037,7 @@ function catchPowder(dt) {
     p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
     p.pos.y -= p.v * dt;
     if (p.mesh) p.mesh.position.copy(p.pos);
-    if (p.pos.y < FALL_KILL_Y) { if (p.mesh) scene.remove(p.mesh); powderFalling.splice(n, 1); continue; }
+    if (p.pos.y < FALL_KILL_Y) { if (p.mesh) { scene.remove(p.mesh); p.mesh.geometry.dispose(); } powderFalling.splice(n, 1); continue; }
     if (voxelAtWorld(p.pos.x, p.pos.y, p.pos.z) !== AIR) {
       const i = colI(p.pos.x), j = colJ(p.pos.z);
       let lvl = lvlOfY(p.pos.y);
@@ -5010,7 +5049,7 @@ function catchPowder(dt) {
           && (aboveLvl - 1 < VOX_FLOOR || voxelAt(i, j, aboveLvl - 1) === AIR)) {
         powderQueue.push({ i, j, lvl: aboveLvl });
       }
-      if (p.mesh) scene.remove(p.mesh);
+      if (p.mesh) { scene.remove(p.mesh); p.mesh.geometry.dispose(); }
       powderFalling.splice(n, 1);
       continue;
     }
@@ -5029,7 +5068,7 @@ function catchPowder(dt) {
       }
       if (!local) continue;
       placeOnDebris(mesh, local, p.mat);
-      if (p.mesh) scene.remove(p.mesh);
+      if (p.mesh) { scene.remove(p.mesh); p.mesh.geometry.dispose(); }
       powderFalling.splice(n, 1);
       break;
     }

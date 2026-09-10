@@ -74,66 +74,106 @@ function calcGrid(){
 }
 
 /*
- * ANCHOR MODEL:
- * 1. Ground blocks are anchors — fixed, immovable.
- * 2. Flood-fill from ALL ground blocks through neighbors (up/down/left/right).
- *    Any block reachable = "anchored". No separation tension.
- * 3. Any block NOT reachable = "adrift". Would fall off.
- * 4. Edge tension: only on edges between an anchored block and an adrift block.
- *    The adrift side is pulling away. Color = how hard it's pulling vs strength.
+ * EDGE-LOAD TENSION MODEL:
  *
- * For a solid tower on ground: everything is anchored → no tension. ✓
- * For a horizontal beam from ground: everything anchored → no tension. ✓
- * For a floating block: adrift, all edges red. ✓
- * For an overhang: the overhanging part is adrift if no side connection back to anchor. ✓
+ * For every horizontal edge between two blocks, compute:
+ *   weightLeft = total weight of all blocks on the LEFT side of this edge
+ *                (connected to the left block, not crossing this edge)
+ *   weightRight = same for the RIGHT side
+ *
+ * If weightLeft > weightRight: the left side is hanging off the right side.
+ *   → right block's LEFT edge is under tension.
+ *   → tension = weightLeft / strength(right block)
+ *
+ * If weightRight > weightLeft: right side hangs off left side.
+ *   → left block's RIGHT edge is under tension.
+ *   → tension = weightRight / strength(left block)
+ *
+ * For VERTICAL edges (above/below): same logic but for top/bottom.
+ *   weightAbove / weightBelow. Tension = hanging_weight / strength.
+ *
+ * Ground blocks have infinite strength and infinite weight.
+ * They anchor everything — edges touching ground never show tension.
+ *
+ * Result: a tower on ground = no tension. A horizontal arm = increasing
+ * tension toward the anchor. An L-shape = tension at the corner.
  */
 function computeStress(){
   const R=rows,C=cols;
-  const anchored=new Uint8Array(R*C); // 1=anchored
-  const queue=[];
-
-  // Seed: all ground blocks
-  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
-    const b=grid[r];if(!b)continue;const bl=b[c];
-    if(bl&&bl.ground){anchored[r*C+c]=1;queue.push(r*C+c);}
-  }
-
-  // BFS: spread through neighbors
-  const dirs=[[-1,0],[1,0],[0,-1],[0,1]];
-  let qi=0;
-  while(qi<queue.length){
-    const idx=queue[qi++];const r2=idx/C|0,c2=idx%C;
-    for(const[dr,dc]of dirs){
-      const nr=r2+dr,nc=c2+dc;
-      if(nr<0||nr>=R||nc<0||nc>=C)continue;
-      const ni=nr*C+nc;if(anchored[ni])continue;
-      const bl=grid[nr]&&grid[nr][nc];if(!bl||bl.ground)continue;
-      anchored[ni]=1;queue.push(ni);
-    }
-  }
-
-  // Compute edge tension: only edges between anchored and adrift
   const result={};
+
+  // Helper: get block or null
+  const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
+  const matOf=(bl)=>bl?(GRIDS[bl.m]||CUSTOM):null;
+
+  // Compute weight of the "cluster" on each side of each edge.
+  // For horizontal edges (left-right neighbors):
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
-    const bl=grid[r]&&grid[r][c];if(!bl||bl.ground)continue;
-    const idx=r*C+c;
-    if(anchored[idx])continue; // anchored = no tension
-    // This block is adrift — all 4 edges connecting to anchored neighbors show tension
-    const mat=GRIDS[bl.m]||CUSTOM;const strength=mat.strength||1;
-    const edges={};let any=false;
-    for(const[dr,dc]of dirs){
+    const bl=bAt(r,c);if(!bl)continue;
+    const br=bAt(r,c+1);if(!br)continue;
+    // Edge between (r,c) and (r,c+1)
+    // weightLeft: total weight of blocks connected to (r,c) without crossing this edge
+    const wL=clusterWeight(r,c,-1); // exclude direction +1 (right)
+    const wR=clusterWeight(r,c+1,1); // exclude direction -1 (left) ... actually we want the other way
+    // Hmm, this is getting complex. Let me simplify.
+  }
+
+  // Actually, let me use a simpler approach: for each block, compute how much
+  // weight hangs off each of its 4 edges. "Weight off edge X" = total weight of
+  // blocks reachable from this block WITHOUT crossing edge X.
+  // If a block is on ground, it has infinite weight (anchors everything).
+
+  // Simple recursive with memo per (block, excluded_direction)
+  const memo=new Map();
+  function hangWeight(r,c,exDir){
+    // exDir: -1=exclude left, 1=exclude right, -2=exclude up, 2=exclude down
+    const key=`${r},${c},${exDir}`;
+    if(memo.has(key))return memo.get(key);
+    const bl=bAt(r,c);
+    if(!bl)return 0;
+    if(bl.ground)return 1e9; // ground = infinite anchor weight
+    const mat=matOf(bl);const w=mat?mat.weight:1;
+    let total=w;
+    const dirs=[[-1,0,-2],[1,0,2],[0,-1,-1],[0,1,1]];
+    for(const[dr,dc,dir]of dirs){
+      if(dir===exDir)continue;
       const nr=r+dr,nc=c+dc;
-      if(nr<0||nr>=R||nc<0||nc>=C)continue;
-      const ni=nr*C+nc;
-      if(!anchored[ni])continue; // only anchored neighbors create tension
-      const sideName=dr===-1?'top':dr===1?'bottom':dc===-1?'left':'right';
-      // Tension = this block's weight / strength (it's falling, pulling on this edge)
-      const ratio=mat.weight/strength;
-      edges[sideName]=Math.min(1.5,ratio);any=true;
+      const nb=bAt(nr,nc);if(!nb)continue;
+      total+=hangWeight(nr,nc,-dir); // exclude the reverse direction to prevent going back
+    }
+    memo.set(key,total);
+    return total;
+  }
+
+  // For each block, compute tension on each edge
+  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+    const bl=bAt(r,c);if(!bl||bl.ground)continue;
+    const mat=matOf(bl);const strength=mat?mat.strength:1;
+    const edges={};let any=false;
+
+    // For each neighbor direction, how much weight hangs off that edge?
+    // "Hangs off" = weight of the cluster reachable via that neighbor
+    const neighborDirs=[
+      {dr:0,dc:-1,name:'left',exDir:-1,opp:'right'},
+      {dr:0,dc:1,name:'right',exDir:1,opp:'left'},
+      {dr:-1,dc:0,name:'top',exDir:-2,opp:'bottom'},
+      {dr:1,dc:0,name:'bottom',exDir:2,opp:'top'},
+    ];
+
+    for(const nd of neighborDirs){
+      const nr=r+nd.dr,nc=c+nd.dc;
+      const nb=bAt(nr,nc);if(!nb||nb.ground)continue;
+      // Weight hanging off this edge = cluster weight reachable through neighbor
+      const hangW=hangWeight(nr,nc,-nd.exDir);
+      if(hangW<=0)continue;
+      const ratio=hangW/strength;
+      if(ratio>0.05){
+        edges[nd.name]=Math.min(1.5,ratio);any=true;
+      }
     }
     if(any)result[`${r},${c}`]=edges;
   }
-  return{anchored,result};
+  return result;
 }
 
 function draw(){
@@ -143,35 +183,22 @@ function draw(){
   for(let c=0;c<=cols;c++){ctx.beginPath();ctx.moveTo(c*cell+.5,0);ctx.lineTo(c*cell+.5,rows*cell);ctx.stroke();}
   for(let r=0;r<=rows;r++){ctx.beginPath();ctx.moveTo(0,r*cell+.5);ctx.lineTo(cols*cell,r*cell+.5);ctx.stroke();}
 
-  const{anchored,result}=computeStress();
+  const stress=computeStress();
 
   for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
     const bl=grid[r][c];if(!bl)continue;
-    const x=c*cell,y=r*cell,idx=r*cols+c;
-
+    const x=c*cell,y=r*cell;
     if(bl.ground){
       ctx.fillStyle=GROUND_COL;ctx.fillRect(x,y,cell,cell);
       ctx.strokeStyle='#2a2a2a';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
       continue;
     }
-
-    // Block fill: normal color, or dimmed if adrift
-    const mat=GRIDS[bl.m]||CUSTOM;
-    if(anchored[idx]){
-      ctx.fillStyle=mat.color;
-    } else {
-      // Adrift: slightly darker/desaturated
-      ctx.fillStyle=mat.color;
-      ctx.globalAlpha=0.5;
-    }
+    ctx.fillStyle=(GRIDS[bl.m]||CUSTOM).color;
     ctx.fillRect(x+1,y+1,cell-2,cell-2);
-    ctx.globalAlpha=1;
 
-    // Edge tension highlights
-    const edges=result[`${r},${c}`];
+    const edges=stress[`${r},${c}`];
     if(edges){
-      const lw=Math.max(2.5,cell*0.15);
-      ctx.lineWidth=lw;ctx.lineCap='round';
+      const lw=Math.max(2.5,cell*0.15);ctx.lineWidth=lw;ctx.lineCap='round';
       if(edges.top!=null){ctx.strokeStyle=stressColor(edges.top);
         ctx.beginPath();ctx.moveTo(x+2,y+2);ctx.lineTo(x+cell-2,y+2);ctx.stroke();}
       if(edges.bottom!=null){ctx.strokeStyle=stressColor(edges.bottom);
@@ -240,12 +267,23 @@ document.getElementById('btn-sim').onclick=()=>{
 };
 
 function doStep(){
-  // Remove all adrift blocks (blocks not connected to ground)
-  const{anchored}=computeStress();
+  // Remove blocks where total hanging weight exceeds strength
+  const toRemove=[];
+  const bAt=(r,c)=>(r>=0&&r<rows&&c>=0&&c<cols&&grid[r])?grid[r][c]:null;
   for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
-    const bl=grid[r][c];if(!bl||bl.ground)continue;
-    if(!anchored[r*cols+c])grid[r][c]=null;
+    const bl=bAt(r,c);if(!bl||bl.ground)continue;
+    const mat=GRIDS[bl.m]||CUSTOM;
+    // Check if this block's total weight exceeds the strength of what holds it
+    const below=bAt(r+1,c);
+    const supported=below&&(below.ground||(GRIDS[below.m]||CUSTOM).strength>=mat.weight);
+    // Also check side connections
+    let sideStrength=0;
+    if(c>0){const l=bAt(r,c-1);if(l)sideStrength+=(GRIDS[l.m]||CUSTOM).strength;}
+    if(c<cols-1){const ri=bAt(r,c+1);if(ri)sideStrength+=(GRIDS[ri.m]||CUSTOM).strength;}
+    const totalSupport=(below?(below.ground?1e9:(GRIDS[below.m]||CUSTOM).strength):0)+sideStrength;
+    if(totalSupport<mat.weight) toRemove.push([r,c]);
   }
+  for(const [r,c] of toRemove) grid[r][c]=null;
   buildStats();
 }
 

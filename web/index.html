@@ -4718,6 +4718,16 @@ function spawnFallingChunk(unit) {
   const blocks = [...unit.values()];
   const n = blocks.length;
 
+  // These blocks just left the terrain, so their columns' grip has changed —
+  // recheck what's left standing there.
+  for (const b of blocks) {
+    markTensionDirty(b.i, b.j);
+    markTensionDirty(b.i - 1, b.j);
+    markTensionDirty(b.i + 1, b.j);
+    markTensionDirty(b.i, b.j - 1);
+    markTensionDirty(b.i, b.j + 1);
+  }
+
   // Weighted centre of the piece, in world units — a piece of mixed materials
   // balances toward its heavier blocks, not its geometric middle.
   const { x: cx, y: cy, z: cz } = debrisWeightedCenter(blocks, chunkCoM);
@@ -4846,6 +4856,14 @@ let powderTick = 0, powderCursor = 0;
 // only every few seconds, which is a long time to watch sand hang in the air
 // over the hole you dug, so a touched column is answered on the spot instead.
 const powderDirty = new Set();
+// Columns with terrain blocks that may need a grip/tension check — see
+// checkTerrainTension. Marked whenever a column's blocks change, since that
+// can change the grip on every block still attached to it.
+const tensionDirty = new Set();
+function markTensionDirty(i, j) {
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return;
+  tensionDirty.add(j * GEN_N + i);
+}
 // Shed whatever powder in column c has nothing under it, up to `budget` blocks.
 // Returns what is left of the budget.
 function shedColumn(c, budget) {
@@ -4926,6 +4944,41 @@ function checkTerrainPowder() {
     budget = shedColumn(k % cols, budget);
   }
   powderCursor = k % cols;
+}
+
+// ----- terrain block tension / grip -----
+// The same grip-vs-weight balance as a debris piece's pieceTensionPass, but
+// for blocks still joined to the world: grip is the sum, over each solid
+// face-neighbour except the one directly below, of the weaker of the two
+// materials' strength — the one below can't hold a block up against gravity,
+// only what it's bonded to sideways or above can. A block whose grip can't
+// carry its own weight breaks off via breakOffAdrift, which only actually
+// removes it if that also leaves it disconnected from the bedrock; otherwise
+// the block stays put, still held by the bulk of the terrain around it.
+// Bottom-up per column, so a block that gives way lets whatever depended on
+// its grip break in turn on a later pass rather than this one.
+function checkTerrainTension() {
+  if (!tensionDirty.size) return;
+  const cols = [...tensionDirty];
+  tensionDirty.clear();
+  for (const c of cols) {
+    const i = c % GEN_N, j = (c - i) / GEN_N;
+    const top = topLvl[c];
+    if (top === NO_COLUMN) continue;
+    for (let lvl = VOX_FLOOR + 1; lvl <= top; lvl++) {
+      const m = voxelAt(i, j, lvl);
+      if (m === AIR || m === WATER) continue;
+      const strength = MAT_STATS[m]?.strength ?? 1;
+      let grip = 0;
+      for (const [di, dj, dl] of GRAV_DIRS) {
+        if (dl === -1) continue;   // the block below doesn't hold you up against gravity
+        const nm = voxelAt(i + di, j + dj, lvl + dl);
+        if (nm === AIR || nm === WATER) continue;
+        grip += Math.min(strength, MAT_STATS[nm]?.strength ?? 1) * GRIP_SCALE;
+      }
+      if (grip < (MAT_STATS[m]?.weight ?? 1)) breakOffAdrift(i, j, lvl);
+    }
+  }
 }
 
 // Debris this far (world units) from the player is frozen rather than kept
@@ -5671,6 +5724,13 @@ function editBlock(i, j, lvl, m) {
       dirtyChunks.add(chunkOf(ii, jj));
     }
   }
+  // This block's own grip changed, and so did the grip of whatever leans on
+  // it from the side.
+  markTensionDirty(i, j);
+  markTensionDirty(i - 1, j);
+  markTensionDirty(i + 1, j);
+  markTensionDirty(i, j - 1);
+  markTensionDirty(i, j + 1);
   // Anything the removal left hanging comes down.
   if (m === AIR && was !== AIR) applyGravity(i, j, lvl);
   return was;
@@ -6331,6 +6391,7 @@ function tick() {
   updateFallingChunks();
   updatePowderBlocks(dt);
   checkTerrainPowder();
+  checkTerrainTension();
 
   updateCamera(dt);
   refreshGridLOD();

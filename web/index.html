@@ -4548,6 +4548,7 @@ const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: s
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
 const GRIP_SCALE     = 1.0;   // 1 grip holds 1 weight in any direction
 const TENSION_CHECK_MAX = 3;  // cascade passes of checkTension per frame, capped against a runaway collapse
+const TENSION_GRACE  = 30;    // frames before tension activates on a new piece (let it settle first)
 
 // A block's contribution to a piece's mass and centre of mass is its material's
 // weight (MAT_STATS), not a flat count — a rock block should drag and balance a
@@ -4841,7 +4842,7 @@ function spawnFallingChunk(unit) {
   // Oldest piece gives up its body if the field is already full of them.
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
-  fallingChunks.push({ mesh, body, still: 0, prevVelocity: body.velocity.clone(), prevAngVel: body.angularVelocity.clone() });
+  fallingChunks.push({ mesh, body, still: 0, tensionGrace: TENSION_GRACE, prevVelocity: body.velocity.clone(), prevAngVel: body.angularVelocity.clone() });
 }
 
 // ----- powder in the ground -----
@@ -4976,7 +4977,13 @@ function checkTerrainTension() {
         if (nm === AIR || nm === WATER) continue;
         grip += Math.min(strength, MAT_STATS[nm]?.strength ?? 1) * GRIP_SCALE;
       }
-      if (grip < (MAT_STATS[m]?.weight ?? 1)) breakOffAdrift(i, j, lvl);
+      if (grip < (MAT_STATS[m]?.weight ?? 1)) {
+        breakOffAdrift(i, j, lvl);
+        // The block above is now exposed — re-mark this column so it gets
+        // rechecked next frame and the cascade continues upward.
+        tensionDirty.add(c);
+        break;   // recheck from the bottom next pass (levels shifted)
+      }
     }
   }
 }
@@ -5383,7 +5390,7 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
 
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);
-  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen, prevVelocity: body.velocity.clone(), prevAngVel: body.angularVelocity.clone() });
+  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen, tensionGrace: TENSION_GRACE, prevVelocity: body.velocity.clone(), prevAngVel: body.angularVelocity.clone() });
 }
 
 // ----- block tension / grip -----
@@ -5400,6 +5407,7 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
 const tensionR = new CANNON.Vec3(), tensionOmega2 = new CANNON.Vec3(), tensionCentrip = new CANNON.Vec3(), tensionAlpha = new CANNON.Vec3();
 const TENSION_NEI = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
 function pieceTensionPass(f, dt) {
+  if (f.tensionGrace > 0) { f.tensionGrace--; return false; }
   const body = f.body, mesh = f.mesh, lat = mesh.userData.blocks;
   if (!lat.length) return false;
 

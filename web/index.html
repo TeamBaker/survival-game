@@ -5344,7 +5344,11 @@ function digDebrisBlock(mesh, idx) {
   splitDebrisIfNeeded(mesh);
 
   const f = chunkOfMesh(mesh);
-  if (f) { rebuildDebrisBody(mesh, f.body); if (!f.frozen) f.still = 0; }    // lighter, and disturbed
+  if (f) {
+    if (f.frozen) { f.frozen = false; f.body.collisionResponse = true; f.body.wakeUp(); }
+    rebuildDebrisBody(mesh, f.body);
+    f.still = 0;    // lighter, and disturbed
+  }
   return true;
 }
 
@@ -5422,8 +5426,11 @@ function placeOnDebris(mesh, local, m) {
   // out and the new block's own exposed faces need to appear.
   const f = chunkOfMesh(mesh);
   if (!f) { buildDebrisGeometry(mesh); return; }
+  // Player interaction wakes a frozen piece — unfreeze, re-enable collision,
+  // and let it settle again so the new block participates in physics.
+  if (f.frozen) { f.frozen = false; f.body.collisionResponse = true; f.body.wakeUp(); }
   rebuildDebrisBody(mesh, f.body);
-  if (!f.frozen) f.still = 0;   // it has been disturbed: let it settle again
+  f.still = 0;   // it has been disturbed: let it settle again
 }
 
 // The six face neighbours, with the one below last so a stack pops it first: a

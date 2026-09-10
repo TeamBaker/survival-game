@@ -4540,13 +4540,40 @@ function buildDebrisGeometry(group) {
       const F = FACES[f];
       if (at.has((b.gi + F.di) + ',' + (b.gj + F.dj) + ',' + (b.lvl + F.dl))) continue;
       const v = F.v, n = F.n;
-      for (let vi = 0; vi < 4; vi++) {
-        const o = vi * 3;
-        B.pos.push(b.pos.x + v[o] * HALF_BLOCK, b.pos.y + v[o + 1] * HALF_BLOCK, b.pos.z + v[o + 2] * HALF_BLOCK);
-        B.nor.push(n[0], n[1], n[2]);
-        B.col.push(c.r, c.g, c.b);
+      if (!MAT_STATS[b.mat]?.powder) {
+        for (let vi = 0; vi < 4; vi++) {
+          const o = vi * 3;
+          B.pos.push(b.pos.x + v[o] * HALF_BLOCK, b.pos.y + v[o + 1] * HALF_BLOCK, b.pos.z + v[o + 2] * HALF_BLOCK);
+          B.nor.push(n[0], n[1], n[2]);
+          B.col.push(c.r, c.g, c.b);
+        }
+        B.faceBlock.push(q);
+        continue;
       }
-      B.faceBlock.push(q);
+      // Powder debris gets the same per-cell grain speckle as powder terrain
+      // faces (see pushFace) instead of one flat colour across the whole face.
+      const dux = v[3] - v[0], duy = v[4] - v[1], duz = v[5] - v[2];
+      const dvx = v[9] - v[0], dvy = v[10] - v[1], dvz = v[11] - v[2];
+      for (let row = 0; row < GRAIN_GRID; row++) {
+        const w0 = row / GRAIN_GRID, w1 = (row + 1) / GRAIN_GRID;
+        for (let col = 0; col < GRAIN_GRID; col++) {
+          const u0 = col / GRAIN_GRID, u1 = (col + 1) / GRAIN_GRID;
+          const tintPalette = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
+          const ti = (Math.sin(b.pos.x * 99.1 + b.pos.z * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
+          const gs = tintPalette[Math.abs(ti) % tintPalette.length];
+          const cr = clamp01(c.r * gs), cg = clamp01(c.g * gs), cb = clamp01(c.b * gs);
+          for (let vi = 0; vi < 4; vi++) {
+            const u = vi === 0 || vi === 3 ? u0 : u1;
+            const w = vi < 2 ? w0 : w1;
+            B.pos.push(b.pos.x + (v[0] + u * dux + w * dvx) * HALF_BLOCK,
+                       b.pos.y + (v[1] + u * duy + w * dvy) * HALF_BLOCK,
+                       b.pos.z + (v[2] + u * duz + w * dvz) * HALF_BLOCK);
+            B.nor.push(n[0], n[1], n[2]);
+            B.col.push(cr, cg, cb);
+          }
+          B.faceBlock.push(q);
+        }
+      }
     }
   }
   for (const child of group.children) child.geometry.dispose();

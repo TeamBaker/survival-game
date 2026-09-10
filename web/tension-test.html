@@ -9,22 +9,15 @@
 body{background:#151d2b;color:#c8d0dc;font-family:-apple-system,sans-serif;
   display:flex;flex-direction:column;height:100dvh;overflow:hidden;touch-action:none}
 
-/* Top bar */
 .top-bar{display:flex;align-items:center;gap:6px;padding:6px 8px;flex-wrap:wrap}
 .mswatch{width:32px;height:32px;border-radius:8px;border:2px solid transparent;cursor:pointer}
 .mswatch.on{border-color:#fff}
 .mswatch.ground{border:2px dashed #666}
-
 .btn{padding:4px 12px;border:1px solid rgba(255,255,255,.25);background:rgba(20,34,54,.62);
   color:#c8d0dc;border-radius:999px;cursor:pointer;font-size:12px;-webkit-tap-highlight-color:transparent}
 .btn.on{background:rgba(102,181,244,.25);border-color:#66b5f4}
 .btn.red{border-color:rgba(255,100,80,.5)}
-
-/* Stats bar */
 .stats{padding:4px 8px;font-size:11px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-.stats .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:3px;vertical-align:middle}
-
-/* Canvas */
 #cv{flex:1;touch-action:none}
 </style>
 </head>
@@ -48,8 +41,6 @@ body{background:#151d2b;color:#c8d0dc;font-family:-apple-system,sans-serif;
 <canvas id="cv"></canvas>
 
 <script>
-/* ===== TENSION SANDBOX v2 — edges, ground, top-down weight ===== */
-
 const GRIDS=[
   {label:'Ground',color:'#444',ground:true},
   {label:'Sand',color:'#c8b464',weight:1.1,strength:0.5},
@@ -60,30 +51,23 @@ const GRIDS=[
 ];
 const CUSTOM={label:'Custom',color:'#c080ff',weight:1,strength:1};
 const GROUND_COL='#3a3a3a';
-const GROUND_EDGE='#2a2a2a';
 
 const cv=document.getElementById('cv');
 const ctx=cv.getContext('2d');
 let W,H,rows,cols,cell;
-let grid=[];   // 2D: null | {m,ground}
-let sel=1, mode='place';
-let simming=false, simInterval=null;
-let dragging=false, dragErase=false;
-let stats={};
+let grid=[];
+let sel=1,mode='place';
+let simming=false,simInterval=null;
+let dragging=false,dragErase=false;
 
-// Stress edge colors: green→yellow→red based on stress ratio
 function stressColor(ratio){
   ratio=Math.min(1,Math.max(0,ratio));
   if(ratio<0.5){
-    // green→yellow
     const t=ratio*2;
-    const r=Math.round(80+175*t), g=Math.round(200+55*t), b=Math.round(80-80*t);
-    return `rgb(${r},${g},${b})`;
+    return `rgb(${Math.round(80+175*t)},${Math.round(200+55*t)},${Math.round(80-80*t)})`;
   } else {
-    // yellow→red
     const t=(ratio-0.5)*2;
-    const r=Math.round(255), g=Math.round(255-200*t), b=Math.round(0);
-    return `rgb(${r},${g},${b})`;
+    return `rgb(255,${Math.round(255-200*t)},0)`;
   }
 }
 
@@ -92,26 +76,19 @@ function resize(){
   cv.width=r.width*devicePixelRatio;
   cv.height=r.height*devicePixelRatio;
   ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
-  W=r.width; H=r.height;
-  calcGrid();
-  draw();
+  W=r.width;H=r.height;
+  calcGrid();draw();
 }
 function calcGrid(){
-  // Leave room for ground at bottom
-  const groundRows=1;
   const availH=H-10;
   cell=Math.floor(Math.min(W/20, availH/14));
   if(cell<16)cell=16;
   cols=Math.floor(W/cell);
   rows=Math.floor(H/cell);
-  // Extend grid if needed
-  while(grid.length<rows){
-    grid.push(new Array(cols).fill(null));
-  }
+  while(grid.length<rows) grid.push(new Array(cols).fill(null));
   while(grid[0]&&grid[0].length<cols){
     for(let r=0;r<grid.length;r++) grid[r].push(null);
   }
-  // Init ground row at bottom
   for(let c=0;c<cols;c++){
     if(!grid[rows-1][c]) grid[rows-1][c]={m:0,ground:true};
   }
@@ -121,7 +98,7 @@ function calcGrid(){
 function draw(){
   ctx.clearRect(0,0,W,H);
 
-  // Draw grid lines
+  // Grid lines
   ctx.strokeStyle='rgba(255,255,255,0.07)';
   ctx.lineWidth=1;
   for(let c=0;c<=cols;c++){
@@ -131,52 +108,35 @@ function draw(){
     ctx.beginPath();ctx.moveTo(0,r*cell+0.5);ctx.lineTo(cols*cell,r*cell+0.5);ctx.stroke();
   }
 
-  // Compute stress edges via top-down weight
   const stress=computeStressEdges();
 
   for(let r=0;r<rows;r++){
     for(let c=0;c<cols;c++){
-      const b=grid[r][c];
-      if(!b)continue;
-      const x=c*cell, y=r*cell;
-      const isGround=b.ground;
+      const b=grid[r][c];if(!b)continue;
+      const x=c*cell,y=r*cell;
 
-      if(isGround){
-        // Ground: solid dark block with subtle grid
+      if(b.ground){
         ctx.fillStyle=GROUND_COL;
         ctx.fillRect(x,y,cell,cell);
-        ctx.strokeStyle=GROUND_EDGE;
+        ctx.strokeStyle='#2a2a2a';
         ctx.lineWidth=1;
         ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
       } else {
-        // Normal block: colored fill
-        const mat=GRIDS[b.m]||CUSTOM;
-        ctx.fillStyle=mat.color;
+        ctx.fillStyle=(GRIDS[b.m]||CUSTOM).color;
         ctx.fillRect(x+1,y+1,cell-2,cell-2);
 
-        // Draw stressed edges
-        const key=`${r},${c}`;
-        const edges=stress[key];
+        const edges=stress[`${r},${c}`];
         if(edges){
           ctx.lineWidth=Math.max(2,cell*0.15);
           ctx.lineCap='round';
-          // edges = {top,left,right,bottom} each = stress ratio or null
-          if(edges.top!=null){
-            ctx.strokeStyle=stressColor(edges.top);
-            ctx.beginPath();ctx.moveTo(x+2,y+2);ctx.lineTo(x+cell-2,y+2);ctx.stroke();
-          }
-          if(edges.bottom!=null){
-            ctx.strokeStyle=stressColor(edges.bottom);
-            ctx.beginPath();ctx.moveTo(x+2,y+cell-2);ctx.lineTo(x+cell-2,y+cell-2);ctx.stroke();
-          }
-          if(edges.left!=null){
-            ctx.strokeStyle=stressColor(edges.left);
-            ctx.beginPath();ctx.moveTo(x+2,y+2);ctx.lineTo(x+2,y+cell-2);ctx.stroke();
-          }
-          if(edges.right!=null){
-            ctx.strokeStyle=stressColor(edges.right);
-            ctx.beginPath();ctx.moveTo(x+cell-2,y+2);ctx.lineTo(x+cell-2,y+cell-2);ctx.stroke();
-          }
+          if(edges.top!=null){ctx.strokeStyle=stressColor(edges.top);
+            ctx.beginPath();ctx.moveTo(x+2,y+2);ctx.lineTo(x+cell-2,y+2);ctx.stroke();}
+          if(edges.bottom!=null){ctx.strokeStyle=stressColor(edges.bottom);
+            ctx.beginPath();ctx.moveTo(x+2,y+cell-2);ctx.lineTo(x+cell-2,y+cell-2);ctx.stroke();}
+          if(edges.left!=null){ctx.strokeStyle=stressColor(edges.left);
+            ctx.beginPath();ctx.moveTo(x+2,y+2);ctx.lineTo(x+2,y+cell-2);ctx.stroke();}
+          if(edges.right!=null){ctx.strokeStyle=stressColor(edges.right);
+            ctx.beginPath();ctx.moveTo(x+cell-2,y+2);ctx.lineTo(x+cell-2,y+cell-2);ctx.stroke();}
         }
       }
     }
@@ -184,78 +144,118 @@ function draw(){
 }
 
 /*
- * Top-down weight stress:
- * For each non-ground block, the weight pressing DOWN through it is the
- * sum of weights of all blocks above it in the same column (or supported
- * by it). Then we find which edge(s) bear that load.
+ * SEPARATION TENSION — only edges where a block is pulling away from its support.
  *
- * Simplified model: each block has a "load" = total weight above it.
- * The edge under most tension is the BOTTOM edge (bearing weight from above),
- * unless the block is on the side of an overhang — then SIDE edges bear load.
+ * Model:
+ *   Each non-ground block's WEIGHT presses down on whatever is below it.
+ *   "Separation tension" on an edge = how much weight that edge connection
+ *   must hold relative to its strength.
+ *
+ *   Bottom edge of block (r,c):  tension = (weight of this block + weight above) / strength of connection to (r+1,c)
+ *     - If (r+1,c) is ground → infinite strength → no tension
+ *     - If (r+1,c) is empty → no support → max tension (the block will fall)
+ *     - If (r+1,c) is a block → strength = min(this block's strength, below block's strength)
+ *
+ *   Side edge of block (r,c):  tension = (weight above block) / side connection strength
+ *     - Only relevant if block is overhanging (nothing below, or weak below)
+ *     - Side holds = weight that would otherwise fall
+ *
+ *   Top edge of block (r,c):  tension = 0 (nothing pressing down from above in separation model)
  */
 function computeStressEdges(){
   const result={};
 
-  // First: compute column loads (weight above each block in same column)
+  // First: for each block, compute total weight ABOVE it in its column (load it bears)
+  // loadAbove[r][c] = sum of weights of non-ground blocks in positions (0..r-1, c)
+  const loadAbove=[];
+  for(let r=0;r<rows;r++){
+    loadAbove[r]=new Float64Array(cols);
+  }
   for(let c=0;c<cols;c++){
-    let loadAbove=0;
+    let sum=0;
     for(let r=0;r<rows;r++){
-      const b=grid[r][c];
-      if(!b)continue;
-      if(b.ground)continue; // ground bears nothing, supports everything
-
-      // This block bears everything above it
-      const load=loadAbove;
-      // After this block, add its own weight to what's above
+      const b=grid[r][c];if(!b||b.ground)continue;
+      loadAbove[r][c]=sum;
       const mat=GRIDS[b.m]||CUSTOM;
-      loadAbove+=mat.weight||1;
+      sum+=mat.weight||1;
+    }
+  }
 
-      if(load<=0)continue; // no tension
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const b=grid[r][c];if(!b||b.ground)continue;
+      const mat=GRIDS[b.m]||CUSTOM;
+      const strength=mat.strength||1;
+      const myWeight=mat.weight||1;
+      const above=loadAbove[r][c]; // total weight above me
 
-      // Find the support: which edge(s) hold this block up?
-      // The block is supported by what's BELOW it, and connected to LEFT/RIGHT.
-      // Tension is on edges that connect to the support structure.
-      const key=`${r},${c}`;
+      // Total weight pressing on what's below me = my weight + everything above me
+      const totalBelow=myWeight+above;
+      // Total weight pressing on me from above = above
+      const totalAbove=above;
+
       const edges={};
+      let any=false;
 
-      // Compute total strength of connections
-      let bottomStrength=0;
+      // --- BOTTOM EDGE: how hard am I pulling on what's below? ---
       const below=grid[r+1]&&grid[r+1][c];
-      if(below&&!below.ground){
-        const bm=GRIDS[below.m]||CUSTOM;
-        bottomStrength=bm.strength||1;
-      } else if(below&&below.ground){
-        bottomStrength=999; // ground is infinitely strong
+      if(!below){
+        // Nothing below — bottom edge is totally unsupported
+        // Tension = max (this block is falling)
+        edges.bottom=Math.min(1.5,totalBelow/strength);
+        any=true;
+      } else if(!below.ground){
+        // Block below — connection strength
+        const belowMat=GRIDS[below.m]||CUSTOM;
+        const connStrength=Math.min(strength,belowMat.strength||1);
+        const ratio=totalBelow/connStrength;
+        if(ratio>0.05){
+          edges.bottom=Math.min(1.5,ratio);
+          any=true;
+        }
+      }
+      // If below is ground → no bottom tension (infinite support)
+
+      // --- SIDE EDGES: if I'm overhanging, sides hold me up ---
+      // A side (left/right) is under tension if this block has weight above it
+      // that needs to be held laterally because there's weak/no bottom support.
+      const belowSupported=below&&!below.ground?Math.min(strength,(GRIDS[below.m]||CUSTOM).strength||1):below?.ground?9999:0;
+      const needsSideHelp=belowSupported<totalBelow;
+
+      if(needsSideHelp&&totalAbove>0.01){
+        // Left connection
+        if(c>0){
+          const left=grid[r][c-1];
+          if(left){
+            const ls=(GRIDS[left.m]||CUSTOM).strength||1;
+            const ratio=totalAbove*0.5/ls; // side shares half the above-weight
+            if(ratio>0.05){edges.left=Math.min(1.5,ratio);any=true;}
+          }
+        }
+        // Right connection
+        if(c<cols-1){
+          const right=grid[r][c+1];
+          if(right){
+            const rs=(GRIDS[right.m]||CUSTOM).strength||1;
+            const ratio=totalAbove*0.5/rs;
+            if(ratio>0.05){edges.right=Math.min(1.5,ratio);any=true;}
+          }
+        }
       }
 
-      let leftSupport=0,rightSupport=0;
-      if(c>0){const l=grid[r][c-1];if(l)leftSupport=(GRIDS[l.m]||CUSTOM).strength||1;}
-      if(c<cols-1){const ri=grid[r][c+1];if(ri)rightSupport=(GRIDS[ri.m]||CUSTOM).strength||1;}
-
-      const totalSupport=bottomStrength+leftSupport+rightSupport;
-      if(totalSupport===0)continue;
-
-      // Stress ratio: how much of the support capacity is being used
-      const totalStrength=(GRIDS[b.m]||CUSTOM).strength||1;
-      const stressRatio=Math.min(1.5, load/totalStrength);
-
-      if(stressRatio<0.05)continue; // negligible
-
-      // Bottom edge always stressed (bearing weight from above)
-      edges.bottom=stressRatio;
-
-      // Side edges stressed proportionally if there are horizontal connections
-      if(leftSupport>0){
-        edges.left=stressRatio*0.6;
-      }
-      if(rightSupport>0){
-        edges.right=stressRatio*0.6;
+      // --- TOP EDGE: connection to block above pulling UP ---
+      // Only if the block above has weight pressing on me
+      if(above>0.01){
+        const aboveBlock=grid[r-1]&&grid[r-1][c];
+        if(aboveBlock&&!aboveBlock.ground){
+          const aboveMat=GRIDS[aboveBlock.m]||CUSTOM;
+          const connStrength=Math.min(strength,aboveMat.strength||1);
+          const ratio=above/connStrength;
+          if(ratio>0.05){edges.top=Math.min(1.5,ratio);any=true;}
+        }
       }
 
-      // Top edge stressed if this block is supporting stuff below (rare, only for compression)
-      // Skip for now — top tension not relevant for hanging blocks
-
-      result[key]=edges;
+      if(any) result[`${r},${c}`]=edges;
     }
   }
   return result;
@@ -265,15 +265,13 @@ function buildStats(){
   let total=0,ground=0,matCount={};
   for(let r=0;r<rows;r++){
     for(let c=0;c<cols;c++){
-      const b=grid[r][c];if(!b)continue;
-      total++;
+      const b=grid[r][c];if(!b)continue;total++;
       if(b.ground){ground++;continue;}
       matCount[b.m]=(matCount[b.m]||0)+1;
     }
   }
   const el=document.getElementById('stats');
   let s=`<span>Blocks: <b>${total}</b></span> <span>Ground: <b>${ground}</b></span>`;
-  // Load/Strength ratio for selected blocks
   for(let m=1;m<GRIDS.length;m++){
     if(matCount[m]){
       const mat=GRIDS[m];
@@ -288,42 +286,35 @@ function getCellFromEvent(e){
   const r=cv.getBoundingClientRect();
   const x=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
   const y=(e.touches?e.touches[0].clientY:e.clientY)-r.top;
-  const c=Math.floor(x/cell), row=Math.floor(y/cell);
+  const c=Math.floor(x/cell),row=Math.floor(y/cell);
   if(row>=0&&row<rows&&c>=0&&c<cols) return {r:row,c};
   return null;
 }
-function placeOrRemove(cell){
-  if(!cell)return;
+function placeOrRemove(cl){
+  if(!cl)return;
   if(mode==='remove'){
-    if(!grid[cell.r][cell.c])return;
-    grid[cell.r][cell.c]=null;
+    if(grid[cl.r][cl.c]) grid[cl.r][cl.c]=null;
   } else {
-    if(grid[cell.r][cell.c])return;
-    if(sel===0){
-      grid[cell.r][cell.c]={m:0,ground:true};
-    } else {
-      grid[cell.r][cell.c]={m:sel,ground:false};
-    }
+    if(grid[cl.r][cl.c])return;
+    if(sel===0) grid[cl.r][cl.c]={m:0,ground:true};
+    else grid[cl.r][cl.c]={m:sel,ground:false};
   }
-  buildStats();
-  draw();
+  buildStats();draw();
 }
 cv.addEventListener('mousedown',e=>{dragging=true;
   const c=getCellFromEvent(e);if(!c)return;
   dragErase=!!grid[c.r][c.c]&&mode==='place';
   if(dragErase){mode='remove';ui_syncMode();}
   placeOrRemove(c);});
-cv.addEventListener('mousemove',e=>{if(!dragging)return;placeOrRemove(getCellFromEvent(e));});
+cv.addEventListener('mousemove',e=>{if(dragging)placeOrRemove(getCellFromEvent(e));});
 cv.addEventListener('mouseup',()=>{if(dragErase){mode='place';ui_syncMode();}dragging=false;});
 cv.addEventListener('mouseleave',()=>{if(dragErase){mode='place';ui_syncMode();}dragging=false;});
-
 cv.addEventListener('touchstart',e=>{e.preventDefault();dragging=true;
   const c=getCellFromEvent(e);if(!c)return;
   dragErase=!!grid[c.r][c.c]&&mode==='place';
   if(dragErase){mode='remove';ui_syncMode();}
   placeOrRemove(c);},{passive:false});
-cv.addEventListener('touchmove',e=>{e.preventDefault();if(!dragging)return;
-  placeOrRemove(getCellFromEvent(e));},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();if(dragging)placeOrRemove(getCellFromEvent(e));},{passive:false});
 cv.addEventListener('touchend',()=>{if(dragErase){mode='place';ui_syncMode();}dragging=false;});
 
 /* ===== BUTTONS ===== */
@@ -341,24 +332,22 @@ document.getElementById('btn-step').onclick=()=>{doStep();draw();};
 document.getElementById('btn-sim').onclick=()=>{
   simming=!simming;
   document.getElementById('btn-sim').classList.toggle('on',simming);
-  if(simming){simInterval=setInterval(()=>{doStep();draw();},200);}
+  if(simming)simInterval=setInterval(()=>{doStep();draw();},200);
   else if(simInterval){clearInterval(simInterval);simInterval=null;}
 };
 
-/* ===== SIMULATION ===== */
 function doStep(){
-  // Simple: remove blocks where load exceeds strength
   const toRemove=[];
   for(let c=0;c<cols;c++){
     let loadAbove=0;
     for(let r=0;r<rows;r++){
       const b=grid[r][c];if(!b)continue;
-      if(b.ground){loadAbove=0;continue;} // ground resets load
+      if(b.ground){loadAbove=0;continue;}
       const mat=GRIDS[b.m]||CUSTOM;
       const strength=mat.strength||1;
-      if(loadAbove>strength){
-        toRemove.push([r,c]);
-      }
+      const below=grid[r+1]&&grid[r+1][c];
+      const supported=below&&(below.ground||(GRIDS[below.m]||CUSTOM).strength>=1);
+      if(loadAbove>strength&&!supported) toRemove.push([r,c]);
       loadAbove+=mat.weight||1;
     }
   }
@@ -366,37 +355,23 @@ function doStep(){
   buildStats();
 }
 
-/* ===== MATERIAL SWATCHES ===== */
-function selM(m){
-  sel=m; mode='place'; ui_syncMode();
-  document.querySelectorAll('.mswatch').forEach((e,i)=>{
-    e.classList.toggle('on',i===m);
-  });
+function selM(m){sel=m;mode='place';ui_syncMode();
+  document.querySelectorAll('.mswatch').forEach((e,i)=>e.classList.toggle('on',i===m));
 }
 for(let i=0;i<GRIDS.length;i++){
-  const el=document.getElementById('sw-'+i);
-  if(!el)continue;
-  el.style.background=GRIDS[i].color;
-  el.title=GRIDS[i].label;
+  const el=document.getElementById('sw-'+i);if(!el)continue;
+  el.style.background=GRIDS[i].color;el.title=GRIDS[i].label;
   el.onclick=()=>selM(i);
 }
-const customEl=document.getElementById('sw-custom');
-customEl.onclick=()=>{
-  const w=prompt('Weight (lower = lighter, breaks easier):',CUSTOM.weight);
-  if(w===null)return;
-  const s=prompt('Strength (higher = holds more):',CUSTOM.strength);
-  if(s===null)return;
+document.getElementById('sw-custom').onclick=()=>{
+  const w=prompt('Weight:',CUSTOM.weight);if(w===null)return;
+  const s=prompt('Strength:',CUSTOM.strength);if(s===null)return;
   const c=prompt('Color:',CUSTOM.color);
-  CUSTOM.weight=parseFloat(w)||1;
-  CUSTOM.strength=parseFloat(s)||1;
-  CUSTOM.color=c||CUSTOM.color;
-  customEl.style.background=CUSTOM.color;
-  selM(5);
+  CUSTOM.weight=parseFloat(w)||1;CUSTOM.strength=parseFloat(s)||1;CUSTOM.color=c||CUSTOM.color;
+  document.getElementById('sw-custom').style.background=CUSTOM.color;selM(5);
 };
-selM(1);
-ui_syncMode();
-window.addEventListener('resize',resize);
-resize();
+selM(1);ui_syncMode();
+window.addEventListener('resize',resize);resize();
 </script>
 </body>
 </html>

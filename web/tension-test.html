@@ -47,7 +47,7 @@ const GRIDS=[
   {label:'Iron',color:'#5c7a8a',weight:4.0,strength:5.0},
 ];
 const CUSTOM={label:'Custom',color:'#c080ff',weight:1,strength:1};
-const GROUND_COL='#3a3a3a';
+const GROUND_COL='#5a6a5a';
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 let W,H,rows,cols,cell,grid=[],sel=1,mode='place';
 let simming=false,simInterval=null,dragging=false,dragErase=false;
@@ -190,7 +190,7 @@ function draw(){
     const x=c*cell,y=r*cell;
     if(bl.ground){
       ctx.fillStyle=GROUND_COL;ctx.fillRect(x,y,cell,cell);
-      ctx.strokeStyle='#2a2a2a';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
+      ctx.strokeStyle='#3a4a3a';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
       continue;
     }
     ctx.fillStyle=(GRIDS[bl.m]||CUSTOM).color;

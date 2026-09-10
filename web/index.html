@@ -5443,8 +5443,11 @@ function pieceTensionPass(f, dt) {
     tensionAlpha.cross(tensionR, tensionOmega2);  // reuse temp vec
 
     const mass = blockWeight(b);
+    // ax/ay/az already include gravity (the body accelerates at g when falling).
+    // Centripetal and tangential are the *extra* forces that stress the piece
+    // beyond free-fall — collision impacts, spin-up, hitting the ground.
     const fx = mass * (ax + tensionCentrip.x + tensionOmega2.x);
-    const fy = mass * (ay + tensionCentrip.y + tensionOmega2.y - 9.82);
+    const fy = mass * (ay + tensionCentrip.y + tensionOmega2.y);
     const fz = mass * (az + tensionCentrip.z + tensionOmega2.z);
     if (Math.sqrt(fx * fx + fy * fy + fz * fz) > grip) breaking.push(q);
   }
@@ -6475,6 +6478,21 @@ window.hermes = {
     vel: playerBody.velocity.toArray(),
   }),
 };
+
+// One-time: mark terrain columns near the player for a tension check on the
+// first frame, so overhangs and weak columns that were generated but never
+// edited still get their grip evaluated.  Only within a radius — the full
+// 960×960 grid is far too large to scan every column on boot.
+const TENSION_INIT_R = 60;  // blocks from spawn
+const pi0 = colI(SPAWN.x), pj0 = colJ(SPAWN.z);
+for (let dj = -TENSION_INIT_R; dj <= TENSION_INIT_R; dj++) {
+  for (let di = -TENSION_INIT_R; di <= TENSION_INIT_R; di++) {
+    const ii = pi0 + di, jj = pj0 + dj;
+    if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+    const k = jj * GEN_N + ii;
+    if (topLvl[k] !== NO_COLUMN) tensionDirty.add(k);
+  }
+}
 
 renderer.setAnimationLoop(tick);
 renderer.compile(scene, camera);

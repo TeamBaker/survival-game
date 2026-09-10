@@ -17,7 +17,6 @@ body{background:#151d2b;color:#c8d0dc;font-family:-apple-system,sans-serif;
 .btn.on{background:rgba(102,181,244,.25);border-color:#66b5f4}
 .btn.red{border-color:rgba(255,100,80,.5)}
 .stats{padding:4px 8px;font-size:11px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-#cv{flex:1;touch-action:none}
 </style>
 </head>
 <body>
@@ -36,10 +35,10 @@ body{background:#151d2b;color:#c8d0dc;font-family:-apple-system,sans-serif;
   <button class="btn red" id="btn-reset">Reset</button>
 </div>
 <div class="stats" id="stats"></div>
-<canvas id="cv"></canvas>
+<canvas id="cv" style="width:100%;flex:1;touch-action:none"></canvas>
 <script>
 const GRIDS=[
-  {label:'Ground',color:'#444',ground:true},
+  {label:'Ground',color:'#6a7a6a',ground:true},
   {label:'Sand',color:'#c8b464',weight:1.1,strength:0.5},
   {label:'Dirt',color:'#8b6914',weight:1.0,strength:1.0},
   {label:'Rock',color:'#9e9e9e',weight:3.0,strength:7.0},
@@ -47,7 +46,7 @@ const GRIDS=[
   {label:'Iron',color:'#5c7a8a',weight:4.0,strength:5.0},
 ];
 const CUSTOM={label:'Custom',color:'#c080ff',weight:1,strength:1};
-const GROUND_COL='#5a6a5a';
+
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 let W,H,rows,cols,cell,grid=[],sel=1,mode='place';
 let simming=false,simInterval=null,dragging=false,dragErase=false;
@@ -57,119 +56,88 @@ function stressColor(r){
   if(r<0.5){const t=r*2;return`rgb(${80+175*t|0},${200+55*t|0},${80-80*t|0})`;}
   const t=(r-0.5)*2;return`rgb(255,${255-200*t|0},0)`;
 }
+
 function resize(){
-  const r=cv.getBoundingClientRect();
-  cv.width=r.width*devicePixelRatio;cv.height=r.height*devicePixelRatio;
+  // Use parent dimensions explicitly — don't trust flex on mobile
+  const par=cv.parentElement;
+  const toolbar=par.querySelector('.top-bar');
+  const stats=par.querySelector('.stats');
+  const parR=par.getBoundingClientRect();
+  const tH=toolbar?toolbar.getBoundingClientRect().height:0;
+  const sH=stats?stats.getBoundingClientRect().height:0;
+  const cvH=Math.max(100,parR.height-tH-sH);
+  const cvW=parR.width;
+  cv.style.width=cvW+'px';
+  cv.style.height=cvH+'px';
+  cv.width=cvW*devicePixelRatio;
+  cv.height=cvH*devicePixelRatio;
   ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
-  W=r.width;H=r.height;calcGrid();draw();
+  W=cvW;H=cvH;
+  calcGrid();draw();
 }
+
 function calcGrid(){
   cell=Math.floor(Math.min(W/20,(H-10)/14));
   if(cell<16)cell=16;
   cols=Math.floor(W/cell);rows=Math.floor(H/cell);
   while(grid.length<rows)grid.push(new Array(cols).fill(null));
   while(grid[0]&&grid[0].length<cols)for(let r=0;r<grid.length;r++)grid[r].push(null);
+  // Fill ground row at bottom
   for(let c=0;c<cols;c++)if(!grid[rows-1][c])grid[rows-1][c]={m:0,ground:true};
   buildStats();
 }
 
 /*
- * EDGE-LOAD TENSION MODEL:
- *
- * For every horizontal edge between two blocks, compute:
- *   weightLeft = total weight of all blocks on the LEFT side of this edge
- *                (connected to the left block, not crossing this edge)
- *   weightRight = same for the RIGHT side
- *
- * If weightLeft > weightRight: the left side is hanging off the right side.
- *   → right block's LEFT edge is under tension.
- *   → tension = weightLeft / strength(right block)
- *
- * If weightRight > weightLeft: right side hangs off left side.
- *   → left block's RIGHT edge is under tension.
- *   → tension = weightRight / strength(left block)
- *
- * For VERTICAL edges (above/below): same logic but for top/bottom.
- *   weightAbove / weightBelow. Tension = hanging_weight / strength.
- *
- * Ground blocks have infinite strength and infinite weight.
- * They anchor everything — edges touching ground never show tension.
- *
- * Result: a tower on ground = no tension. A horizontal arm = increasing
- * tension toward the anchor. An L-shape = tension at the corner.
+ * EDGE-LOAD TENSION:
+ * For each edge between two blocks, compute how much weight hangs off it.
+ * Tension = hanging_weight / block_strength.
+ * Ground = infinite strength, never shows tension.
+ * Only blocks that are NOT directly sitting on ground can have tension.
  */
 function computeStress(){
   const R=rows,C=cols;
   const result={};
-
-  // Helper: get block or null
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
-  const matOf=(bl)=>bl?(GRIDS[bl.m]||CUSTOM):null;
 
-  // Compute weight of the "cluster" on each side of each edge.
-  // For horizontal edges (left-right neighbors):
-  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
-    const bl=bAt(r,c);if(!bl)continue;
-    const br=bAt(r,c+1);if(!br)continue;
-    // Edge between (r,c) and (r,c+1)
-    // weightLeft: total weight of blocks connected to (r,c) without crossing this edge
-    const wL=clusterWeight(r,c,-1); // exclude direction +1 (right)
-    const wR=clusterWeight(r,c+1,1); // exclude direction -1 (left) ... actually we want the other way
-    // Hmm, this is getting complex. Let me simplify.
-  }
-
-  // Actually, let me use a simpler approach: for each block, compute how much
-  // weight hangs off each of its 4 edges. "Weight off edge X" = total weight of
-  // blocks reachable from this block WITHOUT crossing edge X.
-  // If a block is on ground, it has infinite weight (anchors everything).
-
-  // Simple recursive with memo per (block, excluded_direction)
+  // Memoized: total weight reachable from (r,c) NOT going through direction exDir
   const memo=new Map();
   function hangWeight(r,c,exDir){
-    // exDir: -1=exclude left, 1=exclude right, -2=exclude up, 2=exclude down
-    const key=`${r},${c},${exDir}`;
+    const key=r*10000+c*10+exDir;
     if(memo.has(key))return memo.get(key);
     const bl=bAt(r,c);
     if(!bl)return 0;
-    if(bl.ground)return 1e9; // ground = infinite anchor weight
-    const mat=matOf(bl);const w=mat?mat.weight:1;
-    let total=w;
+    if(bl.ground)return 1e9;
+    const mat=GRIDS[bl.m]||CUSTOM;
+    let total=mat.weight||1;
     const dirs=[[-1,0,-2],[1,0,2],[0,-1,-1],[0,1,1]];
     for(const[dr,dc,dir]of dirs){
       if(dir===exDir)continue;
-      const nr=r+dr,nc=c+dc;
-      const nb=bAt(nr,nc);if(!nb)continue;
-      total+=hangWeight(nr,nc,-dir); // exclude the reverse direction to prevent going back
+      const nb=bAt(r+dr,c+dc);if(!nb||nb.ground)continue;
+      total+=hangWeight(r+dr,c+dc,-dir);
     }
     memo.set(key,total);
     return total;
   }
 
-  // For each block, compute tension on each edge
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     const bl=bAt(r,c);if(!bl||bl.ground)continue;
-    const mat=matOf(bl);const strength=mat?mat.strength:1;
+    const mat=GRIDS[bl.m]||CUSTOM;
+    const strength=mat.strength||1;
     const edges={};let any=false;
 
-    // For each neighbor direction, how much weight hangs off that edge?
-    // "Hangs off" = weight of the cluster reachable via that neighbor
     const neighborDirs=[
-      {dr:0,dc:-1,name:'left',exDir:-1,opp:'right'},
-      {dr:0,dc:1,name:'right',exDir:1,opp:'left'},
-      {dr:-1,dc:0,name:'top',exDir:-2,opp:'bottom'},
-      {dr:1,dc:0,name:'bottom',exDir:2,opp:'top'},
+      {dr:0,dc:-1,name:'left',exDir:-1},
+      {dr:0,dc:1,name:'right',exDir:1},
+      {dr:-1,dc:0,name:'top',exDir:-2},
+      {dr:1,dc:0,name:'bottom',exDir:2},
     ];
-
     for(const nd of neighborDirs){
       const nr=r+nd.dr,nc=c+nd.dc;
       const nb=bAt(nr,nc);if(!nb||nb.ground)continue;
-      // Weight hanging off this edge = cluster weight reachable through neighbor
       const hangW=hangWeight(nr,nc,-nd.exDir);
       if(hangW<=0)continue;
       const ratio=hangW/strength;
-      if(ratio>0.05){
-        edges[nd.name]=Math.min(1.5,ratio);any=true;
-      }
+      if(ratio>0.05){edges[nd.name]=Math.min(1.5,ratio);any=true;}
     }
     if(any)result[`${r},${c}`]=edges;
   }
@@ -178,7 +146,7 @@ function computeStress(){
 
 function draw(){
   ctx.clearRect(0,0,W,H);
-  // Grid
+  // Grid lines
   ctx.strokeStyle='rgba(255,255,255,0.07)';ctx.lineWidth=1;
   for(let c=0;c<=cols;c++){ctx.beginPath();ctx.moveTo(c*cell+.5,0);ctx.lineTo(c*cell+.5,rows*cell);ctx.stroke();}
   for(let r=0;r<=rows;r++){ctx.beginPath();ctx.moveTo(0,r*cell+.5);ctx.lineTo(cols*cell,r*cell+.5);ctx.stroke();}
@@ -189,8 +157,10 @@ function draw(){
     const bl=grid[r][c];if(!bl)continue;
     const x=c*cell,y=r*cell;
     if(bl.ground){
-      ctx.fillStyle=GROUND_COL;ctx.fillRect(x,y,cell,cell);
-      ctx.strokeStyle='#3a4a3a';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
+      ctx.fillStyle=(GRIDS[0]).color;
+      ctx.fillRect(x,y,cell,cell);
+      ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=1;
+      ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
       continue;
     }
     ctx.fillStyle=(GRIDS[bl.m]||CUSTOM).color;
@@ -217,12 +187,11 @@ function buildStats(){
     const b=grid[r][c];if(!b)continue;total++;
     if(b.ground){ground++;continue;}matCount[b.m]=(matCount[b.m]||0)+1;
   }
-  const el=document.getElementById('stats');
-  let s=`<span>Blocks: <b>${total}</b></span> <span>Ground: <b>${ground}</b></span>`;
-  for(let m=1;m<GRIDS.length;m++)if(matCount[m]){
-    const mat=GRIDS[m];s+=`<span style="color:${mat.color}">■</span> ${mat.label}: ${matCount[m]} (w=${mat.weight} s=${mat.strength})`;
-  }
-  el.innerHTML=s;
+  document.getElementById('stats').innerHTML=
+    `<span>Blocks: <b>${total}</b></span> <span>Ground: <b>${ground}</b></span>`+
+    Object.entries(matCount).map(([m,n])=>{
+      const mat=GRIDS[m];return`<span style="color:${mat.color}">■</span> ${mat.label}: ${n}`;
+    }).join(' ');
 }
 
 /* ===== INPUT ===== */
@@ -267,23 +236,20 @@ document.getElementById('btn-sim').onclick=()=>{
 };
 
 function doStep(){
-  // Remove blocks where total hanging weight exceeds strength
   const toRemove=[];
   const bAt=(r,c)=>(r>=0&&r<rows&&c>=0&&c<cols&&grid[r])?grid[r][c]:null;
   for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
     const bl=bAt(r,c);if(!bl||bl.ground)continue;
     const mat=GRIDS[bl.m]||CUSTOM;
-    // Check if this block's total weight exceeds the strength of what holds it
     const below=bAt(r+1,c);
     const supported=below&&(below.ground||(GRIDS[below.m]||CUSTOM).strength>=mat.weight);
-    // Also check side connections
     let sideStrength=0;
     if(c>0){const l=bAt(r,c-1);if(l)sideStrength+=(GRIDS[l.m]||CUSTOM).strength;}
     if(c<cols-1){const ri=bAt(r,c+1);if(ri)sideStrength+=(GRIDS[ri.m]||CUSTOM).strength;}
     const totalSupport=(below?(below.ground?1e9:(GRIDS[below.m]||CUSTOM).strength):0)+sideStrength;
-    if(totalSupport<mat.weight) toRemove.push([r,c]);
+    if(totalSupport<mat.weight)toRemove.push([r,c]);
   }
-  for(const [r,c] of toRemove) grid[r][c]=null;
+  for(const[r,c]of toRemove)grid[r][c]=null;
   buildStats();
 }
 
@@ -300,7 +266,9 @@ document.getElementById('sw-custom').onclick=()=>{
   CUSTOM.weight=parseFloat(w)||1;CUSTOM.strength=parseFloat(s)||1;CUSTOM.color=c||CUSTOM.color;
   document.getElementById('sw-custom').style.background=CUSTOM.color;selM(5);
 };
-selM(1);ui_syncMode();window.addEventListener('resize',resize);resize();
+selM(1);ui_syncMode();
+window.addEventListener('resize',resize);
+resize();
 </script>
 </body>
 </html>

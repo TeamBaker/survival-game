@@ -2178,6 +2178,31 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
   f.vertexColors = true;
   return f;
 });
+// A falling powder grain's own box, vertex-coloured like a tiny slice of
+// terrain instead of one flat material colour: each of the cube's 6 faces
+// gets a slightly different shade baked in, so the grain reads as a little
+// cube rather than a flat-shaded speck. boxGeo is shared and unit-sized, so
+// this makes (and caches) one small per-material clone the grains can share.
+const grainGeoCache = new Array(N_MATS).fill(null);
+const GRAIN_FACE_SHADES = [0.92, 0.96, 1.0, 1.04, 0.88, 1.08];
+function grainGeo(m) {
+  let geo = grainGeoCache[m];
+  if (geo) return geo;
+  geo = boxGeo.clone();
+  const base = TERRAIN_MATS[m].color;
+  const col = new Float32Array(24 * 3);
+  for (let f = 0; f < 6; f++) {
+    const s = GRAIN_FACE_SHADES[f];
+    const r = clamp01(base.r * s), g = clamp01(base.g * s), b = clamp01(base.b * s);
+    for (let vi = 0; vi < 4; vi++) {
+      const o = (f * 4 + vi) * 3;
+      col[o] = r; col[o + 1] = g; col[o + 2] = b;
+    }
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  grainGeoCache[m] = geo;
+  return geo;
+}
 const terrain = new THREE.Group();
 scene.add(terrain);
 
@@ -4807,7 +4832,7 @@ function shedColumn(c, budget) {
     }
     // It is not gone, it is falling: hand it to the same grain path the rubble uses.
     const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
-    g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[m]);   // boxGeo is a unit cube: scale it to block size
+    g.mesh = new THREE.Mesh(grainGeo(m), TERRAIN_FACE_MATS[m]);   // boxGeo is a unit cube: scale it to block size
     g.mesh.scale.setScalar(BLOCK);
     g.mesh.position.copy(g.pos);
     scene.add(g.mesh);
@@ -4826,7 +4851,7 @@ function checkTerrainPowder() {
     if (mat === AIR || !MAT_STATS[mat]?.powder) continue;
     if (qLvl - 1 >= VOX_FLOOR && voxelAt(i, j, qLvl - 1) !== AIR) continue;
     editBlock(i, j, qLvl, AIR);
-    const grain = new THREE.Mesh(boxGeo, TERRAIN_MATS[mat]);   // boxGeo is a unit cube: scale it to block size
+    const grain = new THREE.Mesh(grainGeo(mat), TERRAIN_FACE_MATS[mat]);   // boxGeo is a unit cube: scale it to block size
     grain.scale.setScalar(BLOCK);
     grain.position.set(colX(i), (qLvl + 0.5) * BLOCK, colZ(j));
     scene.add(grain);
@@ -4946,7 +4971,7 @@ function shedPowder() {
         if (lat.some((u) => Math.abs(u.pos.x - nx) < 0.01 && Math.abs(u.pos.y - ny) < 0.01
                                                           && Math.abs(u.pos.z - nz) < 0.01)) continue;
         const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
-        g.mesh = new THREE.Mesh(boxGeo, TERRAIN_MATS[b.mat]);   // boxGeo is a unit cube: scale it to block size
+        g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);   // boxGeo is a unit cube: scale it to block size
         g.mesh.scale.setScalar(BLOCK);
         g.mesh.position.copy(g.pos);
         scene.add(g.mesh);

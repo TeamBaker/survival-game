@@ -229,11 +229,33 @@
   }
   #btn-sprint.down { background: rgba(255, 168, 60, 0.5); border-color: rgba(255, 210, 150, 0.9); color: #fff; }
 
-  /* ---------- Mode UI ---------- */
-  #mode-btn {
+  /* ---------- Menu button (opens the menu overlay) ---------- */
+  #btn-menu {
     position: fixed;
     top: calc(10px + env(safe-area-inset-top));
     right: calc(10px + env(safe-area-inset-right));
+    width: 40px;
+    height: 40px;
+    font-family: inherit;
+    font-size: 17px;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    /* Above the pause overlay (50): releasing the mouse pops that overlay up, and
+       a menu button you cannot reach while paused is a menu button that "does not
+       always work". */
+    z-index: 60;
+  }
+  #btn-menu.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-menu:active { transform: translateY(1px); }
+
+  /* ---------- Mode UI ---------- */
+  #mode-btn {
     padding: 11px 18px;
     font-family: inherit;
     font-size: 13px;
@@ -247,10 +269,6 @@
     box-shadow: 0 4px 18px rgba(90, 150, 220, 0.35);
     cursor: pointer;
     touch-action: manipulation;
-    /* Above the pause overlay (50): releasing the mouse pops that overlay up, and
-       a mode button you cannot reach while paused is a mode button that "does not
-       always work". */
-    z-index: 60;
   }
   #mode-btn.game { background: linear-gradient(180deg, #ffd9a8, #f0a054); }
   #mode-btn:active { transform: translateY(1px); }
@@ -276,11 +294,9 @@
   }
 
   #instructions {
-    position: fixed;
-    top: calc(58px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
-    width: 216px;
-    max-width: 46vw;
+    width: 100%;
+    max-width: 320px;
+    margin-top: 12px;
     padding: 9px 11px;
     font-size: 11px;
     line-height: 1.45;
@@ -289,8 +305,6 @@
     border-radius: 8px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    pointer-events: none;
-    z-index: 10;
   }
   #instructions .title {
     display: block;
@@ -305,9 +319,10 @@
   #instructions span { color: #b9c9dc; text-align: right; }
 
   @media (max-width: 620px) {
-    #mode-btn { font-size: 11px; padding: 9px 14px; }
+    #btn-menu { font-size: 15px; width: 36px; height: 36px; }
     #cam-mode { top: calc(52px + env(safe-area-inset-top)); font-size: 10px; }
-    #instructions { width: 168px; font-size: 10px; padding: 7px 9px; top: calc(52px + env(safe-area-inset-top)); }
+    #mode-btn { font-size: 11px; padding: 9px 14px; }
+    #instructions { font-size: 10px; padding: 7px 9px; }
   }
 
   /* ---------- Materials panel ---------- */
@@ -377,9 +392,6 @@
   body.touch #mat-foot .key { display: none; }
 
   #btn-materials {
-    position: fixed;
-    top: calc(176px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -394,14 +406,12 @@
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    z-index: 14;
   }
   #btn-materials.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-materials:active { transform: translateY(1px); }
 
   @media (max-width: 620px) {
     #materials-ui { font-size: 12px; }
-    #btn-materials { top: calc(152px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
   }
 
   /* ---------- Shovel (temporary block-moving tool) ---------- */
@@ -567,9 +577,6 @@
   /* A reference card, not a takeover: the backdrop dims the world and eats the
      clicks, and the panel itself stays a bounded box you can scroll on a phone. */
   #btn-chart {
-    position: fixed;
-    top: calc(212px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -584,15 +591,11 @@
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    z-index: 14;
   }
   #btn-chart.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-chart:active { transform: translateY(1px); }
 
   #btn-debug-chunks {
-    position: fixed;
-    top: calc(256px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -607,15 +610,11 @@
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    z-index: 14;
   }
   #btn-debug-chunks.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-debug-chunks:active { transform: translateY(1px); }
 
   #sel-lod-override {
-    position: fixed;
-    top: calc(300px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 12px;
     font-family: inherit;
     font-size: 11px;
@@ -630,15 +629,11 @@
     -webkit-backdrop-filter: blur(6px);
     cursor: pointer;
     touch-action: manipulation;
-    z-index: 14;
   }
   #sel-lod-override option { background: #14222f; color: #cfe6ff; }
 
   /* ---------- Debug collider toggle ---------- */
   #btn-debug-colliders {
-    position: fixed;
-    right: calc(14px + env(safe-area-inset-right));
-    top: calc(60px + env(safe-area-inset-top));
     display: flex;
     align-items: center;
     gap: 5px;
@@ -658,7 +653,6 @@
     touch-action: manipulation;
     min-height: 32px;
     min-width: 32px;
-    z-index: 30;
   }
   #btn-debug-colliders .dot {
     width: 7px;
@@ -786,12 +780,87 @@
   #chart-foot { margin-top: 10px; color: #62819f; font-size: 10px; }
 
   @media (max-width: 620px) {
-    #btn-chart { top: calc(186px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
-    #btn-debug-chunks { top: calc(220px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
-    #sel-lod-override { top: calc(258px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-chart, #btn-debug-chunks, #sel-lod-override { font-size: 10px; padding: 7px 12px; }
     #chart-panel { padding: 12px; }
     #chart-grid { font-size: 10px; min-width: 460px; }
   }
+
+  /* ---------- Menu overlay (game mode, mats/chart, debug tools) ---------- */
+  #menu-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.menu-open #menu-overlay { display: flex; }
+
+  #menu-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: min(420px, 100%);
+    max-height: 100%;
+    padding: 20px;
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #menu-panel .title {
+    display: block;
+    margin: 0 34px 16px 0;
+    align-self: flex-start;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+  .menu-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-bottom: 22px;
+  }
+  .menu-section:last-child { margin-bottom: 0; }
+  .menu-row { display: flex; gap: 10px; justify-content: center; }
+  .menu-label {
+    align-self: flex-start;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+
+  #menu-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #menu-close:active { transform: translateY(1px); }
 
   /* ---------- Start / pause overlay ---------- */
   #overlay {
@@ -895,9 +964,7 @@
 <span class="k" style="color:#ff0">v10-voxel</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
-<div id="instructions"></div>
-<button id="mode-btn" class="ui-el">Game Mode</button>
-<button id="btn-materials">Mats</button>
+<button id="btn-menu" aria-label="Menu">&#9881;</button>
 
 <!-- Filled in from TERRAIN_MATS so the swatches are the colours actually used. -->
 <div id="materials-ui" class="ui-el">
@@ -934,17 +1001,6 @@
   <button class="sv-btn" id="btn-strike"><span class="glyph">&#128296;</span>STRIKE</button>
 </div>
 
-<button id="btn-chart" class="ui-el">Chart</button>
-<button id="btn-debug-chunks" class="ui-el">Debug Chunks</button>
-<select id="sel-lod-override" class="ui-el">
-  <option value="auto">LOD: Auto</option>
-  <option value="1">LOD: Level 1</option>
-  <option value="2">LOD: Level 2</option>
-  <option value="3">LOD: Level 3</option>
-  <option value="4">LOD: Level 4</option>
-</select>
-<button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
-
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
 <div id="chart-overlay" class="ui-el">
   <div id="chart-panel">
@@ -952,6 +1008,38 @@
     <span class="title">Material Interactions</span>
     <div id="chart-scroll"><div id="chart-grid"></div></div>
     <div id="chart-foot">50% = random chance on break</div>
+  </div>
+</div>
+
+<div id="menu-overlay">
+  <div id="menu-panel">
+    <button id="menu-close" aria-label="Close">&times;</button>
+    <span class="title">Menu</span>
+
+    <div class="menu-section">
+      <button id="mode-btn" class="ui-el">Game Mode</button>
+    </div>
+
+    <div class="menu-section">
+      <div class="menu-row">
+        <button id="btn-materials">Mats</button>
+        <button id="btn-chart" class="ui-el">Chart</button>
+      </div>
+      <div id="instructions"></div>
+    </div>
+
+    <div class="menu-section menu-debug">
+      <span class="menu-label">Debug</span>
+      <button id="btn-debug-chunks" class="ui-el">Debug Chunks</button>
+      <select id="sel-lod-override" class="ui-el">
+        <option value="auto">LOD: Auto</option>
+        <option value="1">LOD: Level 1</option>
+        <option value="2">LOD: Level 2</option>
+        <option value="3">LOD: Level 3</option>
+        <option value="4">LOD: Level 4</option>
+      </select>
+      <button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
+    </div>
   </div>
 </div>
 
@@ -5860,6 +5948,28 @@ bindTap(document.getElementById('chart-close'), () => setChartUI(false));
 // count as one — only a tap on the dimmed area itself closes.
 document.getElementById('chart-overlay').addEventListener('pointerdown', (e) => {
   if (e.target.id === 'chart-overlay') setChartUI(false);
+  e.stopPropagation();
+});
+
+// ---------------------------------------------------------------------------
+// Menu overlay (game mode, mats/chart shortcuts, debug tools)
+// ---------------------------------------------------------------------------
+const menuBtn = document.getElementById('btn-menu');
+
+let menuOpen = false;
+function setMenuUI(on) {
+  menuOpen = on;
+  document.body.classList.toggle('menu-open', on);
+  menuBtn.classList.toggle('on', on);
+  // Same deal as the materials panel and chart: with the pointer locked there is
+  // no cursor to hit the X with, and mouse look would keep running underneath.
+  if (on && document.pointerLockElement) document.exitPointerLock();
+}
+function toggleMenu() { setMenuUI(!menuOpen); }
+bindTap(menuBtn, toggleMenu);
+bindTap(document.getElementById('menu-close'), () => setMenuUI(false));
+document.getElementById('menu-overlay').addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'menu-overlay') setMenuUI(false);
   e.stopPropagation();
 });
 

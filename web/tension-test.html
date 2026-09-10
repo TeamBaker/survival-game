@@ -100,8 +100,8 @@ function calcGrid(){
   // Leave room for ground at bottom
   const groundRows=1;
   const availH=H-10;
-  cell=Math.floor(Math.min(W/48, availH/28));
-  if(cell<4)cell=4;
+  cell=Math.floor(Math.min(W/20, availH/14));
+  if(cell<16)cell=16;
   cols=Math.floor(W/cell);
   rows=Math.floor(H/cell);
   // Extend grid if needed
@@ -120,6 +120,17 @@ function calcGrid(){
 
 function draw(){
   ctx.clearRect(0,0,W,H);
+
+  // Draw grid lines
+  ctx.strokeStyle='rgba(255,255,255,0.07)';
+  ctx.lineWidth=1;
+  for(let c=0;c<=cols;c++){
+    ctx.beginPath();ctx.moveTo(c*cell+0.5,0);ctx.lineTo(c*cell+0.5,rows*cell);ctx.stroke();
+  }
+  for(let r=0;r<=rows;r++){
+    ctx.beginPath();ctx.moveTo(0,r*cell+0.5);ctx.lineTo(cols*cell,r*cell+0.5);ctx.stroke();
+  }
+
   // Compute stress edges via top-down weight
   const stress=computeStressEdges();
 

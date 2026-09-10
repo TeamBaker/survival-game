@@ -5469,20 +5469,56 @@ function pieceTensionPass(f, dt) {
   mesh.quaternion.copy(body.quaternion);
   mesh.updateWorldMatrix(true, false);
 
-  breaking.sort((q1, q2) => q2 - q1);   // highest index first, so lower ones stay valid as they come out
+  // Snapshot block data before we start cutting.
+  const breakSet = new Set(breaking);
+  const blockData = lat.map((b) => ({ pos: b.pos.clone(), mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj, top: b.top }));
+
+  // Flood-fill connected groups among the breaking blocks.
+  // Each group comes off as ONE debris piece — a corner snaps off as a chunk,
+  // not a shower of individual blocks.
+  const visited = new Set();
+  const groups = [];  // array of arrays of block indices
   for (const q of breaking) {
-    const b = lat[q];
-    if (MAT_STATS[b.mat]?.powder) {
-      const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
-      g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);
-      g.mesh.scale.setScalar(BLOCK);
-      g.mesh.position.copy(g.pos);
-      scene.add(g.mesh);
-      powderFalling.push(g);
-      cutDebrisLat(mesh, q);
+    if (visited.has(q)) continue;
+    const group = [];
+    const stack = [q];
+    visited.add(q);
+    while (stack.length) {
+      const cur = stack.pop();
+      group.push(cur);
+      const b = blockData[cur];
+      for (const [di, dj, dl] of TENSION_NEI) {
+        const nk = (b.gi + di) + ',' + (b.gj + dj) + ',' + (b.lvl + dl);
+        const k = at.get(nk);
+        if (k === undefined || !breakSet.has(k) || visited.has(k)) continue;
+        visited.add(k);
+        stack.push(k);
+      }
+    }
+    groups.push(group);
+  }
+
+  // Remove all breaking blocks from the lattice (highest index first).
+  breaking.sort((q1, q2) => q2 - q1);
+  for (const q of breaking) cutDebrisLat(mesh, q);
+
+  // Spawn each connected group. If every block in the group is powder, shed
+  // as individual grains. Otherwise the group becomes one debris piece.
+  for (const group of groups) {
+    const blocks = group.map((q) => blockData[q]);
+    const allPowder = blocks.every((b) => MAT_STATS[b.mat]?.powder);
+    if (allPowder) {
+      for (const b of blocks) {
+        const wp = b.pos.clone().applyMatrix4(mesh.matrixWorld);
+        const g = { pos: wp, mat: b.mat, v: 0, from: mesh };
+        g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);
+        g.mesh.scale.setScalar(BLOCK);
+        g.mesh.position.copy(wp);
+        scene.add(g.mesh);
+        powderFalling.push(g);
+      }
     } else {
-      cutDebrisLat(mesh, q);
-      spawnDebrisPart(mesh, [b], body, f.frozen);
+      spawnDebrisPart(mesh, blocks, body, f.frozen);
     }
   }
 

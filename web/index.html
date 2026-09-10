@@ -4546,7 +4546,7 @@ const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
-const GRIP_SCALE     = 2.0;   // multiplier on min(strength_A, strength_B) across a shared face
+const GRIP_SCALE     = 1.0;   // 1 grip holds 1 weight in any direction
 const TENSION_CHECK_MAX = 3;  // cascade passes of checkTension per frame, capped against a runaway collapse
 
 // A block's contribution to a piece's mass and centre of mass is its material's
@@ -4831,7 +4831,7 @@ function spawnFallingChunk(unit) {
   // Oldest piece gives up its body if the field is already full of them.
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
-  fallingChunks.push({ mesh, body, still: 0, prevVelocity: body.velocity.clone() });
+  fallingChunks.push({ mesh, body, still: 0, prevVelocity: body.velocity.clone(), prevAngVel: body.angularVelocity.clone() });
 }
 
 // ----- powder in the ground -----
@@ -5330,7 +5330,7 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
 
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);
-  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen, prevVelocity: body.velocity.clone() });
+  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen, prevVelocity: body.velocity.clone(), prevAngVel: body.angularVelocity.clone() });
 }
 
 // ----- block tension / grip -----
@@ -5344,7 +5344,7 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
 // neighbours' grip in turn, so the check runs a few passes a frame until
 // nothing more gives, capped at TENSION_CHECK_MAX so a full collapse can't
 // loop forever.
-const tensionR = new CANNON.Vec3(), tensionOmega2 = new CANNON.Vec3(), tensionCentrip = new CANNON.Vec3();
+const tensionR = new CANNON.Vec3(), tensionOmega2 = new CANNON.Vec3(), tensionCentrip = new CANNON.Vec3(), tensionAlpha = new CANNON.Vec3();
 const TENSION_NEI = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
 function pieceTensionPass(f, dt) {
   const body = f.body, mesh = f.mesh, lat = mesh.userData.blocks;
@@ -5353,7 +5353,11 @@ function pieceTensionPass(f, dt) {
   const ax = (body.velocity.x - f.prevVelocity.x) / dt;
   const ay = (body.velocity.y - f.prevVelocity.y) / dt;
   const az = (body.velocity.z - f.prevVelocity.z) / dt;
-  const w = body.angularVelocity;
+  const w  = body.angularVelocity;
+  // Angular acceleration (alpha) — the torque that leverages far blocks harder
+  const px = (w.x - f.prevAngVel.x) / dt;
+  const py = (w.y - f.prevAngVel.y) / dt;
+  const pz = (w.z - f.prevAngVel.z) / dt;
 
   // Neighbour lookup straight off the lattice's own grid indices — same key
   // scheme rebuildDebrisBody uses.
@@ -5374,17 +5378,21 @@ function pieceTensionPass(f, dt) {
     if (neighbours === 0) continue;   // already free-floating
 
     // Centripetal: w x (w x pos), pulling the block outward from the spin axis.
+    // Tangential: alpha x pos, the torque leverage — far blocks feel it harder.
     // angularVelocity is world-space, so pos (local to the piece) is rotated
     // into world space first — same frame as the linear acceleration below.
     tensionR.set(b.pos.x, b.pos.y, b.pos.z);
     body.quaternion.vmult(tensionR, tensionR);
     w.cross(tensionR, tensionOmega2);
     w.cross(tensionOmega2, tensionCentrip);
+    // tangential = alpha x r
+    tensionAlpha.set(px, py, pz);
+    tensionAlpha.cross(tensionR, tensionOmega2);  // reuse temp vec
 
     const mass = blockWeight(b);
-    const fx = mass * (ax + tensionCentrip.x);
-    const fy = mass * (ay + tensionCentrip.y - 9.82);
-    const fz = mass * (az + tensionCentrip.z);
+    const fx = mass * (ax + tensionCentrip.x + tensionOmega2.x);
+    const fy = mass * (ay + tensionCentrip.y + tensionOmega2.y - 9.82);
+    const fz = mass * (az + tensionCentrip.z + tensionOmega2.z);
     if (Math.sqrt(fx * fx + fy * fy + fz * fz) > grip) breaking.push(q);
   }
   if (!breaking.length) return false;
@@ -5431,8 +5439,8 @@ function checkTension(dt) {
     for (const f of pieces) any = pieceTensionPass(f, dt) || any;
     if (!any) break;
   }
-  for (const f of fallingChunks) f.prevVelocity.copy(f.body.velocity);
-  for (const f of restedChunks) f.prevVelocity.copy(f.body.velocity);
+  for (const f of fallingChunks) { f.prevVelocity.copy(f.body.velocity); f.prevAngVel.copy(f.body.angularVelocity); }
+  for (const f of restedChunks) { f.prevVelocity.copy(f.body.velocity); f.prevAngVel.copy(f.body.angularVelocity); }
 }
 
 // Digging a loose piece takes off the one block under the crosshair and leaves

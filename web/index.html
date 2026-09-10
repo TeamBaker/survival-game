@@ -55,24 +55,19 @@
     touch-action: none;
   }
 
-  /* ---------- HUD ---------- */
+  /* ---------- HUD (lives in the menu panel) ---------- */
+  #hud-section { align-items: stretch; }
   #hud {
-    position: fixed;
-    top: calc(10px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    width: 100%;
     padding: 8px 11px;
-    font-size: 13px;
+    font-size: 11px;
     line-height: 1.5;
     letter-spacing: 0.02em;
     background: rgba(8, 14, 24, 0.5);
     border: 1px solid rgba(160, 200, 255, 0.16);
     border-radius: 8px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    pointer-events: none;
     white-space: pre;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-    z-index: 10;
+    box-sizing: border-box;
   }
   #hud .k { color: #7fa8d8; }
   #hud .v { color: #eaf2ff; }
@@ -118,9 +113,7 @@
   }
   #sprint.on { opacity: 1; transform: translateX(-50%) scale(1); }
 
-  /* On a narrow phone the centred pill would collide with the HUD panel. */
   @media (max-width: 620px) {
-    #hud { font-size: 11px; padding: 6px 9px; }
     #sprint {
       top: auto;
       bottom: calc(26px + env(safe-area-inset-bottom));
@@ -325,26 +318,26 @@
     #instructions { font-size: 10px; padding: 7px 9px; }
   }
 
-  /* ---------- Materials panel ---------- */
-  /* Full-screen: fourteen materials with three numbers each is a table, not a
-     tooltip, and at panel size it was a column of ellipses on a phone. */
+  /* ---------- Materials panel (embedded in the menu panel) ---------- */
   #materials-ui {
-    position: fixed;
-    inset: 0;
-    padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
-             calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
-    font-size: 13px;
+    position: relative;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 14px;
+    font-size: 12px;
     line-height: 1.4;
-    background: rgba(8, 14, 24, 0.95);
+    background: rgba(8, 14, 24, 0.5);
+    border: 1px solid rgba(160, 200, 255, 0.16);
+    border-radius: 8px;
     display: none;
-    z-index: 100;
+    max-height: 280px;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
   }
   #materials-ui.on { display: block; }
   #materials-ui .title {
     display: block;
-    margin-bottom: 14px;
+    margin: 0 34px 14px 0;
     font-size: 12px;
     letter-spacing: 0.16em;
     color: #6f92bd;
@@ -370,10 +363,10 @@
   /* Same pill as the MATS button that opens it, parked in the top corner. */
   #mat-close {
     position: absolute;
-    top: calc(16px + env(safe-area-inset-top));
-    right: calc(16px + env(safe-area-inset-right));
-    width: 34px;
-    height: 34px;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
     font-family: inherit;
     font-size: 15px;
     font-weight: 700;
@@ -409,10 +402,6 @@
   }
   #btn-materials.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-materials:active { transform: translateY(1px); }
-
-  @media (max-width: 620px) {
-    #materials-ui { font-size: 12px; }
-  }
 
   /* ---------- Shovel (temporary block-moving tool) ---------- */
   #btn-shovel {
@@ -768,32 +757,25 @@
   #btn-grip-debug.on { color: #fff; border-color: rgba(255, 190, 100, 0.4); }
   #btn-grip-debug:active { transform: translateY(1px); }
 
+  /* Embedded in the menu panel: a bounded, scrollable box rather than a
+     full-screen takeover. */
   #chart-overlay {
-    position: fixed;
-    inset: 0;
     display: none;
-    align-items: center;
-    justify-content: center;
-    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
-             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
-    background: rgba(4, 8, 16, 0.72);
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
-    z-index: 100;
+    width: 100%;
   }
-  body.chart-open #chart-overlay { display: flex; }
+  body.chart-open #chart-overlay { display: block; }
 
   #chart-panel {
     position: relative;
     display: flex;
     flex-direction: column;
-    width: min(760px, 100%);
-    max-height: 100%;
-    padding: 16px;
-    background: #1a1a2e;
-    border: 1px solid rgba(140, 175, 230, 0.28);
-    border-radius: 14px;
-    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    width: 100%;
+    max-height: 280px;
+    box-sizing: border-box;
+    padding: 14px;
+    background: rgba(8, 14, 24, 0.5);
+    border: 1px solid rgba(160, 200, 255, 0.16);
+    border-radius: 8px;
   }
   #chart-panel .title {
     display: block;
@@ -909,7 +891,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: min(420px, 100%);
+    width: min(460px, 100%);
     max-height: 100%;
     padding: 20px;
     background: #1a1a2e;
@@ -1060,22 +1042,8 @@
 <body>
 <canvas id="view"></canvas>
 
-<div id="hud"><span class="k">FPS</span> <span class="v" id="fps">--</span>
-<span class="k">POS</span> <span class="v" id="pos">--</span>
-<span class="k">BLKS</span> <span class="v" id="blocks-hud">--</span>
-<span class="k">HELD</span> <span class="v" id="held-hud">0</span>
-<span class="k" style="color:#ff0">v10-voxel</span></div>
-
 <div id="cam-mode">Cam &mdash; Free</div>
 <button id="btn-menu" aria-label="Menu">&#9881;</button>
-
-<!-- Filled in from TERRAIN_MATS so the swatches are the colours actually used. -->
-<div id="materials-ui" class="ui-el">
-  <button id="mat-close" aria-label="Close">&times;</button>
-  <span class="title">Materials</span>
-  <div id="mat-list"></div>
-  <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / buoy / str</div>
-</div>
 
 <div id="crosshair"></div>
 <div id="sprint">SPRINT</div>
@@ -1119,20 +1087,19 @@
   <button class="sv-btn" id="btn-paint-apply"><span class="glyph">&#127912;</span>PAINT</button>
 </div>
 
-<!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
-<div id="chart-overlay" class="ui-el">
-  <div id="chart-panel">
-    <button id="chart-close" aria-label="Close">&times;</button>
-    <span class="title">Material Interactions</span>
-    <div id="chart-scroll"><div id="chart-grid"></div></div>
-    <div id="chart-foot">50% = random chance on break</div>
-  </div>
-</div>
-
 <div id="menu-overlay">
   <div id="menu-panel">
     <button id="menu-close" aria-label="Close">&times;</button>
     <span class="title">Menu</span>
+
+    <div class="menu-section" id="hud-section">
+      <span class="menu-label">Stats</span>
+      <div id="hud"><span class="k">FPS</span> <span class="v" id="fps">--</span>
+<span class="k">POS</span> <span class="v" id="pos">--</span>
+<span class="k">BLKS</span> <span class="v" id="blocks-hud">--</span>
+<span class="k">HELD</span> <span class="v" id="held-hud">0</span>
+<span class="k" style="color:#ff0">v10-voxel</span></div>
+    </div>
 
     <div class="menu-section">
       <button id="mode-btn" class="ui-el">Game Mode</button>
@@ -1144,6 +1111,24 @@
         <button id="btn-chart" class="ui-el">Chart</button>
       </div>
       <div id="instructions"></div>
+    </div>
+
+    <!-- Filled in from TERRAIN_MATS so the swatches are the colours actually used. -->
+    <div id="materials-ui" class="menu-section ui-el">
+      <button id="mat-close" aria-label="Close">&times;</button>
+      <span class="title">Materials</span>
+      <div id="mat-list"></div>
+      <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / buoy / str</div>
+    </div>
+
+    <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
+    <div id="chart-overlay" class="menu-section ui-el">
+      <div id="chart-panel">
+        <button id="chart-close" aria-label="Close">&times;</button>
+        <span class="title">Material Interactions</span>
+        <div id="chart-scroll"><div id="chart-grid"></div></div>
+        <div id="chart-foot">50% = random chance on break</div>
+      </div>
     </div>
 
     <div class="menu-section menu-debug">
@@ -6526,8 +6511,11 @@ function setMaterialsUI(on) {
   materialsOpen = on;
   materialsEl.classList.toggle('on', on);
   materialsBtn.classList.toggle('on', on);
-  // Full screen now, so it wants the cursor back — with the pointer locked there
-  // is nothing to click the X with, and mouse look would run on under the panel.
+  // Lives inside the menu panel now, so it needs the menu open to be seen at all
+  // — the 5 key used to pop this up on its own.
+  if (on) setMenuUI(true);
+  // Wants the cursor back to reach mat-close — with the pointer locked there is
+  // nothing to click it with, and mouse look would run on underneath the menu.
   if (on && document.pointerLockElement) document.exitPointerLock();
 }
 function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
@@ -6579,6 +6567,9 @@ function setChartUI(on) {
   chartOpen = on;
   document.body.classList.toggle('chart-open', on);
   chartBtn.classList.toggle('on', on);
+  // Lives inside the menu panel now, so it needs the menu open to be seen at all
+  // — the T key used to pop this up on its own.
+  if (on) setMenuUI(true);
   // Same deal as the materials panel: with the pointer locked there is no cursor
   // to hit the X with, and mouse look would keep running underneath.
   if (on && document.pointerLockElement) document.exitPointerLock();

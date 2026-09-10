@@ -565,6 +565,76 @@
   body.hammer-on #btn-down   { bottom: calc(118px + env(safe-area-inset-bottom)); }
   body.hammer-on #btn-up     { bottom: calc(208px + env(safe-area-inset-bottom)); }
 
+  /* ---------- Paint (recolours a debris block, cosmetic only) ---------- */
+  #btn-paint {
+    position: fixed;
+    top: calc(166px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-paint.on {
+    color: #22062f;
+    background: linear-gradient(180deg, #e8b8ff, #a83cff);
+    border-color: transparent;
+  }
+
+  #paint-ui {
+    position: fixed;
+    left: 50%;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    z-index: 13;
+  }
+  body.paint-on #paint-ui { display: flex; }
+
+  #paint-palette {
+    display: flex;
+    gap: 8px;
+    padding: 7px 11px;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  .paint-swatch {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    padding: 0;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .paint-swatch.sel { border-color: #fff; box-shadow: 0 0 6px rgba(255, 255, 255, 0.8); }
+
+  /* Same footprint as the shovel's two-button pad — a palette row plus one
+     action button is about the same height. */
+  body.paint-on #stick-base { bottom: calc(120px + env(safe-area-inset-bottom)); }
+  body.paint-on #btn-jump   { bottom: calc(130px + env(safe-area-inset-bottom)); }
+  body.paint-on #btn-crouch { bottom: calc(126px + env(safe-area-inset-bottom)); }
+  body.paint-on #btn-sprint { bottom: calc(232px + env(safe-area-inset-bottom)); }
+  body.paint-on #btn-down   { bottom: calc(126px + env(safe-area-inset-bottom)); }
+  body.paint-on #btn-up     { bottom: calc(216px + env(safe-area-inset-bottom)); }
+
   @media (max-width: 620px) {
     #btn-shovel { top: calc(84px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
     #btn-hammer { top: calc(118px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
@@ -664,6 +734,39 @@
   #btn-debug-colliders.on .dot { background: #3bff6e; box-shadow: 0 0 4px #3bff6e; }
   #btn-debug-colliders.on { color: #fff; border-color: rgba(120, 255, 160, 0.4); }
   #btn-debug-colliders:active { transform: translateY(1px); }
+
+  /* ---------- Grip debug toggle ---------- */
+  #btn-grip-debug {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 10px;
+    font-family: inherit;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.55);
+    border: 1px solid rgba(150, 195, 245, 0.25);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    min-height: 32px;
+    min-width: 32px;
+  }
+  #btn-grip-debug .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #8a8f99;
+    box-shadow: 0 0 4px #8a8f99;
+  }
+  #btn-grip-debug.on .dot { background: #ffb020; box-shadow: 0 0 4px #ffb020; }
+  #btn-grip-debug.on { color: #fff; border-color: rgba(255, 190, 100, 0.4); }
+  #btn-grip-debug:active { transform: translateY(1px); }
 
   #chart-overlay {
     position: fixed;
@@ -1001,6 +1104,21 @@
   <button class="sv-btn" id="btn-strike"><span class="glyph">&#128296;</span>STRIKE</button>
 </div>
 
+<button id="btn-paint" class="ui-el">Paint &mdash; Off</button>
+<div id="paint-ui">
+  <div id="paint-palette">
+    <button class="paint-swatch" data-color="#ffffff" style="background:#ffffff"></button>
+    <button class="paint-swatch" data-color="#ff4444" style="background:#ff4444"></button>
+    <button class="paint-swatch" data-color="#ff8a3c" style="background:#ff8a3c"></button>
+    <button class="paint-swatch" data-color="#ffe14d" style="background:#ffe14d"></button>
+    <button class="paint-swatch" data-color="#3bff6e" style="background:#3bff6e"></button>
+    <button class="paint-swatch" data-color="#3ca8ff" style="background:#3ca8ff"></button>
+    <button class="paint-swatch" data-color="#b34dff" style="background:#b34dff"></button>
+    <button class="paint-swatch" data-color="#1a1a1a" style="background:#1a1a1a"></button>
+  </div>
+  <button class="sv-btn" id="btn-paint-apply"><span class="glyph">&#127912;</span>PAINT</button>
+</div>
+
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
 <div id="chart-overlay" class="ui-el">
   <div id="chart-panel">
@@ -1039,6 +1157,7 @@
         <option value="4">LOD: Level 4</option>
       </select>
       <button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
+      <button id="btn-grip-debug"><span class="dot"></span>Grip Debug</button>
     </div>
   </div>
 </div>
@@ -1420,6 +1539,21 @@ document.getElementById('btn-debug-colliders').addEventListener('click', () => {
   console.log('DEBUG TOGGLE:', debugColliders.on);
 });
 
+document.getElementById('btn-grip-debug').addEventListener('click', () => {
+  gripDebugOn = !gripDebugOn;
+  document.getElementById('btn-grip-debug').classList.toggle('on', gripDebugOn);
+  // Debris: overlay the grip colours on the geometry already built, or rebuild
+  // clean to drop them.
+  for (const f of fallingChunks.concat(restedChunks)) {
+    if (gripDebugOn) applyGripColors(f.mesh); else buildDebrisGeometry(f.mesh);
+  }
+  // Terrain: every chunk currently built (i.e. in view) is re-coloured by
+  // rebuilding it — collectColumn reads gripDebugOn itself.
+  for (let c = 0; c < chunkMesh.length; c++) {
+    if (chunkMesh[c]) rebuildChunk(c);
+  }
+});
+
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
 const syncList = [];
@@ -1721,6 +1855,36 @@ const MAT_STATS = [
   { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 0.8, powder: false },  // WET_SAND
   { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 1.4, powder: false },  // HARD_SAND
 ];
+
+// Grip: how hard a block resists gravity, from the min of its own and each
+// side neighbour's strength — declared here (rather than by the tension code
+// that reads it) because the grip-debug view needs it during the very first
+// terrain build, before the world has generated even one frame.
+const GRIP_SCALE = 1.0;   // 1 grip holds 1 weight in any direction
+// Side neighbours only (di, dj, dl) — above and below don't resist gravity,
+// same rule checkTerrainTension and the grip-debug view both use.
+const GRIP_SIDE_NEI = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]];
+// Toggled by the "Grip Debug" button: colours blocks by grip/weight instead
+// of material, so a terrain overhang or a debris piece about to shed blocks
+// is visible at a glance.
+let gripDebugOn = false;
+function gripRatioColor(ratio) {
+  if (ratio > 3) return { r: 0.20, g: 0.85, b: 0.25 };   // green — plenty of grip
+  if (ratio >= 1) return { r: 0.95, g: 0.85, b: 0.15 };  // yellow — holding, barely
+  return { r: 0.95, g: 0.20, b: 0.20 };                  // red — should already have broken
+}
+// Terrain block grip, read straight off the voxel store's live neighbours.
+function terrainGripColor(i, j, lvl, m) {
+  const strength = MAT_STATS[m]?.strength ?? 1;
+  let grip = 0;
+  for (const [di, dj, dl] of GRIP_SIDE_NEI) {
+    const nm = voxelAt(i + di, j + dj, lvl + dl);
+    if (nm === AIR || nm === WATER) continue;
+    grip += Math.min(strength, MAT_STATS[nm]?.strength ?? 1) * GRIP_SCALE;
+  }
+  return gripRatioColor(grip / (MAT_STATS[m]?.weight ?? 1));
+}
+
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -2407,7 +2571,11 @@ function collectColumn(i, j, step = 1) {
       const variation = 0.85 + h * 0.30;
       const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl)) * variation;
       const c = TERRAIN_MATS[m].color;
-      const r = c.r * s, g = c.g * s, b = c.b * s;
+      let r = c.r * s, g = c.g * s, b = c.b * s;
+      if (gripDebugOn) {
+        const gc = terrainGripColor(i, j, lvl, m);
+        r = gc.r; g = gc.g; b = gc.b;
+      }
       const cy = (lvl + 0.5) * BLOCK;
       for (let f = 0; f < 6; f++) {
         const F = FACES[f];
@@ -3757,6 +3925,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
   else if (e.code === 'KeyF') setShovel(!shovel.on);
   else if (e.code === 'KeyH') setHammer(!hammer.on);
+  else if (e.code === 'KeyP') setPaint(!paint.on);
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
   else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
@@ -3788,6 +3957,8 @@ renderer.domElement.addEventListener('mousedown', (e) => {
   // clickable, so there is nothing to steal them from.
   // The hammer takes the left button on its own — it is the only thing it does.
   if (hammer.on) { if (e.button === 0) hammerStrike(); return; }
+  // The paint tool, same idea: left button applies the selected colour.
+  if (paint.on) { if (e.button === 0) paintApply(); return; }
   if (!shovel.on) return;
   if (e.button === 0) shovelPickUp();
   else if (e.button === 2) shovelPlace();
@@ -4372,6 +4543,16 @@ const hammer = {
   debris: null,   // {mesh, idx} debris block target, or null
 };
 
+// The paint tool recolours one block of a fallen piece — cosmetic only, no
+// lattice or physics change. Terrain has no lattice to paint, so it only
+// ever targets debris.
+const paint = {
+  on: false,
+  color: null,    // {r, g, b} in 0..1, the palette swatch currently selected
+  hit: null,      // {mesh, idx} debris block target, or null
+  hitWp: null,    // THREE.Vector3 world position of the target, for the highlight
+};
+
 // ----- the ray -----
 // Amanatides & Woo over the column grid. It reports the first solid cell along
 // the ray *and* the last empty one before it, which are exactly the two cells a
@@ -4546,7 +4727,8 @@ const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
-const GRIP_SCALE     = 1.0;   // 1 grip holds 1 weight in any direction
+// GRIP_SCALE is declared up by MAT_STATS — the grip-debug view needs it during
+// the very first terrain build, long before this section runs.
 const TENSION_CHECK_MAX = 3;  // cascade passes of checkTension per frame, capped against a runaway collapse
 const TENSION_GRACE  = 30;    // frames before tension activates on a new piece (let it settle first)
 
@@ -4599,7 +4781,7 @@ function buildDebrisGeometry(group) {
     const h = nhash3(b.gi, b.gj, b.lvl);
     const variation = 0.85 + h * 0.30;
     const s = t * band * shadeOf(shadeStep((b.top ?? 0) - b.lvl)) * variation;
-    const base = TERRAIN_MATS[b.mat].color;
+    const base = b.paintColor || TERRAIN_MATS[b.mat].color;
     c.setRGB(base.r * s, base.g * s, base.b * s);
     let B = buckets[b.mat];
     if (!B) buckets[b.mat] = B = { pos: [], nor: [], col: [], faceBlock: [] };
@@ -4671,6 +4853,44 @@ function buildDebrisGeometry(group) {
   // Aggregated for reference; raycasting reads a hit sub-mesh's own faceBlock
   // (its faceIndex is local to that sub-mesh's geometry, not this group).
   group.userData.faceBlock = faceBlock;
+  if (gripDebugOn) applyGripColors(group);
+}
+
+// Debug-only post-process: overrides the vertex colours buildDebrisGeometry
+// just wrote, block by block, using each child's own faceBlock to map its
+// quads back to lattice indices — same grip-vs-weight balance as the terrain
+// view, read off the piece's own lattice instead of the voxel store.
+function applyGripColors(group) {
+  const lat = group.userData.blocks;
+  if (!lat || !lat.length) return;
+  const at = new Map();
+  for (let q = 0; q < lat.length; q++) at.set(lat[q].gi + ',' + lat[q].gj + ',' + lat[q].lvl, q);
+  const colors = new Array(lat.length);
+  for (let q = 0; q < lat.length; q++) {
+    const b = lat[q];
+    const strength = MAT_STATS[b.mat]?.strength ?? 1;
+    let grip = 0;
+    for (const [di, dj, dl] of GRIP_SIDE_NEI) {
+      const k = at.get((b.gi + di) + ',' + (b.gj + dj) + ',' + (b.lvl + dl));
+      if (k === undefined) continue;
+      grip += Math.min(strength, MAT_STATS[lat[k].mat]?.strength ?? 1) * GRIP_SCALE;
+    }
+    colors[q] = gripRatioColor(grip / (MAT_STATS[b.mat]?.weight ?? 1));
+  }
+  for (const child of group.children) {
+    const fb = child.userData.faceBlock;
+    if (!fb) continue;
+    const col = child.geometry.getAttribute('color');
+    for (let f = 0; f < fb.length; f++) {
+      const gc = colors[fb[f]];
+      const base = f * 4;
+      for (let v = 0; v < 4; v++) {
+        const o = (base + v) * 3;
+        col.array[o] = gc.r; col.array[o + 1] = gc.g; col.array[o + 2] = gc.b;
+      }
+    }
+    col.needsUpdate = true;
+  }
 }
 // Its own group rather than `objects`: the camera boom raycasts that one to pull
 // itself in past props, and rubble lying around the player should not be tugging
@@ -5343,7 +5563,7 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj, top: b.top };
+    return { pos: p, mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj, top: b.top, paintColor: b.paintColor };
   });
   buildDebrisGeometry(mesh);
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
@@ -5471,7 +5691,7 @@ function pieceTensionPass(f, dt) {
 
   // Snapshot block data before we start cutting.
   const breakSet = new Set(breaking);
-  const blockData = lat.map((b) => ({ pos: b.pos.clone(), mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj, top: b.top }));
+  const blockData = lat.map((b) => ({ pos: b.pos.clone(), mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj, top: b.top, paintColor: b.paintColor }));
 
   // Flood-fill connected groups among the breaking blocks.
   // Each group comes off as ONE debris piece — a corner snaps off as a chunk,
@@ -5939,9 +6159,14 @@ const hlHammer = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(BLOCK * 1.05, BLOCK * 1.05, BLOCK * 1.05)),
   new THREE.LineBasicMaterial({ color: 0xff8a3c, transparent: true, opacity: 0.95, depthWrite: false })
 );
-hlPick.visible = hlPlace.visible = hlHammer.visible = false;
-hlPick.frustumCulled = hlPlace.frustumCulled = hlHammer.frustumCulled = false;
-scene.add(hlPick, hlPlace, hlHammer);
+// The paint tool's own cage, in the same violet as its button.
+const hlPaint = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(BLOCK * 1.05, BLOCK * 1.05, BLOCK * 1.05)),
+  new THREE.LineBasicMaterial({ color: 0xb34dff, transparent: true, opacity: 0.95, depthWrite: false })
+);
+hlPick.visible = hlPlace.visible = hlHammer.visible = hlPaint.visible = false;
+hlPick.frustumCulled = hlPlace.frustumCulled = hlHammer.frustumCulled = hlPaint.frustumCulled = false;
+scene.add(hlPick, hlPlace, hlHammer, hlPaint);
 
 const cellCenter = (o, v) => v.set(colX(o.i), (o.lvl + 0.5) * BLOCK, colZ(o.j));
 
@@ -6004,6 +6229,7 @@ function updateShovel() {
 
 function setShovel(on) {
   if (on && hammer.on) setHammer(false);   // one tool out at a time
+  if (on && paint.on) setPaint(false);
   shovel.on = on;
   document.body.classList.toggle('shovel-on', on);
   if (!on) hlPick.visible = hlPlace.visible = false;
@@ -6087,6 +6313,7 @@ function updateHammer() {
 
 function setHammer(on) {
   if (on && shovel.on) setShovel(false);   // one tool out at a time
+  if (on && paint.on) setPaint(false);
   hammer.on = on;
   document.body.classList.toggle('hammer-on', on);
   if (!on) { hlHammer.visible = false; hammer.hit = null; hammer.debris = null; hammer.debrisWp = null; }
@@ -6097,6 +6324,91 @@ function setHammer(on) {
 bindTap(hammerBtn, () => setHammer(!hammer.on));
 bindTap(strikeBtn, () => { if (hammer.on) hammerStrike(); });
 refreshHammerUI();
+
+// ----- the paint tool -----
+// Same ray as the hammer's debris branch — the crosshair only ever picks out
+// a block already loose on the ground, never one still joined to the world,
+// so unlike shovelAim/hammerAim there is no voxelRay branch at all.
+function paintAim() {
+  paint.hit = null;
+  paint.hitWp = null;
+  if (!paint.on) return;
+
+  camera.getWorldDirection(aimDir);
+  let ox, oy, oz;
+  if (camMode === CAM.FREE) {
+    ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
+  } else {
+    const p = playerBody.position;
+    ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
+  }
+
+  const dHit = debrisAim(ox, oy, oz);
+  if (!dHit) return;
+  const dm = dHit.piece;
+  const lat = dm.userData.blocks;
+  const fb = dHit.object.userData.faceBlock;
+  const idx = dHit.faceIndex != null && fb ? fb[Math.floor(dHit.faceIndex / 2)] : -1;
+  if (idx < 0 || idx >= lat.length) return;
+  paint.hit = { mesh: dm, idx };
+  paint.hitWp = new THREE.Vector3().copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);
+}
+
+const paintBtn       = document.getElementById('btn-paint');
+const paintApplyBtn  = document.getElementById('btn-paint-apply');
+const paintSwatches  = [...document.querySelectorAll('.paint-swatch')];
+
+function refreshPaintUI() {
+  paintBtn.innerHTML = 'Paint &mdash; ' + (paint.on ? 'On' : 'Off');
+  paintBtn.classList.toggle('on', paint.on);
+}
+
+// Called every frame while the paint tool is out, same reason updateHammer is.
+function updatePaint() {
+  if (shovel.on || hammer.on) return;   // one tool at a time
+  paintAim();
+  hlPaint.visible = paint.on && !!paint.hit;
+  if (hlPaint.visible) {
+    hlPaint.position.copy(paint.hitWp);
+    paint.hit.mesh.getWorldQuaternion(hlPaint.quaternion);
+  }
+  paintApplyBtn.classList.toggle('dim', !paint.hit || !paint.color);
+}
+
+function setPaint(on) {
+  if (on && shovel.on) setShovel(false);   // one tool out at a time
+  if (on && hammer.on) setHammer(false);
+  paint.on = on;
+  document.body.classList.toggle('paint-on', on);
+  if (!on) { hlPaint.visible = false; paint.hit = null; paint.hitWp = null; }
+  refreshPaintUI();
+  refreshModeUI();
+}
+
+// Recolours the block under the crosshair. Cosmetic only — the lattice's
+// shape, mass and colliders are untouched, so a visual rebuild is all it
+// needs, not the heavier rebuildDebrisBody a dig or a placed block calls.
+function paintApply() {
+  if (!paint.on || !paint.hit || !paint.color) return false;
+  const { mesh, idx } = paint.hit;
+  const lat = mesh.userData.blocks;
+  if (idx < 0 || idx >= lat.length) return false;
+  lat[idx].paintColor = paint.color;
+  buildDebrisGeometry(mesh);
+  return true;
+}
+
+bindTap(paintBtn, () => setPaint(!paint.on));
+bindTap(paintApplyBtn, () => { if (paint.on) paintApply(); });
+for (const sw of paintSwatches) {
+  bindTap(sw, () => {
+    for (const s of paintSwatches) s.classList.remove('sel');
+    sw.classList.add('sel');
+    const tc = new THREE.Color(sw.dataset.color);
+    paint.color = { r: tc.r, g: tc.g, b: tc.b };
+  });
+}
+refreshPaintUI();
 
 // ---------------------------------------------------------------------------
 // Mode UI
@@ -6446,6 +6758,7 @@ function tick() {
   // the render so the highlight boxes are in the right place this frame.
   if (shovel.on) updateShovel();
   if (hammer.on) updateHammer();
+  if (paint.on) updatePaint();
   flushDirtyChunks();
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);

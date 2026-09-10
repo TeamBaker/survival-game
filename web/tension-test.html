@@ -91,15 +91,20 @@ function calcGrid(){
  * block) is "hanging" — it only stays up via its other connections. Tension
  * lives on the CONNECTION between two blocks, not on either block's edge
  * individually:
- *   1. Flood-fill from whichever side of the connection is unsupported,
- *      excluding the direction back across this connection, and excluding
- *      traversal into ground or into independently-supported blocks
- *      (they're anchors, not part of the falling cluster).
- *   2. connStrength = average of the two blocks' strengths.
- *   3. Tension = falling_cluster_weight / connStrength.
+ *   1. Flood-fill each side of the connection, excluding the direction back
+ *      across this connection. If that flood-fill ever reaches ground or an
+ *      independently-supported block, the WHOLE side is anchored elsewhere —
+ *      it stays up even if this connection is cut, so it contributes zero,
+ *      regardless of how much mass is in it.
+ *   2. If a side never reaches an anchor, its full weight would fall if this
+ *      connection failed, so it contributes its total cluster weight.
+ *   3. connStrength = average of the two blocks' strengths.
+ *   4. Tension = max(sideA, sideB) / connStrength.
  *
- * Ground connections: tension = 0. If both sides are independently
- * supported, nothing is hanging on the connection: tension = 0.
+ * This is what makes tension increase toward the support on a cantilever:
+ * the connection nearest the anchor carries the whole arm's weight, while
+ * the farthest connection carries only the single outermost block (every
+ * block between it and the anchor has another way to reach ground).
  */
 function computeStress(){
   const R=rows,C=cols,result={};
@@ -115,31 +120,36 @@ function computeStress(){
     }
   }
 
-  // Cluster weight: BFS from (r,c) NOT going through direction exDir, and not
-  // traversing into ground or independently-supported blocks (anchors stop the fall).
+  // Flood-fill from (r,c) NOT going through direction exDir. Never traverses
+  // into ground or independently-supported blocks — hitting one just marks
+  // the whole flood as anchored (it stops the fall) without adding its weight.
   const memo=new Map();
-  function clusterW(r,c,exDir){
+  function clusterInfo(r,c,exDir){
     const key=r*10000+c*10+(exDir+2);
     if(memo.has(key))return memo.get(key);
-    const bl=bAt(r,c);if(!bl||bl.ground)return 0;
+    const bl=bAt(r,c);if(!bl||bl.ground)return{weight:0,anchored:true};
     const w=(GRIDS[bl.m]||CUSTOM).weight||1;
-    memo.set(key,w); // cycle guard: seed before recursing
-    let total=w;
+    memo.set(key,{weight:w,anchored:false}); // cycle guard: seed before recursing
+    let total=w,anchored=false;
     for(const[dr,dc,dir]of[[-1,0,-2],[1,0,2],[0,-1,-1],[0,1,1]]){
       if(dir===exDir)continue;
-      const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);if(!nb||nb.ground)continue;
-      if(supported[nr][nc])continue;
-      total+=clusterW(nr,nc,-dir);
+      const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);if(!nb)continue;
+      if(nb.ground||supported[nr][nc]){anchored=true;continue;}
+      const sub=clusterInfo(nr,nc,-dir);
+      total+=sub.weight;if(sub.anchored)anchored=true;
     }
-    memo.set(key,total);return total;
+    const result={weight:total,anchored};
+    memo.set(key,result);return result;
   }
 
   // One shared tension value per connection between two adjacent non-ground blocks.
   function addConn(r1,c1,r2,c2,dirAB){
     const a=bAt(r1,c1),b=bAt(r2,c2);
     if(!a||!b||a.ground||b.ground)return;
-    const wA=supported[r1][c1]?0:clusterW(r1,c1,dirAB);
-    const wB=supported[r2][c2]?0:clusterW(r2,c2,-dirAB);
+    const infoA=supported[r1][c1]?{weight:0,anchored:true}:clusterInfo(r1,c1,dirAB);
+    const infoB=supported[r2][c2]?{weight:0,anchored:true}:clusterInfo(r2,c2,-dirAB);
+    const wA=infoA.anchored?0:infoA.weight;
+    const wB=infoB.anchored?0:infoB.weight;
     const clusterWeight=Math.max(wA,wB);
     if(clusterWeight<=0)return;
     const strA=(GRIDS[a.m]||CUSTOM).strength||1;

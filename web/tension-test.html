@@ -105,14 +105,6 @@ function calcGrid(){
  * the connection nearest the anchor carries the whole arm's weight, while
  * the farthest connection carries only the single outermost block (every
  * block between it and the anchor has another way to reach ground).
- *
- * Gravity only pulls straight down, so it's only the TOP/BOTTOM connection
- * between two blocks that can be under separation tension — that's the joint
- * weight actually loads. Two blocks side-by-side in the same row sit at the
- * same height; nothing is pulling them apart vertically, so left-right
- * connections never carry tension (the flood-fill above still walks through
- * them to tally a hanging cluster's weight — it's only the rendered/reported
- * edge that's restricted to top/bottom joints).
  */
 function computeStress(){
   const R=rows,C=cols,result={};
@@ -165,13 +157,12 @@ function computeStress(){
     const connStr=(strA+strB)/2;
     const ratio=clusterWeight/connStr;
     if(ratio>0.05){
-      result[`${r1},${c1}-${r2},${c2}`]={tension:Math.min(1.5,ratio),r1,c1,r2,c2};
+      result[`${r1},${c1}-${r2},${c2}`]={tension:Math.min(1.5,ratio),r1,c1,r2,c2,horizontal:r1===r2};
     }
   }
 
-  // Only top/bottom joints are checked for tension — gravity can't pull
-  // side-by-side blocks apart vertically, so left-right joints are skipped.
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+    addConn(r,c,r,c+1,1);  // connection to the right (dir 'right'=1)
     addConn(r,c,r+1,c,2);  // connection below (dir 'down'=2)
   }
   return result;
@@ -196,14 +187,20 @@ function draw(){
   }
 
   // Shared connection edges: one line drawn AT the boundary between two blocks.
-  // Every tension edge is a top/bottom joint, so the boundary is always horizontal.
   const lw=Math.max(2.5,cell*0.15);ctx.lineWidth=lw;ctx.lineCap='round';
   for(const key in stress){
     const e=stress[key];
     ctx.strokeStyle=stressColor(e.tension);
     ctx.beginPath();
-    const by=e.r2*cell,x=e.c1*cell;
-    ctx.moveTo(x+2,by);ctx.lineTo(x+cell-2,by);
+    if(e.horizontal){
+      // e.c2 = e.c1+1, boundary is the vertical line between them
+      const bx=e.c2*cell,y=e.r1*cell;
+      ctx.moveTo(bx,y+2);ctx.lineTo(bx,y+cell-2);
+    }else{
+      // e.r2 = e.r1+1, boundary is the horizontal line between them
+      const by=e.r2*cell,x=e.c1*cell;
+      ctx.moveTo(x+2,by);ctx.lineTo(x+cell-2,by);
+    }
     ctx.stroke();
   }
 }

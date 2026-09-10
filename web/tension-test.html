@@ -80,38 +80,53 @@ function calcGrid(){
 }
 
 /*
- * SEPARATION TENSION — CORRECTED MODEL
+ * SEPARATION TENSION — SUPPORT-AWARE MODEL
  *
- * For each edge between two non-ground blocks:
- *   1. "Cut" the edge — which blocks would fall off?
- *   2. The falling side = everything reachable from one side without crossing back
- *   3. Tension = total_weight_of_falling_side / min(strength_of_both_blocks)
+ * Tension is about hanging/cantilevered load, not compression. A block that
+ * sits in an unbroken vertical stack straight down to ground is "supported" —
+ * its weight passes straight through as compression and creates zero tension
+ * on any of its edges (a tower on ground is entirely tension-free).
  *
- * Ground edges: tension = 0 (ground has infinite support).
- * Tower on ground: bottom block's bottom edge → ground (skip).
- *   Bottom block's top edge → everything above falls → tension = weight_above / strength.
- *   Middle block's top edge → everything above falls → tension = weight_above / strength.
- * Arm: leftmost block's left edge → nothing left (skip). Right edge → arm falls off column.
- *   Column block's left edge → arm hangs → tension = arm_weight / strength.
+ * A block with nothing directly below it (or resting on another unsupported
+ * block) is "hanging" — it only stays up via its other connections. For an
+ * edge into an unsupported neighbor:
+ *   1. Flood-fill from the neighbor, excluding the direction back to us, and
+ *      excluding traversal into ground or into independently-supported
+ *      blocks (they're anchors, not part of the falling cluster).
+ *   2. Tension = cluster_weight / min(strength_of_both_blocks).
+ *
+ * Ground edges and edges into a supported neighbor: tension = 0.
+ * Ground blocks themselves never show tension.
  */
 function computeStress(){
   const R=rows,C=cols,result={};
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
 
-  // Cluster weight: BFS from (r,c) NOT going through direction exDir.
-  // Ground blocks = infinite weight anchor (stops traversal).
+  // supported[r][c]: unbroken vertical stack straight down to ground (pure compression).
+  const supported=grid.map(row=>row.map(()=>false));
+  for(let c=0;c<C;c++){
+    for(let r=R-1;r>=0;r--){
+      const bl=bAt(r,c);if(!bl||bl.ground)continue;
+      const below=bAt(r+1,c);
+      supported[r][c]=!!below&&(below.ground||supported[r+1][c]);
+    }
+  }
+
+  // Cluster weight: BFS from (r,c) NOT going through direction exDir, and not
+  // traversing into ground or independently-supported blocks (anchors stop the fall).
   const memo=new Map();
   function clusterW(r,c,exDir){
     const key=r*10000+c*10+(exDir+2);
     if(memo.has(key))return memo.get(key);
-    const bl=bAt(r,c);if(!bl)return 0;
-    if(bl.ground)return 1e9;
+    const bl=bAt(r,c);if(!bl||bl.ground)return 0;
     const w=(GRIDS[bl.m]||CUSTOM).weight||1;
+    memo.set(key,w); // cycle guard: seed before recursing
     let total=w;
     for(const[dr,dc,dir]of[[-1,0,-2],[1,0,2],[0,-1,-1],[0,1,1]]){
       if(dir===exDir)continue;
-      const nb=bAt(r+dr,c+dc);if(!nb||nb.ground)continue;
-      total+=clusterW(r+dr,c+dc,-dir);
+      const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);if(!nb||nb.ground)continue;
+      if(supported[nr][nc])continue;
+      total+=clusterW(nr,nc,-dir);
     }
     memo.set(key,total);return total;
   }
@@ -125,8 +140,9 @@ function computeStress(){
       const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);
       if(!nb)continue; // nothing there = no edge
       if(nb.ground)continue; // ground edge = no tension
+      if(supported[nr][nc])continue; // neighbor has its own support, nothing hangs on us
 
-      // Cluster weight on neighbor's side (excluding back toward us)
+      // Falling cluster weight on neighbor's side (excluding back toward us)
       const wNeighbor=clusterW(nr,nc,-exDir);
       if(wNeighbor<=0)continue;
 

@@ -4972,7 +4972,7 @@ function checkTerrainTension() {
       const strength = MAT_STATS[m]?.strength ?? 1;
       let grip = 0;
       for (const [di, dj, dl] of GRAV_DIRS) {
-        if (dl === -1) continue;   // the block below doesn't hold you up against gravity
+        if (dl === -1 || dl === 1) continue;   // above and below don't provide grip against gravity — only side neighbours do
         const nm = voxelAt(i + di, j + dj, lvl + dl);
         if (nm === AIR || nm === WATER) continue;
         grip += Math.min(strength, MAT_STATS[nm]?.strength ?? 1) * GRIP_SCALE;

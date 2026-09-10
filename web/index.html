@@ -4546,6 +4546,8 @@ const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
+const GRIP_SCALE     = 2.0;   // multiplier on min(strength_A, strength_B) across a shared face
+const TENSION_CHECK_MAX = 3;  // cascade passes of checkTension per frame, capped against a runaway collapse
 
 // A block's contribution to a piece's mass and centre of mass is its material's
 // weight (MAT_STATS), not a flat count — a rock block should drag and balance a
@@ -4829,7 +4831,7 @@ function spawnFallingChunk(unit) {
   // Oldest piece gives up its body if the field is already full of them.
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
-  fallingChunks.push({ mesh, body, still: 0 });
+  fallingChunks.push({ mesh, body, still: 0, prevVelocity: body.velocity.clone() });
 }
 
 // ----- powder in the ground -----
@@ -5328,7 +5330,109 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
 
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);
-  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen });
+  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen, prevVelocity: body.velocity.clone() });
+}
+
+// ----- block tension / grip -----
+// Every block in a piece is held to its face-neighbours by grip: the weaker of
+// the two materials' strength (MAT_STATS), scaled by GRIP_SCALE. A block's own
+// grip is the sum of that across whichever of its six neighbours are also in
+// the lattice. Weighed against it each step is the force the piece's motion
+// puts on the block — gravity, the pull of the piece's own spin, and the piece
+// accelerating under it — using the body's velocity change as a stand-in for
+// the forces actually driving it, per block mass. Losing a block strips its
+// neighbours' grip in turn, so the check runs a few passes a frame until
+// nothing more gives, capped at TENSION_CHECK_MAX so a full collapse can't
+// loop forever.
+const tensionR = new CANNON.Vec3(), tensionOmega2 = new CANNON.Vec3(), tensionCentrip = new CANNON.Vec3();
+const TENSION_NEI = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+function pieceTensionPass(f, dt) {
+  const body = f.body, mesh = f.mesh, lat = mesh.userData.blocks;
+  if (!lat.length) return false;
+
+  const ax = (body.velocity.x - f.prevVelocity.x) / dt;
+  const ay = (body.velocity.y - f.prevVelocity.y) / dt;
+  const az = (body.velocity.z - f.prevVelocity.z) / dt;
+  const w = body.angularVelocity;
+
+  // Neighbour lookup straight off the lattice's own grid indices — same key
+  // scheme rebuildDebrisBody uses.
+  const at = new Map();
+  for (let q = 0; q < lat.length; q++) at.set(lat[q].gi + ',' + lat[q].gj + ',' + lat[q].lvl, q);
+
+  const breaking = [];
+  for (let q = 0; q < lat.length; q++) {
+    const b = lat[q];
+    const strength = MAT_STATS[b.mat]?.strength ?? 1;
+    let grip = 0, neighbours = 0;
+    for (const [di, dj, dl] of TENSION_NEI) {
+      const k = at.get((b.gi + di) + ',' + (b.gj + dj) + ',' + (b.lvl + dl));
+      if (k === undefined) continue;
+      neighbours++;
+      grip += Math.min(strength, MAT_STATS[lat[k].mat]?.strength ?? 1) * GRIP_SCALE;
+    }
+    if (neighbours === 0) continue;   // already free-floating
+
+    // Centripetal: w x (w x pos), pulling the block outward from the spin axis.
+    // angularVelocity is world-space, so pos (local to the piece) is rotated
+    // into world space first — same frame as the linear acceleration below.
+    tensionR.set(b.pos.x, b.pos.y, b.pos.z);
+    body.quaternion.vmult(tensionR, tensionR);
+    w.cross(tensionR, tensionOmega2);
+    w.cross(tensionOmega2, tensionCentrip);
+
+    const mass = blockWeight(b);
+    const fx = mass * (ax + tensionCentrip.x);
+    const fy = mass * (ay + tensionCentrip.y - 9.82);
+    const fz = mass * (az + tensionCentrip.z);
+    if (Math.sqrt(fx * fx + fy * fy + fz * fz) > grip) breaking.push(q);
+  }
+  if (!breaking.length) return false;
+
+  // The parent mesh may not have been synced to this step's body transform
+  // yet (checkTension runs ahead of the syncList loop), and a broken-off
+  // block needs the piece's current position and tilt to land in the right
+  // place, not last frame's.
+  mesh.position.copy(body.position);
+  mesh.quaternion.copy(body.quaternion);
+  mesh.updateWorldMatrix(true, false);
+
+  breaking.sort((q1, q2) => q2 - q1);   // highest index first, so lower ones stay valid as they come out
+  for (const q of breaking) {
+    const b = lat[q];
+    if (MAT_STATS[b.mat]?.powder) {
+      const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
+      g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);
+      g.mesh.scale.setScalar(BLOCK);
+      g.mesh.position.copy(g.pos);
+      scene.add(g.mesh);
+      powderFalling.push(g);
+      cutDebrisLat(mesh, q);
+    } else {
+      cutDebrisLat(mesh, q);
+      spawnDebrisPart(mesh, [b], body, f.frozen);
+    }
+  }
+
+  if (!lat.length) { removeDebrisMesh(mesh); return true; }
+  splitDebrisIfNeeded(mesh);
+  const nf = chunkOfMesh(mesh);
+  if (nf) { rebuildDebrisBody(mesh, nf.body); nf.still = 0; }
+  return true;
+}
+
+// Run once a physics step, after world.step and before syncList's mesh/body
+// sync — see pieceTensionPass's own resync of the pieces it actually breaks.
+function checkTension(dt) {
+  if (!(dt > 0)) return;
+  for (let pass = 0; pass < TENSION_CHECK_MAX; pass++) {
+    const pieces = fallingChunks.concat(restedChunks);
+    let any = false;
+    for (const f of pieces) any = pieceTensionPass(f, dt) || any;
+    if (!any) break;
+  }
+  for (const f of fallingChunks) f.prevVelocity.copy(f.body.velocity);
+  for (const f of restedChunks) f.prevVelocity.copy(f.body.velocity);
 }
 
 // Digging a loose piece takes off the one block under the crosshair and leaves
@@ -6210,6 +6314,7 @@ function tick() {
   // they build into a shove, which is the one thing here that helps the walk.
   // Nothing touches the body afterwards — the solver's answer is the answer.
   world.step(PHYS_STEP, dt, 8);
+  checkTension(dt);
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);

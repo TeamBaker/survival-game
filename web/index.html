@@ -4623,7 +4623,7 @@ function buildDebrisGeometry(group) {
         for (let col = 0; col < GRAIN_GRID; col++) {
           const u0 = col / GRAIN_GRID, u1 = (col + 1) / GRAIN_GRID;
           const tintPalette = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
-          const ti = (Math.sin(b.pos.x * 99.1 + b.pos.z * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
+          const ti = (Math.sin(b.gi * 99.1 + b.gj * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
           const gs = tintPalette[Math.abs(ti) % tintPalette.length];
           const cr = clamp01(c.r * gs), cg = clamp01(c.g * gs), cb = clamp01(c.b * gs);
           for (let vi = 0; vi < 4; vi++) {

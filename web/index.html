@@ -4415,11 +4415,12 @@ function shovelAim() {
     // see, and from then on rides with it — the world grid does not come into it.
     const p = dHit.point;
     const dm = dHit.piece;
-    // Which block that is: the mesh is one merged buffer of quads, and
-    // faceBlock maps the triangle the ray hit back to the lattice index it
-    // came from. Its position is in the piece's frame, which is what the
+    // Which block that is: each sub-mesh of the piece is one merged buffer of
+    // quads for a single material, and its own faceBlock maps the triangle the
+    // ray hit back to the lattice index it came from (into the piece's shared
+    // blocks array). Its position is in the piece's frame, which is what the
     // highlight and the dig both want.
-    const fb = dm.userData.faceBlock;
+    const fb = dHit.object.userData.faceBlock;
     const idx = dHit.faceIndex != null && fb ? fb[Math.floor(dHit.faceIndex / 2)] : -1;
     const lat = dm.userData.blocks;
     const blockLocal = idx >= 0 && idx < lat.length ? lat[idx].pos : null;
@@ -4481,8 +4482,6 @@ const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
-// White, because the colour of every face comes in per vertex.
-const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45, vertexColors: true });
 
 // A block's contribution to a piece's mass and centre of mass is its material's
 // weight (MAT_STATS), not a flat count — a rock block should drag and balance a
@@ -4509,19 +4508,21 @@ function debrisWeightedCenter(blocks, out) {
   return out;
 }
 
-// A debris piece is one merged buffer, not a cube per block: like a terrain
-// chunk, only the faces that touch air are worth drawing, so a solid lump of
-// rubble costs the one or two sides of it anything could ever see instead of
-// six per block. Rebuilt whenever the piece's own lattice changes — a block
-// dug off it, one placed on it, or its blocks re-centred on a new CoM.
-// faceBlock maps each drawn quad back to the lattice index it came from, so a
-// raycast hit (which only gives a triangle) can still say which block it hit.
-function buildDebrisGeometry(mesh) {
-  const lat = mesh.userData.blocks;
-  const old = mesh.geometry;
+// A debris piece is a group of one merged buffer per material — like a terrain
+// chunk, split by TERRAIN_FACE_MATS so each material keeps its own roughness/
+// metalness/envMapIntensity instead of sharing one flat look. Only the faces
+// that touch air are worth drawing, so a solid lump of rubble costs the one or
+// two sides of it anything could ever see instead of six per block. Rebuilt
+// whenever the piece's own lattice changes — a block dug off it, one placed on
+// it, or its blocks re-centred on a new CoM. Each sub-mesh's own faceBlock maps
+// its drawn quads back to indices into the group's shared blocks array, so a
+// raycast hit (which only gives a triangle on one sub-mesh) can still say which
+// block it hit.
+function buildDebrisGeometry(group) {
+  const lat = group.userData.blocks;
   const at = new Map();
   for (let q = 0; q < lat.length; q++) at.set(lat[q].gi + ',' + lat[q].gj + ',' + lat[q].lvl, q);
-  const pos = [], nor = [], col = [], faceBlock = [];
+  const buckets = new Array(N_MATS).fill(null);   // per material, like a chunk's faceBuf[m]
   const c = new THREE.Color();
   for (let q = 0; q < lat.length; q++) {
     const b = lat[q];
@@ -4533,34 +4534,49 @@ function buildDebrisGeometry(mesh) {
     const s = t * band * shadeOf(shadeStep((sTop[k] ?? 0) - b.lvl)) * variation;
     const base = TERRAIN_MATS[b.mat].color;
     c.setRGB(base.r * s, base.g * s, base.b * s);
+    let B = buckets[b.mat];
+    if (!B) buckets[b.mat] = B = { pos: [], nor: [], col: [], faceBlock: [] };
     for (let f = 0; f < 6; f++) {
       const F = FACES[f];
       if (at.has((b.gi + F.di) + ',' + (b.gj + F.dj) + ',' + (b.lvl + F.dl))) continue;
       const v = F.v, n = F.n;
-      for (let k = 0; k < 4; k++) {
-        const o = k * 3;
-        pos.push(b.pos.x + v[o] * HALF_BLOCK, b.pos.y + v[o + 1] * HALF_BLOCK, b.pos.z + v[o + 2] * HALF_BLOCK);
-        nor.push(n[0], n[1], n[2]);
-        col.push(c.r, c.g, c.b);
+      for (let vi = 0; vi < 4; vi++) {
+        const o = vi * 3;
+        B.pos.push(b.pos.x + v[o] * HALF_BLOCK, b.pos.y + v[o + 1] * HALF_BLOCK, b.pos.z + v[o + 2] * HALF_BLOCK);
+        B.nor.push(n[0], n[1], n[2]);
+        B.col.push(c.r, c.g, c.b);
       }
-      faceBlock.push(q);
+      B.faceBlock.push(q);
     }
   }
-  const nq = faceBlock.length;
-  const idx = nq * 4 > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
-  for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
-    idx[p] = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
-    idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
+  for (const child of group.children) child.geometry.dispose();
+  group.clear();
+  const faceBlock = [];
+  for (let m = 0; m < N_MATS; m++) {
+    const B = buckets[m];
+    if (!B) continue;
+    const nq = B.faceBlock.length;
+    const idx = nq * 4 > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
+    for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
+      idx[p] = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
+      idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(B.pos), 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(B.nor), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(B.col), 3));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.computeBoundingSphere();
+    const child = new THREE.Mesh(geo, TERRAIN_FACE_MATS[m]);
+    child.castShadow = true;
+    child.receiveShadow = true;
+    child.userData.faceBlock = B.faceBlock;
+    group.add(child);
+    faceBlock.push(...B.faceBlock);
   }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nor), 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1));
-  geo.computeBoundingSphere();
-  mesh.geometry = geo;
-  mesh.userData.faceBlock = faceBlock;
-  if (old) old.dispose();
+  // Aggregated for reference; raycasting reads a hit sub-mesh's own faceBlock
+  // (its faceIndex is local to that sub-mesh's geometry, not this group).
+  group.userData.faceBlock = faceBlock;
 }
 // Its own group rather than `objects`: the camera boom raycasts that one to pull
 // itself in past props, and rubble lying around the player should not be tugging
@@ -4595,7 +4611,7 @@ function dropChunk(f) {
   const q = syncList.findIndex((e) => e.body === f.body);
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
-  f.mesh.geometry.dispose();  // the merged buffers only — material is shared
+  for (const child of f.mesh.children) child.geometry.dispose();  // the merged buffers only — material is shared
 }
 
 // The entry for a piece, whether it is still being watched or has settled. A
@@ -4613,9 +4629,9 @@ function spawnFallingChunk(unit) {
   // balances toward its heavier blocks, not its geometric middle.
   const { x: cx, y: cy, z: cz } = debrisWeightedCenter(blocks, chunkCoM);
 
-  // The mesh: one merged buffer of exposed faces, positioned relative to that
-  // centre so the whole thing rotates about it.
-  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), fallMat);
+  // The mesh: a group of one merged buffer per material, positioned relative
+  // to that centre so the whole thing rotates about it.
+  const mesh = new THREE.Group();
   // The piece's own lattice, in its own frame. Kept because a block placed
   // against the piece is snapped to this rather than to the world grid.
   mesh.userData.blocks = blocks.map((b) => ({
@@ -4626,8 +4642,6 @@ function spawnFallingChunk(unit) {
   }));
   buildDebrisGeometry(mesh);
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
   debris.add(mesh);
 
   const body = new CANNON.Body({
@@ -4983,7 +4997,7 @@ function removeDebrisMesh(mesh) {
   const q = restedChunks.findIndex((f) => f.mesh === mesh);
   if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
-  mesh.geometry.dispose();
+  for (const child of mesh.children) child.geometry.dispose();
 }
 
 // Cannon turns a body about its origin, so a piece's origin has to sit on its
@@ -5168,7 +5182,7 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
   parent.updateWorldMatrix(true, false);
   const c = debrisWeightedCenter(blocks, new THREE.Vector3());
 
-  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), fallMat);
+  const mesh = new THREE.Group();
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   mesh.userData.blocks = blocks.map((b) => {
     const p = b.pos.clone().sub(c);
@@ -5179,8 +5193,6 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
   });
   buildDebrisGeometry(mesh);
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
   debris.add(mesh);
 
   const body = new CANNON.Body({
@@ -5716,7 +5728,7 @@ function hammerAim() {
   if (dHit) {
     const dm = dHit.piece;
     const lat = dm.userData.blocks;
-    const fb = dm.userData.faceBlock;
+    const fb = dHit.object.userData.faceBlock;
     const idx = dHit.faceIndex != null && fb ? fb[Math.floor(dHit.faceIndex / 2)] : -1;
     if (idx >= 0 && idx < lat.length) {
       hammer.debris = { mesh: dm, idx };

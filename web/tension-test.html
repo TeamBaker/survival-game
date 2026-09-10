@@ -106,14 +106,12 @@ function calcGrid(){
  * the farthest connection carries only the single outermost block (every
  * block between it and the anchor has another way to reach ground).
  *
- * Only HORIZONTAL neighbors (same row, different column) are checked —
- * a vertical stack holds its own weight straight down to ground in pure
- * compression, so vertical connections never show tension. It's the
- * horizontal arm connecting two pillars that carries weight sideways and is
- * the only thing under tension. The flood-fill inside clusterInfo still
- * walks in all directions to find how a block reaches its anchor; it's only
- * the edge *between* two vertically-stacked blocks that's excluded from
- * carrying a tension value.
+ * Both HORIZONTAL and VERTICAL neighbors are checked. A vertical stack that
+ * reaches ground on its own is marked `supported` and contributes zero
+ * weight/anchored=true to its connections, so it shows no tension — but a
+ * stack hanging below an unsupported arm has nowhere else to go, so the
+ * weight of everything below it pulls down on each vertical connection just
+ * like the horizontal arm carries weight sideways.
  */
 function computeStress(){
   const R=rows,C=cols,result={};
@@ -173,9 +171,12 @@ function computeStress(){
   }
 
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
-    addConn(r,c,r,c+1,1);  // connection to the right (dir 'right'=1) — only
-                            // horizontal neighbors carry tension; vertical
-                            // stacks are pure compression straight to ground.
+    addConn(r,c,r,c+1,1);  // connection to the right (dir 'right'=1)
+    addConn(r,c,r+1,c,2);  // connection below (dir 'down'=2) — a hanging
+                            // stack below an unsupported arm still carries
+                            // tension; addConn already returns 0 when the
+                            // block is anchored via `supported`, so pillars
+                            // sitting on ground stay untensioned.
   }
   return result;
 }

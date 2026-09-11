@@ -138,7 +138,8 @@ function computeStress(){
   function clusterInfo(r,c,exDir){
     const key=r*10000+c*10+(exDir+2);
     const cached=memo.get(key);
-    if(cached&&cached!==COMPUTING)return cached;
+    if(cached===COMPUTING)return{weight:0,anchored:false};
+    if(cached)return cached;
     const bl=bAt(r,c);if(!bl||bl.ground)return{weight:0,anchored:true};
     const w=(GRIDS[bl.m]||CUSTOM).weight||1;
     memo.set(key,COMPUTING); // cycle guard: mark as in-progress

@@ -159,8 +159,13 @@ function computeStress(){
   function addConn(r1,c1,r2,c2,dirAB){
     const a=bAt(r1,c1),b=bAt(r2,c2);
     if(!a||!b||a.ground||b.ground)return;
-    const infoA=supported[r1][c1]?{weight:0,anchored:true}:clusterInfo(r1,c1,dirAB);
-    const infoB=supported[r2][c2]?{weight:0,anchored:true}:clusterInfo(r2,c2,-dirAB);
+    const horizontal = r1===r2;
+    // supported[] only suppresses VERTICAL connections (compression). Horizontal
+    // connections on a vertically-supported block (e.g. corner of an arm) still
+    // carry the arm's hanging weight.
+    const useSupported = !horizontal;
+    const infoA=useSupported && supported[r1][c1]?{weight:0,anchored:true}:clusterInfo(r1,c1,dirAB);
+    const infoB=useSupported && supported[r2][c2]?{weight:0,anchored:true}:clusterInfo(r2,c2,-dirAB);
     const wA=infoA.anchored?0:infoA.weight;
     const wB=infoB.anchored?0:infoB.weight;
     const clusterWeight=Math.max(wA,wB);
@@ -170,7 +175,7 @@ function computeStress(){
     const connStr=(strA+strB)/2;
     const ratio=clusterWeight/connStr;
     if(ratio>0.05){
-      result[`${r1},${c1}-${r2},${c2}`]={tension:Math.min(1.5,ratio),r1,c1,r2,c2,horizontal:r1===r2};
+      result[`${r1},${c1}-${r2},${c2}`]={tension:Math.min(1.5,ratio),r1,c1,r2,c2,horizontal};
     }
   }
 

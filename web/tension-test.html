@@ -202,6 +202,53 @@ function computeStress(){
     }
   }
 
+  // SPAN TENSION PASS — horizontal beams bridging two grounded supports.
+  // A run of blocks whose left AND right ends each have their own unbroken
+  // vertical stack to ground (supported[][]) is a beam under its own weight.
+  // Simply-supported uniform-load beam: maxMoment = weight*span/8, parabolic
+  // along the span (zero at the supported ends, peak at midspan).
+  for(let r=0;r<R;r++){
+    let c=0;
+    while(c<C){
+      const bl=bAt(r,c);
+      if(!bl||bl.ground){c++;continue;}
+      const runStart=c;
+      while(c<C){
+        const b2=bAt(r,c);
+        if(!b2||b2.ground) break;
+        c++;
+      }
+      const runEnd=c-1;
+      const runLen=runEnd-runStart+1;
+      if(runLen>=2&&supported[r][runStart]&&supported[r][runEnd]){
+        let totalWeight=0;
+        for(let cc=runStart;cc<=runEnd;cc++){
+          const rb=bAt(r,cc);
+          totalWeight+=(GRIDS[rb.m]||CUSTOM).weight||1;
+        }
+        const maxMoment=(totalWeight*runLen)/8;
+        const L=runLen-1;
+        for(let i=0;i<runLen-1;i++){
+          const cA=runStart+i, cB=runStart+i+1;
+          const x=i+0.5;
+          const shapeFactor=L>0?(4*x*(L-x))/(L*L):1;
+          const moment=maxMoment*shapeFactor;
+          const a=bAt(r,cA), b=bAt(r,cB);
+          const strA=(GRIDS[a.m]||CUSTOM).strength||1;
+          const strB=(GRIDS[b.m]||CUSTOM).strength||1;
+          const connStr=(strA+strB)/2;
+          const spanTension=moment/connStr;
+          if(spanTension>0.05){
+            const key=`${r},${cA}-${r},${cB}`;
+            const clipped=Math.min(1.5,spanTension);
+            if(result[key]) result[key].tension=Math.max(result[key].tension,clipped);
+            else result[key]={tension:clipped,r1:r,c1:cA,r2:r,c2:cB,horizontal:true};
+          }
+        }
+      }
+    }
+  }
+
   return result;
 }
 

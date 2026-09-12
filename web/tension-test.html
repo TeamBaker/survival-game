@@ -83,50 +83,69 @@ function calcGrid(){
 }
 
 /*
- * EDGE-LOAD TENSION — CLEAN BFS MODEL
+ * STRUCTURAL STRESS — SUPPORT-AWARE HANGING WEIGHT MODEL
  *
- * For each edge between two non-ground blocks:
- *   1. BFS from side B, NOT crossing the edge back to side A
- *   2. If BFS reaches ground → B is independently anchored → 0 weight
- *   3. Otherwise, totalWeight = sum of all reachable block weights
- *   4. connStrength = avg of the two blocks' material strengths
- *   5. tension = totalWeight / connStrength
+ * Physics:
+ *   - A block in an unbroken vertical stack to ground is "supported" — it sits
+ *     in compression. Its weight passes straight down and creates ZERO tension
+ *     on any connection (a tower on ground is tension-free).
+ *   - A block NOT in such a stack is "hanging" — it stays up only via its
+ *     side connections. Its weight creates TENSION on those connections.
  *
- * This correctly handles:
- *   - Pillars: all vertical edges show 0 tension (BFS reaches ground below)
- *   - Arms: horizontal edges show weight of everything hanging beyond them
- *   - Hanging blocks: vertical edges below unsupported arms show weight
- *   - Complex shapes: BFS naturally finds all paths
+ * Algorithm:
+ *   1. Compute supported[][]: block is supported if it's in a vertical chain
+ *      of blocks going straight down to ground (each block's below neighbor
+ *      is ground or also supported).
+ *   2. For each edge between non-ground blocks:
+ *      a. BFS from the side that would fall (upper for vertical, right for
+ *         horizontal), NOT crossing the edge being tested.
+ *      b. hangingWeight = sum of weights of NON-supported blocks in the BFS.
+ *         (Supported blocks contribute zero — they're in compression, not tension.)
+ *      c. If BFS reaches ground → anchored → skip.
+ *      d. tension = hangingWeight / connectionStrength.
+ *
+ * Results for a pillar + arm:
+ *   - Pillar edges: BFS finds arm blocks (not supported) + pillar blocks
+ *     (supported). Hanging weight = arm weight only. So pillar shows a small,
+ *     constant tension from the arm — the "little bit" of lateral pull.
+ *   - Arm edges: BFS finds arm blocks (not supported). Hanging weight = full
+ *     arm weight. Tension increases toward the pillar (where more arm hangs).
+ *   - Hanging blocks below arm: not supported, so they add to arm tension.
  */
 function computeStress(){
   const R=rows,C=cols;
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
   const result={};
 
+  // supported[r][c]: unbroken vertical stack straight down to ground.
+  const supported=grid.map(row=>row.map(()=>false));
+  for(let c=0;c<C;c++){
+    for(let r=R-1;r>=0;r--){
+      const bl=bAt(r,c);if(!bl||bl.ground)continue;
+      const below=bAt(r+1,c);
+      supported[r][c]=!!below&&(below.ground||supported[r+1][c]);
+    }
+  }
+
   // Collect all edges between non-ground blocks
   const edges=[];
   for(let r=0;r<R;r++) for(let c=0;c<C;c++){
     const a=bAt(r,c); if(!a||a.ground) continue;
-    // Right
     const bR=bAt(r,c+1);
     if(bR&&!bR.ground) edges.push({r1:r,c1:c,r2:r,c2:c+1,horizontal:true});
-    // Down
     const bD=bAt(r+1,c);
     if(bD&&!bD.ground) edges.push({r1:r,c1:c,r2:r+1,c2:c,horizontal:false});
   }
 
-  // For each edge, BFS from side B excluding the edge to A
   for(const edge of edges){
     const {r1,c1,r2,c2,horizontal}=edge;
     // BFS from the side that would FALL if the edge broke.
-    // Vertical edges: BFS from upper block (r1), exclude lower (r2)
-    // Horizontal edges: BFS from right block (r2), exclude left (r1)
     const srcR=horizontal?r2:r1, srcC=horizontal?c2:c1;
     const excR=horizontal?r1:r2, excC=horizontal?c1:c2;
     const visited=new Set();
     const queue=[[srcR,srcC]];
     visited.add(srcR*C+srcC);
-    let totalWeight=0;
+    let hangingWeight=0;
     let reachesGround=false;
 
     while(queue.length){
@@ -134,11 +153,14 @@ function computeStress(){
       const bl=bAt(cr,cc);
       if(!bl) continue;
       if(bl.ground){reachesGround=true; continue;}
-      totalWeight+=(GRIDS[bl.m]||CUSTOM).weight||1;
+      // Only count weight of NON-supported blocks (hanging = tension)
+      if(!supported[cr][cc]){
+        hangingWeight+=(GRIDS[bl.m]||CUSTOM).weight||1;
+      }
 
       for(const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]){
         const nr=cr+dr, nc=cc+dc;
-        if(nr===excR&&nc===excC) continue; // don't cross the edge being tested
+        if(nr===excR&&nc===excC) continue;
         const key=nr*C+nc;
         if(visited.has(key)) continue;
         const nb=bAt(nr,nc);
@@ -148,13 +170,13 @@ function computeStress(){
       }
     }
 
-    if(reachesGround || totalWeight<=0) continue;
+    if(reachesGround || hangingWeight<=0) continue;
 
     const a=bAt(r1,c1), b=bAt(r2,c2);
     const strA=(GRIDS[a.m]||CUSTOM).strength||1;
     const strB=(GRIDS[b.m]||CUSTOM).strength||1;
     const connStr=(strA+strB)/2;
-    const ratio=totalWeight/connStr;
+    const ratio=hangingWeight/connStr;
     if(ratio>0.05){
       result[`${r1},${c1}-${r2},${c2}`]={tension:Math.min(1.5,ratio),r1,c1,r2,c2,horizontal};
     }
@@ -191,7 +213,6 @@ function draw(){
     const baseColor=(GRIDS[bl.m]||CUSTOM).color;
     const bt=blockTension[`${r},${c}`]||0;
     if(bt>0.05){
-      // Blend block color toward stress color based on tension
       ctx.fillStyle=baseColor;ctx.fillRect(x+1,y+1,cell-2,cell-2);
       ctx.fillStyle=stressColor(bt);ctx.globalAlpha=0.35;ctx.fillRect(x+1,y+1,cell-2,cell-2);ctx.globalAlpha=1;
     } else {
@@ -199,7 +220,6 @@ function draw(){
     }
   }
 
-  // Draw connection edges with tension
   const lw=Math.max(2.5,cell*0.15);ctx.lineWidth=lw;ctx.lineCap='round';
   for(const key in stress){
     const e=stress[key];
@@ -225,7 +245,7 @@ function buildStats(){
   document.getElementById('stats').innerHTML=
     `<span>Blocks: <b>${total}</b></span> <span>Ground: <b>${ground}</b></span>`+
     Object.entries(matCount).map(([m,n])=>{
-      const mat=GRIDS[m];return`<span style="color:${mat.color}">■</span> ${mat.label}: ${n}`;
+      const mat=GRIDS[m];return`<span style=\"color:${mat.color}\">■</span> ${mat.label}: ${n}`;
     }).join(' ');
 }
 
@@ -270,8 +290,6 @@ document.getElementById('btn-sim').onclick=()=>{
   else if(simInterval){clearInterval(simInterval);simInterval=null;}
 };
 
-// BFS from ground: any non-ground block reachable = supported.
-// Blocks with NO path to ground are removed.
 function doStep(){
   const R=rows,C=cols;
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;

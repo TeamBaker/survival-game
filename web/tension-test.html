@@ -83,38 +83,33 @@ function calcGrid(){
 }
 
 /*
- * STRUCTURAL STRESS — SUPPORT-AWARE HANGING WEIGHT MODEL
+ * STRUCTURAL STRESS — REDUNDANCY MODEL
  *
  * Physics:
  *   - A block in an unbroken vertical stack to ground is "supported" — it sits
- *     in compression. Its weight passes straight down and creates ZERO tension
- *     on any connection (a tower on ground is tension-free).
- *   - A block NOT in such a stack is "hanging" — it stays up only via its
- *     side connections. Its weight creates TENSION on those connections.
+ *     in compression and contributes ZERO weight to any connection's load
+ *     (a tower on ground is tension-free).
+ *   - A block NOT in such a stack is "hanging" — its weight must be carried
+ *     by whatever paths lead from it back to ground.
+ *   - Each connection sits between two sides. Every side that independently
+ *     reaches ground (without crossing this connection) is one load path
+ *     sharing the weight. More independent paths => less tension on any one
+ *     of them. A beam between two supports (2 paths) is under less tension
+ *     per connection than a cantilever hanging off one support (1 path).
  *
  * Algorithm:
  *   1. Compute supported[][]: block is supported if it's in a vertical chain
- *      of blocks going straight down to ground (each block's below neighbor
- *      is ground or also supported).
+ *      of blocks going straight down to ground.
  *   2. For each edge between non-ground blocks:
- *      a. BFS from BOTH sides of the edge, each excluding the other side, so
- *         either side can be the one that "falls" if the edge breaks (this
- *         correctly handles arms extending either left or right from a pillar).
- *      b. hangingWeight (per side) = sum of weights of NON-supported blocks
- *         reached by that side's BFS. (Supported blocks contribute zero —
- *         they're in compression, not tension.)
- *      c. Whichever side(s) fail to reach ground are the hanging side(s); use
- *         the larger hanging weight if neither reaches ground. If both reach
- *         ground → anchored on both ends → skip.
- *      d. tension = hangingWeight / connectionStrength.
- *
- * Results for a pillar + arm:
- *   - Pillar edges: BFS finds arm blocks (not supported) + pillar blocks
- *     (supported). Hanging weight = arm weight only. So pillar shows a small,
- *     constant tension from the arm — the "little bit" of lateral pull.
- *   - Arm edges: BFS finds arm blocks (not supported). Hanging weight = full
- *     arm weight. Tension increases toward the pillar (where more arm hangs).
- *   - Hanging blocks below arm: not supported, so they add to arm tension.
+ *      a. BFS from both sides, each excluding the other, collecting hanging
+ *         weight (sum of non-supported block weights) and whether ground is
+ *         reached.
+ *      b. numPaths = number of sides that reach ground (0, 1, or 2).
+ *         weight = total hanging weight across both sides.
+ *      c. tension = weight / (numPaths * connectionStrength).
+ *      d. If neither side reaches ground (a disconnected/floating chunk),
+ *         fall back to numPaths=1 and the heavier side's weight so the value
+ *         stays finite.
  */
 function computeStress(){
   const R=rows,C=cols;
@@ -141,8 +136,10 @@ function computeStress(){
     if(bD&&!bD.ground) edges.push({r1:r,c1:c,r2:r+1,c2:c,horizontal:false});
   }
 
-  // BFS from (srcR,srcC), excluding (excR,excC), summing hanging weight until it reaches ground.
-  function bfsHangingWeight(srcR,srcC,excR,excC){
+  // BFS from (srcR,srcC), excluding (excR,excC): sum hanging weight reachable
+  // without crossing the excluded cell, and whether this side reaches ground
+  // (i.e. has its own independent load path).
+  function bfsSide(srcR,srcC,excR,excC){
     const visited=new Set();
     const queue=[[srcR,srcC]];
     visited.add(srcR*C+srcC);
@@ -154,7 +151,6 @@ function computeStress(){
       const bl=bAt(cr,cc);
       if(!bl) continue;
       if(bl.ground){reachesGround=true; continue;}
-      // Only count weight of NON-supported blocks (hanging = tension)
       if(!supported[cr][cc]){
         hangingWeight+=(GRIDS[bl.m]||CUSTOM).weight||1;
       }
@@ -175,77 +171,27 @@ function computeStress(){
 
   for(const edge of edges){
     const {r1,c1,r2,c2,horizontal}=edge;
-    // BFS from both sides — the side that can't reach ground is hanging.
-    const sideA=bfsHangingWeight(r1,c1,r2,c2);
-    const sideB=bfsHangingWeight(r2,c2,r1,c1);
+    const sideA=bfsSide(r1,c1,r2,c2);
+    const sideB=bfsSide(r2,c2,r1,c1);
 
-    let hangingWeight;
-    if(!sideA.reachesGround&&!sideB.reachesGround){
-      hangingWeight=Math.max(sideA.hangingWeight,sideB.hangingWeight);
-    }else if(!sideA.reachesGround){
-      hangingWeight=sideA.hangingWeight;
-    }else if(!sideB.reachesGround){
-      hangingWeight=sideB.hangingWeight;
-    }else{
-      continue;
+    let numPaths=(sideA.reachesGround?1:0)+(sideB.reachesGround?1:0);
+    let weight=sideA.hangingWeight+sideB.hangingWeight;
+    if(numPaths===0){
+      // Floating chunk with no path to ground at all — nothing shares the
+      // load, so fall back to one path carrying the heavier side.
+      numPaths=1;
+      weight=Math.max(sideA.hangingWeight,sideB.hangingWeight);
     }
 
-    if(hangingWeight<=0) continue;
+    if(weight<=0) continue;
 
     const a=bAt(r1,c1), b=bAt(r2,c2);
     const strA=(GRIDS[a.m]||CUSTOM).strength||1;
     const strB=(GRIDS[b.m]||CUSTOM).strength||1;
     const connStr=(strA+strB)/2;
-    const ratio=hangingWeight/connStr;
+    const ratio=weight/(numPaths*connStr);
     if(ratio>0.05){
       result[`${r1},${c1}-${r2},${c2}`]={tension:Math.min(1.5,ratio),r1,c1,r2,c2,horizontal};
-    }
-  }
-
-  // SPAN TENSION PASS — horizontal beams bridging two grounded supports.
-  // A run of blocks whose left AND right ends each have their own unbroken
-  // vertical stack to ground (supported[][]) is a beam under its own weight.
-  // Simply-supported uniform-load beam: maxMoment = weight*span/8, parabolic
-  // along the span (zero at the supported ends, peak at midspan).
-  for(let r=0;r<R;r++){
-    let c=0;
-    while(c<C){
-      const bl=bAt(r,c);
-      if(!bl||bl.ground){c++;continue;}
-      const runStart=c;
-      while(c<C){
-        const b2=bAt(r,c);
-        if(!b2||b2.ground) break;
-        c++;
-      }
-      const runEnd=c-1;
-      const runLen=runEnd-runStart+1;
-      if(runLen>=2&&supported[r][runStart]&&supported[r][runEnd]){
-        let totalWeight=0;
-        for(let cc=runStart;cc<=runEnd;cc++){
-          const rb=bAt(r,cc);
-          totalWeight+=(GRIDS[rb.m]||CUSTOM).weight||1;
-        }
-        const maxMoment=(totalWeight*runLen)/8;
-        const L=runLen-1;
-        for(let i=0;i<runLen-1;i++){
-          const cA=runStart+i, cB=runStart+i+1;
-          const x=i+0.5;
-          const shapeFactor=L>0?(4*x*(L-x))/(L*L):1;
-          const moment=maxMoment*shapeFactor;
-          const a=bAt(r,cA), b=bAt(r,cB);
-          const strA=(GRIDS[a.m]||CUSTOM).strength||1;
-          const strB=(GRIDS[b.m]||CUSTOM).strength||1;
-          const connStr=(strA+strB)/2;
-          const spanTension=moment/connStr;
-          if(spanTension>0.05){
-            const key=`${r},${cA}-${r},${cB}`;
-            const clipped=Math.min(1.5,spanTension);
-            if(result[key]) result[key].tension=Math.max(result[key].tension,clipped);
-            else result[key]={tension:clipped,r1:r,c1:cA,r2:r,c2:cB,horizontal:true};
-          }
-        }
-      }
     }
   }
 

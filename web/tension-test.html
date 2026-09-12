@@ -118,9 +118,14 @@ function computeStress(){
   // For each edge, BFS from side B excluding the edge to A
   for(const edge of edges){
     const {r1,c1,r2,c2,horizontal}=edge;
+    // BFS from the side that would FALL if the edge broke.
+    // Vertical edges: BFS from upper block (r1), exclude lower (r2)
+    // Horizontal edges: BFS from right block (r2), exclude left (r1)
+    const srcR=horizontal?r2:r1, srcC=horizontal?c2:c1;
+    const excR=horizontal?r1:r2, excC=horizontal?c1:c2;
     const visited=new Set();
-    const queue=[[r2,c2]];
-    visited.add(r2*C+c2);
+    const queue=[[srcR,srcC]];
+    visited.add(srcR*C+srcC);
     let totalWeight=0;
     let reachesGround=false;
 
@@ -133,7 +138,7 @@ function computeStress(){
 
       for(const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]){
         const nr=cr+dr, nc=cc+dc;
-        if(nr===r1&&nc===c1) continue; // don't cross the edge being tested
+        if(nr===excR&&nc===excC) continue; // don't cross the edge being tested
         const key=nr*C+nc;
         if(visited.has(key)) continue;
         const nb=bAt(nr,nc);

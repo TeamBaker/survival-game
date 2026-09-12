@@ -83,110 +83,78 @@ function calcGrid(){
 }
 
 /*
- * SEPARATION TENSION — SUPPORT-AWARE MODEL
+ * EDGE-LOAD TENSION — CLEAN BFS MODEL
  *
- * Tension is about hanging/cantilevered load, not compression. A block that
- * sits in an unbroken vertical stack straight down to ground is "supported" —
- * its weight passes straight through as compression and creates zero tension
- * on any of its edges (a tower on ground is entirely tension-free).
+ * For each edge between two non-ground blocks:
+ *   1. BFS from side B, NOT crossing the edge back to side A
+ *   2. If BFS reaches ground → B is independently anchored → 0 weight
+ *   3. Otherwise, totalWeight = sum of all reachable block weights
+ *   4. connStrength = avg of the two blocks' material strengths
+ *   5. tension = totalWeight / connStrength
  *
- * A block with nothing directly below it (or resting on another unsupported
- * block) is "hanging" — it only stays up via its other connections. Tension
- * lives on the CONNECTION between two blocks, not on either block's edge
- * individually:
- *   1. Flood-fill each side of the connection, excluding the direction back
- *      across this connection. If that flood-fill ever reaches ground or an
- *      independently-supported block, the WHOLE side is anchored elsewhere —
- *      it stays up even if this connection is cut, so it contributes zero,
- *      regardless of how much mass is in it.
- *   2. If a side never reaches an anchor, its full weight would fall if this
- *      connection failed, so it contributes its total cluster weight.
- *   3. connStrength = average of the two blocks' strengths.
- *   4. Tension = max(sideA, sideB) / connStrength.
- *
- * This is what makes tension increase toward the support on a cantilever:
- * the connection nearest the anchor carries the whole arm's weight, while
- * the farthest connection carries only the single outermost block (every
- * block between it and the anchor has another way to reach ground).
- *
- * Both HORIZONTAL and VERTICAL neighbors are checked. A vertical stack that
- * reaches ground on its own is marked `supported` and contributes zero
- * weight/anchored=true to its connections, so it shows no tension — but a
- * stack hanging below an unsupported arm has nowhere else to go, so the
- * weight of everything below it pulls down on each vertical connection just
- * like the horizontal arm carries weight sideways.
+ * This correctly handles:
+ *   - Pillars: all vertical edges show 0 tension (BFS reaches ground below)
+ *   - Arms: horizontal edges show weight of everything hanging beyond them
+ *   - Hanging blocks: vertical edges below unsupported arms show weight
+ *   - Complex shapes: BFS naturally finds all paths
  */
 function computeStress(){
-  const R=rows,C=cols,result={};
+  const R=rows,C=cols;
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
+  const result={};
 
-  // supported[r][c]: unbroken vertical stack straight down to ground (pure compression).
-  const supported=grid.map(row=>row.map(()=>false));
-  for(let c=0;c<C;c++){
-    for(let r=R-1;r>=0;r--){
-      const bl=bAt(r,c);if(!bl||bl.ground)continue;
-      const below=bAt(r+1,c);
-      supported[r][c]=!!below&&(below.ground||supported[r+1][c]);
-    }
+  // Collect all edges between non-ground blocks
+  const edges=[];
+  for(let r=0;r<R;r++) for(let c=0;c<C;c++){
+    const a=bAt(r,c); if(!a||a.ground) continue;
+    // Right
+    const bR=bAt(r,c+1);
+    if(bR&&!bR.ground) edges.push({r1:r,c1:c,r2:r,c2:c+1,horizontal:true});
+    // Down
+    const bD=bAt(r+1,c);
+    if(bD&&!bD.ground) edges.push({r1:r,c1:c,r2:r+1,c2:c,horizontal:false});
   }
 
-  // Flood-fill from (r,c) NOT going through direction exDir. Traverses into
-  // all connected blocks. Ground, empty, and independently-supported blocks
-  // mark the flood as anchored (they stop the fall) without adding weight.
-  const memo=new Map();
-  const COMPUTING={weight:0,anchored:false}; // cycle sentinel
-  function clusterInfo(r,c,exDir){
-    const key=r*10000+c*10+(exDir+2);
-    const cached=memo.get(key);
-    if(cached===COMPUTING)return{weight:0,anchored:false};
-    if(cached)return cached;
-    const bl=bAt(r,c);if(!bl||bl.ground)return{weight:0,anchored:true};
-    const w=(GRIDS[bl.m]||CUSTOM).weight||1;
-    memo.set(key,COMPUTING); // cycle guard: mark as in-progress
-    let total=w,anchored=false;
-    for(const[dr,dc,dir]of[[-1,0,-2],[1,0,2],[0,-1,-1],[0,1,1]]){
-      if(dir===exDir)continue;
-      const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);if(!nb)continue;
-      if(nb.ground||supported[nr][nc]){anchored=true;continue;}
-      const sub=clusterInfo(nr,nc,-dir);
-      total+=sub.weight;if(sub.anchored)anchored=true;
-    }
-    const result={weight:total,anchored};
-    memo.set(key,result);return result;
-  }
+  // For each edge, BFS from side B excluding the edge to A
+  for(const edge of edges){
+    const {r1,c1,r2,c2,horizontal}=edge;
+    const visited=new Set();
+    const queue=[[r2,c2]];
+    visited.add(r2*C+c2);
+    let totalWeight=0;
+    let reachesGround=false;
 
-  // One shared tension value per connection between two adjacent non-ground blocks.
-  function addConn(r1,c1,r2,c2,dirAB){
-    const a=bAt(r1,c1),b=bAt(r2,c2);
-    if(!a||!b||a.ground||b.ground)return;
-    const horizontal = r1===r2;
-    // supported[] only suppresses VERTICAL connections (compression). Horizontal
-    // connections on a vertically-supported block (e.g. corner of an arm) still
-    // carry the arm's hanging weight.
-    const useSupported = !horizontal;
-    const infoA=useSupported && supported[r1][c1]?{weight:0,anchored:true}:clusterInfo(r1,c1,dirAB);
-    const infoB=useSupported && supported[r2][c2]?{weight:0,anchored:true}:clusterInfo(r2,c2,-dirAB);
-    const wA=infoA.anchored?0:infoA.weight;
-    const wB=infoB.anchored?0:infoB.weight;
-    const clusterWeight=Math.max(wA,wB);
-    if(clusterWeight<=0)return;
+    while(queue.length){
+      const [cr,cc]=queue.shift();
+      const bl=bAt(cr,cc);
+      if(!bl) continue;
+      if(bl.ground){reachesGround=true; continue;}
+      totalWeight+=(GRIDS[bl.m]||CUSTOM).weight||1;
+
+      for(const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]){
+        const nr=cr+dr, nc=cc+dc;
+        if(nr===r1&&nc===c1) continue; // don't cross the edge being tested
+        const key=nr*C+nc;
+        if(visited.has(key)) continue;
+        const nb=bAt(nr,nc);
+        if(!nb) continue;
+        visited.add(key);
+        queue.push([nr,nc]);
+      }
+    }
+
+    if(reachesGround || totalWeight<=0) continue;
+
+    const a=bAt(r1,c1), b=bAt(r2,c2);
     const strA=(GRIDS[a.m]||CUSTOM).strength||1;
     const strB=(GRIDS[b.m]||CUSTOM).strength||1;
     const connStr=(strA+strB)/2;
-    const ratio=clusterWeight/connStr;
+    const ratio=totalWeight/connStr;
     if(ratio>0.05){
       result[`${r1},${c1}-${r2},${c2}`]={tension:Math.min(1.5,ratio),r1,c1,r2,c2,horizontal};
     }
   }
 
-  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
-    addConn(r,c,r,c+1,1);  // connection to the right (dir 'right'=1)
-    addConn(r,c,r+1,c,2);  // connection below (dir 'down'=2) — a hanging
-                            // stack below an unsupported arm still carries
-                            // tension; addConn already returns 0 when the
-                            // block is anchored via `supported`, so pillars
-                            // sitting on ground stay untensioned.
-  }
   return result;
 }
 
@@ -197,29 +165,45 @@ function draw(){
   for(let r=0;r<=rows;r++){ctx.beginPath();ctx.moveTo(0,r*cell+.5);ctx.lineTo(cols*cell,r*cell+.5);ctx.stroke();}
 
   const stress=computeStress();
-  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
-    const bl=grid[r][c];if(!bl)continue;
+
+  // Color blocks by their max edge tension
+  const blockTension={};
+  for(const key in stress){
+    const e=stress[key];
+    const k1=`${e.r1},${e.c1}`, k2=`${e.r2},${e.c2}`;
+    blockTension[k1]=Math.max(blockTension[k1]||0, e.tension);
+    blockTension[k2]=Math.max(blockTension[k2]||0, e.tension);
+  }
+
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    const bl=grid[r][c]; if(!bl) continue;
     const x=c*cell,y=r*cell;
     if(bl.ground){
       ctx.fillStyle=(GRIDS[0]).color;ctx.fillRect(x,y,cell,cell);
       ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
       continue;
     }
-    ctx.fillStyle=(GRIDS[bl.m]||CUSTOM).color;ctx.fillRect(x+1,y+1,cell-2,cell-2);
+    const baseColor=(GRIDS[bl.m]||CUSTOM).color;
+    const bt=blockTension[`${r},${c}`]||0;
+    if(bt>0.05){
+      // Blend block color toward stress color based on tension
+      ctx.fillStyle=baseColor;ctx.fillRect(x+1,y+1,cell-2,cell-2);
+      ctx.fillStyle=stressColor(bt);ctx.globalAlpha=0.35;ctx.fillRect(x+1,y+1,cell-2,cell-2);ctx.globalAlpha=1;
+    } else {
+      ctx.fillStyle=baseColor;ctx.fillRect(x+1,y+1,cell-2,cell-2);
+    }
   }
 
-  // Shared connection edges: one line drawn AT the boundary between two blocks.
+  // Draw connection edges with tension
   const lw=Math.max(2.5,cell*0.15);ctx.lineWidth=lw;ctx.lineCap='round';
   for(const key in stress){
     const e=stress[key];
     ctx.strokeStyle=stressColor(e.tension);
     ctx.beginPath();
     if(e.horizontal){
-      // e.c2 = e.c1+1, boundary is the vertical line between them
       const bx=e.c2*cell,y=e.r1*cell;
       ctx.moveTo(bx,y+2);ctx.lineTo(bx,y+cell-2);
     }else{
-      // e.r2 = e.r1+1, boundary is the horizontal line between them
       const by=e.r2*cell,x=e.c1*cell;
       ctx.moveTo(x+2,by);ctx.lineTo(x+cell-2,by);
     }
@@ -281,11 +265,8 @@ document.getElementById('btn-sim').onclick=()=>{
   else if(simInterval){clearInterval(simInterval);simInterval=null;}
 };
 
-// A block is supported if it's in an unbroken vertical stack down to ground,
-// OR if it's connected (through any side/vertical chain) to a block that is.
-// This is a flood-fill from ground, not a per-block strength check, so a
-// single step never cascades: only blocks with NO path to support at all
-// (genuinely floating islands) are removed.
+// BFS from ground: any non-ground block reachable = supported.
+// Blocks with NO path to ground are removed.
 function doStep(){
   const R=rows,C=cols;
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;

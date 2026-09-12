@@ -97,11 +97,15 @@ function calcGrid(){
  *      of blocks going straight down to ground (each block's below neighbor
  *      is ground or also supported).
  *   2. For each edge between non-ground blocks:
- *      a. BFS from the side that would fall (upper for vertical, right for
- *         horizontal), NOT crossing the edge being tested.
- *      b. hangingWeight = sum of weights of NON-supported blocks in the BFS.
- *         (Supported blocks contribute zero — they're in compression, not tension.)
- *      c. If BFS reaches ground → anchored → skip.
+ *      a. BFS from BOTH sides of the edge, each excluding the other side, so
+ *         either side can be the one that "falls" if the edge breaks (this
+ *         correctly handles arms extending either left or right from a pillar).
+ *      b. hangingWeight (per side) = sum of weights of NON-supported blocks
+ *         reached by that side's BFS. (Supported blocks contribute zero —
+ *         they're in compression, not tension.)
+ *      c. Whichever side(s) fail to reach ground are the hanging side(s); use
+ *         the larger hanging weight if neither reaches ground. If both reach
+ *         ground → anchored on both ends → skip.
  *      d. tension = hangingWeight / connectionStrength.
  *
  * Results for a pillar + arm:
@@ -137,11 +141,8 @@ function computeStress(){
     if(bD&&!bD.ground) edges.push({r1:r,c1:c,r2:r+1,c2:c,horizontal:false});
   }
 
-  for(const edge of edges){
-    const {r1,c1,r2,c2,horizontal}=edge;
-    // BFS from the side that would FALL if the edge broke.
-    const srcR=horizontal?r2:r1, srcC=horizontal?c2:c1;
-    const excR=horizontal?r1:r2, excC=horizontal?c1:c2;
+  // BFS from (srcR,srcC), excluding (excR,excC), summing hanging weight until it reaches ground.
+  function bfsHangingWeight(srcR,srcC,excR,excC){
     const visited=new Set();
     const queue=[[srcR,srcC]];
     visited.add(srcR*C+srcC);
@@ -169,8 +170,27 @@ function computeStress(){
         queue.push([nr,nc]);
       }
     }
+    return {reachesGround,hangingWeight};
+  }
 
-    if(reachesGround || hangingWeight<=0) continue;
+  for(const edge of edges){
+    const {r1,c1,r2,c2,horizontal}=edge;
+    // BFS from both sides — the side that can't reach ground is hanging.
+    const sideA=bfsHangingWeight(r1,c1,r2,c2);
+    const sideB=bfsHangingWeight(r2,c2,r1,c1);
+
+    let hangingWeight;
+    if(!sideA.reachesGround&&!sideB.reachesGround){
+      hangingWeight=Math.max(sideA.hangingWeight,sideB.hangingWeight);
+    }else if(!sideA.reachesGround){
+      hangingWeight=sideA.hangingWeight;
+    }else if(!sideB.reachesGround){
+      hangingWeight=sideB.hangingWeight;
+    }else{
+      continue;
+    }
+
+    if(hangingWeight<=0) continue;
 
     const a=bAt(r1,c1), b=bAt(r2,c2);
     const strA=(GRIDS[a.m]||CUSTOM).strength||1;

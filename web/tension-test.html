@@ -171,6 +171,7 @@ function computeStress(){
 
   for(const edge of edges){
     const {r1,c1,r2,c2,horizontal}=edge;
+    if(!horizontal&&supported[r1][c1]&&supported[r2][c2]) continue;
     const sideA=bfsSide(r1,c1,r2,c2);
     const sideB=bfsSide(r2,c2,r1,c1);
 

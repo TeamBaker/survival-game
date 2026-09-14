@@ -118,10 +118,16 @@ function calcGrid(){
  * pillar instead of vanishing into redundant paths, and lets stress build up
  * along a cantilever as more blocks hang off the far end.
  *
+ * Before support-edge stress is computed, load also spreads sideways: a
+ * beam doesn't just cascade down whichever support BFS happened to find
+ * first, it equalizes with same-layer neighbors so both pillars under a
+ * beam pick up their share.
+ *
  * Each support edge's stress is its share of flow divided by the weaker of
  * the two blocks' material strength. A block's displayed stress is the worst
  * edge touching it (either as the dependent or as someone else's support);
- * whether that edge is vertical or horizontal decides isCompression.
+ * whether that edge connects to a neighbor one layer closer to the ground
+ * decides isCompression — a same-layer (or upstream) edge isn't compression.
  *
  * Disconnected blocks (nothing BFS-reachable from ground) fall, and any
  * block overloaded past its material's maxStrength breaks — both cascade,
@@ -140,7 +146,7 @@ function recalculate(){
       const mat=matOf(bl.mat);
       bl.weight=mat.weight;bl.maxStress=0;
       bl.connected=false;bl.isCompression=false;
-      bl.layer=-1;bl._vert=false;
+      bl.layer=-1;bl._nbLayer=null;
     }
 
     // 1. BFS from ground anchors — layer = steps from the nearest ground block.
@@ -178,25 +184,64 @@ function recalculate(){
     order.sort((a,b)=>bAt(b[0],b[1]).layer-bAt(a[0],a[1]).layer);
 
     for(const[r,c]of order){
+      const me=bAt(r,c);
+      const supports=[];
+      for(const[dr,dc]of NB){
+        const nb=bAt(r+dr,c+dc);
+        if(nb&&nb.connected&&nb.layer===me.layer-1)supports.push(nb);
+      }
+      const share=me.accum/supports.length;
+      for(const nb of supports)nb.accum+=share;
+    }
+
+    // 2b. Horizontal load transfer: a beam's load shouldn't just cascade
+    // down whichever support BFS found first — it spreads across same-layer
+    // neighbors so it reaches both pillars. Sweep each row L->R then R->L,
+    // moving half the load difference to the lighter neighbor; repeat a
+    // few passes so the equalization can propagate across the whole beam.
+    for(let iter=0;iter<3;iter++){
+      for(let r=0;r<R;r++){
+        for(let c=0;c<C-1;c++){
+          const a=bAt(r,c),b=bAt(r,c+1);
+          if(!a||!b||!a.connected||!b.connected)continue;
+          if(matOf(a.mat).ground||matOf(b.mat).ground)continue;
+          if(a.layer!==b.layer)continue;
+          const t=(a.accum-b.accum)/2;
+          a.accum-=t;b.accum+=t;
+        }
+        for(let c=C-1;c>0;c--){
+          const a=bAt(r,c),b=bAt(r,c-1);
+          if(!a||!b||!a.connected||!b.connected)continue;
+          if(matOf(a.mat).ground||matOf(b.mat).ground)continue;
+          if(a.layer!==b.layer)continue;
+          const t=(a.accum-b.accum)/2;
+          a.accum-=t;b.accum+=t;
+        }
+      }
+    }
+
+    // 2c. With load settled, compute each support edge's stress and record
+    // which neighbor's layer produced a block's worst stress — that's what
+    // tells a real compression edge (to layer-1, below) apart from a lateral
+    // beam edge (same layer) or load merely passing through from above.
+    for(const[r,c]of order){
       const me=bAt(r,c),matMe=matOf(me.mat);
       const supports=[];
       for(const[dr,dc]of NB){
         const nb=bAt(r+dr,c+dc);
-        if(nb&&nb.connected&&nb.layer===me.layer-1)supports.push([dr,nb]);
+        if(nb&&nb.connected&&nb.layer===me.layer-1)supports.push(nb);
       }
       const share=me.accum/supports.length;
-      for(const[dr,nb]of supports){
-        nb.accum+=share;
+      for(const nb of supports){
         const connStrength=Math.min(matMe.maxStrength,matOf(nb.mat).maxStrength);
         const stress=connStrength>0?share/connStrength:0;
-        const isVertical=dr!==0;
-        if(stress>me.maxStress){me.maxStress=stress;me._vert=isVertical;}
-        if(stress>nb.maxStress){nb.maxStress=stress;nb._vert=isVertical;}
+        if(stress>me.maxStress){me.maxStress=stress;me._nbLayer=nb.layer;}
+        if(stress>nb.maxStress){nb.maxStress=stress;nb._nbLayer=me.layer;}
       }
     }
     for(const[r,c]of order){
       const me=bAt(r,c);
-      me.isCompression=me.maxStress>0&&me._vert;
+      me.isCompression=me.maxStress>0&&me._nbLayer===me.layer-1;
     }
 
     // 3. Break anything overloaded past its own material, then restart.

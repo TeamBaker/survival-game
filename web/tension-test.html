@@ -196,6 +196,10 @@ function computeStress(){
       // load, so fall back to one path carrying the heavier side.
       numPaths=1;
       weight=Math.max(sideA.hangingWeight,sideB.hangingWeight);
+    }else if(numPaths===2){
+      // Both sides reach ground independently, through paths other than
+      // this edge — the edge is redundant and carries no unique load.
+      weight=0;
     }
 
     if(weight<=0) continue;

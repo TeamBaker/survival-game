@@ -37,37 +37,45 @@ body{background:#151d2b;color:#c8d0dc;font-family:-apple-system,sans-serif;
 <div class="stats" id="stats"></div>
 <canvas id="cv" style="width:100%;flex:1;touch-action:none"></canvas>
 <script>
-const GRIDS=[
-  {label:'Ground',color:'#6a7a6a',ground:true},
-  {label:'Sand',color:'#c8b464',weight:1.1,strength:0.5},
-  {label:'Dirt',color:'#8b6914',weight:1.0,strength:1.0},
-  {label:'Rock',color:'#9e9e9e',weight:3.0,strength:7.0},
-  {label:'Clay',color:'#cd7f32',weight:1.2,strength:1.2},
-  {label:'Iron',color:'#5c7a8a',weight:4.0,strength:5.0},
+const MATERIALS=[
+  {name:'Ground',color:'#6a7a6a',maxStrength:100,vPenalty:0,hPenalty:0,dPenalty:0,ground:true},
+  {name:'Sand',color:'#c8b464',maxStrength:40,vPenalty:-8,hPenalty:-5,dPenalty:-3},
+  {name:'Dirt',color:'#8b6914',maxStrength:50,vPenalty:-6,hPenalty:-4,dPenalty:-3},
+  {name:'Rock',color:'#9e9e9e',maxStrength:100,vPenalty:-4,hPenalty:-8,dPenalty:-4},
+  {name:'Clay',color:'#cd7f32',maxStrength:30,vPenalty:-10,hPenalty:-6,dPenalty:-5},
+  {name:'Iron',color:'#5c7a8a',maxStrength:120,vPenalty:-2,hPenalty:-6,dPenalty:-3},
 ];
-const CUSTOM={label:'Custom',color:'#c080ff',weight:1,strength:1};
+const CUSTOM={name:'Custom',color:'#c080ff',maxStrength:60,vPenalty:-5,hPenalty:-5,dPenalty:-4};
+const CUSTOM_IDX=MATERIALS.length;
+function matOf(idx){return MATERIALS[idx]||CUSTOM;}
+
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 let W,H,rows,cols,cell,grid=[],sel=1,mode='place';
 let simming=false,simInterval=null,dragging=false,dragErase=false;
 
-const STRESS_STOPS=[
+const COLOR_STOPS=[
   [0.0,[70,190,80]],   // green
   [0.3,[230,210,40]],  // yellow
   [0.7,[240,140,30]],  // orange
   [1.5,[220,40,30]],   // red
   [3.0,[255,70,70]],   // bright red
-  [5.0,[255,255,255]], // white (extreme)
 ];
-function stressColor(r){
-  r=Math.max(0,r);
+function colorScale(v){
+  v=Math.max(0,v);
   const lerp=(a,b,t)=>a+(b-a)*t;
-  for(let i=0;i<STRESS_STOPS.length-1;i++){
-    const[r0,c0]=STRESS_STOPS[i],[r1,c1]=STRESS_STOPS[i+1];
-    if(r<=r1||i===STRESS_STOPS.length-2){
-      const t=Math.min(1,Math.max(0,(r-r0)/(r1-r0)));
+  for(let i=0;i<COLOR_STOPS.length-1;i++){
+    const[r0,c0]=COLOR_STOPS[i],[r1,c1]=COLOR_STOPS[i+1];
+    if(v<=r1||i===COLOR_STOPS.length-2){
+      const t=Math.min(1,Math.max(0,(v-r0)/(r1-r0)));
       return`rgb(${lerp(c0[0],c1[0],t)|0},${lerp(c0[1],c1[1],t)|0},${lerp(c0[2],c1[2],t)|0})`;
     }
   }
+}
+// Maps a strength/maxStrength ratio (1=full health) onto the same color
+// scale used for danger: full strength -> green, zero strength -> bright red.
+function strengthColor(strength,maxStrength){
+  const ratio=maxStrength>0?Math.max(0,strength)/maxStrength:0;
+  return colorScale((1-ratio)*3);
 }
 
 function resize(){
@@ -92,129 +100,70 @@ function calcGrid(){
   while(grid[0]&&grid[0].length<cols)for(let r=0;r<grid.length;r++)grid[r].push(null);
   if(grid[0]&&grid[0].length>cols)for(let r=0;r<grid.length;r++)grid[r].length=cols;
   if(!grid[rows-1])grid[rows-1]=new Array(cols).fill(null);
-  for(let c=0;c<cols;c++)if(!grid[rows-1][c])grid[rows-1][c]={m:0,ground:true};
+  for(let c=0;c<cols;c++)if(!grid[rows-1][c])grid[rows-1][c]={mat:0,strength:MATERIALS[0].maxStrength};
+  recalculate();
   buildStats();
 }
 
 /*
- * STRUCTURAL STRESS — REDUNDANCY MODEL
+ * STRENGTH PROPAGATION MODEL
+ * (ported from Zarkonnen/Structural, script.js — MIT/Unlicense)
  *
- * Physics:
- *   - A block in an unbroken vertical stack to ground is "supported" — it sits
- *     in compression and contributes ZERO weight to any connection's load
- *     (a tower on ground is tension-free).
- *   - A block NOT in such a stack is "hanging" — its weight must be carried
- *     by whatever paths lead from it back to ground.
- *   - Each connection sits between two sides. Every side that independently
- *     reaches ground (without crossing this connection) is one load path
- *     sharing the weight. More independent paths => less tension on any one
- *     of them. A beam between two supports (2 paths) is under less tension
- *     per connection than a cantilever hanging off one support (1 path).
- *
- * Algorithm:
- *   1. Compute supported[][]: block is supported if it's in a vertical chain
- *      of blocks going straight down to ground.
- *   2. For each edge between non-ground blocks:
- *      a. BFS from both sides, each excluding the other, collecting hanging
- *         weight (sum of non-supported block weights) and whether ground is
- *         reached.
- *      b. numPaths = number of sides that reach ground (0, 1, or 2).
- *         weight = total hanging weight across both sides.
- *      c. tension = weight / (numPaths * connectionStrength).
- *      d. If neither side reaches ground (a disconnected/floating chunk),
- *         fall back to numPaths=1 and the heavier side's weight so the value
- *         stays finite.
+ * Ground blocks hold their material's maxStrength forever. Every other
+ * block's strength is derived by propagating strength outward from
+ * neighbors that already have some: a neighbor's strength can push mine up
+ * to (neighbor.strength + neighbor.material's penalty for that direction),
+ * capped at my own maxStrength. Penalties are negative, so strength erodes
+ * with distance from ground. A block whose strength is pushed to <= 0 can't
+ * hold itself up and collapses to air, which can cascade, so after any
+ * collapse the whole propagation restarts from a clean slate.
  */
-function computeStress(){
+function recalculate(){
   const R=rows,C=cols;
+  if(!R||!C)return;
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
-  const result={};
+  const propagate=(nb,val)=>{
+    if(!nb)return;
+    const nm=matOf(nb.mat);
+    nb.strength=Math.min(nm.maxStrength,Math.max(nb.strength,val));
+  };
 
-  // supported[r][c]: unbroken vertical stack straight down to ground.
-  const supported=grid.map(row=>row.map(()=>false));
-  for(let c=0;c<C;c++){
+  // 1. Clear all strengths; ground blocks stay at their material's maxStrength.
+  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+    const bl=grid[r][c];if(!bl)continue;
+    const mat=matOf(bl.mat);
+    bl.strength=mat.ground?mat.maxStrength:0;
+  }
+
+  restart:
+  while(true){
+    // 2. Sweep bottom row to top row, propagating strength upward/sideways.
     for(let r=R-1;r>=0;r--){
-      const bl=bAt(r,c);if(!bl||bl.ground)continue;
-      const below=bAt(r+1,c);
-      supported[r][c]=!!below&&(below.ground||supported[r+1][c]);
-    }
-  }
-
-  // Collect all edges between non-ground blocks
-  const edges=[];
-  for(let r=0;r<R;r++) for(let c=0;c<C;c++){
-    const a=bAt(r,c); if(!a||a.ground) continue;
-    const bR=bAt(r,c+1);
-    if(bR&&!bR.ground) edges.push({r1:r,c1:c,r2:r,c2:c+1,horizontal:true});
-    const bD=bAt(r+1,c);
-    if(bD&&!bD.ground) edges.push({r1:r,c1:c,r2:r+1,c2:c,horizontal:false});
-  }
-
-  // BFS from (srcR,srcC), excluding (excR,excC): sum hanging weight reachable
-  // without crossing the excluded cell, and whether this side reaches ground
-  // (i.e. has its own independent load path).
-  function bfsSide(srcR,srcC,excR,excC){
-    const visited=new Set();
-    const queue=[[srcR,srcC]];
-    visited.add(srcR*C+srcC);
-    let hangingWeight=0;
-    let reachesGround=false;
-
-    while(queue.length){
-      const [cr,cc]=queue.shift();
-      const bl=bAt(cr,cc);
-      if(!bl) continue;
-      if(bl.ground){reachesGround=true; continue;}
-      if(!supported[cr][cc]){
-        hangingWeight+=(GRIDS[bl.m]||CUSTOM).weight||1;
+      for(let pass=0;pass<2;pass++){ // two horizontal directions per row for faster convergence
+        const asc=pass===0;
+        for(let i=0;i<C;i++){
+          const c=asc?i:C-1-i;
+          const me=bAt(r,c);if(!me)continue;
+          const mat=matOf(me.mat);
+          me.strength=Math.min(me.strength,mat.maxStrength);
+          propagate(bAt(r-1,c),me.strength+mat.vPenalty);     // vertical (up)
+          propagate(bAt(r,c-1),me.strength+mat.hPenalty);     // horizontal
+          propagate(bAt(r,c+1),me.strength+mat.hPenalty);     // horizontal
+          propagate(bAt(r-1,c-1),me.strength+mat.dPenalty);   // diagonal
+          propagate(bAt(r-1,c+1),me.strength+mat.dPenalty);   // diagonal
+        }
       }
-
-      for(const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]){
-        const nr=cr+dr, nc=cc+dc;
-        if(nr===excR&&nc===excC) continue;
-        const key=nr*C+nc;
-        if(visited.has(key)) continue;
-        const nb=bAt(nr,nc);
-        if(!nb) continue;
-        visited.add(key);
-        queue.push([nr,nc]);
+      // c. Collapse any non-air block that can't sustain itself, then restart.
+      for(let c=0;c<C;c++){
+        const bl=bAt(r,c);
+        if(bl&&bl.strength<=0){
+          grid[r][c]=null;
+          continue restart;
+        }
       }
     }
-    return {reachesGround,hangingWeight};
+    break;
   }
-
-  for(const edge of edges){
-    const {r1,c1,r2,c2,horizontal}=edge;
-    if(!horizontal&&supported[r1][c1]&&supported[r2][c2]) continue;
-    const sideA=bfsSide(r1,c1,r2,c2);
-    const sideB=bfsSide(r2,c2,r1,c1);
-
-    let numPaths=(sideA.reachesGround?1:0)+(sideB.reachesGround?1:0);
-    let weight=sideA.hangingWeight+sideB.hangingWeight;
-    if(numPaths===0){
-      // Floating chunk with no path to ground at all — nothing shares the
-      // load, so fall back to one path carrying the heavier side.
-      numPaths=1;
-      weight=Math.max(sideA.hangingWeight,sideB.hangingWeight);
-    }else if(numPaths===2){
-      // Both sides reach ground independently, through paths other than
-      // this edge — the edge is redundant and carries no unique load.
-      weight=0;
-    }
-
-    if(weight<=0) continue;
-
-    const a=bAt(r1,c1), b=bAt(r2,c2);
-    const strA=(GRIDS[a.m]||CUSTOM).strength||1;
-    const strB=(GRIDS[b.m]||CUSTOM).strength||1;
-    const connStr=(strA+strB)/2;
-    const ratio=weight/(numPaths*connStr);
-    if(ratio>0.05){
-      result[`${r1},${c1}-${r2},${c2}`]={tension:ratio,r1,c1,r2,c2,horizontal};
-    }
-  }
-
-  return result;
 }
 
 function draw(){
@@ -223,48 +172,19 @@ function draw(){
   for(let c=0;c<=cols;c++){ctx.beginPath();ctx.moveTo(c*cell+.5,0);ctx.lineTo(c*cell+.5,rows*cell);ctx.stroke();}
   for(let r=0;r<=rows;r++){ctx.beginPath();ctx.moveTo(0,r*cell+.5);ctx.lineTo(cols*cell,r*cell+.5);ctx.stroke();}
 
-  const stress=computeStress();
-
-  // Color blocks by their max edge tension
-  const blockTension={};
-  for(const key in stress){
-    const e=stress[key];
-    const k1=`${e.r1},${e.c1}`, k2=`${e.r2},${e.c2}`;
-    blockTension[k1]=Math.max(blockTension[k1]||0, e.tension);
-    blockTension[k2]=Math.max(blockTension[k2]||0, e.tension);
-  }
-
+  const edgeW=Math.max(2.5,cell*0.15);
   for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
     const bl=grid[r][c]; if(!bl) continue;
+    const mat=matOf(bl.mat);
     const x=c*cell,y=r*cell;
-    if(bl.ground){
-      ctx.fillStyle=(GRIDS[0]).color;ctx.fillRect(x,y,cell,cell);
+    if(mat.ground){
+      ctx.fillStyle=mat.color;ctx.fillRect(x,y,cell,cell);
       ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
       continue;
     }
-    const baseColor=(GRIDS[bl.m]||CUSTOM).color;
-    const bt=blockTension[`${r},${c}`]||0;
-    if(bt>0.05){
-      ctx.fillStyle=baseColor;ctx.fillRect(x+1,y+1,cell-2,cell-2);
-      ctx.fillStyle=stressColor(bt);ctx.globalAlpha=0.35;ctx.fillRect(x+1,y+1,cell-2,cell-2);ctx.globalAlpha=1;
-    } else {
-      ctx.fillStyle=baseColor;ctx.fillRect(x+1,y+1,cell-2,cell-2);
-    }
-  }
-
-  const lw=Math.max(2.5,cell*0.15);ctx.lineWidth=lw;ctx.lineCap='round';
-  for(const key in stress){
-    const e=stress[key];
-    ctx.strokeStyle=stressColor(e.tension);
-    ctx.beginPath();
-    if(e.horizontal){
-      const bx=e.c2*cell,y=e.r1*cell;
-      ctx.moveTo(bx,y+2);ctx.lineTo(bx,y+cell-2);
-    }else{
-      const by=e.r2*cell,x=e.c1*cell;
-      ctx.moveTo(x+2,by);ctx.lineTo(x+cell-2,by);
-    }
-    ctx.stroke();
+    ctx.fillStyle=mat.color;ctx.fillRect(x+1,y+1,cell-2,cell-2);
+    ctx.lineWidth=edgeW;ctx.strokeStyle=strengthColor(bl.strength,mat.maxStrength);
+    ctx.strokeRect(x+edgeW/2,y+edgeW/2,cell-edgeW,cell-edgeW);
   }
 }
 
@@ -272,12 +192,13 @@ function buildStats(){
   let total=0,ground=0,matCount={};
   for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
     const b=grid[r][c];if(!b)continue;total++;
-    if(b.ground){ground++;continue;}matCount[b.m]=(matCount[b.m]||0)+1;
+    const mat=matOf(b.mat);
+    if(mat.ground){ground++;continue;}matCount[b.mat]=(matCount[b.mat]||0)+1;
   }
   document.getElementById('stats').innerHTML=
     `<span>Blocks: <b>${total}</b></span> <span>Ground: <b>${ground}</b></span>`+
     Object.entries(matCount).map(([m,n])=>{
-      const mat=GRIDS[m];return`<span style=\"color:${mat.color}\">■</span> ${mat.label}: ${n}`;
+      const mat=matOf(m);return`<span style=\"color:${mat.color}\">■</span> ${mat.name}: ${n}`;
     }).join(' ');
 }
 
@@ -292,8 +213,8 @@ function getCell(e){
 function placeOrRemove(cl){
   if(!cl)return;
   if(mode==='remove'){if(grid[cl.r][cl.c])grid[cl.r][cl.c]=null;}
-  else{if(grid[cl.r][cl.c])return;grid[cl.r][cl.c]=sel===0?{m:0,ground:true}:{m:sel,ground:false};}
-  buildStats();draw();
+  else{if(grid[cl.r][cl.c])return;const mat=matOf(sel);grid[cl.r][cl.c]={mat:sel,strength:mat.maxStrength};}
+  recalculate();buildStats();draw();
 }
 cv.addEventListener('mousedown',e=>{dragging=true;const c=getCell(e);if(!c)return;
   dragErase=!!grid[c.r][c.c]&&mode==='place';if(dragErase){mode='remove';ui_syncMode();}placeOrRemove(c);});
@@ -315,54 +236,24 @@ document.getElementById('btn-remove').onclick=()=>{mode='remove';ui_syncMode();}
 document.getElementById('btn-reset').onclick=()=>{grid=[];simming=false;
   if(simInterval){clearInterval(simInterval);simInterval=null;}
   document.getElementById('btn-sim').classList.remove('on');calcGrid();draw();};
-document.getElementById('btn-step').onclick=()=>{doStep();draw();};
+document.getElementById('btn-step').onclick=()=>{recalculate();buildStats();draw();};
 document.getElementById('btn-sim').onclick=()=>{
   simming=!simming;document.getElementById('btn-sim').classList.toggle('on',simming);
-  if(simming)simInterval=setInterval(()=>{doStep();draw();},200);
+  if(simming)simInterval=setInterval(()=>{recalculate();buildStats();draw();},200);
   else if(simInterval){clearInterval(simInterval);simInterval=null;}
 };
 
-function doStep(){
-  const R=rows,C=cols;
-  const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
-  const supported=[];
-  for(let r=0;r<R;r++)supported.push(new Array(C).fill(false));
-  const queue=[];
-  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
-    const bl=bAt(r,c);if(!bl||!bl.ground)continue;
-    for(const[dr,dc]of[[-1,0],[1,0],[0,-1],[0,1]]){
-      const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);
-      if(nb&&!nb.ground&&!supported[nr][nc]){supported[nr][nc]=true;queue.push([nr,nc]);}
-    }
-  }
-  while(queue.length){
-    const[r,c]=queue.pop();
-    for(const[dr,dc]of[[-1,0],[1,0],[0,-1],[0,1]]){
-      const nr=r+dr,nc=c+dc;const nb=bAt(nr,nc);
-      if(nb&&!nb.ground&&!supported[nr][nc]){supported[nr][nc]=true;queue.push([nr,nc]);}
-    }
-  }
-  const toRemove=[];
-  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
-    const bl=grid[r]&&grid[r][c];if(!bl||bl.ground)continue;
-    if(!supported[r][c])toRemove.push([r,c]);
-  }
-  for(const[r,c]of toRemove)grid[r][c]=null;
-  buildStats();
-}
-
 function selM(m){sel=m;mode='place';ui_syncMode();
   document.querySelectorAll('.mswatch').forEach((e,i)=>e.classList.toggle('on',i===m));}
-for(let i=0;i<GRIDS.length;i++){
+for(let i=0;i<MATERIALS.length;i++){
   const el=document.getElementById('sw-'+i);if(!el)continue;
-  el.style.background=GRIDS[i].color;el.title=GRIDS[i].label;el.onclick=()=>selM(i);
+  el.style.background=MATERIALS[i].color;el.title=MATERIALS[i].name;el.onclick=()=>selM(i);
 }
 document.getElementById('sw-custom').onclick=()=>{
-  const w=prompt('Weight:',CUSTOM.weight);if(w===null)return;
-  const s=prompt('Strength:',CUSTOM.strength);if(s===null)return;
+  const s=prompt('Max strength:',CUSTOM.maxStrength);if(s===null)return;
   const c=prompt('Color:',CUSTOM.color);
-  CUSTOM.weight=parseFloat(w)||1;CUSTOM.strength=parseFloat(s)||1;CUSTOM.color=c||CUSTOM.color;
-  document.getElementById('sw-custom').style.background=CUSTOM.color;selM(5);
+  CUSTOM.maxStrength=parseFloat(s)||1;CUSTOM.color=c||CUSTOM.color;
+  document.getElementById('sw-custom').style.background=CUSTOM.color;selM(CUSTOM_IDX);
 };
 selM(1);ui_syncMode();window.addEventListener('resize',resize);resize();
 </script>

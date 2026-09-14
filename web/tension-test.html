@@ -38,14 +38,14 @@ body{background:#151d2b;color:#c8d0dc;font-family:-apple-system,sans-serif;
 <canvas id="cv" style="width:100%;flex:1;touch-action:none"></canvas>
 <script>
 const MATERIALS=[
-  {name:'Ground',color:'#6a7a6a',maxStrength:100,vPenalty:0,hPenalty:0,dPenalty:0,ground:true},
-  {name:'Sand',color:'#c8b464',maxStrength:40,vPenalty:-8,hPenalty:-5,dPenalty:-3},
-  {name:'Dirt',color:'#8b6914',maxStrength:50,vPenalty:-6,hPenalty:-4,dPenalty:-3},
-  {name:'Rock',color:'#9e9e9e',maxStrength:100,vPenalty:-4,hPenalty:-8,dPenalty:-4},
-  {name:'Clay',color:'#cd7f32',maxStrength:30,vPenalty:-10,hPenalty:-6,dPenalty:-5},
-  {name:'Iron',color:'#5c7a8a',maxStrength:120,vPenalty:-2,hPenalty:-6,dPenalty:-3},
+  {name:'Ground',color:'#6a7a6a',weight:0,maxStrength:100,ground:true},
+  {name:'Sand',color:'#c8b464',weight:1.1,maxStrength:40},
+  {name:'Dirt',color:'#8b6914',weight:1.0,maxStrength:50},
+  {name:'Rock',color:'#9e9e9e',weight:3.0,maxStrength:100},
+  {name:'Clay',color:'#cd7f32',weight:1.2,maxStrength:30},
+  {name:'Iron',color:'#5c7a8a',weight:5.0,maxStrength:120},
 ];
-const CUSTOM={name:'Custom',color:'#c080ff',maxStrength:60,vPenalty:-5,hPenalty:-5,dPenalty:-4};
+const CUSTOM={name:'Custom',color:'#c080ff',weight:2.0,maxStrength:60};
 const CUSTOM_IDX=MATERIALS.length;
 function matOf(idx){return MATERIALS[idx]||CUSTOM;}
 
@@ -71,11 +71,11 @@ function colorScale(v){
     }
   }
 }
-// Maps a strength/maxStrength ratio (1=full health) onto the same color
-// scale used for danger: full strength -> green, zero strength -> bright red.
-function strengthColor(strength,maxStrength){
-  const ratio=maxStrength>0?Math.max(0,strength)/maxStrength:0;
-  return colorScale((1-ratio)*3);
+// Maps a maxStress/maxStrength ratio onto the danger color scale:
+// 0 stress -> green, stress at the breaking point -> bright red.
+function stressColor(stress,maxStrength){
+  const ratio=maxStrength>0?Math.min(1,Math.max(0,stress)/maxStrength):0;
+  return colorScale(ratio*3);
 }
 
 function resize(){
@@ -100,68 +100,112 @@ function calcGrid(){
   while(grid[0]&&grid[0].length<cols)for(let r=0;r<grid.length;r++)grid[r].push(null);
   if(grid[0]&&grid[0].length>cols)for(let r=0;r<grid.length;r++)grid[r].length=cols;
   if(!grid[rows-1])grid[rows-1]=new Array(cols).fill(null);
-  for(let c=0;c<cols;c++)if(!grid[rows-1][c])grid[rows-1][c]={mat:0,strength:MATERIALS[0].maxStrength};
+  for(let c=0;c<cols;c++)if(!grid[rows-1][c])grid[rows-1][c]={mat:0};
   recalculate();
   buildStats();
 }
 
 /*
- * STRENGTH PROPAGATION MODEL
- * (ported from Zarkonnen/Structural, script.js — MIT/Unlicense)
+ * WEIGHT + LEVERAGE TENSION MODEL
  *
- * Ground blocks hold their material's maxStrength forever. Every other
- * block's strength is derived by propagating strength outward from
- * neighbors that already have some: a neighbor's strength can push mine up
- * to (neighbor.strength + neighbor.material's penalty for that direction),
- * capped at my own maxStrength. Penalties are negative, so strength erodes
- * with distance from ground. A block whose strength is pushed to <= 0 can't
- * hold itself up and collapses to air, which can cascade, so after any
- * collapse the whole propagation restarts from a clean slate.
+ * BFS out from the ground to find which blocks are connected and how many
+ * hops (layer) each is from it. Weight then flows from the highest layer
+ * down toward the ground: each block hands its accumulated load to whichever
+ * neighbor(s) sit exactly one layer closer (splitting evenly if there's more
+ * than one), so a load can only ever move toward layer 0. Vertical hand-offs
+ * are pure compression (zero tension). Horizontal hand-offs are the actual
+ * lever arms — the block on the far end is relying entirely on that sideways
+ * connection, so its stress is the load carried across the edge divided by
+ * the weaker of the two materials' strength. Disconnected blocks (nothing
+ * BFS-reachable from ground) fall, and any block overloaded past its
+ * material's maxStrength breaks — both cascade, so we restart from scratch
+ * whenever either happens.
  */
 function recalculate(){
   const R=rows,C=cols;
   if(!R||!C)return;
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
-  const propagate=(nb,val)=>{
-    if(!nb)return;
-    const nm=matOf(nb.mat);
-    nb.strength=Math.min(nm.maxStrength,Math.max(nb.strength,val));
-  };
-
-  // 1. Clear all strengths; ground blocks stay at their material's maxStrength.
-  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
-    const bl=grid[r][c];if(!bl)continue;
-    const mat=matOf(bl.mat);
-    bl.strength=mat.ground?mat.maxStrength:0;
-  }
+  const NB=[[-1,0],[1,0],[0,-1],[0,1]];
 
   restart:
   while(true){
-    // 2. Sweep bottom row to top row, propagating strength upward/sideways.
-    for(let r=R-1;r>=0;r--){
-      for(let pass=0;pass<2;pass++){ // two horizontal directions per row for faster convergence
-        const asc=pass===0;
-        for(let i=0;i<C;i++){
-          const c=asc?i:C-1-i;
-          const me=bAt(r,c);if(!me)continue;
-          const mat=matOf(me.mat);
-          me.strength=Math.min(me.strength,mat.maxStrength);
-          propagate(bAt(r-1,c),me.strength+mat.vPenalty);     // vertical (up)
-          propagate(bAt(r,c-1),me.strength+mat.hPenalty);     // horizontal
-          propagate(bAt(r,c+1),me.strength+mat.hPenalty);     // horizontal
-          propagate(bAt(r-1,c-1),me.strength+mat.dPenalty);   // diagonal
-          propagate(bAt(r-1,c+1),me.strength+mat.dPenalty);   // diagonal
-        }
-      }
-      // c. Collapse any non-air block that can't sustain itself, then restart.
-      for(let c=0;c<C;c++){
-        const bl=bAt(r,c);
-        if(bl&&bl.strength<=0){
-          grid[r][c]=null;
-          continue restart;
-        }
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+      const bl=grid[r][c];if(!bl)continue;
+      const mat=matOf(bl.mat);
+      bl.weight=mat.weight;bl.load=mat.weight;bl.maxStress=0;
+      bl.connected=false;bl.layer=-1;
+    }
+
+    // 1. BFS from ground anchors.
+    const q=[];
+    for(let c=0;c<C;c++){
+      const g=bAt(R-1,c);
+      if(g&&matOf(g.mat).ground){g.connected=true;g.layer=0;q.push([R-1,c]);}
+    }
+    for(let qi=0;qi<q.length;qi++){
+      const[r,c]=q[qi],me=bAt(r,c);
+      for(const[dr,dc]of NB){
+        const nb=bAt(r+dr,c+dc);
+        if(nb&&!nb.connected){nb.connected=true;nb.layer=me.layer+1;q.push([r+dr,c+dc]);}
       }
     }
+
+    // Anything BFS never reached is floating debris — drop it and restart.
+    let collapsed=false;
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+      const bl=bAt(r,c);
+      if(bl&&!matOf(bl.mat).ground&&!bl.connected){grid[r][c]=null;collapsed=true;}
+    }
+    if(collapsed)continue restart;
+
+    // Process highest layer first so a block's load is final before it hands
+    // that load down to its own layer-1 supports.
+    const order=[];
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+      const bl=bAt(r,c);
+      if(bl&&!matOf(bl.mat).ground)order.push([r,c]);
+    }
+    order.sort((a,b)=>bAt(b[0],b[1]).layer-bAt(a[0],a[1]).layer);
+
+    // 2/3. Distribute load to layer-1 supports and record the per-edge flow,
+    // which is exactly the overhung weight carried across that connection.
+    const flow=new Map();
+    const key=(r,c,dr,dc)=>r+','+c+':'+dr+','+dc;
+    for(const[r,c]of order){
+      const me=bAt(r,c);
+      const supports=[];
+      for(const[dr,dc]of NB){
+        const nb=bAt(r+dr,c+dc);
+        if(nb&&nb.connected&&nb.layer===me.layer-1)supports.push([dr,dc,nb]);
+      }
+      if(!supports.length)continue;
+      const share=me.load/supports.length;
+      for(const[dr,dc,nb]of supports){nb.load+=share;flow.set(key(r,c,dr,dc),share);}
+    }
+
+    for(const[r,c]of order){
+      const me=bAt(r,c),matMe=matOf(me.mat);
+      for(const[dr,dc]of NB){
+        const nb=bAt(r+dr,c+dc);
+        if(!nb||!nb.connected||nb.layer!==me.layer-1)continue;
+        let stress=0;
+        if(dr===0){ // horizontal hand-off: leverage, not compression
+          const connStrength=Math.min(matMe.maxStrength,matOf(nb.mat).maxStrength);
+          stress=connStrength>0?(flow.get(key(r,c,dr,dc))||0)/connStrength:0;
+        }
+        if(stress>me.maxStress)me.maxStress=stress;
+        if(stress>nb.maxStress)nb.maxStress=stress;
+      }
+    }
+
+    // 4. Break anything overloaded past its own material, then restart.
+    let broke=false;
+    for(const[r,c]of order){
+      const me=bAt(r,c);
+      if(me.maxStress>matOf(me.mat).maxStrength){grid[r][c]=null;broke=true;}
+    }
+    if(broke)continue restart;
+
     break;
   }
 }
@@ -183,7 +227,7 @@ function draw(){
       continue;
     }
     ctx.fillStyle=mat.color;ctx.fillRect(x+1,y+1,cell-2,cell-2);
-    ctx.lineWidth=edgeW;ctx.strokeStyle=strengthColor(bl.strength,mat.maxStrength);
+    ctx.lineWidth=edgeW;ctx.strokeStyle=stressColor(bl.maxStress,mat.maxStrength);
     ctx.strokeRect(x+edgeW/2,y+edgeW/2,cell-edgeW,cell-edgeW);
   }
 }
@@ -213,7 +257,7 @@ function getCell(e){
 function placeOrRemove(cl){
   if(!cl)return;
   if(mode==='remove'){if(grid[cl.r][cl.c])grid[cl.r][cl.c]=null;}
-  else{if(grid[cl.r][cl.c])return;const mat=matOf(sel);grid[cl.r][cl.c]={mat:sel,strength:mat.maxStrength};}
+  else{if(grid[cl.r][cl.c])return;grid[cl.r][cl.c]={mat:sel};}
   recalculate();buildStats();draw();
 }
 cv.addEventListener('mousedown',e=>{dragging=true;const c=getCell(e);if(!c)return;

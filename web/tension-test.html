@@ -125,9 +125,13 @@ function calcGrid(){
  *
  * Each support edge's stress is its share of flow divided by the weaker of
  * the two blocks' material strength. A block's displayed stress is the worst
- * edge touching it (either as the dependent or as someone else's support);
- * whether that edge connects to a neighbor one layer closer to the ground
- * decides isCompression — a same-layer (or upstream) edge isn't compression.
+ * edge touching it (either as the dependent or as someone else's support).
+ * Same-layer edges get their own share-of-accum stress too, tracked as
+ * worstHorizontalStress: any load crossing sideways to reach a pillar is
+ * tension, never compression, regardless of how it compares to the block's
+ * vertical support stress. Only when a block has no such horizontal stress
+ * does its worst edge — one layer closer to the ground — count as pure
+ * compression.
  *
  * Disconnected blocks (nothing BFS-reachable from ground) fall, and any
  * block overloaded past its material's maxStrength breaks — both cascade,
@@ -144,22 +148,26 @@ function recalculate(){
     for(let r=0;r<R;r++)for(let c=0;c<C;c++){
       const bl=grid[r][c];if(!bl)continue;
       const mat=matOf(bl.mat);
-      bl.weight=mat.weight;bl.maxStress=0;
+      bl.weight=mat.weight;bl.maxStress=0;bl.worstHorizontalStress=0;
       bl.connected=false;bl.isCompression=false;
       bl.layer=-1;bl._nbLayer=null;
     }
 
-    // 1. BFS from ground anchors — layer = steps from the nearest ground block.
+    // 1. BFS from ground anchors for connectivity only. Layer is the row
+    // height from the ground (not BFS distance) so every block at the same
+    // row is a same-layer neighbor of its horizontal neighbors — a beam's
+    // blocks all land in one layer regardless of which pillar BFS reached
+    // them from, so horizontal stress can actually fire between them.
     const q=[];
     for(let c=0;c<C;c++){
       const g=bAt(R-1,c);
       if(g&&matOf(g.mat).ground){g.connected=true;g.layer=0;q.push([R-1,c]);}
     }
     for(let qi=0;qi<q.length;qi++){
-      const[r,c]=q[qi];const cur=bAt(r,c);
+      const[r,c]=q[qi];
       for(const[dr,dc]of NB){
         const nb=bAt(r+dr,c+dc);
-        if(nb&&!nb.connected){nb.connected=true;nb.layer=cur.layer+1;q.push([r+dr,c+dc]);}
+        if(nb&&!nb.connected){nb.connected=true;nb.layer=(R-1)-(r+dr);q.push([r+dr,c+dc]);}
       }
     }
 
@@ -226,10 +234,12 @@ function recalculate(){
     // beam edge (same layer) or load merely passing through from above.
     for(const[r,c]of order){
       const me=bAt(r,c),matMe=matOf(me.mat);
-      const supports=[];
+      const supports=[],lateral=[];
       for(const[dr,dc]of NB){
         const nb=bAt(r+dr,c+dc);
-        if(nb&&nb.connected&&nb.layer===me.layer-1)supports.push(nb);
+        if(!nb||!nb.connected)continue;
+        if(nb.layer===me.layer-1)supports.push(nb);
+        else if(nb.layer===me.layer)lateral.push(nb);
       }
       const share=me.accum/supports.length;
       for(const nb of supports){
@@ -238,10 +248,23 @@ function recalculate(){
         if(stress>me.maxStress){me.maxStress=stress;me._nbLayer=nb.layer;}
         if(stress>nb.maxStress){nb.maxStress=stress;nb._nbLayer=me.layer;}
       }
+      // Same-layer edges carry a beam's load sideways toward its pillars —
+      // that's tension, not compression, however much load crosses it.
+      if(lateral.length){
+        const hShare=me.accum/lateral.length;
+        for(const nb of lateral){
+          const connStrength=Math.min(matMe.maxStrength,matOf(nb.mat).maxStrength);
+          const hStress=connStrength>0?hShare/connStrength:0;
+          if(hStress>me.worstHorizontalStress)me.worstHorizontalStress=hStress;
+          if(hStress>nb.worstHorizontalStress)nb.worstHorizontalStress=hStress;
+          if(hStress>me.maxStress){me.maxStress=hStress;me._nbLayer=nb.layer;}
+          if(hStress>nb.maxStress){nb.maxStress=hStress;nb._nbLayer=me.layer;}
+        }
+      }
     }
     for(const[r,c]of order){
       const me=bAt(r,c);
-      me.isCompression=me.maxStress>0&&me._nbLayer===me.layer-1;
+      me.isCompression=me.worstHorizontalStress>0?false:(me.maxStress>0&&me._nbLayer===me.layer-1);
     }
 
     // 3. Break anything overloaded past its own material, then restart.

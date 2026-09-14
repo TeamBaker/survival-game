@@ -106,20 +106,24 @@ function calcGrid(){
 }
 
 /*
- * WEIGHT + LEVERAGE TENSION MODEL
+ * PER-EDGE OVERHUNG-WEIGHT TENSION MODEL
  *
- * BFS out from the ground to find which blocks are connected and how many
- * hops (layer) each is from it. Weight then flows from the highest layer
- * down toward the ground: each block hands its accumulated load to whichever
- * neighbor(s) sit exactly one layer closer (splitting evenly if there's more
- * than one), so a load can only ever move toward layer 0. Vertical hand-offs
- * are pure compression (zero tension). Horizontal hand-offs are the actual
- * lever arms — the block on the far end is relying entirely on that sideways
- * connection, so its stress is the load carried across the edge divided by
- * the weaker of the two materials' strength. Disconnected blocks (nothing
- * BFS-reachable from ground) fall, and any block overloaded past its
- * material's maxStrength breaks — both cascade, so we restart from scratch
- * whenever either happens.
+ * BFS out from the ground to find which blocks are connected. The stress
+ * model then looks at every edge between two connected blocks
+ * independently: cut that one edge and BFS from the ground again. Whatever
+ * stays reachable has another path to the ground, so the edge wasn't load
+ * bearing for it. Whatever falls out of reach was depending entirely on
+ * that edge — its total weight is "overhung" across the connection, and the
+ * edge's stress is that overhung weight divided by the weaker of the two
+ * blocks' material strength. A block's displayed stress is the worst edge
+ * touching it. This is what lets load spread along an entire beam instead
+ * of only showing near the hanging weight: every block between the weight
+ * and each pillar has an edge whose cut isolates the weight, so every one
+ * of them carries the same overhung weight.
+ *
+ * Disconnected blocks (nothing BFS-reachable from ground) fall, and any
+ * block overloaded past its material's maxStrength breaks — both cascade,
+ * so we restart from scratch whenever either happens.
  */
 function recalculate(){
   const R=rows,C=cols;
@@ -132,21 +136,21 @@ function recalculate(){
     for(let r=0;r<R;r++)for(let c=0;c<C;c++){
       const bl=grid[r][c];if(!bl)continue;
       const mat=matOf(bl.mat);
-      bl.weight=mat.weight;bl.load=mat.weight;bl.maxStress=0;
-      bl.connected=false;bl.layer=-1;
+      bl.weight=mat.weight;bl.maxStress=0;
+      bl.connected=false;
     }
 
     // 1. BFS from ground anchors.
     const q=[];
     for(let c=0;c<C;c++){
       const g=bAt(R-1,c);
-      if(g&&matOf(g.mat).ground){g.connected=true;g.layer=0;q.push([R-1,c]);}
+      if(g&&matOf(g.mat).ground){g.connected=true;q.push([R-1,c]);}
     }
     for(let qi=0;qi<q.length;qi++){
-      const[r,c]=q[qi],me=bAt(r,c);
+      const[r,c]=q[qi];
       for(const[dr,dc]of NB){
         const nb=bAt(r+dr,c+dc);
-        if(nb&&!nb.connected){nb.connected=true;nb.layer=me.layer+1;q.push([r+dr,c+dc]);}
+        if(nb&&!nb.connected){nb.connected=true;q.push([r+dr,c+dc]);}
       }
     }
 
@@ -158,47 +162,70 @@ function recalculate(){
     }
     if(collapsed)continue restart;
 
-    // Process highest layer first so a block's load is final before it hands
-    // that load down to its own layer-1 supports.
     const order=[];
     for(let r=0;r<R;r++)for(let c=0;c<C;c++){
       const bl=bAt(r,c);
       if(bl&&!matOf(bl.mat).ground)order.push([r,c]);
     }
-    order.sort((a,b)=>bAt(b[0],b[1]).layer-bAt(a[0],a[1]).layer);
 
-    // 2/3. Distribute load to layer-1 supports and record the per-edge flow,
-    // which is exactly the overhung weight carried across that connection.
-    const flow=new Map();
-    const key=(r,c,dr,dc)=>r+','+c+':'+dr+','+dc;
-    for(const[r,c]of order){
-      const me=bAt(r,c);
-      const supports=[];
-      for(const[dr,dc]of NB){
-        const nb=bAt(r+dr,c+dc);
-        if(nb&&nb.connected&&nb.layer===me.layer-1)supports.push([dr,dc,nb]);
-      }
-      if(!supports.length)continue;
-      const share=me.load/supports.length;
-      for(const[dr,dc,nb]of supports){nb.load+=share;flow.set(key(r,c,dr,dc),share);}
-    }
-
+    // 2. Per-edge overhung weight: for every edge between two connected
+    // blocks, cut it and re-BFS from the ground. Anything that falls out of
+    // reach was hanging entirely off that edge, so its summed weight becomes
+    // the leverage on that connection.
+    const edgeKey=(r,c,r2,c2)=>(r<r2||(r===r2&&c<c2))?`${r},${c}-${r2},${c2}`:`${r2},${c2}-${r},${c}`;
+    const edgeStress=new Map();
     for(const[r,c]of order){
       const me=bAt(r,c),matMe=matOf(me.mat);
       for(const[dr,dc]of NB){
-        const nb=bAt(r+dr,c+dc);
-        if(!nb||!nb.connected||nb.layer!==me.layer-1)continue;
-        let stress=0;
-        if(dr===0){ // horizontal hand-off: leverage, not compression
-          const connStrength=Math.min(matMe.maxStrength,matOf(nb.mat).maxStrength);
-          stress=connStrength>0?(flow.get(key(r,c,dr,dc))||0)/connStrength:0;
+        const nr=r+dr,nc=c+dc,nb=bAt(nr,nc);
+        if(!nb||!nb.connected)continue;
+        const ek=edgeKey(r,c,nr,nc);
+        if(edgeStress.has(ek)){
+          const s=edgeStress.get(ek);
+          if(s>me.maxStress)me.maxStress=s;
+          continue;
         }
+
+        // BFS from every ground anchor, skipping just this one edge.
+        const reach=new Set();
+        const gq=[];
+        for(let cc=0;cc<C;cc++){
+          const g=bAt(R-1,cc);
+          if(g&&matOf(g.mat).ground){const gk=(R-1)+','+cc;reach.add(gk);gq.push([R-1,cc]);}
+        }
+        for(let qi=0;qi<gq.length;qi++){
+          const[qr,qc]=gq[qi];
+          for(const[ddr,ddc]of NB){
+            const tr=qr+ddr,tc=qc+ddc;
+            if(edgeKey(qr,qc,tr,tc)===ek)continue;
+            const tb=bAt(tr,tc);
+            if(!tb||!tb.connected)continue;
+            const tk=tr+','+tc;
+            if(reach.has(tk))continue;
+            reach.add(tk);gq.push([tr,tc]);
+          }
+        }
+
+        // Cutting one edge can only strand one side (a bridge splits a
+        // connected graph in two; a redundant edge strands nobody), so
+        // summing every still-connected block that fell out of reach gives
+        // exactly the weight hanging off this edge.
+        let overhung=0;
+        if(!reach.has(r+','+c)||!reach.has(nr+','+nc)){
+          for(const[or,oc]of order){
+            if(!reach.has(or+','+oc))overhung+=bAt(or,oc).weight;
+          }
+        }
+
+        const connStrength=Math.min(matMe.maxStrength,matOf(nb.mat).maxStrength);
+        const stress=connStrength>0?overhung/connStrength:0;
+        edgeStress.set(ek,stress);
         if(stress>me.maxStress)me.maxStress=stress;
         if(stress>nb.maxStress)nb.maxStress=stress;
       }
     }
 
-    // 4. Break anything overloaded past its own material, then restart.
+    // 3. Break anything overloaded past its own material, then restart.
     let broke=false;
     for(const[r,c]of order){
       const me=bAt(r,c);

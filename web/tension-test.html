@@ -106,23 +106,27 @@ function calcGrid(){
 }
 
 /*
- * 2D DIRECT STIFFNESS METHOD (TRUSS FEM)
+ * 2D DIRECT STIFFNESS METHOD (FRAME/BEAM FEM)
  *
- * Every connected block is a node with 2 DOFs (x/y displacement); every
- * face-adjacent pair of connected blocks is an axial truss element with
- * stiffness EA/L (E=A=1, so k=1/L). Ground blocks are fixed supports — they
- * exist as nodes but contribute no free DOFs, so their displacement is
- * always zero. Gravity is a downward point load at each free node equal to
- * its material's weight. Assembling the global stiffness matrix K and
- * solving Ku=F (Gaussian elimination) for the free-node displacements gives,
- * per element, the axial deformation along its own direction cosines and
- * hence its internal force: positive is tension, negative is compression. A
- * block's displayed stress is the largest |force| of any edge touching it;
- * if that worst edge is compressive (and clears a small noise floor
- * relative to material strength) the block is flagged as in compression.
+ * Every connected block is a node with 3 DOFs (x displacement, y
+ * displacement, rotation); every face-adjacent pair of connected blocks is a
+ * 2D Euler-Bernoulli beam element with both axial stiffness (EA/L) and
+ * bending stiffness (EI/L^3), so horizontal beams resist vertical loads
+ * instead of collapsing the way a truss (pin-jointed, no bending) does.
+ * Ground blocks are fixed supports — all 3 DOFs are locked at zero. Gravity
+ * is a downward point load at each free node equal to its material's
+ * weight (no applied moments). Assembling the global 3n x 3n stiffness
+ * matrix K and solving Ku=F (Gaussian elimination) gives each free node's
+ * displacement/rotation; transforming an element's global DOFs into its
+ * local axis and multiplying by the local stiffness matrix recovers its end
+ * forces: axial force N (+ tension, - compression) and bending moment M. A
+ * block's displayed stress is the largest combined stress (|N| + |M|/L) of
+ * any edge touching it; if that worst edge is compressive (and clears a
+ * small noise floor relative to material strength) the block is flagged as
+ * in compression.
  *
  * Disconnected blocks (nothing BFS-reachable from ground) fall, and any
- * edge carrying more force than the weaker of its two blocks' material
+ * edge whose combined stress exceeds the weaker of its two blocks' material
  * strength breaks — removing the lighter of the two blocks (ground is
  * never removed). Both cascade, so we restart from scratch whenever either
  * happens.
@@ -158,10 +162,42 @@ function recalculate(){
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
   const NB=[[-1,0],[1,0],[0,-1],[0,1]];
   const RIGHT_DOWN=[[1,0],[0,1]];
+
   const geo=el=>{
     const dx=el.nc-el.c,dy=el.nr-el.r,L=Math.sqrt(dx*dx+dy*dy);
-    return{cs:dx/L,sn:dy/L,k:1/L};
+    const matA=matOf(bAt(el.r,el.c).mat),matB=matOf(bAt(el.nr,el.nc).mat);
+    const EA=(matA.maxStrength+matB.maxStrength)/2;
+    const EI=EA*L*L/12;
+    return{L,cs:dx/L,sn:dy/L,EA,EI};
   };
+  // 6x6 local beam stiffness: axial DOFs (0,3) + bending DOFs (1,2,4,5),
+  // ordered [uA,vA,thetaA,uB,vB,thetaB].
+  const localK=(L,EA,EI)=>{
+    const k=EI/(L*L*L);
+    return[
+      [EA/L,0,0,-EA/L,0,0],
+      [0,12*k,6*L*k,0,-12*k,6*L*k],
+      [0,6*L*k,4*L*L*k,0,-6*L*k,2*L*L*k],
+      [-EA/L,0,0,EA/L,0,0],
+      [0,-12*k,-6*L*k,0,12*k,-6*L*k],
+      [0,6*L*k,2*L*L*k,0,-6*L*k,4*L*L*k],
+    ];
+  };
+  // Local-axis rotation matrix (global -> local): u_local = T * u_global.
+  const rotT=(cs,sn)=>[
+    [cs,sn,0,0,0,0],
+    [-sn,cs,0,0,0,0],
+    [0,0,1,0,0,0],
+    [0,0,0,cs,sn,0],
+    [0,0,0,-sn,cs,0],
+    [0,0,0,0,0,1],
+  ];
+  const matMul6=(A,B)=>{
+    const out=[];for(let i=0;i<6;i++){out.push(new Array(6).fill(0));
+      for(let j=0;j<6;j++){let s=0;for(let k=0;k<6;k++)s+=A[i][k]*B[k][j];out[i][j]=s;}}
+    return out;
+  };
+  const transpose6=A=>{const out=[];for(let i=0;i<6;i++){out.push(new Array(6));for(let j=0;j<6;j++)out[i][j]=A[j][i];}return out;};
 
   restart:
   while(true){
@@ -193,7 +229,7 @@ function recalculate(){
     if(collapsed)continue restart;
 
     // 1. Node list & DOF map — every connected non-ground block gets a
-    // free-DOF node index; ground blocks stay fixed (u=0, no DOFs).
+    // free-node index (3 DOFs: x, y, rotation); ground blocks stay fixed.
     const nodeIdx=[];for(let r=0;r<R;r++)nodeIdx.push(new Array(C).fill(-1));
     let nFree=0;
     const order=[];
@@ -202,6 +238,7 @@ function recalculate(){
       if(bl&&bl.connected&&!matOf(bl.mat).ground){nodeIdx[r][c]=nFree++;order.push([r,c]);}
     }
 
+    // 2. Element list — RIGHT/DOWN pairs of adjacent connected blocks.
     const elements=[];
     for(let r=0;r<R;r++)for(let c=0;c<C;c++){
       const me=bAt(r,c);if(!me||!me.connected)continue;
@@ -211,56 +248,65 @@ function recalculate(){
       }
     }
 
-    // 2. Assemble global stiffness matrix K, 3. force vector F (gravity).
-    const nDOF=2*nFree;
+    // 3. Assemble global stiffness matrix K, 4. force vector F (gravity).
+    const nDOF=3*nFree;
     const K=[];for(let i=0;i<nDOF;i++)K.push(new Float64Array(nDOF));
     const F=new Float64Array(nDOF);
-    for(const[r,c]of order)F[2*nodeIdx[r][c]+1]+=bAt(r,c).weight;
+    for(const[r,c]of order)F[3*nodeIdx[r][c]+1]+=bAt(r,c).weight;
 
     for(const el of elements){
-      const{cs,sn,k}=geo(el);
+      const{L,cs,sn,EA,EI}=geo(el);
+      const Kg=matMul6(transpose6(rotT(cs,sn)),matMul6(localK(L,EA,EI),rotT(cs,sn)));
+
       const iA=nodeIdx[el.r][el.c],iB=nodeIdx[el.nr][el.nc];
-      const dofs=[iA>=0?2*iA:-1,iA>=0?2*iA+1:-1,iB>=0?2*iB:-1,iB>=0?2*iB+1:-1];
-      const ke=[
-        [cs*cs,cs*sn,-cs*cs,-cs*sn],
-        [cs*sn,sn*sn,-cs*sn,-sn*sn],
-        [-cs*cs,-cs*sn,cs*cs,cs*sn],
-        [-cs*sn,-sn*sn,cs*sn,sn*sn],
+      const dofs=[
+        iA>=0?3*iA:-1,iA>=0?3*iA+1:-1,iA>=0?3*iA+2:-1,
+        iB>=0?3*iB:-1,iB>=0?3*iB+1:-1,iB>=0?3*iB+2:-1,
       ];
-      for(let i=0;i<4;i++){
+      for(let i=0;i<6;i++){
         if(dofs[i]<0)continue;
-        for(let j=0;j<4;j++){
+        for(let j=0;j<6;j++){
           if(dofs[j]<0)continue;
-          K[dofs[i]][dofs[j]]+=k*ke[i][j];
+          K[dofs[i]][dofs[j]]+=Kg[i][j];
         }
       }
     }
 
-    // 4. Solve Ku=F for the free-node displacements.
+    // 5. Solve Ku=F for the free-node displacements/rotations.
     const u=solveLinear(K,F,nDOF);
 
-    // 5. Extract internal force per element, tracking each block's worst
-    // edge, then 7. break anything overloaded past the weaker material.
+    // 6. Extract internal forces per element (axial N, bending moment M in
+    // the element's local frame), tracking each block's worst edge, then
+    // 8. break anything overloaded past the weaker material.
     let broke=false;
     for(const el of elements){
-      const{cs,sn,k}=geo(el);
-      const iA=nodeIdx[el.r][el.c],iB=nodeIdx[el.nr][el.nc];
-      const uxA=iA>=0?u[2*iA]:0,uyA=iA>=0?u[2*iA+1]:0;
-      const uxB=iB>=0?u[2*iB]:0,uyB=iB>=0?u[2*iB+1]:0;
-      const delta=(uxB-uxA)*cs+(uyB-uyA)*sn;
-      const Fint=k*delta; // + tension, - compression
-      const absF=Math.abs(Fint);
-
       const A=bAt(el.r,el.c),B=bAt(el.nr,el.nc);
       if(!A||!B)continue; // already broken earlier this pass
 
+      const{L,cs,sn,EA,EI}=geo(el);
+      const Kl=localK(L,EA,EI),T=rotT(cs,sn);
+
+      const iA=nodeIdx[el.r][el.c],iB=nodeIdx[el.nr][el.nc];
+      const uGlobal=[
+        iA>=0?u[3*iA]:0,iA>=0?u[3*iA+1]:0,iA>=0?u[3*iA+2]:0,
+        iB>=0?u[3*iB]:0,iB>=0?u[3*iB+1]:0,iB>=0?u[3*iB+2]:0,
+      ];
+      const uLocal=new Array(6).fill(0);
+      for(let i=0;i<6;i++){let s=0;for(let j=0;j<6;j++)s+=T[i][j]*uGlobal[j];uLocal[i]=s;}
+      const fLocal=new Array(6).fill(0);
+      for(let i=0;i<6;i++){let s=0;for(let j=0;j<6;j++)s+=Kl[i][j]*uLocal[j];fLocal[i]=s;}
+
+      const N=fLocal[3]; // + tension, - compression
+      const M=Math.max(Math.abs(fLocal[2]),Math.abs(fLocal[5])); // worst end moment
+      const combined=Math.abs(N)+M/L; // axial + bending, folded into one stress metric
+
       for(const blk of[A,B]){
-        if(absF>=blk.maxStress){blk.maxStress=absF;blk._worstCompressive=Fint<0;}
+        if(combined>=blk.maxStress){blk.maxStress=combined;blk._worstCompressive=N<0;}
       }
 
       const matA=matOf(A.mat),matB=matOf(B.mat);
       const limit=Math.min(matA.maxStrength,matB.maxStrength);
-      if(absF>limit){
+      if(combined>limit){
         if(matA.ground)grid[el.nr][el.nc]=null;
         else if(matB.ground)grid[el.r][el.c]=null;
         else if(matA.weight<=matB.weight)grid[el.r][el.c]=null;
@@ -270,7 +316,7 @@ function recalculate(){
     }
     if(broke)continue restart;
 
-    // 6. Compression flag: only when a block's worst edge is compressive
+    // 7. Compression flag: only when a block's worst edge is compressive
     // and its stress ratio clears a small noise floor.
     for(const[r,c]of order){
       const bl=bAt(r,c);

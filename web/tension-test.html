@@ -106,72 +106,85 @@ function calcGrid(){
 }
 
 /*
- * LOAD-DISTRIBUTION TENSION MODEL
+ * 2D DIRECT STIFFNESS METHOD (TRUSS FEM)
  *
- * BFS out from the ground assigns every connected block a layer = its
- * shortest distance (in blocks) from the ground. A block's "supports" are
- * its connected neighbors exactly one layer closer to the ground — BFS
- * guarantees at least one exists. Processing blocks from the farthest layer
- * inward, each block's accumulated load (its own weight plus whatever has
- * flowed into it from blocks leaning on it) splits evenly across its
- * supports and flows onward. This lets a beam's load reach every support
- * pillar instead of vanishing into redundant paths, and lets stress build up
- * along a cantilever as more blocks hang off the far end.
- *
- * Before support-edge stress is computed, load also spreads sideways: a
- * beam doesn't just cascade down whichever support BFS happened to find
- * first, it equalizes with same-layer neighbors so both pillars under a
- * beam pick up their share.
- *
- * Each support edge's stress is its share of flow divided by the weaker of
- * the two blocks' material strength. A block's displayed stress is the worst
- * edge touching it (either as the dependent or as someone else's support).
- * Same-layer edges get their own share-of-accum stress too, tracked as
- * worstHorizontalStress: any load crossing sideways to reach a pillar is
- * tension, never compression, regardless of how it compares to the block's
- * vertical support stress. Only when a block has no such horizontal stress
- * does its worst edge — one layer closer to the ground — count as pure
- * compression.
+ * Every connected block is a node with 2 DOFs (x/y displacement); every
+ * face-adjacent pair of connected blocks is an axial truss element with
+ * stiffness EA/L (E=A=1, so k=1/L). Ground blocks are fixed supports — they
+ * exist as nodes but contribute no free DOFs, so their displacement is
+ * always zero. Gravity is a downward point load at each free node equal to
+ * its material's weight. Assembling the global stiffness matrix K and
+ * solving Ku=F (Gaussian elimination) for the free-node displacements gives,
+ * per element, the axial deformation along its own direction cosines and
+ * hence its internal force: positive is tension, negative is compression. A
+ * block's displayed stress is the largest |force| of any edge touching it;
+ * if that worst edge is compressive (and clears a small noise floor
+ * relative to material strength) the block is flagged as in compression.
  *
  * Disconnected blocks (nothing BFS-reachable from ground) fall, and any
- * block overloaded past its material's maxStrength breaks — both cascade,
- * so we restart from scratch whenever either happens.
+ * edge carrying more force than the weaker of its two blocks' material
+ * strength breaks — removing the lighter of the two blocks (ground is
+ * never removed). Both cascade, so we restart from scratch whenever either
+ * happens.
  */
+function solveLinear(K,F,n){
+  const A=new Array(n);
+  for(let i=0;i<n;i++){A[i]=Array.from(K[i]);A[i].push(F[i]);A[i][i]+=1e-9;}
+  for(let p=0;p<n;p++){
+    let piv=p,best=Math.abs(A[p][p]);
+    for(let r=p+1;r<n;r++){const v=Math.abs(A[r][p]);if(v>best){best=v;piv=r;}}
+    if(piv!==p){const t=A[p];A[p]=A[piv];A[piv]=t;}
+    const d=A[p][p];
+    if(Math.abs(d)<1e-12)continue;
+    for(let r=p+1;r<n;r++){
+      const f=A[r][p]/d;
+      if(!f)continue;
+      for(let cIdx=p;cIdx<=n;cIdx++)A[r][cIdx]-=f*A[p][cIdx];
+    }
+  }
+  const u=new Float64Array(n);
+  for(let p=n-1;p>=0;p--){
+    let sum=A[p][n];
+    for(let cIdx=p+1;cIdx<n;cIdx++)sum-=A[p][cIdx]*u[cIdx];
+    const d=A[p][p];
+    u[p]=Math.abs(d)<1e-12?0:sum/d;
+  }
+  return u;
+}
+
 function recalculate(){
   const R=rows,C=cols;
   if(!R||!C)return;
   const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
   const NB=[[-1,0],[1,0],[0,-1],[0,1]];
+  const RIGHT_DOWN=[[1,0],[0,1]];
+  const geo=el=>{
+    const dx=el.nc-el.c,dy=el.nr-el.r,L=Math.sqrt(dx*dx+dy*dy);
+    return{cs:dx/L,sn:dy/L,k:1/L};
+  };
 
   restart:
   while(true){
     for(let r=0;r<R;r++)for(let c=0;c<C;c++){
       const bl=grid[r][c];if(!bl)continue;
       const mat=matOf(bl.mat);
-      bl.weight=mat.weight;bl.maxStress=0;bl.worstHorizontalStress=0;
-      bl.connected=false;bl.isCompression=false;
-      bl.layer=-1;bl._nbLayer=null;
+      bl.weight=mat.weight;bl.maxStress=0;bl.compression=false;
+      bl.connected=false;
     }
 
-    // 1. BFS from ground anchors for connectivity only. Layer is the row
-    // height from the ground (not BFS distance) so every block at the same
-    // row is a same-layer neighbor of its horizontal neighbors — a beam's
-    // blocks all land in one layer regardless of which pillar BFS reached
-    // them from, so horizontal stress can actually fire between them.
+    // BFS from ground anchors; anything unreached is floating debris.
     const q=[];
     for(let c=0;c<C;c++){
       const g=bAt(R-1,c);
-      if(g&&matOf(g.mat).ground){g.connected=true;g.layer=0;q.push([R-1,c]);}
+      if(g&&matOf(g.mat).ground){g.connected=true;q.push([R-1,c]);}
     }
     for(let qi=0;qi<q.length;qi++){
       const[r,c]=q[qi];
       for(const[dr,dc]of NB){
         const nb=bAt(r+dr,c+dc);
-        if(nb&&!nb.connected){nb.connected=true;nb.layer=(R-1)-(r+dr);q.push([r+dr,c+dc]);}
+        if(nb&&!nb.connected){nb.connected=true;q.push([r+dr,c+dc]);}
       }
     }
-
-    // Anything BFS never reached is floating debris — drop it and restart.
     let collapsed=false;
     for(let r=0;r<R;r++)for(let c=0;c<C;c++){
       const bl=bAt(r,c);
@@ -179,101 +192,91 @@ function recalculate(){
     }
     if(collapsed)continue restart;
 
+    // 1. Node list & DOF map — every connected non-ground block gets a
+    // free-DOF node index; ground blocks stay fixed (u=0, no DOFs).
+    const nodeIdx=[];for(let r=0;r<R;r++)nodeIdx.push(new Array(C).fill(-1));
+    let nFree=0;
     const order=[];
     for(let r=0;r<R;r++)for(let c=0;c<C;c++){
       const bl=bAt(r,c);
-      if(bl&&!matOf(bl.mat).ground)order.push([r,c]);
+      if(bl&&bl.connected&&!matOf(bl.mat).ground){nodeIdx[r][c]=nFree++;order.push([r,c]);}
     }
 
-    // 2. Load distribution: process farthest-from-ground first so every
-    // block's incoming load is fully tallied before it pushes its own total
-    // onward to its supports.
-    for(const[r,c]of order)bAt(r,c).accum=bAt(r,c).weight;
-    order.sort((a,b)=>bAt(b[0],b[1]).layer-bAt(a[0],a[1]).layer);
-
-    for(const[r,c]of order){
-      const me=bAt(r,c);
-      const supports=[];
-      for(const[dr,dc]of NB){
-        const nb=bAt(r+dr,c+dc);
-        if(nb&&nb.connected&&nb.layer===me.layer-1)supports.push(nb);
+    const elements=[];
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+      const me=bAt(r,c);if(!me||!me.connected)continue;
+      for(const[dr,dc]of RIGHT_DOWN){
+        const nr=r+dr,nc=c+dc,nb=bAt(nr,nc);
+        if(nb&&nb.connected)elements.push({r,c,nr,nc});
       }
-      const share=me.accum/supports.length;
-      for(const nb of supports)nb.accum+=share;
     }
 
-    // 2b. Horizontal load transfer: a beam's load shouldn't just cascade
-    // down whichever support BFS found first — it spreads across same-layer
-    // neighbors so it reaches both pillars. Sweep each row L->R then R->L,
-    // moving half the load difference to the lighter neighbor; repeat a
-    // few passes so the equalization can propagate across the whole beam.
-    for(let iter=0;iter<3;iter++){
-      for(let r=0;r<R;r++){
-        for(let c=0;c<C-1;c++){
-          const a=bAt(r,c),b=bAt(r,c+1);
-          if(!a||!b||!a.connected||!b.connected)continue;
-          if(matOf(a.mat).ground||matOf(b.mat).ground)continue;
-          if(a.layer!==b.layer)continue;
-          const t=(a.accum-b.accum)/2;
-          a.accum-=t;b.accum+=t;
-        }
-        for(let c=C-1;c>0;c--){
-          const a=bAt(r,c),b=bAt(r,c-1);
-          if(!a||!b||!a.connected||!b.connected)continue;
-          if(matOf(a.mat).ground||matOf(b.mat).ground)continue;
-          if(a.layer!==b.layer)continue;
-          const t=(a.accum-b.accum)/2;
-          a.accum-=t;b.accum+=t;
+    // 2. Assemble global stiffness matrix K, 3. force vector F (gravity).
+    const nDOF=2*nFree;
+    const K=[];for(let i=0;i<nDOF;i++)K.push(new Float64Array(nDOF));
+    const F=new Float64Array(nDOF);
+    for(const[r,c]of order)F[2*nodeIdx[r][c]+1]+=bAt(r,c).weight;
+
+    for(const el of elements){
+      const{cs,sn,k}=geo(el);
+      const iA=nodeIdx[el.r][el.c],iB=nodeIdx[el.nr][el.nc];
+      const dofs=[iA>=0?2*iA:-1,iA>=0?2*iA+1:-1,iB>=0?2*iB:-1,iB>=0?2*iB+1:-1];
+      const ke=[
+        [cs*cs,cs*sn,-cs*cs,-cs*sn],
+        [cs*sn,sn*sn,-cs*sn,-sn*sn],
+        [-cs*cs,-cs*sn,cs*cs,cs*sn],
+        [-cs*sn,-sn*sn,cs*sn,sn*sn],
+      ];
+      for(let i=0;i<4;i++){
+        if(dofs[i]<0)continue;
+        for(let j=0;j<4;j++){
+          if(dofs[j]<0)continue;
+          K[dofs[i]][dofs[j]]+=k*ke[i][j];
         }
       }
     }
 
-    // 2c. With load settled, compute each support edge's stress and record
-    // which neighbor's layer produced a block's worst stress — that's what
-    // tells a real compression edge (to layer-1, below) apart from a lateral
-    // beam edge (same layer) or load merely passing through from above.
-    for(const[r,c]of order){
-      const me=bAt(r,c),matMe=matOf(me.mat);
-      const supports=[],lateral=[];
-      for(const[dr,dc]of NB){
-        const nb=bAt(r+dr,c+dc);
-        if(!nb||!nb.connected)continue;
-        if(nb.layer===me.layer-1)supports.push(nb);
-        else if(nb.layer===me.layer)lateral.push(nb);
-      }
-      const share=me.accum/supports.length;
-      for(const nb of supports){
-        const connStrength=Math.min(matMe.maxStrength,matOf(nb.mat).maxStrength);
-        const stress=connStrength>0?share/connStrength:0;
-        if(stress>me.maxStress){me.maxStress=stress;me._nbLayer=nb.layer;}
-        if(stress>nb.maxStress){nb.maxStress=stress;nb._nbLayer=me.layer;}
-      }
-      // Same-layer edges carry a beam's load sideways toward its pillars —
-      // that's tension, not compression, however much load crosses it.
-      if(lateral.length){
-        const hShare=me.accum/lateral.length;
-        for(const nb of lateral){
-          const connStrength=Math.min(matMe.maxStrength,matOf(nb.mat).maxStrength);
-          const hStress=connStrength>0?hShare/connStrength:0;
-          if(hStress>me.worstHorizontalStress)me.worstHorizontalStress=hStress;
-          if(hStress>nb.worstHorizontalStress)nb.worstHorizontalStress=hStress;
-          if(hStress>me.maxStress){me.maxStress=hStress;me._nbLayer=nb.layer;}
-          if(hStress>nb.maxStress){nb.maxStress=hStress;nb._nbLayer=me.layer;}
-        }
-      }
-    }
-    for(const[r,c]of order){
-      const me=bAt(r,c);
-      me.isCompression=me.worstHorizontalStress>0?false:(me.maxStress>0&&me._nbLayer===me.layer-1);
-    }
+    // 4. Solve Ku=F for the free-node displacements.
+    const u=solveLinear(K,F,nDOF);
 
-    // 3. Break anything overloaded past its own material, then restart.
+    // 5. Extract internal force per element, tracking each block's worst
+    // edge, then 7. break anything overloaded past the weaker material.
     let broke=false;
-    for(const[r,c]of order){
-      const me=bAt(r,c);
-      if(me.maxStress>matOf(me.mat).maxStrength){grid[r][c]=null;broke=true;}
+    for(const el of elements){
+      const{cs,sn,k}=geo(el);
+      const iA=nodeIdx[el.r][el.c],iB=nodeIdx[el.nr][el.nc];
+      const uxA=iA>=0?u[2*iA]:0,uyA=iA>=0?u[2*iA+1]:0;
+      const uxB=iB>=0?u[2*iB]:0,uyB=iB>=0?u[2*iB+1]:0;
+      const delta=(uxB-uxA)*cs+(uyB-uyA)*sn;
+      const Fint=k*delta; // + tension, - compression
+      const absF=Math.abs(Fint);
+
+      const A=bAt(el.r,el.c),B=bAt(el.nr,el.nc);
+      if(!A||!B)continue; // already broken earlier this pass
+
+      for(const blk of[A,B]){
+        if(absF>=blk.maxStress){blk.maxStress=absF;blk._worstCompressive=Fint<0;}
+      }
+
+      const matA=matOf(A.mat),matB=matOf(B.mat);
+      const limit=Math.min(matA.maxStrength,matB.maxStrength);
+      if(absF>limit){
+        if(matA.ground)grid[el.nr][el.nc]=null;
+        else if(matB.ground)grid[el.r][el.c]=null;
+        else if(matA.weight<=matB.weight)grid[el.r][el.c]=null;
+        else grid[el.nr][el.nc]=null;
+        broke=true;
+      }
     }
     if(broke)continue restart;
+
+    // 6. Compression flag: only when a block's worst edge is compressive
+    // and its stress ratio clears a small noise floor.
+    for(const[r,c]of order){
+      const bl=bAt(r,c);
+      const ratio=bl.maxStress/matOf(bl.mat).maxStrength;
+      bl.compression=bl._worstCompressive&&ratio>0.05;
+    }
 
     break;
   }
@@ -298,10 +301,9 @@ function draw(){
     ctx.fillStyle=mat.color;ctx.fillRect(x+1,y+1,cell-2,cell-2);
     ctx.lineWidth=edgeW;ctx.strokeStyle=stressColor(bl.maxStress,mat.maxStrength);
     ctx.strokeRect(x+edgeW/2,y+edgeW/2,cell-edgeW,cell-edgeW);
-    if(bl.isCompression){
-      ctx.fillStyle='rgba(90,170,255,0.85)';
-      const dotR=Math.max(2,cell*0.12);
-      ctx.beginPath();ctx.arc(x+cell-dotR-2,y+dotR+2,dotR,0,Math.PI*2);ctx.fill();
+    if(bl.compression){
+      ctx.fillStyle='#3fa9f5';
+      ctx.beginPath();ctx.arc(x+cell/2,y+cell/2,Math.max(2,cell*0.12),0,Math.PI*2);ctx.fill();
     }
   }
 }
@@ -313,7 +315,7 @@ function buildStats(){
     const mat=matOf(b.mat);
     if(mat.ground){ground++;continue;}
     matCount[b.mat]=(matCount[b.mat]||0)+1;
-    if(b.isCompression)compression++;
+    if(b.compression)compression++;
   }
   document.getElementById('stats').innerHTML=
     `<span>Blocks: <b>${total}</b></span> <span>Ground: <b>${ground}</b></span> `+

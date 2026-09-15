@@ -75,7 +75,7 @@ function colorScale(v){
 // 0 stress -> green, stress at the breaking point -> bright red.
 function stressColor(stress,maxStrength){
   const ratio=maxStrength>0?Math.min(1,Math.max(0,stress)/maxStrength):0;
-  return colorScale(ratio*3);
+  return colorScale(ratio*6);
 }
 
 function resize(){
@@ -275,7 +275,7 @@ function recalculate(){
     for(const[r,c]of order){
       const bl=bAt(r,c);
       const ratio=bl.maxStress/matOf(bl.mat).maxStrength;
-      bl.compression=bl._worstCompressive&&ratio>0.05;
+      bl.compression=bl._worstCompressive&&ratio>0.01;
     }
 
     break;

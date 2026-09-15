@@ -52,6 +52,11 @@ function matOf(idx){return MATERIALS[idx]||CUSTOM;}
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
 let W,H,rows,cols,cell,grid=[],sel=1,mode='place';
 let simming=false,simInterval=null,dragging=false,dragErase=false;
+let brokenEdges=new Set();
+function edgeKey(r,c,nr,nc){
+  const a=`${r},${c}`,b=`${nr},${nc}`;
+  return a<b?`${a}-${b}`:`${b}-${a}`;
+}
 
 const COLOR_STOPS=[
   [0.0,[70,190,80]],   // green
@@ -125,11 +130,12 @@ function calcGrid(){
  * small noise floor relative to material strength) the block is flagged as
  * in compression.
  *
- * Disconnected blocks (nothing BFS-reachable from ground) fall, and any
- * edge whose combined stress exceeds the weaker of its two blocks' material
- * strength breaks — removing the lighter of the two blocks (ground is
- * never removed). Both cascade, so we restart from scratch whenever either
- * happens.
+ * Disconnected blocks (nothing BFS-reachable from ground) fall, restarting
+ * the computation from scratch. Any edge whose combined stress exceeds the
+ * weaker of its two blocks' material strength breaks — but instead of
+ * removing a block, the edge is just recorded in brokenEdges and marked
+ * with a red X in draw(); the blocks themselves stay put and there's no
+ * restart.
  */
 function solveLinear(K,F,n){
   const A=new Array(n);
@@ -307,11 +313,9 @@ function recalculate(){
       const matA=matOf(A.mat),matB=matOf(B.mat);
       const limit=Math.min(matA.maxStrength,matB.maxStrength);
       if(combined>limit){
-        if(matA.ground)grid[el.nr][el.nc]=null;
-        else if(matB.ground)grid[el.r][el.c]=null;
-        else if(matA.weight<=matB.weight)grid[el.r][el.c]=null;
-        else grid[el.nr][el.nc]=null;
-        broke=true;
+        brokenEdges.add(edgeKey(el.r,el.c,el.nr,el.nc));
+        broke=false;
+        break;
       }
     }
     if(broke)continue restart;
@@ -352,6 +356,18 @@ function draw(){
       ctx.beginPath();ctx.arc(x+cell/2,y+cell/2,Math.max(2,cell*0.12),0,Math.PI*2);ctx.fill();
     }
   }
+
+  ctx.strokeStyle='red';ctx.lineWidth=3;
+  const xSize=cell*0.18;
+  for(const key of brokenEdges){
+    const[a,b]=key.split('-');
+    const[r,c]=a.split(',').map(Number),[nr,nc]=b.split(',').map(Number);
+    const mx=((c+nc)/2+0.5)*cell,my=((r+nr)/2+0.5)*cell;
+    ctx.beginPath();
+    ctx.moveTo(mx-xSize,my-xSize);ctx.lineTo(mx+xSize,my+xSize);
+    ctx.moveTo(mx-xSize,my+xSize);ctx.lineTo(mx+xSize,my-xSize);
+    ctx.stroke();
+  }
 }
 
 function buildStats(){
@@ -365,7 +381,7 @@ function buildStats(){
   }
   document.getElementById('stats').innerHTML=
     `<span>Blocks: <b>${total}</b></span> <span>Ground: <b>${ground}</b></span> `+
-    `<span>Compression: <b>${compression}</b></span>`+
+    `<span>Compression: <b>${compression}</b></span> <span>Broken: <b>${brokenEdges.size}</b></span>`+
     Object.entries(matCount).map(([m,n])=>{
       const mat=matOf(m);return`<span style=\"color:${mat.color}\">■</span> ${mat.name}: ${n}`;
     }).join(' ');
@@ -402,7 +418,7 @@ function ui_syncMode(){
 }
 document.getElementById('btn-place').onclick=()=>{mode='place';ui_syncMode();};
 document.getElementById('btn-remove').onclick=()=>{mode='remove';ui_syncMode();};
-document.getElementById('btn-reset').onclick=()=>{grid=[];simming=false;
+document.getElementById('btn-reset').onclick=()=>{grid=[];brokenEdges=new Set();simming=false;
   if(simInterval){clearInterval(simInterval);simInterval=null;}
   document.getElementById('btn-sim').classList.remove('on');calcGrid();draw();};
 document.getElementById('btn-step').onclick=()=>{recalculate();buildStats();draw();};

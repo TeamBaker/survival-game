@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 12;
+  var v = 13;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1928,7 +1928,8 @@ function computeLocalFEM() {
   femEdgeStress.clear();
   femBlockMaxStress.clear();
 
-  const camX = camera.position.x, camZ = camera.position.z;
+  // Use player position (always inside world), not camera (may be in free-cam outside world)
+  const camX = playerBody.position.x, camZ = playerBody.position.z;
   const range = TENSION_RANGE;
   const range2 = range * range;
 
@@ -1938,29 +1939,28 @@ function computeLocalFEM() {
   const ci = colI(camX), cj = colJ(camZ);
   const radius = Math.ceil(range / BLOCK);
 
-  let _dbgSkipped = 0, _dbgNoTop = 0, _dbgAir = 0;
+  
   for (let dj = -radius; dj <= radius; dj++) {
     for (let di = -radius; di <= radius; di++) {
       const ii = ci + di, jj = cj + dj;
       if (ii < 0 || ii >= GEN_N || jj < 0 || jj >= GEN_N) continue;
       const dx = colX(ii) - camX, dz = colZ(jj) - camZ;
-      if (dx*dx + dz*dz > range2) { _dbgSkipped++; continue; }
+      if (dx*dx + dz*dz > range2) continue;
       const k = jj * GEN_N + ii;
       const top = topLvl[k];
-      if (top === NO_COLUMN) { _dbgNoTop++; continue; }
+      if (top === NO_COLUMN) continue;
       const o = voxOff[k] - VOX_FLOOR;
-      let found = 0;
       for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
         const m = voxMat[o + lvl];
-        if (m === AIR || m === WATER) { _dbgAir++; continue; }
-        found++;
+        if (m === AIR || m === WATER) continue;
+
         const bkey = `${ii},${jj},${lvl}`;
         blocks.push({i: ii, j: jj, lvl, mat: m, weight: MAT_STATS[m]?.weight ?? 1, strength: MAT_STATS[m]?.strength ?? 1});
         blockMap.set(bkey, blocks.length - 1);
       }
     }
   }
-  console.log('[FEM GATHER] camX=' + camX.toFixed(1) + ' camZ=' + camZ.toFixed(1) + ' range=' + range.toFixed(1) + ' ci=' + ci + ' cj=' + cj + ' radius=' + radius + ' blocks=' + blocks.length + ' skipped=' + _dbgSkipped + ' noTop=' + _dbgNoTop + ' air=' + _dbgAir);
+
 
   if (blocks.length === 0) return;
   if (blocks.length > 300) return; // safety cap — O(n³) Gaussian elimination
@@ -3256,11 +3256,9 @@ function rebuildTensionOverlay() {
   computeLocalFEM();
 
   // DEBUG: log FEM results
-  const _femDebug = { blocks: femBlockMaxStress.size, edges: femEdgeStress.size, maxStress: 0, samples: [] };
-  femBlockMaxStress.forEach((v, k) => { if (v > _femDebug.maxStress) _femDebug.maxStress = v; _femDebug.samples.push(k + ':' + v.toFixed(4)); });
-  console.log('[FEM DEBUG]', JSON.stringify(_femDebug));
 
-  const camPos = camera.position;
+
+  const camPos = playerBody.position;
   const edgePos = [], edgeCol = [];
   const xPositions = []; // one {x,y,z} per overstressed block
 

@@ -1916,25 +1916,207 @@ function terrainGripColor(i, j, lvl, m) {
   return gripRatioColor(grip / (MAT_STATS[m]?.weight ?? 1));
 }
 
-// Same grip formula as terrainGripColor, but the raw ratio rather than a
-// bucketed colour — the "Tension Viz" overlay needs the number itself for
-// both the finer-grained face tint and the break-mark threshold.
-function terrainTensionRatio(i, j, lvl, m) {
-  const strength = MAT_STATS[m]?.strength ?? 1;
-  let grip = 0;
-  for (const [di, dj, dl] of GRIP_SIDE_NEI) {
-    const nm = voxelAt(i + di, j + dj, lvl + dl);
-    if (nm === AIR || nm === WATER) continue;
-    grip += Math.min(strength, MAT_STATS[nm]?.strength ?? 1) * GRIP_SCALE;
+// Local FEM stress computation for tension viz.
+// Gathers blocks near the player, assembles a stiffness matrix, solves for
+// displacements under gravity, and extracts per-edge axial stress.
+let femEdgeStress = new Map(); // key="i1,j1,l1|i2,j2,l2" -> stress value
+let femBlockMaxStress = new Map(); // key="i,j,l" -> max edge stress on that block
+
+function computeLocalFEM() {
+  femEdgeStress.clear();
+  femBlockMaxStress.clear();
+
+  const camX = camera.position.x, camZ = camera.position.z;
+  const range = TENSION_RANGE;
+  const range2 = range * range;
+
+  // 1. Gather solid blocks near camera
+  const blocks = [];
+  const blockMap = new Map(); // key -> index in blocks[]
+  const ci = colI(camX), cj = colJ(camZ);
+  const radius = Math.ceil(range / BLOCK);
+
+  for (let dj = -radius; dj <= radius; dj++) {
+    for (let di = -radius; di <= radius; di++) {
+      const ii = ci + di, jj = cj + dj;
+      if (ii < 0 || ii >= GEN_N || jj < 0 || jj >= GEN_N) continue;
+      const dx = colX(ii) - camX, dz = colZ(jj) - camZ;
+      if (dx*dx + dz*dz > range2) continue;
+      const k = jj * GEN_N + ii;
+      const top = topLvl[k];
+      if (top === NO_COLUMN) continue;
+      const o = voxOff[k] - VOX_FLOOR;
+      for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
+        const m = voxMat[o + lvl];
+        if (m === AIR || m === WATER) continue;
+        const key = `${ii},${jj},${lvl}`;
+        const idx = blocks.length;
+        blocks.push({i: ii, j: jj, lvl, mat: m, weight: MAT_STATS[m]?.weight ?? 1, strength: MAT_STATS[m]?.strength ?? 1});
+        blockMap.set(key, idx);
+      }
+    }
   }
-  return grip / (MAT_STATS[m]?.weight ?? 1);
+
+  if (blocks.length === 0) return;
+
+  // 2. BFS from bottom blocks (connected to ground) to find supported region
+  const NB6 = [[-1,0,0],[1,0,0],[0,-1,0],[0,1,0],[0,0,-1],[0,0,1]];
+  const connected = new Uint8Array(blocks.length);
+  const queue = [];
+
+  for (let idx = 0; idx < blocks.length; idx++) {
+    const b = blocks[idx];
+    // Bottom of world or adjacent to bedrock = ground
+    if (b.lvl <= VOX_FLOOR + 2) { connected[idx] = 1; queue.push(idx); continue; }
+    // Adjacent to a non-air block below = supported
+    const below = voxelAt(b.i, b.j, b.lvl - 1);
+    if (below !== AIR && below !== WATER && blockMap.has(`${b.i},${b.j},${b.lvl-1}`)) {
+      connected[idx] = 1; queue.push(idx);
+    }
+  }
+
+  for (let qi = 0; qi < queue.length; qi++) {
+    const idx = queue[qi];
+    const b = blocks[idx];
+    for (const [di,dj,dl] of NB6) {
+      const nkey = `${b.i+di},${b.j+dj},${b.lvl+dl}`;
+      const nidx = blockMap.get(nkey);
+      if (nidx !== undefined && !connected[nidx]) { connected[nidx] = 1; queue.push(nidx); }
+    }
+  }
+
+  // 3. Build node list (connected non-ground blocks) and element list
+  const nodeIdx = new Int32Array(blocks.length).fill(-1);
+  let nFree = 0;
+  const nodeList = []; // indices into blocks[]
+  for (let idx = 0; idx < blocks.length; idx++) {
+    if (!connected[idx]) continue;
+    if (blocks[idx].lvl <= VOX_FLOOR + 2) continue; // ground = fixed
+    nodeIdx[idx] = nFree++;
+    nodeList.push(idx);
+  }
+
+  if (nFree === 0) return;
+
+  const elements = []; // {a: nodeIdx, b: nodeIdx, blockA: idx, blockB: idx}
+  const processed = new Set();
+  for (const idx of nodeList) {
+    const b = blocks[idx];
+    for (const [di,dj,dl] of NB6) {
+      const nkey = `${b.i+di},${b.j+dj},${b.lvl+dl}`;
+      const nidx = blockMap.get(nkey);
+      if (nidx === undefined || !connected[nidx]) continue;
+      const ekey = Math.min(idx,nidx) + ':' + Math.max(idx,nidx);
+      if (processed.has(ekey)) continue;
+      processed.add(ekey);
+      elements.push({a: nodeIdx[idx], b: nodeIdx[nidx] >= 0 ? nodeIdx[nidx] : -1, blockA: idx, blockB: nidx});
+    }
+  }
+
+  // 4. Assemble stiffness matrix K and force vector F
+  const nDOF = 3 * nFree;
+  const K = [];
+  for (let i = 0; i < nDOF; i++) K.push(new Float64Array(nDOF));
+  const F = new Float64Array(nDOF);
+
+  for (let n = 0; n < nFree; n++) {
+    const b = blocks[nodeList[n]];
+    F[3*n + 1] = -b.weight; // gravity downward (y)
+  }
+
+  const L = BLOCK;
+  for (const el of elements) {
+    if (el.a < 0 || el.b < 0) continue;
+    const bA = blocks[el.blockA], bB = blocks[el.blockB];
+    const EA = (bA.strength + bB.strength) / 2;
+    const k = EA / L; // axial stiffness
+
+    // Direction vector
+    const di = bB.i - bA.i, dj = bB.j - bA.j, dl = bB.lvl - bA.lvl;
+
+    // For axis-aligned elements, stiffness in the axial direction only
+    // (simplified truss model - axial forces only)
+    const ax = di !== 0 ? 0 : (dj !== 0 ? 1 : 2); // 0=x, 1=y, 2=z
+
+    const dofsA = [3*el.a, 3*el.a+1, 3*el.a+2];
+    const dofsB = [3*el.b, 3*el.b+1, 3*el.b+2];
+
+    // Only add stiffness along the element axis
+    K[dofsA[ax]][dofsA[ax]] += k;
+    K[dofsA[ax]][dofsB[ax]] -= k;
+    K[dofsB[ax]][dofsA[ax]] -= k;
+    K[dofsB[ax]][dofsB[ax]] += k;
+  }
+
+  // 5. Solve Ku = F
+  const u = solveLinear3D(K, F, nDOF);
+
+  // 6. Extract per-edge axial forces
+  for (const el of elements) {
+    if (el.a < 0 || el.b < 0) continue;
+    const bA = blocks[el.blockA], bB = blocks[el.blockB];
+    const EA = (bA.strength + bB.strength) / 2;
+    const k = EA / L;
+    const di = bB.i - bA.i, dj = bB.j - bA.j, dl = bB.lvl - bA.lvl;
+    const ax = di !== 0 ? 0 : (dj !== 0 ? 1 : 2);
+
+    const dispA = u[3*el.a + ax];
+    const dispB = u[3*el.b + ax];
+    const axialForce = k * (dispB - dispA); // +tension, -compression
+
+    const stress = Math.abs(axialForce) / Math.min(bA.strength, bB.strength);
+
+    // Store edge stress (sorted key)
+    const k1 = `${bA.i},${bA.j},${bA.lvl}`;
+    const k2 = `${bB.i},${bB.j},${bB.lvl}`;
+    const ekey = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
+    femEdgeStress.set(ekey, stress);
+
+    // Track max stress per block
+    const curA = femBlockMaxStress.get(k1) ?? 0;
+    if (stress > curA) femBlockMaxStress.set(k1, stress);
+    const curB = femBlockMaxStress.get(k2) ?? 0;
+    if (stress > curB) femBlockMaxStress.set(k2, stress);
+  }
 }
+
+// Gaussian elimination solver (same as 2D tension test)
+function solveLinear3D(K, F, n) {
+  const A = [];
+  for (let i = 0; i < n; i++) { A.push(Array.from(K[i])); A[i].push(F[i]); A[i][i] += 1e-9; }
+  for (let p = 0; p < n; p++) {
+    let piv = p, best = Math.abs(A[p][p]);
+    for (let r = p+1; r < n; r++) { const v = Math.abs(A[r][p]); if (v > best) { best = v; piv = r; } }
+    if (piv !== p) { const t = A[p]; A[p] = A[piv]; A[piv] = t; }
+    const d = A[p][p];
+    if (Math.abs(d) < 1e-12) continue;
+    for (let r = p+1; r < n; r++) {
+      const f = A[r][p] / d;
+      if (!f) continue;
+      for (let c = p; c <= n; c++) A[r][c] -= f * A[p][c];
+    }
+  }
+  const u = new Float64Array(n);
+  for (let p = n-1; p >= 0; p--) {
+    let sum = A[p][n];
+    for (let c = p+1; c < n; c++) sum -= A[p][c] * u[c];
+    u[p] = Math.abs(A[p][p]) < 1e-12 ? 0 : sum / A[p][p];
+  }
+  return u;
+}
+
+function edgeKey3(i1,j1,l1, i2,j2,l2) {
+  const a = `${i1},${j1},${l1}`, b = `${i2},${j2},${l2}`;
+  return a < b ? a+'|'+b : b+'|'+a;
+}
+
 function tensionColor(ratio) {
-  if (ratio >= 3) return [0.20, 0.85, 0.25];    // green
-  if (ratio >= 2) return [0.70, 0.80, 0.15];    // yellow-green
-  if (ratio >= 1.2) return [0.95, 0.85, 0.15];  // yellow
-  if (ratio >= 0.7) return [0.95, 0.55, 0.12];  // orange
-  return [0.90, 0.15, 0.12];                    // red
+  if (ratio >= 3) return [0.90, 0.15, 0.12];    // red - critical
+  if (ratio >= 2) return [0.95, 0.35, 0.12];    // orange-red
+  if (ratio >= 1.2) return [0.95, 0.55, 0.12];  // orange
+  if (ratio >= 0.7) return [0.95, 0.85, 0.15];  // yellow
+  if (ratio >= 0.3) return [0.70, 0.80, 0.15];  // yellow-green
+  return [0.20, 0.85, 0.25];                     // green - low stress
 }
 // Toggled by the "Tension Viz" button.
 let tensionVizOn = false;
@@ -2632,7 +2814,8 @@ function collectColumn(i, j, step = 1) {
         r = gc.r; g = gc.g; b = gc.b;
       }
       if (tensionVizOn) {
-        const tc = tensionColor(terrainTensionRatio(i, j, lvl, m));
+        const blockStress = femBlockMaxStress.get(`${i},${j},${lvl}`) ?? 0;
+        const tc = tensionColor(blockStress / (MAT_STATS[m]?.strength ?? 1));
         r = tc[0]; g = tc[1]; b = tc[2];
       }
       const cy = (lvl + 0.5) * BLOCK;
@@ -2960,6 +3143,8 @@ function rebuildTensionOverlay() {
   clearTensionEdges();
   if (!tensionVizOn) return;
 
+  computeLocalFEM();
+
   const camPos = camera.position;
   const edgePos = [], edgeCol = [], xPos = [];
 
@@ -2979,14 +3164,17 @@ function rebuildTensionOverlay() {
         for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
           const m = voxMat[o + lvl];
           if (m === AIR || !blockVisible[o + lvl]) continue;
-          const ratio = terrainTensionRatio(i, j, lvl, m);
-          const [r, g, b] = tensionColor(ratio);
+          const strength = MAT_STATS[m]?.strength ?? 1;
+          const blockStress = femBlockMaxStress.get(`${i},${j},${lvl}`) ?? 0;
+          const [r, g, b] = tensionColor(blockStress / strength);
           const bx = colX(i), by = (lvl + 0.5) * BLOCK, bz = colZ(j);
           for (let f = 0; f < 6; f++) {
             const F = FACES[f];
             if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
-            pushFaceEdgeLines(edgePos, edgeCol, F, bx, by, bz, r, g, b);
-            if (ratio < 1.0) pushFaceXLines(xPos, F, bx, by, bz);
+            const edgeStress = femEdgeStress.get(edgeKey3(i, j, lvl, i + F.di, j + F.dj, lvl + F.dl)) ?? blockStress;
+            const [er, eg, eb] = tensionColor(edgeStress / strength);
+            pushFaceEdgeLines(edgePos, edgeCol, F, bx, by, bz, er, eg, eb);
+            if (blockStress / strength > 1.0) pushFaceXLines(xPos, F, bx, by, bz);
           }
         }
       }

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 13;
+  var v = 14;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -3255,7 +3255,13 @@ function rebuildTensionOverlay() {
 
   computeLocalFEM();
 
-  // DEBUG: log FEM results
+  // DEBUG — remove after phone test
+  if (femBlockMaxStress.size > 0) {
+    let mx = 0; femBlockMaxStress.forEach(v => { if (v > mx) mx = v; });
+    console.log('[FEM] blocks=' + femBlockMaxStress.size + ' maxStress=' + mx.toFixed(3));
+  } else {
+    console.log('[FEM] 0 blocks near player at ' + playerBody.position.x.toFixed(1) + ',' + playerBody.position.z.toFixed(1));
+  }
 
 
   const camPos = playerBody.position;

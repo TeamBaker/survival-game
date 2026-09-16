@@ -1958,6 +1958,7 @@ function computeLocalFEM() {
   }
 
   if (blocks.length === 0) return;
+  if (blocks.length > 500) return;  // too many blocks, skip this frame
 
   // 2. BFS from bottom blocks (connected to ground) to find supported region
   const NB6 = [[-1,0,0],[1,0,0],[0,-1,0],[0,1,0],[0,0,-1],[0,0,1]];
@@ -3095,7 +3096,7 @@ document.getElementById('btn-debug-chunks').addEventListener('click', () => {
 const tensionEdges = new THREE.Group();
 scene.add(tensionEdges);
 const TENSION_X_SIZE = 0.05;               // half-width of the break-mark X, world units
-const TENSION_RANGE  = CHUNK * BLOCK * 3;  // only chunks within ~3 chunks of the player
+const TENSION_RANGE  = CHUNK * BLOCK;  // 1 chunk radius only (~3.2m, ~16 blocks)
 
 function clearTensionEdges() {
   for (const c of tensionEdges.children) c.geometry.dispose();
@@ -7111,7 +7112,7 @@ function tick() {
   flushDirtyChunks();
   if (tensionVizOn) {
     tensionVizAccum += dt;
-    if (tensionVizAccum >= 0.25) { tensionVizAccum = 0; rebuildTensionOverlay(); }
+    if (tensionVizAccum >= 1.0) { tensionVizAccum = 0; rebuildTensionOverlay(); }
   }
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);

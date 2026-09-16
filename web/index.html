@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 9;
+  var v = 10;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -3223,23 +3223,23 @@ function pushFaceEdgeLines(posArr, colArr, F, bx, by, bz, r, g, b) {
   }
 }
 
-// A small X centred on one face, in its own plane — two in-plane axes taken
-// from two of the face's own edges rather than a fixed world axis, so it lies
-// flat against the face regardless of which of the 6 it is.
-function pushFaceXLines(posArr, F, bx, by, bz) {
-  const v = F.v, n = F.n;
-  const fx = bx + n[0] * HALF_BLOCK, fy = by + n[1] * HALF_BLOCK, fz = bz + n[2] * HALF_BLOCK;
-  let ux = v[3] - v[0], uy = v[4] - v[1], uz = v[5] - v[2];
-  const ul = Math.hypot(ux, uy, uz); ux /= ul; uy /= ul; uz /= ul;
-  let vx = v[9] - v[0], vy = v[10] - v[1], vz = v[11] - v[2];
-  const vl = Math.hypot(vx, vy, vz); vx /= vl; vy /= vl; vz /= vl;
-  const S = TENSION_X_SIZE;
-  posArr.push(
-    fx - S * ux - S * vx, fy - S * uy - S * vy, fz - S * uz - S * vz,
-    fx + S * ux + S * vx, fy + S * uy + S * vy, fz + S * uz + S * vz,
-    fx - S * ux + S * vx, fy - S * uy + S * vy, fz - S * uz + S * vz,
-    fx + S * ux - S * vx, fy + S * uy - S * vy, fz + S * uz - S * vz,
-  );
+// Builds a small red-X sprite texture (created once, reused for all X marks).
+let _xSpriteMat = null;
+function xSpriteMaterial() {
+  if (_xSpriteMat) return _xSpriteMat;
+  const cv = document.createElement('canvas');
+  cv.width = 64; cv.height = 64;
+  const cx = cv.getContext('2d');
+  cx.clearRect(0, 0, 64, 64);
+  cx.strokeStyle = '#ff2020';
+  cx.lineWidth = 5;
+  cx.lineCap = 'round';
+  const s = 12;
+  cx.beginPath(); cx.moveTo(s, s); cx.lineTo(64 - s, 64 - s); cx.stroke();
+  cx.beginPath(); cx.moveTo(64 - s, s); cx.lineTo(s, 64 - s); cx.stroke();
+  const tex = new THREE.CanvasTexture(cv);
+  _xSpriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: true, transparent: true });
+  return _xSpriteMat;
 }
 
 // Rebuilds the whole overlay from the live voxel store — cheap enough to call
@@ -3252,7 +3252,8 @@ function rebuildTensionOverlay() {
   computeLocalFEM();
 
   const camPos = camera.position;
-  const edgePos = [], edgeCol = [], xPos = [];
+  const edgePos = [], edgeCol = [];
+  const xPositions = []; // one {x,y,z} per overstressed block
 
   for (let c = 0; c < chunkMesh.length; c++) {
     if (!chunkMesh[c]) continue;
@@ -3280,7 +3281,10 @@ function rebuildTensionOverlay() {
             const edgeStress = femEdgeStress.get(edgeKey3(i, j, lvl, i + F.di, j + F.dj, lvl + F.dl)) ?? blockStress;
             const [er, eg, eb] = tensionColor(edgeStress / strength);
             pushFaceEdgeLines(edgePos, edgeCol, F, bx, by, bz, er, eg, eb);
-            if (blockStress / strength > 1.0) pushFaceXLines(xPos, F, bx, by, bz);
+          }
+          // One X sprite per overstressed block (always visible, faces camera)
+          if (blockStress / strength > 1.0) {
+            xPositions.push({ x: bx, y: by, z: bz });
           }
         }
       }
@@ -3293,10 +3297,15 @@ function rebuildTensionOverlay() {
     geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(edgeCol), 3));
     tensionEdges.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true })));
   }
-  if (xPos.length) {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(xPos), 3));
-    tensionEdges.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xff2020 })));
+  // Create one sprite per overstressed block — always faces camera, always visible
+  if (xPositions.length) {
+    const mat = xSpriteMaterial();
+    for (const p of xPositions) {
+      const sprite = new THREE.Sprite(mat);
+      sprite.position.set(p.x, p.y, p.z);
+      sprite.scale.set(0.15, 0.15, 1);
+      tensionEdges.add(sprite);
+    }
   }
 }
 

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 17;
+  var v = 18;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -5244,6 +5244,21 @@ function shovelAim() {
     const aj = colJ(p.z - Math.cos(state.yaw) * 1.5);
     const atop = solidTopAt(ai, aj);
     if (atop !== NO_COLUMN) shovel.spot = { i: ai, j: aj, lvl: atop + 1 };
+  } else if (sandboxMode) {
+    // Sandbox: nothing to hit — cast ray against ground plane at y=0 and place there
+    if (Math.abs(aimDir.y) > 0.001) {
+      const t = -oy / aimDir.y;
+      if (t > 0 && t < SHOVEL_REACH / BLOCK) {
+        const hx = ox + aimDir.x * t, hz = oz + aimDir.z * t;
+        const gi = colI(hx), gj = colJ(hz);
+        if (gi >= 0 && gi < GEN_N && gj >= 0 && gj < GEN_N) {
+          const k = gj * GEN_N + gi;
+          if (topLvl[k] === NO_COLUMN) createColumn(k, 0);
+          shovel.hit = { i: gi, j: gj, lvl: 0 };
+          shovel.spot = { i: gi, j: gj, lvl: 1 };
+        }
+      }
+    }
   }
 
   // A place has to land in a cell the store can actually hold a block in, that
@@ -7230,7 +7245,12 @@ function createColumn(k, lvl) {
   const newVis = new Uint8Array(voxCount);
   newVis.set(blockVisible);
   blockVisible = newVis;
+  // Fill with AIR then place a ROCK block at the base so there is something to see and aim at
   voxMat.fill(AIR, voxOff[k], voxOff[k] + newCap);
+  const baseOff = voxOff[k] + lvl - VOX_FLOOR;
+  voxMat[baseOff] = ROCK;
+  sTop[k] = lvl;
+  worldBlocks++;
 }
 
 function toggleSandbox() {

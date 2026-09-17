@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 20;
+  var v = 21;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1030,30 +1030,6 @@
     display: flex; align-items: center; justify-content: center;
   }
   #f2d-close:hover { background: rgba(255,80,60,.25); color: #ff6450; }
-
-  /* ---- Sandbox palette ---- */
-  #sandbox-palette {
-    position: fixed;
-    bottom: calc(16px + env(safe-area-inset-bottom));
-    left: 50%; transform: translateX(-50%);
-    display: none;
-    gap: 6px; padding: 8px 12px;
-    background: rgba(20, 28, 42, 0.92);
-    border: 1px solid rgba(140, 175, 230, 0.25);
-    border-radius: 12px;
-    z-index: 50;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  body.sandbox-mode #sandbox-palette { display: flex; }
-  .pal-btn {
-    width: 36px; height: 36px;
-    border-radius: 8px; border: 2px solid transparent;
-    cursor: pointer; flex-shrink: 0;
-    -webkit-tap-highlight-color: transparent;
-  }
-  .pal-btn.on { border-color: #fff; box-shadow: 0 0 8px rgba(255,255,255,.4); }
-  .pal-btn:active { transform: scale(0.92); }
   #f2d-frame {
     flex: 1; border: none; width: 100%; height: 100%;
     background: #151d2b;
@@ -1376,7 +1352,7 @@
 </div>
 
 <div id="loading">Loading&hellip;</div>
-<div id="sandbox-palette"></div>
+
 
 <script src="lib/three.js?v=2"></script>
 <script src="lib/cannon-global.js?v=2"></script>
@@ -7307,30 +7283,7 @@ document.getElementById('f2d-overlay').addEventListener('pointerdown', (e) => {
 // ---------------------------------------------------------------------------
 let sandboxMode = false;
 const sandboxBtn = document.getElementById('btn-sandbox');
-const palEl = document.getElementById('sandbox-palette');
-// Materials available in sandbox (skip WATER, index 3 — not carryable/placeable).
-const SANDBOX_MATS = [0,1,2,4,5,6,7,8,9,10,11,12,13,14,15];
-let sandboxMat = ROCK; // default selected material
-
-// Build palette buttons, colours read straight off TERRAIN_MATS so the
-// swatches match what the cubes actually render as (same trick the
-// materials panel uses).
-SANDBOX_MATS.forEach(m => {
-  const s = MAT_STATS[m];
-  if (!s) return;
-  const btn = document.createElement('button');
-  btn.className = 'pal-btn';
-  btn.style.background = '#' + TERRAIN_MATS[m].color.getHexString();
-  btn.title = s.name;
-  btn.addEventListener('click', () => {
-    sandboxMat = m;
-    palEl.querySelectorAll('.pal-btn').forEach(b => b.classList.remove('on'));
-    btn.classList.add('on');
-  });
-  palEl.appendChild(btn);
-});
-// Mark default
-if (palEl.children[2]) palEl.children[2].classList.add('on'); // ROCK
+let sandboxMat = ROCK;
 
 function createColumn(k, lvl) {
   if (topLvl[k] !== NO_COLUMN) return;
@@ -7374,23 +7327,29 @@ function toggleSandbox() {
     for (let c = 0; c < chunkMesh.length; c++) {
       if (chunkMesh[c]) rebuildChunk(c);
     }
-    // Create a small platform of columns around the player
+    // Create a large platform at the player's feet
     const p = playerBody.position;
     const ci = colI(p.x), cj = colJ(p.z);
+    const platLvl = Math.floor(p.y / BLOCK) - 2; // 2 blocks below player
+    for (let dj = -8; dj <= 8; dj++) {
+      for (let di = -8; di <= 8; di++) {
+        const ii = ci + di, jj = cj + dj;
+        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+        const k = jj * GEN_N + ii;
+        createColumn(k, platLvl);
+        // Place a ROCK block at the platform level
+        const off = voxOff[k] + platLvl - VOX_FLOOR;
+        voxMat[off] = ROCK;
+        sTop[k] = platLvl;
+      }
+    }
+    // Rebuild chunks for the platform
     for (let dj = -2; dj <= 2; dj++) {
       for (let di = -2; di <= 2; di++) {
         const ii = ci + di, jj = cj + dj;
         if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
-        createColumn(jj * GEN_N + ii, 0);
-      }
-    }
-    // Rebuild chunks for the new columns
-    for (let dj = -1; dj <= 1; dj++) {
-      for (let di = -1; di <= 1; di++) {
-        const ii = ci + di, jj = cj + dj;
-        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
         const cc = chunkOf(ii, jj);
-        if (chunkMesh[cc]) rebuildChunk(cc);
+        rebuildChunk(cc);
       }
     }
   }

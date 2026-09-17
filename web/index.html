@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 29;
+  var v = 30;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -5378,6 +5378,44 @@ function updatePowderBlocks(dt) {
   catchPowder(dt);
 }
 
+// ----- floating block detection -----
+// When a block has air below it and isn't held up by something solid, it
+// should break off as a debris piece.  This extends the powder gravity to
+// all materials — but instead of shedding as a grain, unsupported blocks
+// become physics debris chunks.
+let floatingTick = 0;
+const FLOAT_CHECK_INTERVAL = 10;   // frames between column scans
+const FLOAT_BUDGET = 8;            // blocks shed per scan pass
+
+function checkFloatingBlocks() {
+  if (sandboxMode) return;
+  if (++floatingTick % FLOAT_CHECK_INTERVAL !== 0) return;
+
+  // Scan a slice of dug columns each pass, like checkTerrainPowder does.
+  const cols = GEN_N * GEN_N;
+  let budget = FLOAT_BUDGET, k = (floatingTick * 7) % cols;  // pseudo-random start
+  for (let pass = 0; pass < 200 && budget > 0; pass++, k = (k + 1) % cols) {
+    if (!colDug[k]) continue;
+    const o = voxOff[k];
+    if (o < 0) continue;
+    const i = k % GEN_N, j = (k - i) / GEN_N;
+    const cap = voxCap(k);
+    // Scan bottom-up: the first unsupported block triggers the cascade.
+    for (let lvl = VOX_FLOOR + 1; lvl <= cap && budget > 0; lvl++) {
+      const m = voxMat[o + lvl - VOX_FLOOR];
+      if (m === AIR || m === WATER) continue;
+      if (MAT_STATS[m]?.powder) continue;  // powder handled by checkTerrainPowder
+      // Block below must be air for this block to be floating.
+      const below = voxMat[o + lvl - 1 - VOX_FLOOR];
+      if (below !== AIR && below !== WATER) continue;
+      // Remove from terrain and spawn as debris.
+      editBlock(i, j, lvl, AIR);
+      spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m }]]));
+      budget--;
+    }
+  }
+}
+
 // Taking a whole loose piece away. Its blocks were cut out of the store when it
 // broke off, so nothing here is owed back to the world count.
 function removeDebrisMesh(mesh) {
@@ -6718,6 +6756,7 @@ function tick() {
   updateFallingChunks();
   updatePowderBlocks(dt);
   checkTerrainPowder();
+  checkFloatingBlocks();
 
   updateCamera(dt);
   refreshGridLOD();

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 27;
+  var v = 28;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -784,25 +784,6 @@
   #btn-debug-chunks.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-debug-chunks:active { transform: translateY(1px); }
 
-  #btn-tension-viz {
-    padding: 8px 14px;
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: #cfe6ff;
-    background: rgba(20, 34, 54, 0.62);
-    border: 1px solid rgba(150, 195, 245, 0.4);
-    border-radius: 999px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    cursor: pointer;
-    touch-action: manipulation;
-  }
-  #btn-tension-viz.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
-  #btn-tension-viz:active { transform: translateY(1px); }
-
   #sel-lod-override {
     padding: 8px 12px;
     font-family: inherit;
@@ -1351,7 +1332,6 @@
       </select>
       <button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
       <button id="btn-grip-debug"><span class="dot"></span>Grip Debug</button>
-      <button id="btn-tension-viz" class="ui-el">Tension Viz</button>
       <button id="btn-f2d" class="ui-el">2D Sandbox</button>
       <button id="btn-sandbox" class="ui-el">Sandbox Mode</button>
     </div>
@@ -1751,17 +1731,6 @@ document.getElementById('btn-grip-debug').addEventListener('click', () => {
   }
 });
 
-document.getElementById('btn-tension-viz').addEventListener('click', () => {
-  tensionVizOn = !tensionVizOn;
-  document.getElementById('btn-tension-viz').classList.toggle('on', tensionVizOn);
-  // Terrain faces: rebuilding re-colours them, same as grip debug above.
-  for (let c = 0; c < chunkMesh.length; c++) {
-    if (chunkMesh[c]) rebuildChunk(c);
-  }
-  // Edge/break-mark overlay: a separate object, built or cleared here.
-  rebuildTensionOverlay();
-});
-
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
 const syncList = [];
@@ -2092,328 +2061,6 @@ function terrainGripColor(i, j, lvl, m) {
   }
   return gripRatioColor(grip / (MAT_STATS[m]?.weight ?? 1));
 }
-
-// 3D Beam FEM stress computation for tension viz.
-// Uses Euler-Bernoulli beam elements with bending stiffness (matches 2D tension-test.html).
-// Each block = 1 node with 6 DOFs (ux,uy,uz,θx,θy,θz).
-// Each face-adjacent pair = 1 beam element with 12x12 stiffness (axial + bending).
-// Ground blocks at VOX_FLOOR+2 or below are fixed supports.
-let femEdgeStress = new Map(); // key="i1,j1,l1|i2,j2,l2" -> stress value
-let femBlockMaxStress = new Map(); // key="i,j,l" -> max edge stress on that block
-
-function computeLocalFEM() {
-  femEdgeStress.clear();
-  femBlockMaxStress.clear();
-
-  // Use player position (always inside world), not camera (may be in free-cam outside world)
-  const camX = playerBody.position.x, camZ = playerBody.position.z;
-  const range = TENSION_RANGE;
-  const range2 = range * range;
-
-  // 1. Gather solid blocks near camera
-  const blocks = [];
-  const blockMap = new Map(); // key -> index in blocks[]
-  const ci = colI(camX), cj = colJ(camZ);
-  const radius = Math.ceil(range / BLOCK);
-
-  
-  for (let dj = -radius; dj <= radius; dj++) {
-    for (let di = -radius; di <= radius; di++) {
-      const ii = ci + di, jj = cj + dj;
-      if (ii < 0 || ii >= GEN_N || jj < 0 || jj >= GEN_N) continue;
-      const dx = colX(ii) - camX, dz = colZ(jj) - camZ;
-      if (dx*dx + dz*dz > range2) continue;
-      const k = jj * GEN_N + ii;
-      const top = topLvl[k];
-      if (top === NO_COLUMN) continue;
-      const o = voxOff[k] - VOX_FLOOR;
-      for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
-        const m = voxMat[o + lvl];
-        if (m === AIR || m === WATER) continue;
-
-        const bkey = `${ii},${jj},${lvl}`;
-        blocks.push({i: ii, j: jj, lvl, mat: m, weight: MAT_STATS[m]?.weight ?? 1, strength: MAT_STATS[m]?.strength ?? 1});
-        blockMap.set(bkey, blocks.length - 1);
-      }
-    }
-  }
-
-
-  if (blocks.length === 0) return;
-  if (blocks.length > 300) return; // safety cap — O(n³) Gaussian elimination
-
-  // 2. BFS from anchor blocks to find connected region.
-  // Ground blocks (near bedrock) are always anchors. In sandbox mode (no
-  // bedrock in range), the lowest block in each column is an anchor instead.
-  const NB6 = [[-1,0,0],[1,0,0],[0,-1,0],[0,1,0],[0,0,-1],[0,0,1]];
-  const connected = new Uint8Array(blocks.length);
-  const isAnchor = new Uint8Array(blocks.length);
-  const queue = [];
-
-  for (let idx = 0; idx < blocks.length; idx++) {
-    const b = blocks[idx];
-    const below = blockMap.get(`${b.i},${b.j},${b.lvl - 1}`);
-    if (b.lvl <= VOX_FLOOR + 2 || below === undefined) {
-      isAnchor[idx] = 1;
-      connected[idx] = 1;
-      queue.push(idx);
-    }
-  }
-
-  for (let qi = 0; qi < queue.length; qi++) {
-    const idx = queue[qi];
-    const b = blocks[idx];
-    for (const [di,dj,dl] of NB6) {
-      const nkey = `${b.i+di},${b.j+dj},${b.lvl+dl}`;
-      const nidx = blockMap.get(nkey);
-      if (nidx !== undefined && !connected[nidx]) {
-        connected[nidx] = 1;
-        queue.push(nidx);
-      }
-    }
-  }
-
-  // 3. Assign node indices (non-ground connected blocks)
-  const nodeIdx = new Int32Array(blocks.length).fill(-1);
-  let nFree = 0;
-  const nodeList = [];
-  for (let idx = 0; idx < blocks.length; idx++) {
-    if (!connected[idx]) continue;
-    if (isAnchor[idx]) continue; // ground / anchor = fixed
-    nodeIdx[idx] = nFree++;
-    nodeList.push(idx);
-  }
-
-  if (nFree === 0) return;
-
-  // 4. Build element list (face-adjacent connected pairs, deduplicated)
-  const elemDirs = [[1,0,0],[0,1,0],[0,0,1]]; // +x, +y, +z only
-  const elements = [];
-  for (const idx of nodeList) {
-    const b = blocks[idx];
-    for (const [di,dj,dl] of elemDirs) {
-      const nkey = `${b.i+di},${b.j+dj},${b.lvl+dl}`;
-      const nidx = blockMap.get(nkey);
-      if (nidx !== undefined && connected[nidx]) {
-        elements.push({ a: idx, b: nidx, di, dj, dl });
-      }
-    }
-  }
-
-  // 5. Assemble global 6n×6n stiffness matrix K and force vector F
-  const nDOF = 6 * nFree;
-  const K = new Array(nDOF);
-  for (let i = 0; i < nDOF; i++) K[i] = new Float64Array(nDOF);
-  const Fvec = new Float64Array(nDOF);
-
-  // Gravity: -weight in y-direction (DOF 6*nodeIdx + 1)
-  for (const idx of nodeList) {
-    const b = blocks[idx];
-    Fvec[6 * nodeIdx[idx] + 1] = -b.weight;
-  }
-
-  const L = BLOCK;
-  const L2 = L * L;
-  const L3 = L * L * L;
-
-  // Helper: add bending stiffness terms for one plane
-  // DOFs: t1 (trans node A), r1 (rot node A), t2 (trans node B), r2 (rot node B)
-  function addBend(t1, r1, t2, r2, kval, Lv) {
-    const Lk = Lv * kval, L2k = Lv * Lv * kval;
-    K[t1][t1] += 12*kval;
-    K[t1][r1] += 6*Lk;
-    K[t1][t2] -= 12*kval;
-    K[t1][r2] += 6*Lk;
-    K[r1][t1] += 6*Lk;
-    K[r1][r1] += 4*L2k;
-    K[r1][t2] -= 6*Lk;
-    K[r1][r2] += 2*L2k;
-    K[t2][t1] -= 12*kval;
-    K[t2][r1] -= 6*Lk;
-    K[t2][t2] += 12*kval;
-    K[t2][r2] -= 6*Lk;
-    K[r2][t1] += 6*Lk;
-    K[r2][r1] += 2*L2k;
-    K[r2][t2] -= 6*Lk;
-    K[r2][r2] += 4*L2k;
-  }
-
-  for (const el of elements) {
-    const ba = blocks[el.a], bb = blocks[el.b];
-    const EA = (ba.strength + bb.strength) / 2;
-    const EI = EA * L2 / 12;
-    const k = EI / L3;
-    const eaL = EA / L;
-
-    const iA = nodeIdx[el.a], iB = nodeIdx[el.b];
-
-    // Map DOFs based on beam axis
-    let ax_a, ax_b; // axial translation DOFs
-    let b1t1, b1r1, b1t2, b1r2; // bending plane 1
-    let b2t1, b2r1, b2t2, b2r2; // bending plane 2
-
-    if (el.di === 1) {
-      // X-beam: axial=x(0), bend-y-plane=(y1,z5,y7,z11), bend-z-plane=(z2,y4,z8,y10)
-      ax_a = 6*iA+0; ax_b = 6*iB+0;
-      b1t1=6*iA+1; b1r1=6*iA+5; b1t2=6*iB+1; b1r2=6*iB+5;
-      b2t1=6*iA+2; b2r1=6*iA+4; b2t2=6*iB+2; b2r2=6*iB+4;
-    } else if (el.dj === 1) {
-      // Y-beam: axial=y(1), bend-x-plane=(x0,z5,x6,z11), bend-z-plane=(z2,x3,z8,x9)
-      ax_a = 6*iA+1; ax_b = 6*iB+1;
-      b1t1=6*iA+0; b1r1=6*iA+5; b1t2=6*iB+0; b1r2=6*iB+5;
-      b2t1=6*iA+2; b2r1=6*iA+3; b2t2=6*iB+2; b2r2=6*iB+3;
-    } else {
-      // Z-beam: axial=z(2), bend-x-plane=(x0,y4,x6,y10), bend-y-plane=(y1,x3,y7,x9)
-      ax_a = 6*iA+2; ax_b = 6*iB+2;
-      b1t1=6*iA+0; b1r1=6*iA+4; b1t2=6*iB+0; b1r2=6*iB+4;
-      b2t1=6*iA+1; b2r1=6*iA+3; b2t2=6*iB+1; b2r2=6*iB+3;
-    }
-
-    // Axial stiffness: EA/L
-    K[ax_a][ax_a] += eaL;
-    K[ax_a][ax_b] -= eaL;
-    K[ax_b][ax_a] -= eaL;
-    K[ax_b][ax_b] += eaL;
-
-    // Bending in plane 1
-    addBend(b1t1, b1r1, b1t2, b1r2, k, L);
-    // Bending in plane 2
-    addBend(b2t1, b2r1, b2t2, b2r2, k, L);
-  }
-
-  // 6. Solve Ku = F
-  const u = solveLinear3D(K, Fvec, nDOF);
-
-  // 7. Extract per-element forces: f = K_local * u_global, then |N| + M/L
-  for (const el of elements) {
-    const ba = blocks[el.a], bb = blocks[el.b];
-    const EA = (ba.strength + bb.strength) / 2;
-    const EI = EA * L2 / 12;
-    const k = EI / L3;
-    const eaL = EA / L;
-
-    const iA = nodeIdx[el.a], iB = nodeIdx[el.b];
-
-    // Global displacements for this element (12 DOFs)
-    const uG = new Float64Array(12);
-    for (let d = 0; d < 6; d++) {
-      uG[d] = u[6 * iA + d];
-      uG[6 + d] = u[6 * iB + d];
-    }
-
-    // Build 12×12 local stiffness
-    const Kl = new Array(12);
-    for (let i = 0; i < 12; i++) Kl[i] = new Float64Array(12);
-
-    let ax0, ax6, b1t1, b1r1, b1t2, b1r2, b2t1, b2r1, b2t2, b2r2;
-
-    if (el.di === 1) {
-      ax0=0; ax6=6;
-      b1t1=1; b1r1=5; b1t2=7; b1r2=11;
-      b2t1=2; b2r1=4; b2t2=8; b2r2=10;
-    } else if (el.dj === 1) {
-      ax0=1; ax6=7;
-      b1t1=0; b1r1=5; b1t2=6; b1r2=11;
-      b2t1=2; b2r1=3; b2t2=8; b2r2=9;
-    } else {
-      ax0=2; ax6=8;
-      b1t1=0; b1r1=4; b1t2=6; b1r2=10;
-      b2t1=1; b2r1=3; b2t2=7; b2r2=9;
-    }
-
-    // Axial
-    Kl[ax0][ax0] = eaL;  Kl[ax0][ax6] = -eaL;
-    Kl[ax6][ax0] = -eaL; Kl[ax6][ax6] = eaL;
-
-    // Bending plane 1
-    const Lk = L * k, L2k = L2 * k;
-    Kl[b1t1][b1t1]+=12*k; Kl[b1t1][b1r1]+=6*Lk; Kl[b1t1][b1t2]-=12*k; Kl[b1t1][b1r2]+=6*Lk;
-    Kl[b1r1][b1t1]+=6*Lk; Kl[b1r1][b1r1]+=4*L2k; Kl[b1r1][b1t2]-=6*Lk; Kl[b1r1][b1r2]+=2*L2k;
-    Kl[b1t2][b1t1]-=12*k; Kl[b1t2][b1r1]-=6*Lk; Kl[b1t2][b1t2]+=12*k; Kl[b1t2][b1r2]-=6*Lk;
-    Kl[b1r2][b1t1]+=6*Lk; Kl[b1r2][b1r1]+=2*L2k; Kl[b1r2][b1t2]-=6*Lk; Kl[b1r2][b1r2]+=4*L2k;
-
-    // Bending plane 2
-    Kl[b2t1][b2t1]+=12*k; Kl[b2t1][b2r1]+=6*Lk; Kl[b2t1][b2t2]-=12*k; Kl[b2t1][b2r2]+=6*Lk;
-    Kl[b2r1][b2t1]+=6*Lk; Kl[b2r1][b2r1]+=4*L2k; Kl[b2r1][b2t2]-=6*Lk; Kl[b2r1][b2r2]+=2*L2k;
-    Kl[b2t2][b2t1]-=12*k; Kl[b2t2][b2r1]-=6*Lk; Kl[b2t2][b2t2]+=12*k; Kl[b2t2][b2r2]-=6*Lk;
-    Kl[b2r2][b2t1]+=6*Lk; Kl[b2r2][b2r1]+=2*L2k; Kl[b2r2][b2t2]-=6*Lk; Kl[b2r2][b2r2]+=4*L2k;
-
-    // Element forces: f = Kl * uG
-    const f = new Float64Array(12);
-    for (let i = 0; i < 12; i++) {
-      let s = 0;
-      for (let j = 0; j < 12; j++) s += Kl[i][j] * uG[j];
-      f[i] = s;
-    }
-
-    // Axial force magnitude |N|
-    const N_val = Math.abs(f[ax6]);
-    // Max bending moment M at either end, either plane
-    const M = Math.max(Math.abs(f[b1r1]), Math.abs(f[b2r1]), Math.abs(f[b1r2]), Math.abs(f[b2r2]));
-    // Combined stress: |N| + M/L (same metric as 2D tension test)
-    const combined = N_val + M / L;
-
-    // Store edge stress (sorted key)
-    const k1 = `${ba.i},${ba.j},${ba.lvl}`;
-    const k2 = `${bb.i},${bb.j},${bb.lvl}`;
-    const ekey = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
-    femEdgeStress.set(ekey, combined);
-
-    // Track max stress per block
-    const curA = femBlockMaxStress.get(k1) ?? 0;
-    if (combined > curA) femBlockMaxStress.set(k1, combined);
-    const curB = femBlockMaxStress.get(k2) ?? 0;
-    if (combined > curB) femBlockMaxStress.set(k2, combined);
-  }
-}
-
-// Gaussian elimination solver with partial pivoting (same as 2D tension test)
-function solveLinear3D(K, F, n) {
-  const A = new Array(n);
-  for (let i = 0; i < n; i++) {
-    A[i] = new Float64Array(n + 1);
-    for (let j = 0; j < n; j++) A[i][j] = K[i][j];
-    A[i][n] = F[i];
-    A[i][i] += 1e-9;
-  }
-  for (let p = 0; p < n; p++) {
-    let piv = p, best = Math.abs(A[p][p]);
-    for (let r = p+1; r < n; r++) { const v = Math.abs(A[r][p]); if (v > best) { best = v; piv = r; } }
-    if (piv !== p) { const t = A[p]; A[p] = A[piv]; A[piv] = t; }
-    const d = A[p][p];
-    if (Math.abs(d) < 1e-12) continue;
-    for (let r = p+1; r < n; r++) {
-      const f = A[r][p] / d;
-      if (!f) continue;
-      for (let c = p; c <= n; c++) A[r][c] -= f * A[p][c];
-    }
-  }
-  const u = new Float64Array(n);
-  for (let p = n-1; p >= 0; p--) {
-    let sum = A[p][n];
-    for (let c = p+1; c < n; c++) sum -= A[p][c] * u[c];
-    u[p] = Math.abs(A[p][p]) < 1e-12 ? 0 : sum / A[p][p];
-  }
-  return u;
-}
-
-function edgeKey3(i1,j1,l1, i2,j2,l2) {
-  const a = `${i1},${j1},${l1}`, b = `${i2},${j2},${l2}`;
-  return a < b ? a+'|'+b : b+'|'+a;
-}
-
-function tensionColor(ratio) {
-  // ratio = stress / maxStrength.  0 = no stress (green), 1.0 = at breaking point (red)
-  if (ratio >= 1.5) return [0.90, 0.15, 0.12];  // red - critical
-  if (ratio >= 1.0) return [0.95, 0.35, 0.12];  // orange-red
-  if (ratio >= 0.7) return [0.95, 0.55, 0.12];  // orange
-  if (ratio >= 0.4) return [0.95, 0.85, 0.15];  // yellow
-  if (ratio >= 0.2) return [0.70, 0.80, 0.15];  // yellow-green
-  return [0.20, 0.85, 0.25];                     // green - low stress
-}
-// Toggled by the "Tension Viz" button.
-let tensionVizOn = false;
-let tensionVizAccum = 0;
 
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
@@ -3106,11 +2753,6 @@ function collectColumn(i, j, step = 1) {
         const gc = terrainGripColor(i, j, lvl, m);
         r = gc.r; g = gc.g; b = gc.b;
       }
-      if (tensionVizOn) {
-        const blockStress = femBlockMaxStress.get(`${i},${j},${lvl}`) ?? 0;
-        const tc = tensionColor(blockStress / (MAT_STATS[m]?.strength ?? 1));
-        r = tc[0]; g = tc[1]; b = tc[2];
-      }
       const cy = (lvl + 0.5) * BLOCK;
       for (let f = 0; f < 6; f++) {
         const F = FACES[f];
@@ -3379,131 +3021,6 @@ document.getElementById('btn-debug-chunks').addEventListener('click', () => {
   debugChunkGrid.visible = !debugChunkGrid.visible;
   document.getElementById('btn-debug-chunks').classList.toggle('on', debugChunkGrid.visible);
 });
-
-// ---------------------------------------------------------------------------
-// Tension viz overlay — edge outlines and break-marks on top of the terrain
-// mesh's own tension colouring above. A separate group rather than baked into
-// the terrain geometry, so it can be rebuilt on its own schedule and skip
-// blocks far from the player without touching the mesh pipeline at all.
-const tensionEdges = new THREE.Group();
-scene.add(tensionEdges);
-const TENSION_X_SIZE = 0.05;               // half-width of the break-mark X, world units
-const TENSION_RANGE  = CHUNK * BLOCK;  // 1 chunk radius only (~3.2m, ~16 blocks)
-
-function clearTensionEdges() {
-  for (const c of tensionEdges.children) c.geometry.dispose();
-  tensionEdges.clear();
-}
-
-// The 4 edges of one face, as a line-segment pair per edge, in the given colour.
-function pushFaceEdgeLines(posArr, colArr, F, bx, by, bz, r, g, b) {
-  const v = F.v;
-  const P = [0, 1, 2, 3].map((q) => [
-    bx + v[q * 3] * HALF_BLOCK,
-    by + v[q * 3 + 1] * HALF_BLOCK,
-    bz + v[q * 3 + 2] * HALF_BLOCK,
-  ]);
-  for (let e = 0; e < 4; e++) {
-    const a = P[e], c = P[(e + 1) % 4];
-    posArr.push(a[0], a[1], a[2], c[0], c[1], c[2]);
-    colArr.push(r, g, b, r, g, b);
-  }
-}
-
-// Builds a small red-X sprite texture (created once, reused for all X marks).
-let _xSpriteMat = null;
-function xSpriteMaterial() {
-  if (_xSpriteMat) return _xSpriteMat;
-  const cv = document.createElement('canvas');
-  cv.width = 64; cv.height = 64;
-  const cx = cv.getContext('2d');
-  cx.clearRect(0, 0, 64, 64);
-  cx.strokeStyle = '#ff2020';
-  cx.lineWidth = 5;
-  cx.lineCap = 'round';
-  const s = 12;
-  cx.beginPath(); cx.moveTo(s, s); cx.lineTo(64 - s, 64 - s); cx.stroke();
-  cx.beginPath(); cx.moveTo(64 - s, s); cx.lineTo(s, 64 - s); cx.stroke();
-  const tex = new THREE.CanvasTexture(cv);
-  _xSpriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: true, transparent: true });
-  return _xSpriteMat;
-}
-
-// Rebuilds the whole overlay from the live voxel store — cheap enough to call
-// on toggle and every so often while it's on (see tensionVizAccum in tick()),
-// same as rebuildChunk is for the terrain mesh itself.
-function rebuildTensionOverlay() {
-  clearTensionEdges();
-  if (!tensionVizOn) return;
-
-  computeLocalFEM();
-
-  // DEBUG — remove after phone test
-  if (femBlockMaxStress.size > 0) {
-    let mx = 0; femBlockMaxStress.forEach(v => { if (v > mx) mx = v; });
-    console.log('[FEM] blocks=' + femBlockMaxStress.size + ' maxStress=' + mx.toFixed(3));
-  } else {
-    console.log('[FEM] 0 blocks near player at ' + playerBody.position.x.toFixed(1) + ',' + playerBody.position.z.toFixed(1));
-  }
-
-
-  const camPos = playerBody.position;
-  const edgePos = [], edgeCol = [];
-  const xPositions = []; // one {x,y,z} per overstressed block
-
-  for (let c = 0; c < chunkMesh.length; c++) {
-    if (!chunkMesh[c]) continue;
-    const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
-    const ccx = colX(i0 + CHUNK / 2), ccz = colZ(j0 + CHUNK / 2);
-    if (Math.hypot(ccx - camPos.x, ccz - camPos.z) > TENSION_RANGE) continue;
-
-    const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
-    for (let j = j0; j < j1; j++) {
-      for (let i = i0; i < i1; i++) {
-        const k = j * GEN_N + i;
-        const top = sTop[k];
-        if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) continue;
-        const o = voxOff[k] - VOX_FLOOR;
-        for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
-          const m = voxMat[o + lvl];
-          if (m === AIR || !blockVisible[o + lvl]) continue;
-          const strength = MAT_STATS[m]?.strength ?? 1;
-          const blockStress = femBlockMaxStress.get(`${i},${j},${lvl}`) ?? 0;
-          const [r, g, b] = tensionColor(blockStress / strength);
-          const bx = colX(i), by = (lvl + 0.5) * BLOCK, bz = colZ(j);
-          for (let f = 0; f < 6; f++) {
-            const F = FACES[f];
-            if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
-            const edgeStress = femEdgeStress.get(edgeKey3(i, j, lvl, i + F.di, j + F.dj, lvl + F.dl)) ?? blockStress;
-            const [er, eg, eb] = tensionColor(edgeStress / strength);
-            pushFaceEdgeLines(edgePos, edgeCol, F, bx, by, bz, er, eg, eb);
-          }
-          // One X sprite per overstressed block (always visible, faces camera)
-          if (blockStress / strength > 1.0) {
-            xPositions.push({ x: bx, y: by, z: bz });
-          }
-        }
-      }
-    }
-  }
-
-  if (edgePos.length) {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(edgePos), 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(edgeCol), 3));
-    tensionEdges.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true })));
-  }
-  // Create one sprite per overstressed block — always faces camera, always visible
-  if (xPositions.length) {
-    const mat = xSpriteMaterial();
-    for (const p of xPositions) {
-      const sprite = new THREE.Sprite(mat);
-      sprite.position.set(p.x, p.y, p.z);
-      sprite.scale.set(0.15, 0.15, 1);
-      tensionEdges.add(sprite);
-    }
-  }
-}
 
 document.getElementById('sel-lod-override').addEventListener('change', (e) => {
   lodOverride = e.target.value === 'auto' ? null : Number(e.target.value);
@@ -7654,10 +7171,6 @@ function tick() {
   if (paint.on) updatePaint();
   if (placerOn) updatePlacer();
   flushDirtyChunks();
-  if (tensionVizOn) {
-    tensionVizAccum += dt;
-    if (tensionVizAccum >= 1.0) { tensionVizAccum = 0; rebuildTensionOverlay(); }
-  }
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
 

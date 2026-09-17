@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 5;
+  var v = 50;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -799,6 +799,224 @@
     white-space: pre-wrap;
     text-align: left;
   }
+
+  /* ---- 2-D tension sandbox overlay ---- */
+  #f2d-overlay {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.f2d-open #f2d-overlay { display: flex; }
+  #f2d-panel {
+    position: relative;
+    display: flex; flex-direction: column;
+    width: min(900px, 100%);
+    height: min(700px, 80dvh);
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+  }
+  #f2d-panel .f2d-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(20, 28, 42, 0.95);
+    border-bottom: 1px solid rgba(140, 175, 230, 0.15);
+  }
+  #f2d-panel .f2d-header span {
+    font-size: 12px; letter-spacing: 0.16em; color: #6f92bd; text-transform: uppercase;
+  }
+  #f2d-close {
+    position: static;
+    width: 28px; height: 28px;
+    border: none; background: rgba(255,255,255,.08);
+    color: #8a9bb5; font-size: 18px;
+    border-radius: 50%; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #f2d-close:hover { background: rgba(255,80,60,.25); color: #ff6450; }
+  #f2d-frame {
+    flex: 1; border: none; width: 100%; height: 100%;
+    background: #151d2b;
+  }
+  #btn-f2d {
+    position: fixed;
+    top: calc(248px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-f2d:active { transform: translateY(1px); }
+
+  /* ---- Sandbox mode ---- */
+  #btn-sandbox {
+    position: fixed;
+    top: calc(284px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-sandbox.on {
+    color: #06101f;
+    background: linear-gradient(180deg, #b8ffcf, #54f0a0);
+    border-color: transparent;
+  }
+  #btn-sandbox:active { transform: translateY(1px); }
+
+  /* ---- Place tool (creative) ---- */
+  #btn-placer {
+    position: fixed;
+    top: calc(152px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-placer.on {
+    color: #06101f;
+    background: linear-gradient(180deg, #a8e0ff, #54b0f0);
+    border-color: transparent;
+  }
+  #placer-ui {
+    position: fixed;
+    left: 50%; bottom: calc(10px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: none;
+    flex-direction: column; align-items: center; gap: 7px;
+    z-index: 13;
+  }
+  body.placer-on #placer-ui { display: flex; }
+  #placer-mat-name {
+    font-size: 11px; color: #8ab4d8; letter-spacing: 0.1em;
+    text-transform: uppercase; margin-bottom: 2px;
+  }
+  #placer-do {
+    width: 106px; height: 58px;
+    padding: 0; border: 1px solid rgba(150, 195, 245, 0.4);
+    background: rgba(20, 34, 54, 0.72); color: #cfe6ff;
+    border-radius: 12px; cursor: pointer;
+    font-family: inherit; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #placer-do .glyph { font-size: 19px; }
+  #placer-do:active { background: rgba(90, 160, 235, 0.6); border-color: rgba(220, 240, 255, 0.85); color: #fff; }
+  #placer-row { display: flex; gap: 12px; }
+  #placer-del {
+    padding: 0; border: 1px solid rgba(200, 100, 100, 0.4);
+    background: rgba(54, 20, 20, 0.72); color: #ffb0b0;
+    width: 106px; height: 58px;
+    border-radius: 12px; cursor: pointer;
+    font-family: inherit; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #placer-del .glyph { font-size: 19px; }
+  #placer-del:active { background: rgba(235, 90, 90, 0.6); border-color: rgba(255, 220, 220, 0.85); color: #fff; }
+  /* Material selector overlay */
+  #placer-mat-overlay {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.placer-mat-open #placer-mat-overlay { display: flex; }
+  #placer-mat-panel {
+    position: relative;
+    display: flex; flex-direction: column; align-items: center;
+    width: min(420px, 100%);
+    max-height: 100%;
+    padding: 20px;
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #placer-mat-panel .title {
+    display: block; margin: 0 34px 16px 0; align-self: flex-start;
+    font-size: 12px; letter-spacing: 0.16em; color: #6f92bd; text-transform: uppercase;
+  }
+  #placer-mat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 8px; width: 100%;
+  }
+  .placer-mat-sel-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    padding: 10px 6px;
+    border: 1px solid rgba(140, 175, 230, 0.2);
+    border-radius: 10px; cursor: pointer;
+    background: rgba(255,255,255,0.03);
+    color: #c8d0dc; font-size: 10px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .placer-mat-sel-btn:active { background: rgba(90, 160, 235, 0.35); }
+  .placer-mat-sel-btn .swatch {
+    width: 28px; height: 28px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15);
+  }
+  #placer-mat-close {
+    position: absolute; top: 10px; right: 10px;
+    width: 28px; height: 28px;
+    border: none; background: rgba(255,255,255,.08);
+    color: #8a9bb5; font-size: 18px;
+    border-radius: 50%; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #placer-mat-close:hover { background: rgba(255,80,60,.25); color: #ff6450; }
 </style>
 </head>
 <body>
@@ -812,6 +1030,35 @@
 
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="instructions"></div>
+<div id="f2d-overlay" class="ui-el">
+  <div id="f2d-panel">
+    <div class="f2d-header">
+      <span>2D Tension Sandbox</span>
+      <button id="f2d-close" aria-label="Close">&times;</button>
+    </div>
+    <iframe id="f2d-frame" src="tension-test.html" loading="lazy"></iframe>
+  </div>
+</div>
+
+<button id="btn-f2d" class="ui-el">2D Sandbox</button>
+<button id="btn-sandbox" class="ui-el">Sandbox Mode</button>
+
+<button id="btn-placer" class="ui-el">Creative &mdash; Off</button>
+<div id="placer-ui">
+  <div id="placer-mat-name">Rock</div>
+  <div id="placer-row">
+    <button class="sv-btn" id="placer-del"><span class="glyph">&#10005;</span>DELETE</button>
+    <button class="sv-btn" id="placer-do"><span class="glyph">&#9635;</span>PLACE</button>
+  </div>
+</div>
+<div id="placer-mat-overlay" class="ui-el">
+  <div id="placer-mat-panel">
+    <button id="placer-mat-close" aria-label="Close">&times;</button>
+    <span class="title">Select Material</span>
+    <div id="placer-mat-grid"></div>
+  </div>
+</div>
+
 <button id="mode-btn" class="ui-el">Game Mode</button>
 <button id="btn-materials">Mats</button>
 
@@ -1426,22 +1673,22 @@ const AIR = N_MATS;
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 0.5, powder: true  },  // SAND
-  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
+  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 25,  powder: true  },  // SAND
+  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 50,  powder: false },  // DIRT
+  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 350, powder: false },  // ROCK
   null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 0.8, powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 1.4, powder: false },  // HARD_SAND
+  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 25,  powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 65,  powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 100, powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 75,  powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 50,  powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 75,  powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 100, powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 60,  powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 75,  powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 125, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 40,  powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 70,  powder: false },  // HARD_SAND
 ];
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
@@ -5083,6 +5330,187 @@ document.getElementById('chart-overlay').addEventListener('pointerdown', (e) => 
   if (e.target.id === 'chart-overlay') setChartUI(false);
   e.stopPropagation();
 });
+
+// ---------------------------------------------------------------------------
+// 2-D tension sandbox (iframe overlay)
+// ---------------------------------------------------------------------------
+let f2dOpen = false;
+function setF2DUI(on) {
+  f2dOpen = on;
+  document.body.classList.toggle('f2d-open', on);
+}
+function toggleF2D() { setF2DUI(!f2dOpen); }
+bindTap(document.getElementById('btn-f2d'), toggleF2D);
+bindTap(document.getElementById('f2d-close'), () => setF2DUI(false));
+document.getElementById('f2d-overlay').addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'f2d-overlay') setF2DUI(false);
+});
+
+// ---------------------------------------------------------------------------
+// Sandbox mode — clears the world to air and drops a flat platform under the
+// player so it can be rebuilt from scratch with the shovel / hammer / placer.
+// ---------------------------------------------------------------------------
+let sandboxMode = false;
+const sandboxBtn = document.getElementById('btn-sandbox');
+
+// Give column k a fresh, empty (all-AIR) voxel range up through lvl + headroom.
+// A no-op for a column that already exists — the sandbox reset below empties
+// existing columns in place rather than tearing down their metadata.
+function createColumn(k, lvl) {
+  if (topLvl[k] !== NO_COLUMN) return;
+  const headroom = 200;
+  topLvl[k] = lvl;
+  bedLvl[k] = lvl;
+  bedMat[k] = ROCK;
+  colMaxCap[k] = lvl + headroom;
+  voxOff[k] = voxCount;
+  const newCap = colMaxCap[k] - VOX_FLOOR + 1;
+  voxCount += newCap;
+  const newVox = new Uint8Array(voxCount);
+  newVox.set(voxMat);
+  voxMat = newVox;
+  const newVis = new Uint8Array(voxCount);
+  newVis.set(blockVisible);
+  blockVisible = newVis;
+  voxMat.fill(AIR, voxOff[k], voxOff[k] + newCap);
+  sTop[k] = NO_COLUMN;
+  worldBlocks++;
+}
+
+function toggleSandbox() {
+  sandboxMode = !sandboxMode;
+  document.body.classList.toggle('sandbox-mode', sandboxMode);
+  sandboxBtn.classList.toggle('on', sandboxMode);
+  if (sandboxMode) {
+    // Empty every existing column.
+    voxMat.fill(AIR);
+    worldBlocks = 0;
+    colDug.fill(0);
+    colDugLo.fill(0);
+    sTop.fill(NO_COLUMN);
+    blockVisible.fill(0);
+    powderDirty.clear();
+    for (let c = 0; c < chunkMesh.length; c++) {
+      if (chunkMesh[c]) rebuildChunk(c);
+    }
+    // Flat platform of ROCK under the player's feet.
+    const p = playerBody.position;
+    const ci = colI(p.x), cj = colJ(p.z);
+    const platLvl = Math.floor(p.y / BLOCK) - 2;
+    for (let dj = -8; dj <= 8; dj++) {
+      for (let di = -8; di <= 8; di++) {
+        const ii = ci + di, jj = cj + dj;
+        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+        const k = jj * GEN_N + ii;
+        createColumn(k, platLvl);
+        if (platLvl < VOX_FLOOR || platLvl > voxCap(k)) continue;
+        const off = voxOff[k] + platLvl - VOX_FLOOR;
+        voxMat[off] = ROCK;
+        sTop[k] = platLvl;
+        refreshVisible(ii, jj, platLvl);
+        patchCollider(ii, jj);
+      }
+    }
+    for (let dj = -4; dj <= 4; dj++) {
+      for (let di = -4; di <= 4; di++) {
+        const ii = ci + di, jj = cj + dj;
+        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+        rebuildChunk(chunkOf(ii, jj));
+      }
+    }
+  }
+}
+bindTap(sandboxBtn, toggleSandbox);
+
+// ---------------------------------------------------------------------------
+// Creative tool (placer) — pick a material from the palette, then place or
+// delete blocks with it under the same crosshair aim the shovel uses.
+// ---------------------------------------------------------------------------
+const placerBtn = document.getElementById('btn-placer');
+const placerMatName = document.getElementById('placer-mat-name');
+const placerDo = document.getElementById('placer-do');
+const placerDel = document.getElementById('placer-del');
+const placerMatOverlay = document.getElementById('placer-mat-overlay');
+const placerMatGrid = document.getElementById('placer-mat-grid');
+let placerOn = false;
+let placerMat = ROCK;
+
+for (let m = 0; m < N_MATS; m++) {
+  if (m === WATER) continue;
+  const s = MAT_STATS[m];
+  if (!s) continue;
+  const btn = document.createElement('button');
+  btn.className = 'placer-mat-sel-btn';
+  const swatch = document.createElement('div');
+  swatch.className = 'swatch';
+  swatch.style.background = '#' + TERRAIN_MATS[m].color.getHexString();
+  const label = document.createElement('span');
+  label.textContent = s.name;
+  btn.appendChild(swatch);
+  btn.appendChild(label);
+  btn.addEventListener('click', () => {
+    placerMat = m;
+    placerMatName.textContent = s.name;
+    setPlacerMatUI(false);
+    setPlacer(true);
+  });
+  placerMatGrid.appendChild(btn);
+}
+
+function setPlacerMatUI(on) {
+  document.body.classList.toggle('placer-mat-open', on);
+}
+
+function setPlacer(on) {
+  if (on && shovel.on) setShovel(false);
+  if (on && hammer.on) setHammer(false);
+  placerOn = on;
+  placerBtn.classList.toggle('on', on);
+  placerBtn.innerHTML = 'Creative &mdash; ' + (on ? 'On' : 'Off');
+  document.body.classList.toggle('placer-on', on);
+  if (!on) hlPick.visible = hlPlace.visible = false;
+}
+
+placerBtn.addEventListener('click', () => {
+  if (placerOn) { setPlacer(false); return; }
+  setPlacerMatUI(true);
+});
+
+bindTap(document.getElementById('placer-mat-close'), () => setPlacerMatUI(false));
+placerMatOverlay.addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'placer-mat-overlay') setPlacerMatUI(false);
+});
+
+bindTap(placerDo, () => {
+  if (!placerOn || !shovel.spot) return;
+  const { i, j, lvl } = shovel.spot;
+  if (lvl < VOX_FLOOR || i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return;
+  const k = j * GEN_N + i;
+  if (topLvl[k] === NO_COLUMN && sandboxMode) createColumn(k, lvl);
+  if (topLvl[k] !== NO_COLUMN && lvl <= voxCap(k) && voxelAt(i, j, lvl) === AIR) {
+    editBlock(i, j, lvl, placerMat);
+  }
+});
+
+bindTap(placerDel, () => {
+  if (!placerOn || !shovel.hit) return;
+  const { i, j, lvl } = shovel.hit;
+  if (voxelAt(i, j, lvl) !== AIR) editBlock(i, j, lvl, AIR);
+});
+
+// Called every frame while the Place tool is active — same job as updateShovel.
+function updatePlacer() {
+  shovel.on = true;           // temporarily enable so shovelAim() runs
+  shovelAim();
+  shovel.on = false;
+  const canPlace = !!shovel.spot;
+  hlPick.visible  = false;               // no pick-up mode in Place tool
+  hlPlace.visible = placerOn && canPlace;
+  if (hlPlace.visible) {
+    cellCenter(shovel.spot, hlPlace.position);
+    hlPlace.quaternion.identity();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Overlay

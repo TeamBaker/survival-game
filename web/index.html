@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 50;
+  var v = 51;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -707,6 +707,7 @@
     #btn-chart { top: calc(186px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
     #chart-panel { padding: 12px; }
     #chart-grid { font-size: 10px; min-width: 460px; }
+    #btn-menu { font-size: 15px; width: 36px; height: 36px; }
   }
 
   /* ---------- Start / pause overlay ---------- */
@@ -845,6 +846,130 @@
   #f2d-frame {
     flex: 1; border: none; width: 100%; height: 100%;
     background: #151d2b;
+  }
+
+  /* ---------- Menu button (opens the menu overlay) ---------- */
+  #btn-menu {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    width: 40px;
+    height: 40px;
+    font-family: inherit;
+    font-size: 17px;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 60;
+  }
+  #btn-menu.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-menu:active { transform: translateY(1px); }
+
+  /* ---------- Menu overlay ---------- */
+  #menu-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.menu-open #menu-overlay { display: flex; }
+
+  #menu-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: min(420px, 100%);
+    max-height: 100%;
+    padding: 20px;
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #menu-panel .title {
+    display: block;
+    margin: 0 34px 16px 0;
+    align-self: flex-start;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+  .menu-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-bottom: 22px;
+  }
+  .menu-section:last-child { margin-bottom: 0; }
+  .menu-row { display: flex; gap: 10px; justify-content: center; }
+  .menu-label {
+    align-self: flex-start;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+
+  #menu-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #menu-close:active { transform: translateY(1px); }
+
+  /* Settings section */
+  .settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(140, 175, 230, 0.1);
+  }
+  .settings-row:last-child { border-bottom: none; }
+  .settings-row label {
+    font-size: 12px;
+    color: #b9c9dc;
+  }
+  .settings-row input[type="range"] {
+    width: 120px;
+    accent-color: #54b0f0;
+  }
+  .settings-row .val {
+    font-size: 11px;
+    color: #6f92bd;
+    min-width: 32px;
+    text-align: right;
   }
   #btn-f2d {
     position: fixed;
@@ -1029,7 +1154,6 @@
 <span class="k" style="color:#ff0">v10-voxel</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
-<div id="instructions"></div>
 <div id="f2d-overlay" class="ui-el">
   <div id="f2d-panel">
     <div class="f2d-header">
@@ -1039,9 +1163,6 @@
     <iframe id="f2d-frame" src="tension-test.html" loading="lazy"></iframe>
   </div>
 </div>
-
-<button id="btn-f2d" class="ui-el">2D Sandbox</button>
-<button id="btn-sandbox" class="ui-el">Sandbox Mode</button>
 
 <button id="btn-placer" class="ui-el">Creative &mdash; Off</button>
 <div id="placer-ui">
@@ -1058,9 +1179,6 @@
     <div id="placer-mat-grid"></div>
   </div>
 </div>
-
-<button id="mode-btn" class="ui-el">Game Mode</button>
-<button id="btn-materials">Mats</button>
 
 <!-- Filled in from TERRAIN_MATS so the swatches are the colours actually used. -->
 <div id="materials-ui" class="ui-el">
@@ -1097,7 +1215,7 @@
   <button class="sv-btn" id="btn-strike"><span class="glyph">&#128296;</span>STRIKE</button>
 </div>
 
-<button id="btn-chart" class="ui-el">Chart</button>
+<button id="btn-menu" aria-label="Menu">&#9881;</button>
 
 <!-- Rows are generated from MAT_CHART so the table and the data stay one thing. -->
 <div id="chart-overlay" class="ui-el">
@@ -1106,6 +1224,50 @@
     <span class="title">Material Interactions</span>
     <div id="chart-scroll"><div id="chart-grid"></div></div>
     <div id="chart-foot">50% = random chance on break</div>
+  </div>
+</div>
+
+<div id="menu-overlay">
+  <div id="menu-panel">
+    <button id="menu-close" aria-label="Close">&times;</button>
+    <span class="title">Menu</span>
+
+    <div class="menu-section">
+      <button id="mode-btn" class="ui-el">Game Mode</button>
+    </div>
+
+    <div class="menu-section">
+      <div class="menu-row">
+        <button id="btn-materials">Mats</button>
+        <button id="btn-chart" class="ui-el">Chart</button>
+      </div>
+      <div id="instructions"></div>
+    </div>
+
+    <div class="menu-section">
+      <span class="menu-label">Settings</span>
+      <div class="settings-row">
+        <label>Mouse Sensitivity</label>
+        <input type="range" id="set-sensitivity" min="0.05" max="0.5" step="0.01" value="0.15">
+        <span class="val" id="set-sens-val">0.15</span>
+      </div>
+      <div class="settings-row">
+        <label>Render Distance</label>
+        <input type="range" id="set-renderdist" min="1" max="5" step="1" value="3">
+        <span class="val" id="set-rd-val">3</span>
+      </div>
+      <div class="settings-row">
+        <label>Shadow Quality</label>
+        <input type="range" id="set-shadows" min="0" max="2" step="1" value="1">
+        <span class="val" id="set-sh-val">Med</span>
+      </div>
+    </div>
+
+    <div class="menu-section menu-debug">
+      <span class="menu-label">Debug</span>
+      <button id="btn-f2d" class="ui-el">2D Sandbox</button>
+      <button id="btn-sandbox" class="ui-el">Sandbox Mode</button>
+    </div>
   </div>
 </div>
 
@@ -1738,7 +1900,7 @@ function pickMaterial(h, slope, x, z) {
   if (h < 1.2 + n * 0.5) return SAND;              // the beach, up to knee height
   // Just above the tide line the ground never dries out, so the damp variants
   // sit in a band there rather than anywhere on the island.
-  if (h < 3.0 + n) return v > 0.30 ? MUD : (v < -0.45 ? CLAY_MUD : DIRT);
+  if (h < 3.0 + n) return DIRT;
   // All the gentle ground above it: earth, with clay banks and loose topsoil
   // through it.
   return v > 0.40 ? CLAY : (v < -0.40 ? FINE_DIRT : DIRT);
@@ -1749,7 +1911,7 @@ function pickMaterial(h, slope, x, z) {
 // column is the packed or waterlogged version of whatever caps it. Indexed by
 // material id; WATER's entry is never read (a flooded column's bed is sand).
 const DEEP_MAT = [
-  MUD,            // SAND — wet sand under the beach
+  DIRT,           // SAND — wet sand under the beach
   HARD_DIRT,      // DIRT
   ROCK,           // ROCK
   WATER,          // WATER
@@ -1876,6 +2038,33 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   // of, so it has to be written rather than left alone.
   voxMat.fill(AIR, o + top + 1, o + voxCap(k) + 1);
   worldBlocks += top - VOX_FLOOR + 1;
+}
+
+// Post-generation swap pass: occasionally trades the surface material of two
+// adjacent columns, so the boundary between materials is a ragged edge rather
+// than a clean polygon.
+for (let k = 0; k < GEN_N * GEN_N; k++) {
+  if (topLvl[k] === NO_COLUMN) continue;
+  const i = k % GEN_N, j = (k / GEN_N) | 0;
+  const neighbors = [];
+  if (i > 0) neighbors.push(k - 1);
+  if (i < GEN_N - 1) neighbors.push(k + 1);
+  if (j > 0) neighbors.push(k - GEN_N);
+  if (j < GEN_N - 1) neighbors.push(k + GEN_N);
+  for (const nb of neighbors) {
+    if (topLvl[nb] === NO_COLUMN) continue;
+    if (topMat[k] === topMat[nb]) continue;
+    const chance = nhash(i, j) * 0.5 + 0.5;
+    if (chance <= 0.85) continue;
+    const idxK = voxOff[k] + topLvl[k] - VOX_FLOOR;
+    const idxNb = voxOff[nb] + topLvl[nb] - VOX_FLOOR;
+    const tmpMat = topMat[k];
+    topMat[k] = topMat[nb];
+    topMat[nb] = tmpMat;
+    const tmpVox = voxMat[idxK];
+    voxMat[idxK] = voxMat[idxNb];
+    voxMat[idxNb] = tmpVox;
+  }
 }
 
 // The highest solid level in each column, cached rather than searched for. It
@@ -2107,9 +2296,9 @@ const TERRAIN_MATS = [
   mat(0x6a7078, 0.85, 0.02, { envMapIntensity: 0.50 }),   // STONE_MUD
   mat(0x909898, 0.94, 0.01, { envMapIntensity: 0.50 }),   // BRITTLE_STONE
   // The clay family — tan, and the least rough of the dry materials.
-  mat(0xc4a882, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
-  mat(0x8a7a60, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
-  mat(0xb09070, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
+  mat(0xa88060, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
+  mat(0x947858, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
+  mat(0xba8a64, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
   // The sand family, either side of SAND: damp is darker, packed is warmer.
   mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
   mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
@@ -3301,8 +3490,8 @@ renderer.domElement.addEventListener('mousedown', (e) => {
 
 document.addEventListener('mousemove', (e) => {
   if (!isLocked()) return;
-  state.yaw   -= (e.movementX || 0) * MOUSE_SENSITIVITY * DEG;
-  state.pitch -= (e.movementY || 0) * MOUSE_SENSITIVITY * DEG;
+  state.yaw   -= (e.movementX || 0) * mouseSensitivity * DEG;
+  state.pitch -= (e.movementY || 0) * mouseSensitivity * DEG;
   state.pitch = THREE.MathUtils.clamp(state.pitch, -PITCH_LIMIT, PITCH_LIMIT);
 });
 
@@ -3398,8 +3587,8 @@ function onTouchMove(e) {
     if (rec.role === 'look') {
       const dx = t.clientX - rec.x;
       const dy = t.clientY - rec.y;
-      state.yaw   -= dx * MOUSE_SENSITIVITY * TOUCH_LOOK_MULT * DEG;
-      state.pitch -= dy * MOUSE_SENSITIVITY * TOUCH_LOOK_MULT * DEG;
+      state.yaw   -= dx * mouseSensitivity * TOUCH_LOOK_MULT * DEG;
+      state.pitch -= dy * mouseSensitivity * TOUCH_LOOK_MULT * DEG;
       state.pitch = THREE.MathUtils.clamp(state.pitch, -PITCH_LIMIT, PITCH_LIMIT);
     } else if (rec.role === 'move') {
       let dx = t.clientX - moveOrigin.x;
@@ -5345,6 +5534,55 @@ bindTap(document.getElementById('f2d-close'), () => setF2DUI(false));
 document.getElementById('f2d-overlay').addEventListener('pointerdown', (e) => {
   if (e.target.id === 'f2d-overlay') setF2DUI(false);
 });
+
+// ---------------------------------------------------------------------------
+// Menu overlay
+// ---------------------------------------------------------------------------
+const menuBtn = document.getElementById('btn-menu');
+let menuOpen = false;
+function setMenuUI(on) {
+  menuOpen = on;
+  document.body.classList.toggle('menu-open', on);
+  if (on && document.pointerLockElement) document.exitPointerLock();
+}
+function toggleMenu() { setMenuUI(!menuOpen); }
+bindTap(menuBtn, toggleMenu);
+bindTap(document.getElementById('menu-close'), () => setMenuUI(false));
+document.getElementById('menu-overlay').addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'menu-overlay') setMenuUI(false);
+  e.stopPropagation();
+});
+
+// --- Settings ---
+let mouseSensitivity = MOUSE_SENSITIVITY;
+const sensSlider = document.getElementById('set-sensitivity');
+const sensVal = document.getElementById('set-sens-val');
+if (sensSlider) {
+  sensSlider.addEventListener('input', () => {
+    mouseSensitivity = parseFloat(sensSlider.value);
+    sensVal.textContent = mouseSensitivity.toFixed(2);
+  });
+}
+const rdSlider = document.getElementById('set-renderdist');
+const rdVal = document.getElementById('set-rd-val');
+if (rdSlider) {
+  rdSlider.addEventListener('input', () => {
+    rdVal.textContent = rdSlider.value;
+    if (typeof RENDER_DIST !== 'undefined') window.RENDER_DIST = parseInt(rdSlider.value);
+  });
+}
+const shSlider = document.getElementById('set-shadows');
+const shVal = document.getElementById('set-sh-val');
+const shLabels = ['Off', 'Med', 'High'];
+if (shSlider) {
+  shSlider.addEventListener('input', () => {
+    const v = parseInt(shSlider.value);
+    shVal.textContent = shLabels[v];
+    renderer.shadowMap.enabled = v > 0;
+    renderer.shadowMap.type = v >= 2 ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Sandbox mode — clears the world to air and drops a flat platform under the

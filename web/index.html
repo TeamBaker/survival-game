@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 25;
+  var v = 26;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6579,6 +6579,10 @@ function adriftGroup(i, j, lvl) {
 // out of the store, so a later side that was part of it finds air and is passed
 // over.
 function applyGravity(i, j, lvl) {
+  // Sandbox platforms float with nothing below them down to VOX_FLOOR, so the
+  // adrift check below would see the whole platform as unanchored and tear it
+  // off the moment a single grain sheds out of it. Skip the cascade entirely.
+  if (sandboxMode) return;
   for (const [di, dj, dl] of GRAV_DIRS) breakOffAdrift(i + di, j + dj, lvl + dl);
 }
 
@@ -7624,7 +7628,7 @@ function tick() {
   // they build into a shove, which is the one thing here that helps the walk.
   // Nothing touches the body afterwards — the solver's answer is the answer.
   world.step(PHYS_STEP, dt, 8);
-  checkTension(dt);
+  if (!sandboxMode) checkTension(dt);
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);

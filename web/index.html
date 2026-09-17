@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 14;
+  var v = 15;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -901,6 +901,53 @@
   #chart-close:active { transform: translateY(1px); }
   #chart-foot { margin-top: 10px; color: #62819f; font-size: 10px; }
 
+  /* ---- 2-D sandbox overlay ---- */
+  #f2d-overlay {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.f2d-open #f2d-overlay { display: flex; }
+  #f2d-panel {
+    position: relative;
+    display: flex; flex-direction: column;
+    width: min(900px, 100%);
+    height: min(700px, 80dvh);
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+  }
+  #f2d-panel .f2d-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(20, 28, 42, 0.95);
+    border-bottom: 1px solid rgba(140, 175, 230, 0.15);
+  }
+  #f2d-panel .f2d-header span {
+    font-size: 12px; letter-spacing: 0.16em; color: #6f92bd; text-transform: uppercase;
+  }
+  #f2d-close {
+    position: static;
+    width: 28px; height: 28px;
+    border: none; background: rgba(255,255,255,.08);
+    color: #8a9bb5; font-size: 18px;
+    border-radius: 50%; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #f2d-close:hover { background: rgba(255,80,60,.25); color: #ff6450; }
+  #f2d-frame {
+    flex: 1; border: none; width: 100%; height: 100%;
+    background: #151d2b;
+  }
+
   @media (max-width: 620px) {
     #btn-chart, #btn-debug-chunks, #sel-lod-override { font-size: 10px; padding: 7px 12px; }
     #chart-panel { padding: 12px; }
@@ -1148,6 +1195,16 @@
   </div>
 </div>
 
+<div id="f2d-overlay" class="ui-el">
+  <div id="f2d-panel">
+    <div class="f2d-header">
+      <span>2D Tension Sandbox</span>
+      <button id="f2d-close" aria-label="Close">&times;</button>
+    </div>
+    <iframe id="f2d-frame" src="tension-test.html" loading="lazy"></iframe>
+  </div>
+</div>
+
 <div id="menu-overlay">
   <div id="menu-panel">
     <button id="menu-close" aria-label="Close">&times;</button>
@@ -1178,6 +1235,7 @@
       <button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
       <button id="btn-grip-debug"><span class="dot"></span>Grip Debug</button>
       <button id="btn-tension-viz" class="ui-el">Tension Viz</button>
+      <button id="btn-f2d" class="ui-el">2D Sandbox</button>
     </div>
   </div>
 </div>
@@ -7068,6 +7126,19 @@ bindTap(document.getElementById('chart-close'), () => setChartUI(false));
 document.getElementById('chart-overlay').addEventListener('pointerdown', (e) => {
   if (e.target.id === 'chart-overlay') setChartUI(false);
   e.stopPropagation();
+});
+
+// ---- 2-D Sandbox toggle ----
+let f2dOpen = false;
+function setF2DUI(on) {
+  f2dOpen = on;
+  document.body.classList.toggle('f2d-open', on);
+}
+function toggleF2D() { setF2DUI(!f2dOpen); }
+bindTap(document.getElementById('btn-f2d'), toggleF2D);
+bindTap(document.getElementById('f2d-close'), () => setF2DUI(false));
+document.getElementById('f2d-overlay').addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'f2d-overlay') setF2DUI(false);
 });
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 23;
+  var v = 24;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1289,8 +1289,8 @@
 <div id="placer-ui">
   <div id="placer-mat-name">Rock</div>
   <div id="placer-row">
-    <button class="sv-btn" id="placer-do"><span class="glyph">&#9635;</span>PLACE</button>
     <button class="sv-btn" id="placer-del"><span class="glyph">&#10005;</span>DELETE</button>
+    <button class="sv-btn" id="placer-do"><span class="glyph">&#9635;</span>PLACE</button>
   </div>
 </div>
 
@@ -7632,7 +7632,7 @@ function tick() {
   }
   updateFallingChunks();
   updatePowderBlocks(dt);
-  if (!sandboxMode) checkTerrainPowder();
+  checkTerrainPowder();
   checkTerrainTension();
 
   updateCamera(dt);

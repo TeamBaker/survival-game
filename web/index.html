@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 26;
+  var v = 27;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -2142,13 +2142,19 @@ function computeLocalFEM() {
   if (blocks.length === 0) return;
   if (blocks.length > 300) return; // safety cap — O(n³) Gaussian elimination
 
-  // 2. BFS from ground blocks (lvl <= VOX_FLOOR+2) to find connected region
+  // 2. BFS from anchor blocks to find connected region.
+  // Ground blocks (near bedrock) are always anchors. In sandbox mode (no
+  // bedrock in range), the lowest block in each column is an anchor instead.
   const NB6 = [[-1,0,0],[1,0,0],[0,-1,0],[0,1,0],[0,0,-1],[0,0,1]];
   const connected = new Uint8Array(blocks.length);
+  const isAnchor = new Uint8Array(blocks.length);
   const queue = [];
 
   for (let idx = 0; idx < blocks.length; idx++) {
-    if (blocks[idx].lvl <= VOX_FLOOR + 2) {
+    const b = blocks[idx];
+    const below = blockMap.get(`${b.i},${b.j},${b.lvl - 1}`);
+    if (b.lvl <= VOX_FLOOR + 2 || below === undefined) {
+      isAnchor[idx] = 1;
       connected[idx] = 1;
       queue.push(idx);
     }
@@ -2173,7 +2179,7 @@ function computeLocalFEM() {
   const nodeList = [];
   for (let idx = 0; idx < blocks.length; idx++) {
     if (!connected[idx]) continue;
-    if (blocks[idx].lvl <= VOX_FLOOR + 2) continue; // ground = fixed
+    if (isAnchor[idx]) continue; // ground / anchor = fixed
     nodeIdx[idx] = nFree++;
     nodeList.push(idx);
   }

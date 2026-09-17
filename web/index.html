@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 22;
+  var v = 23;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -633,6 +633,19 @@
   }
   #placer-do .glyph { font-size: 19px; }
   #placer-do:active { background: rgba(90, 160, 235, 0.6); border-color: rgba(220, 240, 255, 0.85); color: #fff; }
+  #placer-row { display: flex; gap: 12px; }
+  #placer-del {
+    width: 106px; height: 58px;
+    padding: 0; border: 1px solid rgba(200, 100, 100, 0.4);
+    background: rgba(54, 20, 20, 0.72); color: #ffb0b0;
+    border-radius: 12px; cursor: pointer;
+    font-family: inherit; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #placer-del .glyph { font-size: 19px; }
+  #placer-del:active { background: rgba(235, 90, 90, 0.6); border-color: rgba(255, 220, 220, 0.85); color: #fff; }
   /* Material selector overlay */
   #placer-mat-overlay {
     position: fixed; inset: 0;
@@ -1272,10 +1285,13 @@
   <button class="sv-btn" id="btn-paint-apply"><span class="glyph">&#127912;</span>PAINT</button>
 </div>
 
-<button id="btn-placer" class="ui-el">Place &mdash; Off</button>
+<button id="btn-placer" class="ui-el">Creative &mdash; Off</button>
 <div id="placer-ui">
   <div id="placer-mat-name">Rock</div>
-  <button class="sv-btn" id="placer-do"><span class="glyph">&#9635;</span>PLACE</button>
+  <div id="placer-row">
+    <button class="sv-btn" id="placer-do"><span class="glyph">&#9635;</span>PLACE</button>
+    <button class="sv-btn" id="placer-del"><span class="glyph">&#10005;</span>DELETE</button>
+  </div>
 </div>
 
 <div id="placer-mat-overlay" class="ui-el">
@@ -7401,7 +7417,7 @@ function setPlacer(on) {
   if (on && paint.on) setPaint(false);
   placerOn = on;
   placerBtn.classList.toggle('on', on);
-  placerBtn.innerHTML = 'Place &mdash; ' + (on ? 'On' : 'Off');
+  placerBtn.innerHTML = 'Creative &mdash; ' + (on ? 'On' : 'Off');
   document.body.classList.toggle('placer-on', on);
   if (!on) hlPick.visible = hlPlace.visible = false;
 }
@@ -7431,6 +7447,18 @@ bindTap(placerDo, () => {
         editBlock(i, j, lvl, placerMat);
       }
     }
+  }
+});
+
+const placerDel = document.getElementById('placer-del');
+bindTap(placerDel, () => {
+  if (!placerOn) return;
+  shovel.on = true;
+  shovelAim();
+  shovel.on = false;
+  if (shovel.hit) {
+    const { i, j, lvl } = shovel.hit;
+    if (voxelAt(i, j, lvl) !== AIR) editBlock(i, j, lvl, AIR);
   }
 });
 
@@ -7604,7 +7632,7 @@ function tick() {
   }
   updateFallingChunks();
   updatePowderBlocks(dt);
-  checkTerrainPowder();
+  if (!sandboxMode) checkTerrainPowder();
   checkTerrainTension();
 
   updateCamera(dt);

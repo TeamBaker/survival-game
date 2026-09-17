@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 18;
+  var v = 19;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -565,32 +565,9 @@
   body.hammer-on #btn-down   { bottom: calc(118px + env(safe-area-inset-bottom)); }
   body.hammer-on #btn-up     { bottom: calc(208px + env(safe-area-inset-bottom)); }
 
-  /* ---------- Paint (recolours a debris block, cosmetic only) ---------- */
-  #btn-paint {
-    position: fixed;
-    top: calc(166px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
-    padding: 8px 14px;
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: #cfe6ff;
-    background: rgba(20, 34, 54, 0.62);
-    border: 1px solid rgba(150, 195, 245, 0.4);
-    border-radius: 999px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    cursor: pointer;
-    touch-action: manipulation;
-    z-index: 14;
-  }
-  #btn-paint.on {
-    color: #22062f;
-    background: linear-gradient(180deg, #e8b8ff, #a83cff);
-    border-color: transparent;
-  }
+  /* ---------- Paint (hidden) ---------- */
+  #btn-paint { display: none !important; }
+  #paint-ui  { display: none !important; }
 
   #paint-ui {
     position: fixed;
@@ -7480,8 +7457,7 @@ placerMatOverlay.addEventListener('pointerdown', (e) => {
 
 bindTap(placerDo, () => {
   if (!placerOn) return;
-  // Reuse the shovel's aim to find where crosshair points, then place
-  shovelAim();
+  // shovel.spot was set by updatePlacer → shovelAim() last frame
   if (shovel.spot) {
     const { i, j, lvl } = shovel.spot;
     if (lvl >= VOX_FLOOR && i >= 0 && j >= 0 && i < GEN_N && j < GEN_N) {
@@ -7493,6 +7469,18 @@ bindTap(placerDo, () => {
     }
   }
 });
+
+// Called every frame while the Place tool is active — same job as updateShovel.
+function updatePlacer() {
+  shovelAim();
+  const canPlace = !!shovel.spot;
+  hlPick.visible  = false;               // no pick-up mode in Place tool
+  hlPlace.visible = placerOn && canPlace;
+  if (hlPlace.visible) {
+    cellCenter(shovel.spot, hlPlace.position);
+    hlPlace.quaternion.identity();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Menu overlay (game mode, mats/chart shortcuts, debug tools)
@@ -7660,6 +7648,7 @@ function tick() {
   if (shovel.on) updateShovel();
   if (hammer.on) updateHammer();
   if (paint.on) updatePaint();
+  if (placerOn) updatePlacer();
   flushDirtyChunks();
   if (tensionVizOn) {
     tensionVizAccum += dt;

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 28;
+  var v = 29;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -835,39 +835,6 @@
   #btn-debug-colliders.on { color: #fff; border-color: rgba(120, 255, 160, 0.4); }
   #btn-debug-colliders:active { transform: translateY(1px); }
 
-  /* ---------- Grip debug toggle ---------- */
-  #btn-grip-debug {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 6px 10px;
-    font-family: inherit;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #cfe6ff;
-    background: rgba(20, 34, 54, 0.55);
-    border: 1px solid rgba(150, 195, 245, 0.25);
-    border-radius: 999px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    cursor: pointer;
-    touch-action: manipulation;
-    min-height: 32px;
-    min-width: 32px;
-  }
-  #btn-grip-debug .dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #8a8f99;
-    box-shadow: 0 0 4px #8a8f99;
-  }
-  #btn-grip-debug.on .dot { background: #ffb020; box-shadow: 0 0 4px #ffb020; }
-  #btn-grip-debug.on { color: #fff; border-color: rgba(255, 190, 100, 0.4); }
-  #btn-grip-debug:active { transform: translateY(1px); }
-
   #chart-overlay {
     position: fixed;
     inset: 0;
@@ -1331,7 +1298,6 @@
         <option value="4">LOD: Level 4</option>
       </select>
       <button id="btn-debug-colliders"><span class="dot"></span>Debug Colliders</button>
-      <button id="btn-grip-debug"><span class="dot"></span>Grip Debug</button>
       <button id="btn-f2d" class="ui-el">2D Sandbox</button>
       <button id="btn-sandbox" class="ui-el">Sandbox Mode</button>
     </div>
@@ -1716,21 +1682,6 @@ document.getElementById('btn-debug-colliders').addEventListener('click', () => {
   console.log('DEBUG TOGGLE:', debugColliders.on);
 });
 
-document.getElementById('btn-grip-debug').addEventListener('click', () => {
-  gripDebugOn = !gripDebugOn;
-  document.getElementById('btn-grip-debug').classList.toggle('on', gripDebugOn);
-  // Debris: overlay the grip colours on the geometry already built, or rebuild
-  // clean to drop them.
-  for (const f of fallingChunks.concat(restedChunks)) {
-    if (gripDebugOn) applyGripColors(f.mesh); else buildDebrisGeometry(f.mesh);
-  }
-  // Terrain: every chunk currently built (i.e. in view) is re-coloured by
-  // rebuilding it — collectColumn reads gripDebugOn itself.
-  for (let c = 0; c < chunkMesh.length; c++) {
-    if (chunkMesh[c]) rebuildChunk(c);
-  }
-});
-
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
 const syncList = [];
@@ -2032,35 +1983,6 @@ const MAT_STATS = [
   { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 40,  powder: false },  // WET_SAND
   { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 70,  powder: false },  // HARD_SAND
 ];
-
-// Grip: how hard a block resists gravity, from the min of its own and each
-// side neighbour's strength — declared here (rather than by the tension code
-// that reads it) because the grip-debug view needs it during the very first
-// terrain build, before the world has generated even one frame.
-const GRIP_SCALE = 1.0;   // 1 grip holds 1 weight in any direction
-// Side neighbours only (di, dj, dl) — above and below don't resist gravity,
-// same rule checkTerrainTension and the grip-debug view both use.
-const GRIP_SIDE_NEI = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]];
-// Toggled by the "Grip Debug" button: colours blocks by grip/weight instead
-// of material, so a terrain overhang or a debris piece about to shed blocks
-// is visible at a glance.
-let gripDebugOn = false;
-function gripRatioColor(ratio) {
-  if (ratio > 3) return { r: 0.20, g: 0.85, b: 0.25 };   // green — plenty of grip
-  if (ratio >= 1) return { r: 0.95, g: 0.85, b: 0.15 };  // yellow — holding, barely
-  return { r: 0.95, g: 0.20, b: 0.20 };                  // red — should already have broken
-}
-// Terrain block grip, read straight off the voxel store's live neighbours.
-function terrainGripColor(i, j, lvl, m) {
-  const strength = MAT_STATS[m]?.strength ?? 1;
-  let grip = 0;
-  for (const [di, dj, dl] of GRIP_SIDE_NEI) {
-    const nm = voxelAt(i + di, j + dj, lvl + dl);
-    if (nm === AIR || nm === WATER) continue;
-    grip += Math.min(strength, MAT_STATS[nm]?.strength ?? 1) * GRIP_SCALE;
-  }
-  return gripRatioColor(grip / (MAT_STATS[m]?.weight ?? 1));
-}
 
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
@@ -2748,11 +2670,7 @@ function collectColumn(i, j, step = 1) {
       const variation = 0.85 + h * 0.30;
       const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl)) * variation;
       const c = TERRAIN_MATS[m].color;
-      let r = c.r * s, g = c.g * s, b = c.b * s;
-      if (gripDebugOn) {
-        const gc = terrainGripColor(i, j, lvl, m);
-        r = gc.r; g = gc.g; b = gc.b;
-      }
+      const r = c.r * s, g = c.g * s, b = c.b * s;
       const cy = (lvl + 0.5) * BLOCK;
       for (let f = 0; f < 6; f++) {
         const F = FACES[f];
@@ -4917,12 +4835,9 @@ const FALL_SHAPE_CAP = 24;    // blocks that get a collider each, rather than on
 const FALL_MASS_CAP  = 120;   // a cliff face weighs as much as the solver can take, not as much as it is
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
+const PLACE_GRACE_TICKS = 20; // frames after a user places a block on a piece before shedPowder may touch it again — the new block's mass/CoM can nudge the body's orientation, and shedding off that transient wobble would look like the whole piece breaking apart from a single placement
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
-// GRIP_SCALE is declared up by MAT_STATS — the grip-debug view needs it during
-// the very first terrain build, long before this section runs.
-const TENSION_CHECK_MAX = 3;  // cascade passes of checkTension per frame, capped against a runaway collapse
-const TENSION_GRACE  = 30;    // frames before tension activates on a new piece (let it settle first)
 
 // A block's contribution to a piece's mass and centre of mass is its material's
 // weight (MAT_STATS), not a flat count — a rock block should drag and balance a
@@ -5045,45 +4960,8 @@ function buildDebrisGeometry(group) {
   // Aggregated for reference; raycasting reads a hit sub-mesh's own faceBlock
   // (its faceIndex is local to that sub-mesh's geometry, not this group).
   group.userData.faceBlock = faceBlock;
-  if (gripDebugOn) applyGripColors(group);
 }
 
-// Debug-only post-process: overrides the vertex colours buildDebrisGeometry
-// just wrote, block by block, using each child's own faceBlock to map its
-// quads back to lattice indices — same grip-vs-weight balance as the terrain
-// view, read off the piece's own lattice instead of the voxel store.
-function applyGripColors(group) {
-  const lat = group.userData.blocks;
-  if (!lat || !lat.length) return;
-  const at = new Map();
-  for (let q = 0; q < lat.length; q++) at.set(lat[q].gi + ',' + lat[q].gj + ',' + lat[q].lvl, q);
-  const colors = new Array(lat.length);
-  for (let q = 0; q < lat.length; q++) {
-    const b = lat[q];
-    const strength = MAT_STATS[b.mat]?.strength ?? 1;
-    let grip = 0;
-    for (const [di, dj, dl] of GRIP_SIDE_NEI) {
-      const k = at.get((b.gi + di) + ',' + (b.gj + dj) + ',' + (b.lvl + dl));
-      if (k === undefined) continue;
-      grip += Math.min(strength, MAT_STATS[lat[k].mat]?.strength ?? 1) * GRIP_SCALE;
-    }
-    colors[q] = gripRatioColor(grip / (MAT_STATS[b.mat]?.weight ?? 1));
-  }
-  for (const child of group.children) {
-    const fb = child.userData.faceBlock;
-    if (!fb) continue;
-    const col = child.geometry.getAttribute('color');
-    for (let f = 0; f < fb.length; f++) {
-      const gc = colors[fb[f]];
-      const base = f * 4;
-      for (let v = 0; v < 4; v++) {
-        const o = (base + v) * 3;
-        col.array[o] = gc.r; col.array[o + 1] = gc.g; col.array[o + 2] = gc.b;
-      }
-    }
-    col.needsUpdate = true;
-  }
-}
 // Its own group rather than `objects`: the camera boom raycasts that one to pull
 // itself in past props, and rubble lying around the player should not be tugging
 // the camera about.
@@ -5130,16 +5008,6 @@ const chunkCoM = new THREE.Vector3();
 function spawnFallingChunk(unit) {
   const blocks = [...unit.values()];
   const n = blocks.length;
-
-  // These blocks just left the terrain, so their columns' grip has changed —
-  // recheck what's left standing there.
-  for (const b of blocks) {
-    markTensionDirty(b.i, b.j);
-    markTensionDirty(b.i - 1, b.j);
-    markTensionDirty(b.i + 1, b.j);
-    markTensionDirty(b.i, b.j - 1);
-    markTensionDirty(b.i, b.j + 1);
-  }
 
   // Weighted centre of the piece, in world units — a piece of mixed materials
   // balances toward its heavier blocks, not its geometric middle.
@@ -5254,7 +5122,7 @@ function spawnFallingChunk(unit) {
   // Oldest piece gives up its body if the field is already full of them.
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
-  fallingChunks.push({ mesh, body, still: 0, tensionGrace: TENSION_GRACE, prevVelocity: body.velocity.clone(), prevAngVel: body.angularVelocity.clone() });
+  fallingChunks.push({ mesh, body, still: 0 });
 }
 
 // ----- powder in the ground -----
@@ -5269,14 +5137,6 @@ let powderTick = 0, powderCursor = 0;
 // only every few seconds, which is a long time to watch sand hang in the air
 // over the hole you dug, so a touched column is answered on the spot instead.
 const powderDirty = new Set();
-// Columns with terrain blocks that may need a grip/tension check — see
-// checkTerrainTension. Marked whenever a column's blocks change, since that
-// can change the grip on every block still attached to it.
-const tensionDirty = new Set();
-function markTensionDirty(i, j) {
-  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return;
-  tensionDirty.add(j * GEN_N + i);
-}
 // Shed whatever powder in column c has nothing under it, up to `budget` blocks.
 // Returns what is left of the budget.
 function shedColumn(c, budget) {
@@ -5359,47 +5219,6 @@ function checkTerrainPowder() {
   powderCursor = k % cols;
 }
 
-// ----- terrain block tension / grip -----
-// The same grip-vs-weight balance as a debris piece's pieceTensionPass, but
-// for blocks still joined to the world: grip is the sum, over each solid
-// face-neighbour except the one directly below, of the weaker of the two
-// materials' strength — the one below can't hold a block up against gravity,
-// only what it's bonded to sideways or above can. A block whose grip can't
-// carry its own weight breaks off via breakOffAdrift, which only actually
-// removes it if that also leaves it disconnected from the bedrock; otherwise
-// the block stays put, still held by the bulk of the terrain around it.
-// Bottom-up per column, so a block that gives way lets whatever depended on
-// its grip break in turn on a later pass rather than this one.
-function checkTerrainTension() {
-  if (!tensionDirty.size) return;
-  const cols = [...tensionDirty];
-  tensionDirty.clear();
-  for (const c of cols) {
-    const i = c % GEN_N, j = (c - i) / GEN_N;
-    const top = topLvl[c];
-    if (top === NO_COLUMN) continue;
-    for (let lvl = VOX_FLOOR + 1; lvl <= top; lvl++) {
-      const m = voxelAt(i, j, lvl);
-      if (m === AIR || m === WATER) continue;
-      const strength = MAT_STATS[m]?.strength ?? 1;
-      let grip = 0;
-      for (const [di, dj, dl] of GRAV_DIRS) {
-        if (dl === -1 || dl === 1) continue;   // above and below don't provide grip against gravity — only side neighbours do
-        const nm = voxelAt(i + di, j + dj, lvl + dl);
-        if (nm === AIR || nm === WATER) continue;
-        grip += Math.min(strength, MAT_STATS[nm]?.strength ?? 1) * GRIP_SCALE;
-      }
-      if (grip < (MAT_STATS[m]?.weight ?? 1)) {
-        breakOffAdrift(i, j, lvl);
-        // The block above is now exposed — re-mark this column so it gets
-        // rechecked next frame and the cascade continues upward.
-        tensionDirty.add(c);
-        break;   // recheck from the bottom next pass (levels shifted)
-      }
-    }
-  }
-}
-
 // Debris this far (world units) from the player is frozen rather than kept
 // under live physics — slightly inside the live collider ring, so a piece
 // never freezes while still standing on ground that has a body under it.
@@ -5465,6 +5284,10 @@ function shedPowder() {
     const list = s ? fallingChunks : restedChunks;
     for (let n = list.length - 1; n >= 0; n--) {
       const f = list[n];
+      // Just placed on: give the body a few frames to settle under the new
+      // block's mass before judging what counts as unsupported, so a single
+      // placement can't read as a shed across the whole piece.
+      if (f.placeGrace > 0) { f.placeGrace--; continue; }
       // A piece still travelling is mid-break: leave it, or it dissolves in the air.
       // Actually, shed powder always — it should fall when unsupported regardless.
       const mesh = f.mesh, lat = mesh.userData.blocks;
@@ -5802,157 +5625,7 @@ function spawnDebrisPart(parent, blocks, pbody, frozen) {
 
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);
-  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen, tensionGrace: TENSION_GRACE, prevVelocity: body.velocity.clone(), prevAngVel: body.angularVelocity.clone() });
-}
-
-// ----- block tension / grip -----
-// Every block in a piece is held to its face-neighbours by grip: the weaker of
-// the two materials' strength (MAT_STATS), scaled by GRIP_SCALE. A block's own
-// grip is the sum of that across whichever of its six neighbours are also in
-// the lattice. Weighed against it each step is the force the piece's motion
-// puts on the block — gravity, the pull of the piece's own spin, and the piece
-// accelerating under it — using the body's velocity change as a stand-in for
-// the forces actually driving it, per block mass. Losing a block strips its
-// neighbours' grip in turn, so the check runs a few passes a frame until
-// nothing more gives, capped at TENSION_CHECK_MAX so a full collapse can't
-// loop forever.
-const tensionR = new CANNON.Vec3(), tensionOmega2 = new CANNON.Vec3(), tensionCentrip = new CANNON.Vec3(), tensionAlpha = new CANNON.Vec3();
-const TENSION_NEI = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
-function pieceTensionPass(f, dt) {
-  if (f.tensionGrace > 0) { f.tensionGrace--; return false; }
-  const body = f.body, mesh = f.mesh, lat = mesh.userData.blocks;
-  if (!lat.length) return false;
-
-  const ax = (body.velocity.x - f.prevVelocity.x) / dt;
-  const ay = (body.velocity.y - f.prevVelocity.y) / dt;
-  const az = (body.velocity.z - f.prevVelocity.z) / dt;
-  const w  = body.angularVelocity;
-  // Angular acceleration (alpha) — the torque that leverages far blocks harder
-  const px = (w.x - f.prevAngVel.x) / dt;
-  const py = (w.y - f.prevAngVel.y) / dt;
-  const pz = (w.z - f.prevAngVel.z) / dt;
-
-  // Neighbour lookup straight off the lattice's own grid indices — same key
-  // scheme rebuildDebrisBody uses.
-  const at = new Map();
-  for (let q = 0; q < lat.length; q++) at.set(lat[q].gi + ',' + lat[q].gj + ',' + lat[q].lvl, q);
-
-  const breaking = [];
-  for (let q = 0; q < lat.length; q++) {
-    const b = lat[q];
-    const strength = MAT_STATS[b.mat]?.strength ?? 1;
-    let grip = 0, neighbours = 0;
-    for (const [di, dj, dl] of TENSION_NEI) {
-      const k = at.get((b.gi + di) + ',' + (b.gj + dj) + ',' + (b.lvl + dl));
-      if (k === undefined) continue;
-      neighbours++;
-      grip += Math.min(strength, MAT_STATS[lat[k].mat]?.strength ?? 1) * GRIP_SCALE;
-    }
-    if (neighbours === 0) continue;   // already free-floating
-
-    // Centripetal: w x (w x pos), pulling the block outward from the spin axis.
-    // Tangential: alpha x pos, the torque leverage — far blocks feel it harder.
-    // angularVelocity is world-space, so pos (local to the piece) is rotated
-    // into world space first — same frame as the linear acceleration below.
-    tensionR.set(b.pos.x, b.pos.y, b.pos.z);
-    body.quaternion.vmult(tensionR, tensionR);
-    w.cross(tensionR, tensionOmega2);
-    w.cross(tensionOmega2, tensionCentrip);
-    // tangential = alpha x r
-    tensionAlpha.set(px, py, pz);
-    tensionAlpha.cross(tensionR, tensionOmega2);  // reuse temp vec
-
-    const mass = blockWeight(b);
-    // ax/ay/az already include gravity (the body accelerates at g when falling).
-    // Centripetal and tangential are the *extra* forces that stress the piece
-    // beyond free-fall — collision impacts, spin-up, hitting the ground.
-    const fx = mass * (ax + tensionCentrip.x + tensionOmega2.x);
-    const fy = mass * (ay + tensionCentrip.y + tensionOmega2.y);
-    const fz = mass * (az + tensionCentrip.z + tensionOmega2.z);
-    if (Math.sqrt(fx * fx + fy * fy + fz * fz) > grip) breaking.push(q);
-  }
-  if (!breaking.length) return false;
-
-  // The parent mesh may not have been synced to this step's body transform
-  // yet (checkTension runs ahead of the syncList loop), and a broken-off
-  // block needs the piece's current position and tilt to land in the right
-  // place, not last frame's.
-  mesh.position.copy(body.position);
-  mesh.quaternion.copy(body.quaternion);
-  mesh.updateWorldMatrix(true, false);
-
-  // Snapshot block data before we start cutting.
-  const breakSet = new Set(breaking);
-  const blockData = lat.map((b) => ({ pos: b.pos.clone(), mat: b.mat, lvl: b.lvl, gi: b.gi, gj: b.gj, top: b.top, paintColor: b.paintColor }));
-
-  // Flood-fill connected groups among the breaking blocks.
-  // Each group comes off as ONE debris piece — a corner snaps off as a chunk,
-  // not a shower of individual blocks.
-  const visited = new Set();
-  const groups = [];  // array of arrays of block indices
-  for (const q of breaking) {
-    if (visited.has(q)) continue;
-    const group = [];
-    const stack = [q];
-    visited.add(q);
-    while (stack.length) {
-      const cur = stack.pop();
-      group.push(cur);
-      const b = blockData[cur];
-      for (const [di, dj, dl] of TENSION_NEI) {
-        const nk = (b.gi + di) + ',' + (b.gj + dj) + ',' + (b.lvl + dl);
-        const k = at.get(nk);
-        if (k === undefined || !breakSet.has(k) || visited.has(k)) continue;
-        visited.add(k);
-        stack.push(k);
-      }
-    }
-    groups.push(group);
-  }
-
-  // Remove all breaking blocks from the lattice (highest index first).
-  breaking.sort((q1, q2) => q2 - q1);
-  for (const q of breaking) cutDebrisLat(mesh, q);
-
-  // Spawn each connected group. If every block in the group is powder, shed
-  // as individual grains. Otherwise the group becomes one debris piece.
-  for (const group of groups) {
-    const blocks = group.map((q) => blockData[q]);
-    const allPowder = blocks.every((b) => MAT_STATS[b.mat]?.powder);
-    if (allPowder) {
-      for (const b of blocks) {
-        const wp = b.pos.clone().applyMatrix4(mesh.matrixWorld);
-        const g = { pos: wp, mat: b.mat, v: 0, from: mesh };
-        g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);
-        g.mesh.scale.setScalar(BLOCK);
-        g.mesh.position.copy(wp);
-        scene.add(g.mesh);
-        powderFalling.push(g);
-      }
-    } else {
-      spawnDebrisPart(mesh, blocks, body, f.frozen);
-    }
-  }
-
-  if (!lat.length) { removeDebrisMesh(mesh); return true; }
-  splitDebrisIfNeeded(mesh);
-  const nf = chunkOfMesh(mesh);
-  if (nf) { rebuildDebrisBody(mesh, nf.body); nf.still = 0; }
-  return true;
-}
-
-// Run once a physics step, after world.step and before syncList's mesh/body
-// sync — see pieceTensionPass's own resync of the pieces it actually breaks.
-function checkTension(dt) {
-  if (!(dt > 0)) return;
-  for (let pass = 0; pass < TENSION_CHECK_MAX; pass++) {
-    const pieces = fallingChunks.concat(restedChunks);
-    let any = false;
-    for (const f of pieces) any = pieceTensionPass(f, dt) || any;
-    if (!any) break;
-  }
-  for (const f of fallingChunks) { f.prevVelocity.copy(f.body.velocity); f.prevAngVel.copy(f.body.angularVelocity); }
-  for (const f of restedChunks) { f.prevVelocity.copy(f.body.velocity); f.prevAngVel.copy(f.body.angularVelocity); }
+  fallingChunks.push({ mesh, body, still: 0, frozen: !!frozen });
 }
 
 // Digging a loose piece takes off the one block under the crosshair and leaves
@@ -6055,115 +5728,13 @@ function placeOnDebris(mesh, local, m) {
   if (f.frozen) { f.frozen = false; f.body.collisionResponse = true; f.body.wakeUp(); }
   rebuildDebrisBody(mesh, f.body);
   f.still = 0;   // it has been disturbed: let it settle again
+  f.placeGrace = PLACE_GRACE_TICKS;   // don't let shedPowder read the settling wobble as a break-apart
 }
 
 // The six face neighbours, with the one below last so a stack pops it first: a
 // fill that walks down before it walks out reaches bedrock in a hundred-odd
 // steps from the surface instead of ballooning outwards on the way.
 const GRAV_DIRS = [[0, 0, 1], [-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1]];
-const GRAV_MAX  = 1024;   // blocks one fill walks before it gives the group up as terrain
-
-// Everything joined to (i, j, lvl) through solid faces, as one group. Water is
-// not solid, so it neither joins a group nor holds one up. The group is adrift —
-// and comes down whole — only if none of it reaches bedrock: with all six
-// directions walked, a block standing on anything solid is standing on another
-// member, so the floor is the one thing left that can anchor the lot. Returns
-// the group's blocks, or null if it is anchored, or too big to be worth walking.
-function adriftGroup(i, j, lvl) {
-  if (!gravSolid(i, j, lvl)) return null;
-  const first = { i, j, lvl, m: voxelAt(i, j, lvl) };
-  const unit = new Map([[gravKey(i, j, lvl), first]]);
-  const stack = [first];
-  while (stack.length) {
-    const b = stack.pop();
-    if (b.lvl <= VOX_FLOOR) return null;    // sitting on bedrock: the whole group is held up
-    for (const [di, dj, dl] of GRAV_DIRS) {
-      const ii = b.i + di, jj = b.j + dj, ll = b.lvl + dl;
-      const key = gravKey(ii, jj, ll);
-      if (unit.has(key) || !gravSolid(ii, jj, ll)) continue;
-      if (unit.size >= GRAV_MAX) return null;
-      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll) };
-      unit.set(key, nb);
-      stack.push(nb);
-    }
-  }
-  // A group of nothing but loose grain does not come down as one piece: it is
-  // left to the cascade, which sheds it a grain at a time from the bottom. Any
-  // solid in the mix holds the rest together, and the powder rides along.
-  let allPowder = true;
-  for (const b of unit.values()) if (!MAT_STATS[b.m]?.powder) { allPowder = false; break; }
-  if (allPowder) return null;
-  return unit;
-}
-
-// The removal at (i, j, lvl) opened one face on each of the six cells around it,
-// so whatever they are joined to may have just lost its last path to the ground.
-// Each side is walked in turn; the first group that comes away cuts its blocks
-// out of the store, so a later side that was part of it finds air and is passed
-// over.
-function applyGravity(i, j, lvl) {
-  // Sandbox platforms float with nothing below them down to VOX_FLOOR, so the
-  // adrift check below would see the whole platform as unanchored and tear it
-  // off the moment a single grain sheds out of it. Skip the cascade entirely.
-  if (sandboxMode) return;
-  for (const [di, dj, dl] of GRAV_DIRS) breakOffAdrift(i + di, j + dj, lvl + dl);
-}
-
-function breakOffAdrift(i, j, lvl) {
-  const unit = adriftGroup(i, j, lvl);
-  if (!unit) return;
-
-  // The loose blocks leave the grid. Nothing is written back lower down — the
-  // piece itself takes over from here.
-  for (const b of unit.values()) setVoxel(b.i, b.j, b.lvl, AIR);
-
-  // Then the same housekeeping an edit does, for every cell that emptied.
-  const cols = new Set();
-  for (const b of unit.values()) {
-    const k = b.j * GEN_N + b.i;
-    colDug[k] = 1;
-    if (b.lvl < colDugLo[k]) colDugLo[k] = b.lvl;
-    refreshVisible(b.i, b.j, b.lvl);
-    refreshVisible(b.i - 1, b.j, b.lvl);
-    refreshVisible(b.i + 1, b.j, b.lvl);
-    refreshVisible(b.i, b.j - 1, b.lvl);
-    refreshVisible(b.i, b.j + 1, b.lvl);
-    refreshVisible(b.i, b.j, b.lvl - 1);
-    refreshVisible(b.i, b.j, b.lvl + 1);
-    cols.add(k);
-  }
-  for (const k of cols) {
-    const ci = k % GEN_N, cj = (k - ci) / GEN_N;
-    for (let dj = -1; dj <= 1; dj++) {
-      for (let di = -1; di <= 1; di++) {
-        const ii = ci + di, jj = cj + dj;
-        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
-        dirtyChunks.add(chunkOf(ii, jj));
-      }
-    }
-  }
-
-  // Rebuild colliders for the now-empty chunks immediately, before the
-  // debris body spawns — otherwise it collides with the stale boxes for
-  // a frame (flushDirtyChunks() runs too late for this).
-  for (const k of cols) {
-    rebuildChunkCollider(chunkOf(k % GEN_N, (k - k % GEN_N) / GEN_N));
-  }
-
-  spawnFallingChunk(unit);
-
-  // Propagate: blocks next to the ones that fell might now be adrift too.
-  const checked = new Set();
-  for (const b of unit.values()) {
-    for (const [di, dj, dl] of GRAV_DIRS) {
-      const ni = b.i + di, nj = b.j + dj, nl = b.lvl + dl;
-      const nk = ni + ',' + nj + ',' + nl;
-      if (checked.has(nk)) continue;
-      checked.add(nk);
-      if (gravSolid(ni, nj, nl)) breakOffAdrift(ni, nj, nl);
-    }
-  }
-}
 
 function editBlock(i, j, lvl, m) {
   const was = setVoxel(i, j, lvl, m);
@@ -6187,15 +5758,6 @@ function editBlock(i, j, lvl, m) {
       dirtyChunks.add(chunkOf(ii, jj));
     }
   }
-  // This block's own grip changed, and so did the grip of whatever leans on
-  // it from the side.
-  markTensionDirty(i, j);
-  markTensionDirty(i - 1, j);
-  markTensionDirty(i + 1, j);
-  markTensionDirty(i, j - 1);
-  markTensionDirty(i, j + 1);
-  // Anything the removal left hanging comes down.
-  if (m === AIR && was !== AIR) applyGravity(i, j, lvl);
   return was;
 }
 
@@ -6281,8 +5843,6 @@ function hammerStrike() {
 
   // A group of one — the same path a broken-off cliff takes, just smaller.
   spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat }]]));
-  // And whatever the hole left hanging comes down after it.
-  applyGravity(i, j, lvl);
   hammer.hit = null;
   return true;
 }
@@ -6866,7 +6426,6 @@ function toggleSandbox() {
     sTop.fill(NO_COLUMN);
     blockVisible.fill(0);
     powderDirty.clear();
-    tensionDirty.clear();
     for (let c = 0; c < chunkMesh.length; c++) {
       if (chunkMesh[c]) rebuildChunk(c);
     }
@@ -7151,7 +6710,6 @@ function tick() {
   // they build into a shove, which is the one thing here that helps the walk.
   // Nothing touches the body afterwards — the solver's answer is the answer.
   world.step(PHYS_STEP, dt, 8);
-  if (!sandboxMode) checkTension(dt);
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);
@@ -7160,7 +6718,6 @@ function tick() {
   updateFallingChunks();
   updatePowderBlocks(dt);
   checkTerrainPowder();
-  if (!sandboxMode) checkTerrainTension();
 
   updateCamera(dt);
   refreshGridLOD();
@@ -7246,21 +6803,6 @@ window.hermes = {
     vel: playerBody.velocity.toArray(),
   }),
 };
-
-// One-time: mark terrain columns near the player for a tension check on the
-// first frame, so overhangs and weak columns that were generated but never
-// edited still get their grip evaluated.  Only within a radius — the full
-// 960×960 grid is far too large to scan every column on boot.
-const TENSION_INIT_R = 60;  // blocks from spawn
-const pi0 = colI(SPAWN.x), pj0 = colJ(SPAWN.z);
-for (let dj = -TENSION_INIT_R; dj <= TENSION_INIT_R; dj++) {
-  for (let di = -TENSION_INIT_R; di <= TENSION_INIT_R; di++) {
-    const ii = pi0 + di, jj = pj0 + dj;
-    if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
-    const k = jj * GEN_N + ii;
-    if (topLvl[k] !== NO_COLUMN) tensionDirty.add(k);
-  }
-}
 
 renderer.setAnimationLoop(tick);
 renderer.compile(scene, camera);

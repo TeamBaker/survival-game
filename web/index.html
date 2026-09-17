@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 19;
+  var v = 20;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -7440,6 +7440,7 @@ function setPlacer(on) {
   if (on && paint.on) setPaint(false);
   placerOn = on;
   placerBtn.classList.toggle('on', on);
+  placerBtn.innerHTML = 'Place &mdash; ' + (on ? 'On' : 'Off');
   document.body.classList.toggle('placer-on', on);
   if (!on) hlPick.visible = hlPlace.visible = false;
 }
@@ -7457,7 +7458,9 @@ placerMatOverlay.addEventListener('pointerdown', (e) => {
 
 bindTap(placerDo, () => {
   if (!placerOn) return;
-  // shovel.spot was set by updatePlacer → shovelAim() last frame
+  shovel.on = true;
+  shovelAim();
+  shovel.on = false;
   if (shovel.spot) {
     const { i, j, lvl } = shovel.spot;
     if (lvl >= VOX_FLOOR && i >= 0 && j >= 0 && i < GEN_N && j < GEN_N) {
@@ -7472,7 +7475,9 @@ bindTap(placerDo, () => {
 
 // Called every frame while the Place tool is active — same job as updateShovel.
 function updatePlacer() {
+  shovel.on = true;           // temporarily enable so shovelAim() runs
   shovelAim();
+  shovel.on = false;
   const canPlace = !!shovel.spot;
   hlPick.visible  = false;               // no pick-up mode in Place tool
   hlPlace.visible = placerOn && canPlace;

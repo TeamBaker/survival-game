@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 21;
+  var v = 22;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -7341,11 +7341,13 @@ function toggleSandbox() {
         const off = voxOff[k] + platLvl - VOX_FLOOR;
         voxMat[off] = ROCK;
         sTop[k] = platLvl;
+        // Mark block visible so the mesh builder draws it
+        refreshVisible(ii, jj, platLvl);
       }
     }
     // Rebuild chunks for the platform
-    for (let dj = -2; dj <= 2; dj++) {
-      for (let di = -2; di <= 2; di++) {
+    for (let dj = -4; dj <= 4; dj++) {
+      for (let di = -4; di <= 4; di++) {
         const ii = ci + di, jj = cj + dj;
         if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
         const cc = chunkOf(ii, jj);

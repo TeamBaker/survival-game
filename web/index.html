@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 69;
+  var v = 70;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4644,6 +4644,21 @@ function restFallingChunk(n) {
   const f = fallingChunks[n];
   fallingChunks.splice(n, 1);
   restedChunks.push(f);
+  // Belt-and-suspenders: make sure the chunks this piece settled into have
+  // their colliders loaded.
+  {
+    const lat = f.mesh.userData.blocks;
+    const loaded = new Set();
+    for (const b of lat) {
+      const wx = b.pos.x + f.body.position.x;
+      const wz = b.pos.z + f.body.position.z;
+      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
+      if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
+        const idx = cj * CHUNK_N + ci;
+        if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
+      }
+    }
+  }
   while (restedChunks.length > FALL_MESH_CAP) dropChunk(restedChunks.shift());
 }
 
@@ -4834,6 +4849,20 @@ function spawnFallingChunk(unit) {
   // Oldest piece gives up its body if the field is already full of them.
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
+  // Immediately load collision for the chunk this piece is in.
+  {
+    const lat = mesh.userData.blocks;
+    const loaded = new Set();
+    for (const b of lat) {
+      const wx = b.pos.x + cx;
+      const wz = b.pos.z + cz;
+      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
+      if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
+        const idx = cj * CHUNK_N + ci;
+        if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
+      }
+    }
+  }
   fallingChunks.push({ mesh, body, still: 0 });
 }
 
@@ -5411,6 +5440,20 @@ function spawnDebrisPart(parent, blocks, pbody) {
 
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);
+  // Immediately load collision for the chunk this piece is in.
+  {
+    const lat = mesh.userData.blocks;
+    const loaded = new Set();
+    for (const b of lat) {
+      const wx = b.pos.x + w.x;
+      const wz = b.pos.z + w.z;
+      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
+      if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
+        const idx = cj * CHUNK_N + ci;
+        if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
+      }
+    }
+  }
   fallingChunks.push({ mesh, body, still: 0 });
 }
 
@@ -6269,14 +6312,11 @@ let debugColOn = false;
 const debugCollision = new THREE.Group();
 debugCollision.visible = false;
 scene.add(debugCollision);
-// The column the last rebuild was centred on, so a standing still player does
-// not pay for the same 321 x 321 patch over and over.
-let debugColI = NaN, debugColJ = NaN;
 
 function toggleDebugCollision() {
   debugColOn = !debugColOn;
   debugCollision.visible = debugColOn;
-  if (debugColOn) { debugColI = NaN; rebuildDebugCollision(); }
+  if (debugColOn) rebuildDebugCollision();
 }
 
 function rebuildDebugCollision() {
@@ -6287,42 +6327,31 @@ function rebuildDebugCollision() {
   }
   if (!debugColOn) return;
 
-  const p = playerBody.position;
-  const pi = colI(p.x), pj = colJ(p.z);
-  const range = CHUNK * 5;
   const mat = new THREE.LineBasicMaterial({ color: 0xff8800, opacity: 0.5, transparent: true, depthTest: false });
 
-  const i0c = Math.max(0, Math.floor((pi - range) / CHUNK));
-  const i1c = Math.min(CHUNK_N - 1, Math.floor((pi + range) / CHUNK));
-  const j0c = Math.max(0, Math.floor((pj - range) / CHUNK));
-  const j1c = Math.min(CHUNK_N - 1, Math.floor((pj + range) / CHUNK));
-
-  for (let cj = j0c; cj <= j1c; cj++) {
-    for (let ci = i0c; ci <= i1c; ci++) {
-      const c = cj * CHUNK_N + ci;
-      const boxes = buildChunkColliderBoxes(c);
-      for (const b of boxes) {
-        const verts = [];
-        const hx = b.hx, hy = b.hy, hz = b.hz;
-        const cx = b.x, cy = b.y, cz = b.z;
-        const corners = [
-          [cx-hx, cy-hy, cz-hz], [cx+hx, cy-hy, cz-hz],
-          [cx+hx, cy+hy, cz-hz], [cx-hx, cy+hy, cz-hz],
-          [cx-hx, cy-hy, cz+hz], [cx+hx, cy-hy, cz+hz],
-          [cx+hx, cy+hy, cz+hz], [cx-hx, cy+hy, cz+hz],
-        ];
-        const edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
-        for (const [a, b2] of edges) {
-          verts.push(corners[a][0], corners[a][1], corners[a][2]);
-          verts.push(corners[b2][0], corners[b2][1], corners[b2][2]);
-        }
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-        debugCollision.add(new THREE.LineSegments(geo, mat));
+  for (let c = 0; c < colliderBody.length; c++) {
+    if (!colliderBody[c]) continue;
+    const boxes = buildChunkColliderBoxes(c);
+    for (const b of boxes) {
+      const verts = [];
+      const hx = b.hx, hy = b.hy, hz = b.hz;
+      const cx = b.x, cy = b.y, cz = b.z;
+      const corners = [
+        [cx-hx, cy-hy, cz-hz], [cx+hx, cy-hy, cz-hz],
+        [cx+hx, cy+hy, cz-hz], [cx-hx, cy+hy, cz-hz],
+        [cx-hx, cy-hy, cz+hz], [cx+hx, cy-hy, cz+hz],
+        [cx+hx, cy+hy, cz+hz], [cx-hx, cy+hy, cz+hz],
+      ];
+      const edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+      for (const [a, b2] of edges) {
+        verts.push(corners[a][0], corners[a][1], corners[a][2]);
+        verts.push(corners[b2][0], corners[b2][1], corners[b2][2]);
       }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      debugCollision.add(new THREE.LineSegments(geo, mat));
     }
   }
-  debugColI = pi; debugColJ = pj;
 }
 
 const btnDebugChunks = document.getElementById('btn-debug-chunks');
@@ -6686,10 +6715,8 @@ function tick() {
     }
   }
 
-  // Re-centre the collider wireframe, but only once the player has actually
-  // walked off the column it was built around — it is a big patch to rebuild.
-  if (debugColOn && frameCount % 30 === 0 &&
-      (colI(playerBody.position.x) !== debugColI || colJ(playerBody.position.z) !== debugColJ)) {
+  // Redraw the collider wireframe now and then to pick up newly loaded chunks.
+  if (debugColOn && frameCount % 60 === 0) {
     rebuildDebugCollision();
   }
 

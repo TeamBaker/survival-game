@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 60;
+  var v = 61;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1317,6 +1317,8 @@
           <option value="4">Lowest</option>
         </select>
       </div>
+      <button id="btn-debug-chunks" class="ui-el">Chunks: Off</button>
+      <button id="btn-debug-collision" class="ui-el">Collision: Off</button>
     </div>
   </div>
 </div>
@@ -5938,6 +5940,106 @@ if (lodOverrideSel) {
 }
 
 // ---------------------------------------------------------------------------
+// Debug visualisations — the chunk grid, and the collider's own idea of the
+// ground near the player. Both draw-only: nothing here touches the store, the
+// meshes or the heightfield, and both are off until asked for.
+// ---------------------------------------------------------------------------
+let debugChunksOn = false;
+const debugChunks = new THREE.Group();
+debugChunks.visible = false;
+scene.add(debugChunks);
+
+function toggleDebugChunks() {
+  debugChunksOn = !debugChunksOn;
+  debugChunks.visible = debugChunksOn;
+  if (debugChunksOn && debugChunks.children.length === 0) buildDebugChunks();
+}
+
+// One line per chunk seam, laid flat at y = 0. Seams sit on column *edges*, at
+// -GEN_R + i * BLOCK, which is half a block off the column centres colX / colZ.
+function buildDebugChunks() {
+  const mat = new THREE.LineBasicMaterial({ color: 0x00ff88, opacity: 0.3, transparent: true });
+  const lines = [];
+  for (let i = 0; i <= GEN_N; i += CHUNK) {
+    const x = -GEN_R + i * BLOCK;
+    lines.push(x, 0, -GEN_R, x, 0, GEN_R);
+  }
+  for (let j = 0; j <= GEN_N; j += CHUNK) {
+    const z = -GEN_R + j * BLOCK;
+    lines.push(-GEN_R, 0, z, GEN_R, 0, z);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
+  debugChunks.add(new THREE.LineSegments(geo, mat));
+}
+
+let debugColOn = false;
+const debugCollision = new THREE.Group();
+debugCollision.visible = false;
+scene.add(debugCollision);
+// The column the last rebuild was centred on, so a standing still player does
+// not pay for the same 321 x 321 patch over and over.
+let debugColI = NaN, debugColJ = NaN;
+
+function toggleDebugCollision() {
+  debugColOn = !debugColOn;
+  debugCollision.visible = debugColOn;
+  if (debugColOn) { debugColI = NaN; rebuildDebugCollision(); }
+}
+
+function rebuildDebugCollision() {
+  while (debugCollision.children.length) {
+    const c = debugCollision.children[0];
+    c.geometry.dispose();
+    debugCollision.remove(c);
+  }
+  if (!debugColOn) return;
+
+  const p = playerBody.position;
+  const pi = colI(p.x), pj = colJ(p.z);
+  const range = CHUNK * 10;                             // 160 columns either way
+  const i0 = Math.max(0, pi - range), i1 = Math.min(GEN_N - 1, pi + range);
+  const j0 = Math.max(0, pj - range), j1 = Math.min(GEN_N - 1, pj + range);
+  if (i1 < i0 || j1 < j0) return;                       // player outside the field
+
+  const verts = [], indices = [];
+  const stride = i1 - i0 + 1;
+  const idx = (i, j) => (j - j0) * stride + (i - i0);
+
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      // The body is tipped so the field's +y runs to world -z: the row index
+      // counts back down the field, exactly as the bake and patchCollider do.
+      verts.push(colX(i), hfShape.data[i][GEN_N - 1 - j], colZ(j));
+    }
+  }
+  for (let j = j0; j < j1; j++) {
+    for (let i = i0; i < i1; i++) {
+      const a = idx(i, j), b = idx(i + 1, j), c = idx(i + 1, j + 1), d = idx(i, j + 1);
+      indices.push(a, b, b, c, c, d, d, a);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(indices);
+  const mat = new THREE.LineBasicMaterial({ color: 0xff4400, opacity: 0.5, transparent: true });
+  debugCollision.add(new THREE.LineSegments(geo, mat));
+  debugColI = pi; debugColJ = pj;
+}
+
+const btnDebugChunks = document.getElementById('btn-debug-chunks');
+const btnDebugCollision = document.getElementById('btn-debug-collision');
+bindTap(btnDebugChunks, () => {
+  toggleDebugChunks();
+  btnDebugChunks.textContent = debugChunksOn ? 'Chunks: On' : 'Chunks: Off';
+});
+bindTap(btnDebugCollision, () => {
+  toggleDebugCollision();
+  btnDebugCollision.textContent = debugColOn ? 'Collision: On' : 'Collision: Off';
+});
+
+// ---------------------------------------------------------------------------
 // Sandbox mode — clears the world to air and drops a flat platform under the
 // player so it can be rebuilt from scratch with the shovel / hammer / placer.
 // ---------------------------------------------------------------------------
@@ -6206,9 +6308,11 @@ function updateFreeCam(dt) {
   }
 }
 
+let frameCount = 0;
 function tick() {
   const dt = Math.min(clock.getDelta(), 0.1);
   elapsed += dt;
+  frameCount++;
 
   if (camMode === CAM.FREE) {
     updateFreeCam(dt);
@@ -6232,6 +6336,13 @@ function tick() {
   updateFallingChunks();
   updatePowderBlocks(dt);
   checkTerrainPowder();
+
+  // Re-centre the collider wireframe, but only once the player has actually
+  // walked off the column it was built around — it is a big patch to rebuild.
+  if (debugColOn && frameCount % 30 === 0 &&
+      (colI(playerBody.position.x) !== debugColI || colJ(playerBody.position.z) !== debugColJ)) {
+    rebuildDebugCollision();
+  }
 
   updateCamera(dt);
   // After the camera, since the aim is taken down the view direction, and before

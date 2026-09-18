@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 52;
+  var v = 54;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4386,8 +4386,9 @@ function shovelAim() {
     // Which block that is: an instance of the piece itself, or one of the cubes
     // placed on it since, which hang off it as children. Its position is in the
     // piece's frame, which is what the highlight and the dig both want.
-    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
-    const child = dHit.object !== dm ? dHit.object : null;
+    const instMesh = dm.children.find((c) => c.isInstancedMesh);
+    const inst = (dHit.object === instMesh && dHit.instanceId != null) ? dHit.instanceId : -1;
+    const child = (dHit.object !== instMesh) ? dHit.object : null;
     const lat = dm.userData.blocks;
     let blockLocal = null;
     if (child) blockLocal = child.position;
@@ -4486,7 +4487,8 @@ function dropChunk(f) {
   const q = syncList.findIndex((e) => e.body === f.body);
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
-  f.mesh.dispose();  // the per-instance buffers only — geometry and material are shared
+  // Dispose per-block grainGeo instances; shared fallGeo is left alone.
+  f.mesh.traverse((c) => { if (c !== f.mesh && c.geometry && c.geometry !== fallGeo) c.geometry.dispose(); });
 }
 
 // The entry for a piece, whether it is still being watched or has settled. A
@@ -4511,28 +4513,46 @@ function spawnFallingChunk(unit) {
   }
   cx /= n; cy /= n; cz /= n;
 
-  // The mesh: one cube per block, positioned relative to that centre so the
-  // whole thing rotates about it.
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
+  // Split into solid and powder. Powder blocks get grainGeo for speckled
+  // texture; solid blocks use InstancedMesh with per-instance flat colours.
+  const solidBlocks = [], powderBlocks = [];
+  for (const b of blocks) (MAT_STATS[b.m]?.powder ? powderBlocks : solidBlocks).push(b);
+
+  // Group wraps everything — it is the sync target for the physics body.
+  const group = new THREE.Group();
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, solidBlocks.length);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
-  for (let q = 0; q < n; q++) {
-    const b = blocks[q];
-    m4.makeTranslation(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
+  const lat = [];
+  for (let q = 0; q < solidBlocks.length; q++) {
+    const b = solidBlocks[q];
+    const p = new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
+    m4.makeTranslation(p.x, p.y, p.z);
     mesh.setMatrixAt(q, m4);
     mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.m].color));
+    lat.push({ pos: p, mat: b.m });
   }
-  mesh.instanceMatrix.needsUpdate = true;
-  mesh.instanceColor.needsUpdate = true;
-  // The piece's own lattice, in its own frame. Kept because a block placed
-  // against the piece is snapped to this rather than to the world grid.
-  mesh.userData.blocks = blocks.map((b) => ({
-    pos: new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz),
-    mat: b.m,
-  }));
-  mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
+  if (solidBlocks.length > 0) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor.needsUpdate = true;
+  }
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-  debris.add(mesh);
+  group.add(mesh);
+
+  for (const b of powderBlocks) {
+    const p = new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
+    const gm = new THREE.Mesh(grainGeo(b.m), TERRAIN_FACE_MATS[b.m]);
+    gm.position.copy(p);
+    gm.scale.setScalar(BLOCK);
+    gm.castShadow = true;
+    gm.receiveShadow = true;
+    group.add(gm);
+    lat.push({ pos: p, mat: b.m, child: gm });
+  }
+
+  group.userData.blocks = lat;
+  group.userData.perBlock = n <= FALL_SHAPE_CAP;
+  debris.add(group);
 
   const body = new CANNON.Body({
     mass: Math.min(n * 0.5, FALL_MASS_CAP),
@@ -4563,8 +4583,8 @@ function spawnFallingChunk(unit) {
 
   // Oldest piece gives up its body if the field is already full of them.
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
-  linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
-  fallingChunks.push({ mesh, body, still: 0 });
+  linkBody(group, body);  // adds the body to the world and the group to syncList
+  fallingChunks.push({ mesh: group, body, still: 0 });
 }
 
 // ----- powder in the ground -----
@@ -4806,7 +4826,7 @@ function removeDebrisMesh(mesh) {
   const q = restedChunks.findIndex((f) => f.mesh === mesh);
   if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
-  mesh.dispose();
+  mesh.traverse((c) => { if (c !== mesh && c.geometry && c.geometry !== fallGeo) c.geometry.dispose(); });
 }
 
 // Cannon turns a body about its origin, so a piece's origin has to sit on its
@@ -4821,13 +4841,14 @@ function recentreDebris(mesh, body) {
   for (const b of lat) c.add(b.pos);
   c.multiplyScalar(1 / lat.length);
   if (c.lengthSq() < 1e-12) return;
+  const inst = mesh.children.find((c) => c.isInstancedMesh);
   const m4 = new THREE.Matrix4();
   for (let q = 0; q < lat.length; q++) {
     lat[q].pos.sub(c);
     if (lat[q].child) lat[q].child.position.copy(lat[q].pos);
-    else mesh.setMatrixAt(q, m4.makeTranslation(lat[q].pos.x, lat[q].pos.y, lat[q].pos.z));
+    else if (inst) inst.setMatrixAt(q, m4.makeTranslation(lat[q].pos.x, lat[q].pos.y, lat[q].pos.z));
   }
-  mesh.instanceMatrix.needsUpdate = true;
+  if (inst) inst.instanceMatrix.needsUpdate = true;
   for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
   body.quaternion.vmult(debrisArm.set(c.x, c.y, c.z), debrisArm);
   body.position.vadd(debrisArm, body.position);
@@ -4874,14 +4895,15 @@ function cutDebrisLat(mesh, q) {
   if (lat[q].child) {
     mesh.remove(lat[q].child);
   } else {
+    const inst = mesh.children.find((c) => c.isInstancedMesh);
     const m4 = new THREE.Matrix4(), col = new THREE.Color();
-    for (let k = q + 1; k < mesh.count; k++) {
-      mesh.getMatrixAt(k, m4); mesh.setMatrixAt(k - 1, m4);
-      mesh.getColorAt(k, col); mesh.setColorAt(k - 1, col);
+    for (let k = q + 1; k < inst.count; k++) {
+      inst.getMatrixAt(k, m4); inst.setMatrixAt(k - 1, m4);
+      inst.getColorAt(k, col); inst.setColorAt(k - 1, col);
     }
-    mesh.count -= 1;
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.instanceColor.needsUpdate = true;
+    inst.count -= 1;
+    inst.instanceMatrix.needsUpdate = true;
+    inst.instanceColor.needsUpdate = true;
   }
   lat.splice(q, 1);
 }
@@ -4934,10 +4956,19 @@ function spawnDebrisPart(parent, blocks, pbody) {
   for (const b of blocks) c.add(b.pos);
   c.multiplyScalar(1 / n);
 
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
+  // Split into solid and powder. Powder blocks already have a .child mesh from
+  // the original piece; solid blocks get a new InstancedMesh entry.
+  const solidBlocks = [], powderBlocks = [];
+  for (const b of blocks) (b.child ? powderBlocks : solidBlocks).push(b);
+
+  // Group wraps everything — it is the sync target for the physics body.
+  const group = new THREE.Group();
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, solidBlocks.length);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-  mesh.userData.blocks = blocks.map((b, q) => {
+  const lat = [];
+  for (let q = 0; q < solidBlocks.length; q++) {
+    const b = solidBlocks[q];
     const p = b.pos.clone().sub(c);
     m4.makeTranslation(p.x, p.y, p.z);
     mesh.setMatrixAt(q, m4);
@@ -4945,14 +4976,34 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    return { pos: p, mat: b.mat };
-  });
-  mesh.instanceMatrix.needsUpdate = true;
-  mesh.instanceColor.needsUpdate = true;
-  mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
+    lat.push({ pos: p, mat: b.mat });
+  }
+  if (solidBlocks.length > 0) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor.needsUpdate = true;
+  }
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-  debris.add(mesh);
+  group.add(mesh);
+
+  for (const b of powderBlocks) {
+    // Rebuild the grain mesh from scratch — the old one was detached in
+    // cutDebrisLat but may have been disposed.
+    const gm = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);
+    const p = b.pos.clone().sub(c);
+    gm.position.copy(p);
+    gm.scale.setScalar(BLOCK);
+    gm.castShadow = true;
+    gm.receiveShadow = true;
+    group.add(gm);
+    if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+    if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+    if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
+    lat.push({ pos: p, mat: b.mat, child: gm });
+  }
+  group.userData.blocks = lat;
+  group.userData.perBlock = n <= FALL_SHAPE_CAP;
+  debris.add(group);
 
   const body = new CANNON.Body({
     mass: Math.min(n * 0.5, FALL_MASS_CAP),
@@ -4987,8 +5038,8 @@ function spawnDebrisPart(parent, blocks, pbody) {
   body.angularVelocity.z += (Math.random() - 0.5) * 0.4;
 
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
-  linkBody(mesh, body);
-  fallingChunks.push({ mesh, body, still: 0 });
+  linkBody(group, body);
+  fallingChunks.push({ mesh: group, body, still: 0 });
 }
 
 // Digging a loose piece takes off the one block under the crosshair and leaves
@@ -4999,7 +5050,10 @@ function digDebrisBlock(mesh, inst, child) {
   const lat = mesh.userData.blocks;
   let q = -1;
   if (child) q = lat.findIndex((b) => b.child === child);
-  else if (inst >= 0 && inst < mesh.count) q = inst;
+  else if (inst >= 0) {
+    const im = mesh.children.find((c) => c.isInstancedMesh);
+    if (im && inst < im.count) q = inst;
+  }
   if (q < 0) return false;
 
   cutDebrisLat(mesh, q);
@@ -5335,7 +5389,10 @@ function shovelPickUp() {
     const lat = d.mesh.userData.blocks;
     let mat = -1;
     if (d.child) { const idx = lat.findIndex((b) => b.child === d.child); if (idx >= 0) mat = lat[idx].mat; }
-    else if (d.inst >= 0 && d.inst < d.mesh.count) mat = lat[d.inst].mat;
+    else if (d.inst >= 0) {
+      const im = d.mesh.children.find((c) => c.isInstancedMesh);
+      if (im && d.inst < im.count) mat = lat[d.inst].mat;
+    }
     digDebrisBlock(d.mesh, d.inst, d.child);
     if (mat >= 0 && shovel.held.length < SHOVEL_CAP) { shovel.held.push(mat); refreshShovelUI(); }
     shovel.debris = null;
@@ -5495,8 +5552,9 @@ function hammerAim() {
   // Debris piece in the way — target the block on it.
   if (dHit) {
     const dm = dHit.piece;
-    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
-    const child = dHit.object !== dm ? dHit.object : null;
+    const instMesh = dm.children.find((c) => c.isInstancedMesh);
+    const inst = (dHit.object === instMesh && dHit.instanceId != null) ? dHit.instanceId : -1;
+    const child = (dHit.object !== instMesh) ? dHit.object : null;
     const lat = dm.userData.blocks;
     let idx = -1;
     if (child) {

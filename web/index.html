@@ -4607,7 +4607,7 @@ function shedColumn(c, budget) {
     }
     // It is not gone, it is falling: hand it to the same grain path the rubble uses.
     const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
-    g.mesh = new THREE.Mesh(grainGeo(m), TERRAIN_MATS[m]);   // grainGeo builds a speckled unit cube: scale it to block size
+    g.mesh = new THREE.Mesh(grainGeo(m), TERRAIN_FACE_MATS[m]);   // grainGeo builds a speckled unit cube: scale it to block size
     g.mesh.scale.setScalar(BLOCK);
     g.mesh.position.copy(g.pos);
     scene.add(g.mesh);
@@ -4626,7 +4626,7 @@ function checkTerrainPowder() {
     if (mat === AIR || !MAT_STATS[mat]?.powder) continue;
     if (qLvl - 1 >= VOX_FLOOR && voxelAt(i, j, qLvl - 1) !== AIR) continue;
     editBlock(i, j, qLvl, AIR);
-    const grain = new THREE.Mesh(grainGeo(mat), TERRAIN_MATS[mat]);   // grainGeo builds a speckled unit cube: scale it to block size
+    const grain = new THREE.Mesh(grainGeo(mat), TERRAIN_FACE_MATS[mat]);   // grainGeo builds a speckled unit cube: scale it to block size
     grain.scale.setScalar(BLOCK);
     grain.position.set(colX(i), (qLvl + 0.5) * BLOCK, colZ(j));
     scene.add(grain);
@@ -4720,7 +4720,7 @@ function shedPowder() {
         if (lat.some((u) => Math.abs(u.pos.x - nx) < 0.01 && Math.abs(u.pos.y - ny) < 0.01
                                                           && Math.abs(u.pos.z - nz) < 0.01)) continue;
         const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
-        g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_MATS[b.mat]);   // grainGeo builds a speckled unit cube: scale it to block size
+        g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);   // grainGeo builds a speckled unit cube: scale it to block size
         g.mesh.scale.setScalar(BLOCK);
         g.mesh.position.copy(g.pos);
         scene.add(g.mesh);

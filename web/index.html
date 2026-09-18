@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 54;
+  var v = 55;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4453,6 +4453,28 @@ const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each 
 const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 // White, because the colour of every cube comes in per instance.
 const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
+// A block that hangs off a piece rather than being one of its instances: the
+// powder ones, which need grainGeo's speckle instead of a flat instance colour,
+// and the ones the player lays on. Both ride with the piece as children, which
+// is what cutDebrisLat and recentreDebris already key off.
+function grainChild(m, pos, parent) {
+  const c = new THREE.Mesh(grainGeo(m), TERRAIN_FACE_MATS[m]);
+  c.scale.setScalar(BLOCK);   // grainGeo builds a unit cube
+  c.position.copy(pos);
+  c.castShadow = true;
+  c.receiveShadow = true;
+  parent.add(c);
+  return c;
+}
+
+// Those children own something the shared fallGeo/fallMat instances do not: a
+// powder block its own geometry, a placed block its own shade as a material
+// clone. Free whichever of the two it is, and never the shared pair.
+function freeDebrisChild(c) {
+  if (c.geometry !== fallGeo) c.geometry.dispose();
+  else if (c.material !== fallMat) c.material.dispose();
+}
+
 // Its own group rather than `objects`: the camera boom raycasts that one to pull
 // itself in past props, and rubble lying around the player should not be tugging
 // the camera about.
@@ -4486,6 +4508,7 @@ function dropChunk(f) {
   const q = syncList.findIndex((e) => e.body === f.body);
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
+  for (const c of f.mesh.children) freeDebrisChild(c);
   f.mesh.dispose();  // the per-instance buffers only — geometry and material are shared
 }
 
@@ -4524,11 +4547,19 @@ function spawnFallingChunk(unit) {
   }
   cx /= n; cy /= n; cz /= n;
 
+  // A flat instance colour reads as a plain cube on sand, which in the ground is
+  // speckled: powder is drawn as a grainGeo child instead. The instanced blocks
+  // have to sit at the front of the lattice, in step with the instance buffer,
+  // so the piece is ordered solid first and powder after.
+  const nPowder = blocks.filter((b) => MAT_STATS[b.m]?.powder).length;
+  if (nPowder) blocks.sort((a, b) => (MAT_STATS[a.m]?.powder ? 1 : 0) - (MAT_STATS[b.m]?.powder ? 1 : 0));
+  const nSolid = n - nPowder;
+
   // The mesh: one cube per block, positioned relative to that centre so the
   // whole thing rotates about it.
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, nSolid);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
-  for (let q = 0; q < n; q++) {
+  for (let q = 0; q < nSolid; q++) {
     const b = blocks[q];
     m4.makeTranslation(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
     mesh.setMatrixAt(q, m4);
@@ -4538,15 +4569,18 @@ function spawnFallingChunk(unit) {
     mesh.setColorAt(q, b.color ? col.copy(b.color)
                                : col.copy(TERRAIN_MATS[b.m].color).multiplyScalar(variation));
   }
-  mesh.instanceMatrix.needsUpdate = true;
-  mesh.instanceColor.needsUpdate = true;
+  if (nSolid) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor.needsUpdate = true;
+  }
   // The piece's own lattice, in its own frame. Kept because a block placed
   // against the piece is snapped to this rather than to the world grid.
-  mesh.userData.blocks = blocks.map((b) => ({
-    pos: new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz),
-    mat: b.m,
-    color: b.color ? b.color.clone() : null,
-  }));
+  mesh.userData.blocks = blocks.map((b, q) => {
+    const pos = new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
+    const e = { pos, mat: b.m, color: b.color ? b.color.clone() : null };
+    if (q >= nSolid) e.child = grainChild(b.m, pos, mesh);
+    return e;
+  });
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -4824,6 +4858,7 @@ function removeDebrisMesh(mesh) {
   const q = restedChunks.findIndex((f) => f.mesh === mesh);
   if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
+  for (const c of mesh.children) freeDebrisChild(c);
   mesh.dispose();
 }
 
@@ -4891,6 +4926,7 @@ function cutDebrisLat(mesh, q) {
   const lat = mesh.userData.blocks;
   if (lat[q].child) {
     mesh.remove(lat[q].child);
+    freeDebrisChild(lat[q].child);
   } else {
     const m4 = new THREE.Matrix4(), col = new THREE.Color();
     for (let k = q + 1; k < mesh.count; k++) {
@@ -4952,25 +4988,36 @@ function spawnDebrisPart(parent, blocks, pbody) {
   for (const b of blocks) c.add(b.pos);
   c.multiplyScalar(1 / n);
 
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
+  // Solid first, powder after, the same ordering spawnFallingChunk lays down.
+  const nPowder = blocks.filter((b) => MAT_STATS[b.mat]?.powder).length;
+  if (nPowder) blocks.sort((a, b) => (MAT_STATS[a.mat]?.powder ? 1 : 0) - (MAT_STATS[b.mat]?.powder ? 1 : 0));
+  const nSolid = n - nPowder;
+
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, nSolid);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   mesh.userData.blocks = blocks.map((b, q) => {
     const p = b.pos.clone().sub(c);
-    m4.makeTranslation(p.x, p.y, p.z);
-    mesh.setMatrixAt(q, m4);
-    // The original i/j/lvl are long gone here, so hash the world position
-    // instead — still one fixed shade per block, just not the terrain's.
-    const variation = 0.85 + nhash3(Math.round(b.pos.x / BLOCK), Math.round(b.pos.z / BLOCK), Math.round(b.pos.y / BLOCK)) * 0.30;
-    mesh.setColorAt(q, b.color ? col.copy(b.color)
-                               : col.copy(TERRAIN_MATS[b.mat].color).multiplyScalar(variation));
+    if (q < nSolid) {
+      m4.makeTranslation(p.x, p.y, p.z);
+      mesh.setMatrixAt(q, m4);
+      // The original i/j/lvl are long gone here, so hash the world position
+      // instead — still one fixed shade per block, just not the terrain's.
+      const variation = 0.85 + nhash3(Math.round(b.pos.x / BLOCK), Math.round(b.pos.z / BLOCK), Math.round(b.pos.y / BLOCK)) * 0.30;
+      mesh.setColorAt(q, b.color ? col.copy(b.color)
+                                 : col.copy(TERRAIN_MATS[b.mat].color).multiplyScalar(variation));
+    }
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    return { pos: p, mat: b.mat, color: b.color || null };
+    const e = { pos: p, mat: b.mat, color: b.color || null };
+    if (q >= nSolid) e.child = grainChild(b.mat, p, mesh);
+    return e;
   });
-  mesh.instanceMatrix.needsUpdate = true;
-  mesh.instanceColor.needsUpdate = true;
+  if (nSolid) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor.needsUpdate = true;
+  }
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -5087,12 +5134,24 @@ function debrisSpot(mesh, point, dir) {
 // local coordinates, so it turns and tumbles with it, and the body it is glued
 // to gets heavier and grows a collider to match.
 function placeOnDebris(mesh, local, m) {
-  const cube = new THREE.Mesh(fallGeo, TERRAIN_MATS[m]);
-  cube.position.copy(local);
-  cube.castShadow = true;
-  cube.receiveShadow = true;
-  mesh.add(cube);
-  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube });
+  // Powder gets grainGeo's speckle, the same as the piece's own powder blocks.
+  // Anything else gets its own shade off the cell it lands in, so a wall built
+  // on a piece is not one flat colour the way TERRAIN_MATS alone would make it.
+  let cube, colour = null;
+  if (MAT_STATS[m]?.powder) {
+    cube = grainChild(m, local, mesh);
+  } else {
+    const variation = 0.85 + nhash3(Math.round(local.x / BLOCK), Math.round(local.z / BLOCK), Math.round(local.y / BLOCK)) * 0.30;
+    const cubeMat = TERRAIN_MATS[m].clone();
+    cubeMat.color.multiplyScalar(variation);
+    cube = new THREE.Mesh(fallGeo, cubeMat);
+    cube.position.copy(local);
+    cube.castShadow = true;
+    cube.receiveShadow = true;
+    mesh.add(cube);
+    colour = cubeMat.color.clone();
+  }
+  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, color: colour });
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it.
@@ -5299,8 +5358,11 @@ function hammerStrike() {
     const gi = colI(wp.x), gj = colJ(wp.z), gl = lvlOfY(wp.y);
     // Spawn it as its own single-block falling piece.
     spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat, color: lat[idx].color || terrainBlockColor(gi, gj, gl, dropMat) }]]));
-    // Remove from the original piece (may split it).
-    digDebrisBlock(mesh, idx, null);
+    // Remove from the original piece (may split it). Powder and placed blocks
+    // hang off the piece as children and sit past the end of the instance
+    // buffer, so hand the child over or digDebrisBlock will not find the block
+    // and the strike would leave a copy of it behind.
+    digDebrisBlock(mesh, idx, lat[idx].child || null);
     hammer.hit = null;
     hammer.debris = null;
     return true;

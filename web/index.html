@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 53;
+  var v = 54;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4495,6 +4495,19 @@ function dropChunk(f) {
 const chunkOfMesh = (mesh) => fallingChunks.find((e) => e.mesh === mesh)
                           || restedChunks.find((e) => e.mesh === mesh);
 
+// The exact colour collectColumn bakes into this block in the terrain, so a
+// block that breaks off carries the shade it already had rather than a fresh one.
+function terrainBlockColor(i, j, lvl, m) {
+  const k = j * GEN_N + i;
+  const t = tint[k], top = sTop[k];
+  const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
+  const h = nhash3(i, j, lvl);
+  const variation = 0.85 + h * 0.30;
+  const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl)) * variation;
+  const c = TERRAIN_MATS[m].color;
+  return new THREE.Color(c.r * s, c.g * s, c.b * s);
+}
+
 function spawnFallingChunk(unit) {
   const blocks = [...unit.values()];
   const n = blocks.length;
@@ -4522,7 +4535,8 @@ function spawnFallingChunk(unit) {
     // Same per-block variation the terrain gives this block, so a chunk that
     // breaks off keeps the speckle it had in the ground.
     const variation = 0.85 + nhash3(b.i, b.j, b.lvl) * 0.30;
-    mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.m].color).multiplyScalar(variation));
+    mesh.setColorAt(q, b.color ? col.copy(b.color)
+                               : col.copy(TERRAIN_MATS[b.m].color).multiplyScalar(variation));
   }
   mesh.instanceMatrix.needsUpdate = true;
   mesh.instanceColor.needsUpdate = true;
@@ -4531,6 +4545,7 @@ function spawnFallingChunk(unit) {
   mesh.userData.blocks = blocks.map((b) => ({
     pos: new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz),
     mat: b.m,
+    color: b.color ? b.color.clone() : null,
   }));
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
@@ -4947,11 +4962,12 @@ function spawnDebrisPart(parent, blocks, pbody) {
     // The original i/j/lvl are long gone here, so hash the world position
     // instead — still one fixed shade per block, just not the terrain's.
     const variation = 0.85 + nhash3(Math.round(b.pos.x / BLOCK), Math.round(b.pos.z / BLOCK), Math.round(b.pos.y / BLOCK)) * 0.30;
-    mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.mat].color).multiplyScalar(variation));
+    mesh.setColorAt(q, b.color ? col.copy(b.color)
+                               : col.copy(TERRAIN_MATS[b.mat].color).multiplyScalar(variation));
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    return { pos: p, mat: b.mat };
+    return { pos: p, mat: b.mat, color: b.color || null };
   });
   mesh.instanceMatrix.needsUpdate = true;
   mesh.instanceColor.needsUpdate = true;
@@ -5125,7 +5141,7 @@ const GRAV_MAX  = 1024;   // blocks one fill walks before it gives the group up 
 // the group's blocks, or null if it is anchored, or too big to be worth walking.
 function adriftGroup(i, j, lvl) {
   if (!gravSolid(i, j, lvl)) return null;
-  const first = { i, j, lvl, m: voxelAt(i, j, lvl) };
+  const first = { i, j, lvl, m: voxelAt(i, j, lvl), color: terrainBlockColor(i, j, lvl, voxelAt(i, j, lvl)) };
   const unit = new Map([[gravKey(i, j, lvl), first]]);
   const stack = [first];
   while (stack.length) {
@@ -5136,7 +5152,7 @@ function adriftGroup(i, j, lvl) {
       const key = gravKey(ii, jj, ll);
       if (unit.has(key) || !gravSolid(ii, jj, ll)) continue;
       if (unit.size >= GRAV_MAX) return null;
-      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll) };
+      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll), color: terrainBlockColor(ii, jj, ll, voxelAt(ii, jj, ll)) };
       unit.set(key, nb);
       stack.push(nb);
     }
@@ -5282,7 +5298,7 @@ function hammerStrike() {
     const wp = lat[idx].pos.clone().applyMatrix4(mesh.matrixWorld);
     const gi = colI(wp.x), gj = colJ(wp.z), gl = lvlOfY(wp.y);
     // Spawn it as its own single-block falling piece.
-    spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat }]]));
+    spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat, color: lat[idx].color || terrainBlockColor(gi, gj, gl, dropMat) }]]));
     // Remove from the original piece (may split it).
     digDebrisBlock(mesh, idx, null);
     hammer.hit = null;
@@ -5319,7 +5335,7 @@ function hammerStrike() {
   }
 
   // A group of one — the same path a broken-off cliff takes, just smaller.
-  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat }]]));
+  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat) }]]));
   // And whatever the hole left hanging comes down after it.
   applyGravity(i, j, lvl);
   hammer.hit = null;

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 67;
+  var v = 68;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4934,29 +4934,11 @@ function checkTerrainPowder() {
 // Called once a frame after the step: retire whatever has stopped moving, and
 // drop whatever has fallen out of the world altogether.
 function updateFallingChunks() {
-  const pp = playerBody.position;
-  const colR2 = (COLLIDER_RADIUS * CHUNK * BLOCK) ** 2;
   for (let n = fallingChunks.length - 1; n >= 0; n--) {
     const f = fallingChunks[n];
     if (f.body.position.y < FALL_KILL_Y) {
       fallingChunks.splice(n, 1);
       dropChunk(f);
-      continue;
-    }
-    // Freeze pieces that have drifted outside the collision region.
-    const lat = f.mesh.userData.blocks;
-    let outside = false;
-    for (const b of lat) {
-      const wx = b.pos.x + f.body.position.x;
-      const wz = b.pos.z + f.body.position.z;
-      const dx = wx - pp.x, dz = wz - pp.z;
-      if (dx * dx + dz * dz > colR2) { outside = true; break; }
-    }
-    if (outside) {
-      f.body.velocity.set(0, 0, 0);
-      f.body.angularVelocity.set(0, 0, 0);
-      f.body.sleep();
-      f.still = FALL_REST_TICKS;  // will be moved to restedChunks next check
       continue;
     }
     const v = f.body.velocity, w = f.body.angularVelocity;
@@ -4965,27 +4947,9 @@ function updateFallingChunks() {
     f.still = slow ? f.still + 1 : 0;
     if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) restFallingChunk(n);
   }
-  // Settled pieces are still live bodies, so one shoved off the edge of the
-  // field has to be caught here as well.
   for (let n = restedChunks.length - 1; n >= 0; n--) {
     const f = restedChunks[n];
-    if (f.body.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); continue; }
-    const lat2 = f.mesh.userData.blocks;
-    let outside2 = false;
-    for (const b of lat2) {
-      const wx = b.pos.x + f.body.position.x;
-      const wz = b.pos.z + f.body.position.z;
-      const dx = wx - pp.x, dz = wz - pp.z;
-      if (dx * dx + dz * dz > colR2) { outside2 = true; break; }
-    }
-    if (outside2) { restedChunks.splice(n, 1); dropChunk(f); continue; }
-    // Wake sleeping pieces that have re-entered the collision region.
-    if (f.body.sleepState === CANNON.Body.SLEEPING) {
-      f.body.wakeUp();
-      f.still = 0;
-      restedChunks.splice(n, 1);
-      fallingChunks.push(f);
-    }
+    if (f.body.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); }
   }
 }
 

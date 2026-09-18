@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 56;
+  var v = 57;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -2346,7 +2346,7 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 // nearly invisible. Built fresh every call rather than cached: the geometry
 // is tiny (6 faces x GRAIN_GRID² cells) and grainGeo is only called a
 // handful of times a frame.
-function grainGeo(m) {
+function grainGeo(m, seed = 0) {
   const base = TERRAIN_MATS[m].color;
   const nq = 6 * GRAIN_GRID * GRAIN_GRID;
   const pos = new Float32Array(nq * 4 * 3);
@@ -2365,7 +2365,7 @@ function grainGeo(m) {
       for (let col2 = 0; col2 < GRAIN_GRID; col2++) {
         const u0 = col2 / GRAIN_GRID, u1 = (col2 + 1) / GRAIN_GRID;
 
-        const h = nhash3(0, 0, f * 100 + row * 10 + col2);
+        const h = nhash3(seed, 0, f * 100 + row * 10 + col2);
         const s = 0.7 + h * 0.6;
         const r = clamp01(base.r * s), g = clamp01(base.g * s), b = clamp01(base.b * s);
 
@@ -4460,7 +4460,7 @@ const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
 function grainChild(m, pos, parent) {
   const mat = TERRAIN_FACE_MATS[m].clone();
   mat.color.multiplyScalar(0.85 + Math.random() * 0.30);   // same range as terrain's per-block tint
-  const c = new THREE.Mesh(grainGeo(m), mat);
+  const c = new THREE.Mesh(grainGeo(m, (Math.random() * 100000) | 0), mat);
   c.scale.setScalar(BLOCK);   // grainGeo builds a unit cube
   c.position.copy(pos);
   c.castShadow = true;

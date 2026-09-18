@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 70;
+  var v = 71;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6674,33 +6674,27 @@ function tick() {
         loadChunkCollider(cj * CHUNK_N + ci);
       }
     }
-    // Also load chunks that contain debris pieces
+    // Also load chunks near debris pieces (2-chunk lookahead)
     const debrisChunks = new Set();
-    for (const f of fallingChunks) {
-      const lat = f.mesh.userData.blocks;
-      for (const b of lat) {
-        const wx = b.pos.x + f.body.position.x;
-        const wz = b.pos.z + f.body.position.z;
-        const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
-        if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
-          const idx = cj * CHUNK_N + ci;
+    const loadNearby = (wx, wz) => {
+      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
+      for (let dj = -2; dj <= 2; dj++) {
+        for (let di = -2; di <= 2; di++) {
+          const ni = ci + di, nj = cj + dj;
+          if (ni < 0 || nj < 0 || ni >= CHUNK_N || nj >= CHUNK_N) continue;
+          const idx = nj * CHUNK_N + ni;
           debrisChunks.add(idx);
           loadChunkCollider(idx);
         }
       }
+    };
+    for (const f of fallingChunks) {
+      const pp = f.body.position;
+      loadNearby(pp.x, pp.z);
     }
     for (const f of restedChunks) {
-      const lat = f.mesh.userData.blocks;
-      for (const b of lat) {
-        const wx = b.pos.x + f.body.position.x;
-        const wz = b.pos.z + f.body.position.z;
-        const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
-        if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
-          const idx = cj * CHUNK_N + ci;
-          debrisChunks.add(idx);
-          loadChunkCollider(idx);
-        }
-      }
+      const pp = f.body.position;
+      loadNearby(pp.x, pp.z);
     }
     // Unload distant chunk colliders (but keep chunks that have debris)
     for (let c = 0; c < colliderBody.length; c++) {

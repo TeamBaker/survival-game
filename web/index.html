@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 58;
+  var v = 59;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1022,6 +1022,18 @@
     border-color: transparent;
   }
   #btn-sandbox:active { transform: translateY(1px); }
+
+  /* Inside the menu panel these buttons flow normally — the fixed
+     positioning above is vestigial from when they were HUD buttons. */
+  #menu-panel #btn-materials,
+  #menu-panel #btn-chart,
+  #menu-panel #btn-f2d,
+  #menu-panel #btn-sandbox {
+    position: static;
+    top: auto;
+    left: auto;
+    z-index: auto;
+  }
 
   /* ---- Place tool (creative) ---- */
   #btn-placer {

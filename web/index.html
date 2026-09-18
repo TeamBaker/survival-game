@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 57;
+  var v = 58;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -885,6 +885,7 @@
     z-index: 100;
   }
   body.menu-open #menu-overlay { display: flex; }
+  body.menu-open #instructions { display: none; }
 
   #menu-panel {
     position: relative;
@@ -952,6 +953,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 14px;
     width: 100%;
     padding: 6px 0;
     border-bottom: 1px solid rgba(140, 175, 230, 0.1);

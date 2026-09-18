@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 61;
+  var v = 62;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -5958,19 +5958,21 @@ function toggleDebugChunks() {
 // One line per chunk seam, laid flat at y = 0. Seams sit on column *edges*, at
 // -GEN_R + i * BLOCK, which is half a block off the column centres colX / colZ.
 function buildDebugChunks() {
-  const mat = new THREE.LineBasicMaterial({ color: 0x00ff88, opacity: 0.3, transparent: true });
+  const mat = new THREE.LineBasicMaterial({ color: 0x00ff88, opacity: 0.4, transparent: true, depthTest: false });
   const lines = [];
   for (let i = 0; i <= GEN_N; i += CHUNK) {
     const x = -GEN_R + i * BLOCK;
-    lines.push(x, 0, -GEN_R, x, 0, GEN_R);
+    lines.push(x, 50, -GEN_R, x, 50, GEN_R);
   }
   for (let j = 0; j <= GEN_N; j += CHUNK) {
     const z = -GEN_R + j * BLOCK;
-    lines.push(-GEN_R, 0, z, GEN_R, 0, z);
+    lines.push(-GEN_R, 50, z, GEN_R, 50, z);
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(lines, 3));
-  debugChunks.add(new THREE.LineSegments(geo, mat));
+  const ls = new THREE.LineSegments(geo, mat);
+  ls.renderOrder = 999;
+  debugChunks.add(ls);
 }
 
 let debugColOn = false;
@@ -5997,7 +5999,7 @@ function rebuildDebugCollision() {
 
   const p = playerBody.position;
   const pi = colI(p.x), pj = colJ(p.z);
-  const range = CHUNK * 10;                             // 160 columns either way
+  const range = CHUNK * 5;                              // 80 columns either way
   const i0 = Math.max(0, pi - range), i1 = Math.min(GEN_N - 1, pi + range);
   const j0 = Math.max(0, pj - range), j1 = Math.min(GEN_N - 1, pj + range);
   if (i1 < i0 || j1 < j0) return;                       // player outside the field

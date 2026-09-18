@@ -4746,7 +4746,15 @@ function catchPowder(dt) {
     const p = powderFalling[n];
     p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
     p.pos.y -= p.v * dt;
-    if (p.mesh) p.mesh.position.copy(p.pos);
+    if (p.mesh) {
+      p.mesh.position.copy(p.pos);
+      // LOD: scale grain based on camera distance
+      const dx = p.pos.x - camera.position.x, dz = p.pos.z - camera.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      const step = lodStepFor(dist);
+      const scale = mergeSizeFor(step) * BLOCK;
+      p.mesh.scale.setScalar(scale);
+    }
     if (p.pos.y < FALL_KILL_Y) { if (p.mesh) scene.remove(p.mesh); powderFalling.splice(n, 1); continue; }
     if (voxelAtWorld(p.pos.x, p.pos.y, p.pos.z) !== AIR) {
       const i = colI(p.pos.x), j = colJ(p.pos.z);

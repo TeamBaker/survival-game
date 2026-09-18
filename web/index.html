@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 66;
+  var v = 67;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4979,6 +4979,13 @@ function updateFallingChunks() {
       if (dx * dx + dz * dz > colR2) { outside2 = true; break; }
     }
     if (outside2) { restedChunks.splice(n, 1); dropChunk(f); continue; }
+    // Wake sleeping pieces that have re-entered the collision region.
+    if (f.body.sleepState === CANNON.Body.SLEEPING) {
+      f.body.wakeUp();
+      f.still = 0;
+      restedChunks.splice(n, 1);
+      fallingChunks.push(f);
+    }
   }
 }
 

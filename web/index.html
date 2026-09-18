@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 53;
+  var v = 52;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4480,19 +4480,12 @@ function restFallingChunk(n) {
   while (restedChunks.length > FALL_MESH_CAP) dropChunk(restedChunks.shift());
 }
 
-// A piece's children are placed blocks (shared fallGeo) and powder grains
-// (their own grainGeo each) — free only the geometry that isn't shared.
-function disposeDebrisChildren(mesh) {
-  for (const c of mesh.children) if (c.geometry !== fallGeo) c.geometry.dispose();
-}
-
 // Take a piece away for good: body out of the world, mesh out of the scene.
 function dropChunk(f) {
   world.removeBody(f.body);
   const q = syncList.findIndex((e) => e.body === f.body);
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
-  disposeDebrisChildren(f.mesh);
   f.mesh.dispose();  // the per-instance buffers only — geometry and material are shared
 }
 
@@ -4519,43 +4512,23 @@ function spawnFallingChunk(unit) {
   cx /= n; cy /= n; cz /= n;
 
   // The mesh: one cube per block, positioned relative to that centre so the
-  // whole thing rotates about it. Powder blocks (sand, fine dirt, stone dust,
-  // clay) can't be flat-coloured instances — they want the speckled grain
-  // texture terrain powder gets — so they hang off the piece as their own
-  // meshes instead, the same way a block placed onto debris does.
-  const solidBlocks = [], powderBlocks = [];
-  for (const b of blocks) (MAT_STATS[b.m]?.powder ? powderBlocks : solidBlocks).push(b);
-
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, solidBlocks.length);
+  // whole thing rotates about it.
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
-  const lat = [];
-  for (let q = 0; q < solidBlocks.length; q++) {
-    const b = solidBlocks[q];
-    const p = new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
-    m4.makeTranslation(p.x, p.y, p.z);
+  for (let q = 0; q < n; q++) {
+    const b = blocks[q];
+    m4.makeTranslation(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
     mesh.setMatrixAt(q, m4);
     mesh.setColorAt(q, col.copy(TERRAIN_MATS[b.m].color));
-    lat.push({ pos: p, mat: b.m });
   }
-  if (solidBlocks.length > 0) {
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.instanceColor.needsUpdate = true;
-  }
-  for (const b of powderBlocks) {
-    const p = new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
-    const gm = new THREE.Mesh(grainGeo(b.m), TERRAIN_FACE_MATS[b.m]);
-    gm.position.copy(p);
-    gm.scale.setScalar(BLOCK);
-    gm.castShadow = true;
-    gm.receiveShadow = true;
-    mesh.add(gm);
-    lat.push({ pos: p, mat: b.m, child: gm });
-  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor.needsUpdate = true;
   // The piece's own lattice, in its own frame. Kept because a block placed
   // against the piece is snapped to this rather than to the world grid.
-  // The non-child prefix lines up index-for-index with the instance buffer;
-  // powder blocks, and any placed on later, live at the back as children.
-  mesh.userData.blocks = lat;
+  mesh.userData.blocks = blocks.map((b) => ({
+    pos: new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz),
+    mat: b.m,
+  }));
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
@@ -4833,7 +4806,6 @@ function removeDebrisMesh(mesh) {
   const q = restedChunks.findIndex((f) => f.mesh === mesh);
   if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
-  disposeDebrisChildren(mesh);
   mesh.dispose();
 }
 
@@ -4901,9 +4873,6 @@ function cutDebrisLat(mesh, q) {
   const lat = mesh.userData.blocks;
   if (lat[q].child) {
     mesh.remove(lat[q].child);
-    // Powder grains carry their own geometry (grainGeo); placed blocks share
-    // fallGeo and must not be disposed out from under the rest of the piece.
-    if (lat[q].child.geometry !== fallGeo) lat[q].child.geometry.dispose();
   } else {
     const m4 = new THREE.Matrix4(), col = new THREE.Color();
     for (let k = q + 1; k < mesh.count; k++) {
@@ -4965,21 +4934,10 @@ function spawnDebrisPart(parent, blocks, pbody) {
   for (const b of blocks) c.add(b.pos);
   c.multiplyScalar(1 / n);
 
-  // Some of these were already children of the parent (a placed block, or a
-  // powder grain) — that mesh was detached in cutDebrisLat but not disposed.
-  // It is rebuilt from scratch below either way, so free its geometry now if
-  // it wasn't the shared fallGeo.
-  for (const b of blocks) if (b.child && b.child.geometry !== fallGeo) b.child.geometry.dispose();
-
-  const solidBlocks = [], powderBlocks = [];
-  for (const b of blocks) (MAT_STATS[b.mat]?.powder ? powderBlocks : solidBlocks).push(b);
-
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, solidBlocks.length);
+  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, n);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-  const lat = [];
-  for (let q = 0; q < solidBlocks.length; q++) {
-    const b = solidBlocks[q];
+  mesh.userData.blocks = blocks.map((b, q) => {
     const p = b.pos.clone().sub(c);
     m4.makeTranslation(p.x, p.y, p.z);
     mesh.setMatrixAt(q, m4);
@@ -4987,26 +4945,10 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    lat.push({ pos: p, mat: b.mat });
-  }
-  if (solidBlocks.length > 0) {
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.instanceColor.needsUpdate = true;
-  }
-  for (const b of powderBlocks) {
-    const p = b.pos.clone().sub(c);
-    const gm = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);
-    gm.position.copy(p);
-    gm.scale.setScalar(BLOCK);
-    gm.castShadow = true;
-    gm.receiveShadow = true;
-    mesh.add(gm);
-    if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
-    if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
-    if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    lat.push({ pos: p, mat: b.mat, child: gm });
-  }
-  mesh.userData.blocks = lat;
+    return { pos: p, mat: b.mat };
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor.needsUpdate = true;
   mesh.userData.perBlock = n <= FALL_SHAPE_CAP;
   mesh.castShadow = true;
   mesh.receiveShadow = true;

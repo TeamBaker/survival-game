@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 59;
+  var v = 60;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -274,6 +274,31 @@
     white-space: nowrap;
     z-index: 10;
   }
+
+  #cam-toggle {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    padding: 13px 18px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.7);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    white-space: nowrap;
+    user-select: none;
+    -webkit-user-select: none;
+    z-index: 14;
+  }
+  #cam-toggle:active { transform: translateY(1px); }
 
   #instructions {
     position: fixed;
@@ -1168,6 +1193,7 @@
 <span class="k" style="color:#ff0">v10-voxel</span></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
+<div id="cam-toggle" class="ui-el">First Person</div>
 <div id="f2d-overlay" class="ui-el">
   <div id="f2d-panel">
     <div class="f2d-header">
@@ -5661,6 +5687,7 @@ refreshHammerUI();
 const camModeEl = document.getElementById('cam-mode');
 const instrEl   = document.getElementById('instructions');
 const modeBtn   = document.getElementById('mode-btn');
+const camToggle = document.getElementById('cam-toggle');
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
@@ -5708,6 +5735,7 @@ function refreshModeUI() {
   const inGame = camMode !== CAM.FREE;
   camModeEl.innerHTML = 'Cam &mdash; ' + CAM_NAMES[camMode];
   modeBtn.textContent = inGame ? 'Free Camera' : 'Game Mode';
+  camToggle.textContent = inGame ? CAM_NAMES[camMode] : 'First Person';
   modeBtn.classList.toggle('game', inGame);
 
   let rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
@@ -5734,6 +5762,7 @@ function refreshModeUI() {
 // "didn't always work". Esc frees the cursor (and pops the overlay, which this
 // button now sits above); a click in the world captures it again.
 bindTap(modeBtn, () => toggleGameMode());
+bindTap(camToggle, () => cycleCamera());
 refreshModeUI();
 
 // ---------------------------------------------------------------------------

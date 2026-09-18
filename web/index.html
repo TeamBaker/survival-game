@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 55;
+  var v = 56;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4458,7 +4458,9 @@ const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
 // and the ones the player lays on. Both ride with the piece as children, which
 // is what cutDebrisLat and recentreDebris already key off.
 function grainChild(m, pos, parent) {
-  const c = new THREE.Mesh(grainGeo(m), TERRAIN_FACE_MATS[m]);
+  const mat = TERRAIN_FACE_MATS[m].clone();
+  mat.color.multiplyScalar(0.85 + Math.random() * 0.30);   // same range as terrain's per-block tint
+  const c = new THREE.Mesh(grainGeo(m), mat);
   c.scale.setScalar(BLOCK);   // grainGeo builds a unit cube
   c.position.copy(pos);
   c.castShadow = true;
@@ -4468,11 +4470,12 @@ function grainChild(m, pos, parent) {
 }
 
 // Those children own something the shared fallGeo/fallMat instances do not: a
-// powder block its own geometry, a placed block its own shade as a material
-// clone. Free whichever of the two it is, and never the shared pair.
+// powder block its own geometry and its own tinted material clone, a placed
+// block its own shade as a material clone. Free whatever is theirs, and never
+// the shared pair.
 function freeDebrisChild(c) {
   if (c.geometry !== fallGeo) c.geometry.dispose();
-  else if (c.material !== fallMat) c.material.dispose();
+  if (c.material !== fallMat) c.material.dispose();
 }
 
 // Its own group rather than `objects`: the camera boom raycasts that one to pull

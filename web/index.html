@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 81;
+  var v = 82;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -76,6 +76,28 @@
   }
   #hud .k { color: #7fa8d8; }
   #hud .v { color: #eaf2ff; }
+
+  #coltest-hud {
+    display: none;
+    position: fixed;
+    top: calc(90px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 11px;
+    font-size: 13px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    background: rgba(40, 8, 8, 0.5);
+    border: 1px solid rgba(255, 120, 100, 0.25);
+    border-radius: 8px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    pointer-events: none;
+    white-space: pre;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+    color: #ffcfc0;
+    z-index: 10;
+  }
+  #coltest-hud.on { display: block; }
 
   #crosshair {
     position: fixed;
@@ -1192,6 +1214,8 @@
 <span class="k">HELD</span> <span class="v" id="held-hud">0</span>
 <span class="k" style="color:#ff0">v10-voxel</span></div>
 
+<div id="coltest-hud"></div>
+
 <div id="cam-mode">Cam &mdash; Free</div>
 <div id="cam-toggle" class="ui-el">First Person</div>
 <div id="f2d-overlay" class="ui-el">
@@ -1319,6 +1343,7 @@
       </div>
       <button id="btn-debug-chunks" class="ui-el">Chunks: Off</button>
       <button id="btn-debug-collision" class="ui-el">Collision: Off</button>
+      <button id="btn-coltest" class="ui-el">COL TEST: Off</button>
     </div>
   </div>
 </div>
@@ -6389,6 +6414,67 @@ bindTap(btnDebugCollision, () => {
 });
 
 // ---------------------------------------------------------------------------
+// Collision chunk test tool — a marker sphere sits where the player is
+// looking (5 m out along the view ray) and drags the 3x3 chunk neighbourhood
+// around it into the collider set every frame, rebuilding the debug
+// wireframe live so chunk load/unload is visible as it moves.
+// ---------------------------------------------------------------------------
+let colTestOn = false;
+let colTestSphere = null;
+let colTestPrevDebugCol = false;
+const colTestHud = document.getElementById('coltest-hud');
+const colTestAimDir = new THREE.Vector3();
+
+function toggleColTest() {
+  colTestOn = !colTestOn;
+  if (colTestOn) {
+    colTestSphere = new THREE.Mesh(
+      new THREE.SphereGeometry(0.5, 16, 16),
+      mat(0xff0000, 0.4, 0.1, { emissive: 0xff0000, emissiveIntensity: 1, depthTest: false })
+    );
+    colTestSphere.renderOrder = 999;
+    scene.add(colTestSphere);
+    colTestPrevDebugCol = debugColOn;
+    if (!debugColOn) { debugColOn = true; debugCollision.visible = true; }
+  } else {
+    scene.remove(colTestSphere);
+    colTestSphere.geometry.dispose();
+    colTestSphere.material.dispose();
+    colTestSphere = null;
+    if (!colTestPrevDebugCol) { debugColOn = false; debugCollision.visible = false; }
+  }
+  colTestHud.classList.toggle('on', colTestOn);
+}
+
+const btnColTest = document.getElementById('btn-coltest');
+bindTap(btnColTest, () => {
+  toggleColTest();
+  btnColTest.textContent = colTestOn ? 'COL TEST: On' : 'COL TEST: Off';
+});
+
+// Called every frame from tick() while colTestOn.
+function updateColTest() {
+  camera.getWorldDirection(colTestAimDir);
+  colTestSphere.position.copy(camera.position).addScaledVector(colTestAimDir, 5);
+
+  const ci = (colI(colTestSphere.position.x) / CHUNK) | 0;
+  const cj = (colJ(colTestSphere.position.z) / CHUNK) | 0;
+  for (let dj = -1; dj <= 1; dj++) {
+    for (let di = -1; di <= 1; di++) {
+      const ii = ci + di, jj = cj + dj;
+      if (ii < 0 || jj < 0 || ii >= CHUNK_N || jj >= CHUNK_N) continue;
+      loadChunkCollider(jj * CHUNK_N + ii);
+    }
+  }
+
+  rebuildDebugCollision();
+
+  let loaded = 0;
+  for (let c = 0; c < colliderBody.length; c++) if (colliderBody[c]) loaded++;
+  colTestHud.textContent = `CHUNK: ${ci}, ${cj}\nLOADED: ${loaded} chunks`;
+}
+
+// ---------------------------------------------------------------------------
 // Sandbox mode — clears the world to air and drops a flat platform under the
 // player so it can be rebuilt from scratch with the shovel / hammer / placer.
 // ---------------------------------------------------------------------------
@@ -6740,13 +6826,14 @@ function tick() {
   }
 
   // Redraw the collider wireframe now and then to pick up newly loaded chunks.
-  if (debugColOn && frameCount % 60 === 0) {
+  if (debugColOn && !colTestOn && frameCount % 60 === 0) {
     rebuildDebugCollision();
   }
 
   updateCamera(dt);
   // After the camera, since the aim is taken down the view direction, and before
   // the render so the highlight boxes are in the right place this frame.
+  if (colTestOn) updateColTest();
   if (shovel.on) updateShovel();
   if (hammer.on) updateHammer();
   flushDirtyChunks();

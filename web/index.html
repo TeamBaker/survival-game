@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 76;
+  var v = 75;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6313,13 +6313,6 @@ const debugCollision = new THREE.Group();
 debugCollision.visible = false;
 scene.add(debugCollision);
 
-const debrisDebugHud = document.createElement('div');
-debrisDebugHud.id = 'debris-debug-hud';
-debrisDebugHud.style.cssText = 'position:fixed; bottom:120px; left:10px; z-index:9999; ' +
-  'color:#0f0; background:rgba(0,0,0,0.6); font-family:monospace; font-size:11px; ' +
-  'padding:4px 6px; white-space:pre; pointer-events:none;';
-document.body.appendChild(debrisDebugHud);
-
 function toggleDebugCollision() {
   debugColOn = !debugColOn;
   debugCollision.visible = debugColOn;
@@ -6756,28 +6749,6 @@ function tick() {
   // Redraw the collider wireframe now and then to pick up newly loaded chunks.
   if (debugColOn && frameCount % 60 === 0) {
     rebuildDebugCollision();
-  }
-
-  {
-    const allPieces = fallingChunks.concat(restedChunks);
-    let html = 'falling=' + fallingChunks.length + ' rested=' + restedChunks.length;
-    const f = allPieces[0];
-    if (f) {
-      const lat = f.mesh.userData.blocks;
-      const bp = f.body.position;
-      html += '\nblocks=' + lat.length + ' shapes=' + f.body.shapes.length +
-        ' ' + (f.body.sleepState === 0 ? 'AWAKE' : 'SLEEP') +
-        '\nbody(' + bp.x.toFixed(1) + ',' + bp.y.toFixed(1) + ',' + bp.z.toFixed(1) + ')';
-      for (let j = 0; j < Math.min(lat.length, 3); j++) {
-        const wx = lat[j].pos.x + bp.x, wz = lat[j].pos.z + bp.z;
-        const ci = Math.round(colI(wx) / CHUNK), cj = Math.round(colJ(wz) / CHUNK);
-        const idx = cj * CHUNK_N + ci;
-        html += '\n b' + j + ' chunk(' + ci + ',' + cj + ') loaded=' + !!colliderBody[idx];
-      }
-    }
-    const pci = (colI(playerBody.position.x) / CHUNK) | 0, pcj = (colJ(playerBody.position.z) / CHUNK) | 0;
-    html += '\nplayerChunk(' + pci + ',' + pcj + ')';
-    debrisDebugHud.innerHTML = html;
   }
 
   updateCamera(dt);

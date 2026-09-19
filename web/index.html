@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 91;
+  var v = 92;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4701,18 +4701,7 @@ function restFallingChunk(n) {
       const cj = (colJ(f.body.position.z + b.pos.z) / CHUNK) | 0;
       if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
         const idx = cj * CHUNK_N + ci;
-        if (!loaded.has(idx)) {
-          loaded.add(idx);
-          if (!colliderBody[idx]) {
-            const body = new CANNON.Body({ mass: 0, material: physWorld });
-            for (const b of buildChunkColliderBoxes(idx)) {
-              body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-            }
-            body.updateAABB();
-            world.addBody(body);
-            colliderBody[idx] = body;
-          }
-        }
+        if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
       }
     }
   }
@@ -4915,18 +4904,7 @@ function spawnFallingChunk(unit) {
       const cj = (colJ(body.position.z + b.pos.z) / CHUNK) | 0;
       if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
         const idx = cj * CHUNK_N + ci;
-        if (!loaded.has(idx)) {
-          loaded.add(idx);
-          if (!colliderBody[idx]) {
-            const body = new CANNON.Body({ mass: 0, material: physWorld });
-            for (const b of buildChunkColliderBoxes(idx)) {
-              body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-            }
-            body.updateAABB();
-            world.addBody(body);
-            colliderBody[idx] = body;
-          }
-        }
+        if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
       }
     }
   }
@@ -5517,18 +5495,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
       const cj = (colJ(body.position.z + b.pos.z) / CHUNK) | 0;
       if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
         const idx = cj * CHUNK_N + ci;
-        if (!loaded.has(idx)) {
-          loaded.add(idx);
-          if (!colliderBody[idx]) {
-            const body = new CANNON.Body({ mass: 0, material: physWorld });
-            for (const b of buildChunkColliderBoxes(idx)) {
-              body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-            }
-            body.updateAABB();
-            world.addBody(body);
-            colliderBody[idx] = body;
-          }
-        }
+        if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
       }
     }
   }

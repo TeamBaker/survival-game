@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 99;
+  var v = 100;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -59,7 +59,7 @@
   #hud {
     position: fixed;
     top: calc(10px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 11px;
     font-size: 13px;
     line-height: 1.5;
@@ -81,7 +81,7 @@
     display: none;
     position: fixed;
     top: calc(90px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 11px;
     font-size: 13px;
     line-height: 1.5;
@@ -280,7 +280,7 @@
   #cam-mode {
     position: fixed;
     top: calc(62px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 5px 10px;
     font-size: 11px;
     font-weight: 700;
@@ -426,7 +426,7 @@
   #btn-materials {
     position: fixed;
     top: calc(176px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -455,7 +455,7 @@
   #btn-shovel {
     position: fixed;
     top: calc(94px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -545,7 +545,7 @@
   #btn-hammer {
     position: fixed;
     top: calc(130px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -616,7 +616,7 @@
   #btn-chart {
     position: fixed;
     top: calc(212px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -1023,7 +1023,7 @@
   #btn-f2d {
     position: fixed;
     top: calc(248px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -1046,7 +1046,7 @@
   #btn-sandbox {
     position: fixed;
     top: calc(284px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -1086,7 +1086,7 @@
   #btn-placer {
     position: fixed;
     top: calc(152px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -1262,7 +1262,7 @@
   #btn-matbar {
     position: fixed;
     top: calc(188px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;

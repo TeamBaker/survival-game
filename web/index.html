@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 83;
+  var v = 84;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6456,18 +6456,25 @@ function updateColTest() {
   camera.getWorldDirection(colTestAimDir);
   colTestSphere.position.copy(camera.position).addScaledVector(colTestAimDir, 5);
 
-  const ci = (colI(colTestSphere.position.x) / CHUNK) | 0;
-  const cj = (colJ(colTestSphere.position.z) / CHUNK) | 0;
-  if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
-    const idx = cj * CHUNK_N + ci;
-    if (!colliderBody[idx]) {
-      const body = new CANNON.Body({ mass: 0, material: physWorld });
-      for (const b of buildChunkColliderBoxes(idx)) {
-        body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+  const _pos = colTestSphere.position;
+  const _r = 0.5; // sphere radius
+  const _cw = CHUNK * BLOCK; // chunk width in meters
+  const ciMin = Math.max(0, Math.floor((_pos.x - _r) / _cw));
+  const ciMax = Math.min(CHUNK_N - 1, Math.floor((_pos.x + _r) / _cw));
+  const cjMin = Math.max(0, Math.floor((_pos.z - _r) / _cw));
+  const cjMax = Math.min(CHUNK_N - 1, Math.floor((_pos.z + _r) / _cw));
+  for (let _cj = cjMin; _cj <= cjMax; _cj++) {
+    for (let _ci = ciMin; _ci <= ciMax; _ci++) {
+      const idx = _cj * CHUNK_N + _ci;
+      if (!colliderBody[idx]) {
+        const body = new CANNON.Body({ mass: 0, material: physWorld });
+        for (const b of buildChunkColliderBoxes(idx)) {
+          body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+        }
+        body.updateAABB();
+        world.addBody(body);
+        colliderBody[idx] = body;
       }
-      body.updateAABB();
-      world.addBody(body);
-      colliderBody[idx] = body;
     }
   }
 
@@ -6475,7 +6482,7 @@ function updateColTest() {
 
   let loaded = 0;
   for (let c = 0; c < colliderBody.length; c++) if (colliderBody[c]) loaded++;
-  colTestHud.textContent = `CHUNK: ${ci}, ${cj}\nLOADED: ${loaded} chunks`;
+  colTestHud.textContent = `CHUNK: ${ciMin},${ciMax} x ${cjMin},${cjMax}\nLOADED: ${loaded} chunks`;
 }
 
 // ---------------------------------------------------------------------------

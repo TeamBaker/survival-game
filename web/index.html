@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 73;
+  var v = 72;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6676,7 +6676,6 @@ function tick() {
     }
     // Also load chunks that contain debris pieces
     const debrisChunks = new Set();
-    if (frameCount % 120 === 0 && (fallingChunks.length || restedChunks.length)) { let _dbg = "DEBRIS CHUNKS: falling=" + fallingChunks.length + " rested=" + restedChunks.length; for (const f of fallingChunks.concat(restedChunks)) { const lat = f.mesh.userData.blocks; const bp = f.body.position; const b0 = lat[0]; const wx0 = b0.pos.x + bp.x, wz0 = b0.pos.z + bp.z; _dbg += " | piece(" + lat.length + "bl) body(" + bp.x.toFixed(1) + "," + bp.z.toFixed(1) + ") b0pos(" + b0.pos.x.toFixed(1) + "," + b0.pos.z.toFixed(1) + ") wx0=" + wx0.toFixed(1) + " wz0=" + wz0.toFixed(1); } console.log(_dbg); }
     for (const f of fallingChunks) {
       const lat = f.mesh.userData.blocks;
       for (const b of lat) {
@@ -6703,7 +6702,6 @@ function tick() {
         }
       }
     }
-    if (frameCount % 120 === 0 && debrisChunks.size) console.log("DEBRIS CHUNK SET: size=" + debrisChunks.size + " chunks=[" + [...debrisChunks].join(",") + "]");
     // Unload distant chunk colliders (but keep chunks that have debris)
     for (let c = 0; c < colliderBody.length; c++) {
       if (!colliderBody[c]) continue;

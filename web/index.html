@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 78;
+  var v = 79;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -5111,7 +5111,7 @@ function removeDebrisMesh(mesh) {
 // centre of mass. Blocks dug off or laid on move that centre: put the lattice,
 // the colliders and the drawn cubes back in step with it, then slide the body
 // the same way in world space so none of it appears to move.
-const debrisCoM = new THREE.Vector3(), debrisArm = new CANNON.Vec3();
+const debrisCoM = new THREE.Vector3();
 function recentreDebris(mesh, body) {
   const lat = mesh.userData.blocks;
   if (!lat.length) return;
@@ -5127,8 +5127,9 @@ function recentreDebris(mesh, body) {
   }
   mesh.instanceMatrix.needsUpdate = true;
   for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
-  body.quaternion.vmult(debrisArm.set(c.x, c.y, c.z), debrisArm);
-  body.position.vadd(debrisArm, body.position);
+  body.position.x += c.x;
+  body.position.y += c.y;
+  body.position.z += c.z;
   mesh.position.copy(body.position);
 }
 

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 100;
+  var v = 101;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1261,7 +1261,7 @@
 
   #btn-matbar {
     position: fixed;
-    top: calc(188px + env(safe-area-inset-top));
+    bottom: calc(100px + env(safe-area-inset-bottom));
     right: calc(10px + env(safe-area-inset-right));
     padding: 8px 14px;
     font-family: inherit;
@@ -1283,7 +1283,7 @@
   #btn-matbar.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
   #btn-matbar:active { transform: translateY(1px); }
   @media (max-width: 620px) {
-    #btn-matbar { top: calc(164px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-matbar { bottom: calc(80px + env(safe-area-inset-bottom)); font-size: 10px; padding: 7px 12px; }
   }
 </style>
 </head>

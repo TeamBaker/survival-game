@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 101;
+  var v = 102;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -255,7 +255,7 @@
   #mode-btn {
     position: fixed;
     top: calc(10px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
+    left: calc(10px + env(safe-area-inset-left));
     padding: 11px 18px;
     font-family: inherit;
     font-size: 13px;
@@ -455,7 +455,7 @@
   #btn-shovel {
     position: fixed;
     top: calc(94px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
+    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -545,7 +545,7 @@
   #btn-hammer {
     position: fixed;
     top: calc(130px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
+    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -1086,7 +1086,7 @@
   #btn-placer {
     position: fixed;
     top: calc(152px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
+    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;
@@ -1262,7 +1262,7 @@
   #btn-matbar {
     position: fixed;
     bottom: calc(100px + env(safe-area-inset-bottom));
-    right: calc(10px + env(safe-area-inset-right));
+    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
     font-size: 11px;

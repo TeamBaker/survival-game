@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 77;
+  var v = 78;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6665,7 +6665,7 @@ function tick() {
 
   // Bring in nearby chunk colliders and let distant ones go, a few dozen at a
   // time so the sweep costs nothing next to the physics step itself.
-  if (frameCount % 60 === 0) {
+  if (true) {
     const pci = (colI(playerBody.position.x) / CHUNK) | 0, pcj = (colJ(playerBody.position.z) / CHUNK) | 0;
     // Load chunks around the player
     for (let cj = pcj - COLLIDER_RADIUS; cj <= pcj + COLLIDER_RADIUS; cj++) {

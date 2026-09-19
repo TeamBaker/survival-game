@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 84;
+  var v = 85;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6424,6 +6424,7 @@ let colTestSphere = null;
 let colTestPrevDebugCol = false;
 const colTestHud = document.getElementById('coltest-hud');
 const colTestAimDir = new THREE.Vector3();
+let colTestPrevCiMin = -1, colTestPrevCiMax = -1, colTestPrevCjMin = -1, colTestPrevCjMax = -1;
 
 function toggleColTest() {
   colTestOn = !colTestOn;
@@ -6436,6 +6437,7 @@ function toggleColTest() {
     colTestPrevDebugCol = debugColOn;
     if (!debugColOn) { debugColOn = true; debugCollision.visible = true; }
   } else {
+    colTestPrevCiMin = colTestPrevCiMax = colTestPrevCjMin = colTestPrevCjMax = -1;
     scene.remove(colTestSphere);
     colTestSphere.geometry.dispose();
     colTestSphere.material.dispose();
@@ -6478,7 +6480,11 @@ function updateColTest() {
     }
   }
 
-  rebuildDebugCollision();
+  if (ciMin !== colTestPrevCiMin || ciMax !== colTestPrevCiMax || cjMin !== colTestPrevCjMin || cjMax !== colTestPrevCjMax) {
+    colTestPrevCiMin = ciMin; colTestPrevCiMax = ciMax;
+    colTestPrevCjMin = cjMin; colTestPrevCjMax = cjMax;
+    rebuildDebugCollision();
+  }
 
   let loaded = 0;
   for (let c = 0; c < colliderBody.length; c++) if (colliderBody[c]) loaded++;

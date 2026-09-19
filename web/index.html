@@ -6666,7 +6666,7 @@ function tick() {
   // Bring in nearby chunk colliders and let distant ones go, a few dozen at a
   // time so the sweep costs nothing next to the physics step itself.
   if (frameCount % 60 === 0) {
-    const pci = (colI(playerBody.position.x) / CHUNK) | 0, pcj = (colJ(playerBody.position.z) / CHUNK) | 0;
+    const pci = Math.round(colI(playerBody.position.x) / CHUNK), pcj = Math.round(colJ(playerBody.position.z) / CHUNK);
     // Load chunks around the player
     for (let cj = pcj - COLLIDER_RADIUS; cj <= pcj + COLLIDER_RADIUS; cj++) {
       for (let ci = pci - COLLIDER_RADIUS; ci <= pci + COLLIDER_RADIUS; ci++) {

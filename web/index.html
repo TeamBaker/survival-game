@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 88;
+  var v = 89;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4697,7 +4697,9 @@ function restFallingChunk(n) {
     const lat = f.mesh.userData.blocks;
     const loaded = new Set();
     for (const b of lat) {
-      const ci = (b.gi / CHUNK) | 0, cj = (b.gj / CHUNK) | 0;
+      const wx = f.body.position.x + b.pos.x;
+      const wz = f.body.position.z + b.pos.z;
+      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
       if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
         const idx = cj * CHUNK_N + ci;
         if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
@@ -4899,7 +4901,9 @@ function spawnFallingChunk(unit) {
     const lat = mesh.userData.blocks;
     const loaded = new Set();
     for (const b of lat) {
-      const ci = (b.gi / CHUNK) | 0, cj = (b.gj / CHUNK) | 0;
+      const wx = body.position.x + b.pos.x;
+      const wz = body.position.z + b.pos.z;
+      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
       if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
         const idx = cj * CHUNK_N + ci;
         if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
@@ -5489,7 +5493,9 @@ function spawnDebrisPart(parent, blocks, pbody) {
     const lat = mesh.userData.blocks;
     const loaded = new Set();
     for (const b of lat) {
-      const ci = (b.gi / CHUNK) | 0, cj = (b.gj / CHUNK) | 0;
+      const wx = body.position.x + b.pos.x;
+      const wz = body.position.z + b.pos.z;
+      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
       if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
         const idx = cj * CHUNK_N + ci;
         if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
@@ -6793,7 +6799,9 @@ function tick() {
     for (const f of fallingChunks) {
       const lat = f.mesh.userData.blocks;
       for (const b of lat) {
-        const ci = (b.gi / CHUNK) | 0, cj = (b.gj / CHUNK) | 0;
+        const wx = f.body.position.x + b.pos.x;
+        const wz = f.body.position.z + b.pos.z;
+        const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
         if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
           const idx = cj * CHUNK_N + ci;
           debrisChunks.add(idx);
@@ -6804,7 +6812,9 @@ function tick() {
     for (const f of restedChunks) {
       const lat = f.mesh.userData.blocks;
       for (const b of lat) {
-        const ci = (b.gi / CHUNK) | 0, cj = (b.gj / CHUNK) | 0;
+        const wx = f.body.position.x + b.pos.x;
+        const wz = f.body.position.z + b.pos.z;
+        const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
         if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
           const idx = cj * CHUNK_N + ci;
           debrisChunks.add(idx);

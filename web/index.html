@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 73;
+  var v = 74;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -3747,7 +3747,7 @@ SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
 
 // Bring in colliders around the spawn point so the player starts on solid ground.
 {
-  const sci = (colI(SPAWN.x) / CHUNK) | 0, scj = (colJ(SPAWN.z) / CHUNK) | 0;
+  const sci = Math.round(colI(SPAWN.x) / CHUNK), scj = Math.round(colJ(SPAWN.z) / CHUNK);
   for (let cj = scj - COLLIDER_RADIUS; cj <= scj + COLLIDER_RADIUS; cj++) {
     for (let ci = sci - COLLIDER_RADIUS; ci <= sci + COLLIDER_RADIUS; ci++) {
       if (ci < 0 || cj < 0 || ci >= CHUNK_N || cj >= CHUNK_N) continue;
@@ -4652,7 +4652,7 @@ function restFallingChunk(n) {
     for (const b of lat) {
       const wx = b.pos.x + f.body.position.x;
       const wz = b.pos.z + f.body.position.z;
-      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
+      const ci = Math.round(colI(wx) / CHUNK), cj = Math.round(colJ(wz) / CHUNK);
       if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
         const idx = cj * CHUNK_N + ci;
         if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
@@ -4856,7 +4856,7 @@ function spawnFallingChunk(unit) {
     for (const b of lat) {
       const wx = b.pos.x + cx;
       const wz = b.pos.z + cz;
-      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
+      const ci = Math.round(colI(wx) / CHUNK), cj = Math.round(colJ(wz) / CHUNK);
       if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
         const idx = cj * CHUNK_N + ci;
         if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
@@ -5447,7 +5447,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     for (const b of lat) {
       const wx = b.pos.x + w.x;
       const wz = b.pos.z + w.z;
-      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
+      const ci = Math.round(colI(wx) / CHUNK), cj = Math.round(colJ(wz) / CHUNK);
       if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
         const idx = cj * CHUNK_N + ci;
         if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
@@ -6666,7 +6666,7 @@ function tick() {
   // Bring in nearby chunk colliders and let distant ones go, a few dozen at a
   // time so the sweep costs nothing next to the physics step itself.
   if (frameCount % 60 === 0) {
-    const pci = (colI(playerBody.position.x) / CHUNK) | 0, pcj = (colJ(playerBody.position.z) / CHUNK) | 0;
+    const pci = Math.round(colI(playerBody.position.x) / CHUNK), pcj = Math.round(colJ(playerBody.position.z) / CHUNK);
     // Load chunks around the player
     for (let cj = pcj - COLLIDER_RADIUS; cj <= pcj + COLLIDER_RADIUS; cj++) {
       for (let ci = pci - COLLIDER_RADIUS; ci <= pci + COLLIDER_RADIUS; ci++) {
@@ -6676,13 +6676,12 @@ function tick() {
     }
     // Also load chunks that contain debris pieces
     const debrisChunks = new Set();
-    if (frameCount % 120 === 0 && (fallingChunks.length || restedChunks.length)) { let _dbg = "DEBRIS CHUNKS: falling=" + fallingChunks.length + " rested=" + restedChunks.length; for (const f of fallingChunks.concat(restedChunks)) { const lat = f.mesh.userData.blocks; const bp = f.body.position; const b0 = lat[0]; const wx0 = b0.pos.x + bp.x, wz0 = b0.pos.z + bp.z; _dbg += " | piece(" + lat.length + "bl) body(" + bp.x.toFixed(1) + "," + bp.z.toFixed(1) + ") b0pos(" + b0.pos.x.toFixed(1) + "," + b0.pos.z.toFixed(1) + ") wx0=" + wx0.toFixed(1) + " wz0=" + wz0.toFixed(1); } console.log(_dbg); }
     for (const f of fallingChunks) {
       const lat = f.mesh.userData.blocks;
       for (const b of lat) {
         const wx = b.pos.x + f.body.position.x;
         const wz = b.pos.z + f.body.position.z;
-        const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
+        const ci = Math.round(colI(wx) / CHUNK), cj = Math.round(colJ(wz) / CHUNK);
         if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
           const idx = cj * CHUNK_N + ci;
           debrisChunks.add(idx);
@@ -6695,7 +6694,7 @@ function tick() {
       for (const b of lat) {
         const wx = b.pos.x + f.body.position.x;
         const wz = b.pos.z + f.body.position.z;
-        const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
+        const ci = Math.round(colI(wx) / CHUNK), cj = Math.round(colJ(wz) / CHUNK);
         if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
           const idx = cj * CHUNK_N + ci;
           debrisChunks.add(idx);
@@ -6703,7 +6702,6 @@ function tick() {
         }
       }
     }
-    if (frameCount % 120 === 0 && debrisChunks.size) console.log("DEBRIS CHUNK SET: size=" + debrisChunks.size + " chunks=[" + [...debrisChunks].join(",") + "]");
     // Unload distant chunk colliders (but keep chunks that have debris)
     for (let c = 0; c < colliderBody.length; c++) {
       if (!colliderBody[c]) continue;

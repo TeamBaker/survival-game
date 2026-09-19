@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 80;
+  var v = 81;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -3702,16 +3702,28 @@ function buildChunkColliderBoxes(c) {
 // One collision body per chunk, live only while within COLLIDER_RADIUS.
 const colliderBody = new Array(CHUNK_N * CHUNK_N).fill(null);
 const COLLIDER_RADIUS = 5;
+const _pendingColliders = [];
 
 function loadChunkCollider(c) {
   if (colliderBody[c]) return;
-  const body = new CANNON.Body({ mass: 0, material: physWorld });
-  for (const b of buildChunkColliderBoxes(c)) {
-    body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+  if (_pendingColliders.indexOf(c) >= 0) return;
+  _pendingColliders.push(c);
+}
+
+function buildPendingColliders() {
+  let built = 0;
+  while (_pendingColliders.length > 0 && built < 2) {
+    const c = _pendingColliders.shift();
+    if (colliderBody[c]) continue;
+    const body = new CANNON.Body({ mass: 0, material: physWorld });
+    for (const b of buildChunkColliderBoxes(c)) {
+      body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+    }
+    body.updateAABB();
+    world.addBody(body);
+    colliderBody[c] = body;
+    built++;
   }
-  body.updateAABB();
-  world.addBody(body);
-  colliderBody[c] = body;
 }
 
 function unloadChunkCollider(c) {
@@ -3725,7 +3737,17 @@ function unloadChunkCollider(c) {
 function rebuildChunkCollider(c) {
   if (!colliderBody[c]) return;
   unloadChunkCollider(c);
-  loadChunkCollider(c);
+  // Remove from pending queue if queued.
+  const pi = _pendingColliders.indexOf(c);
+  if (pi >= 0) _pendingColliders.splice(pi, 1);
+  // Build immediately — terrain changes need instant collision.
+  const body = new CANNON.Body({ mass: 0, material: physWorld });
+  for (const b of buildChunkColliderBoxes(c)) {
+    body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+  }
+  body.updateAABB();
+  world.addBody(body);
+  colliderBody[c] = body;
 }
 
 // Where the ground is, for anything that needs to ask — the top of the block you
@@ -6637,6 +6659,7 @@ function updateFreeCam(dt) {
 
 let frameCount = 0;
 function tick() {
+  buildPendingColliders();
   const dt = Math.min(clock.getDelta(), 0.1);
   elapsed += dt;
   frameCount++;

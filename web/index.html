@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 97;
+  var v = 98;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6650,7 +6650,7 @@ function setPlacer(on) {
   document.body.classList.toggle('placer-on', on);
   if (!on) hlPick.visible = hlPlace.visible = false;
   // Show/hide the mat bar toggle button; hide the bar itself when turning off.
-  btnMatBar.style.display = on ? '' : 'none';
+  btnMatBar.style.display = on ? 'block' : 'none';
   if (!on) setMatBarVis(false);
 }
 

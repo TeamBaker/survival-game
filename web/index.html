@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 98;
+  var v = 99;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1208,7 +1208,7 @@
   #mat-bar {
     position: fixed;
     top: 50%;
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     transform: translateY(-50%);
     display: none;
     flex-direction: column;
@@ -1218,8 +1218,8 @@
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     background: rgba(8, 14, 24, 0.72);
-    border-right: 1px solid rgba(150, 195, 245, 0.2);
-    border-radius: 0 8px 8px 0;
+    border-left: 1px solid rgba(150, 195, 245, 0.2);
+    border-radius: 8px 0 0 8px;
     z-index: 13;
     scrollbar-width: none;
     max-height: 60vh;
@@ -6656,7 +6656,7 @@ function setPlacer(on) {
 
 placerBtn.addEventListener('click', () => {
   if (placerOn) { setPlacer(false); return; }
-  setPlacerMatUI(true);
+  setPlacer(true);
 });
 
 bindTap(document.getElementById('placer-mat-close'), () => setPlacerMatUI(false));

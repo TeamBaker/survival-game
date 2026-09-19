@@ -6430,9 +6430,8 @@ function toggleColTest() {
   if (colTestOn) {
     colTestSphere = new THREE.Mesh(
       new THREE.SphereGeometry(0.5, 16, 16),
-      mat(0xff0000, 0.4, 0.1, { emissive: 0xff0000, emissiveIntensity: 1, depthTest: false })
+      mat(0xff0000, 0.7, 0.3)
     );
-    colTestSphere.renderOrder = 999;
     scene.add(colTestSphere);
     colTestPrevDebugCol = debugColOn;
     if (!debugColOn) { debugColOn = true; debugCollision.visible = true; }
@@ -6463,7 +6462,16 @@ function updateColTest() {
     for (let di = -1; di <= 1; di++) {
       const ii = ci + di, jj = cj + dj;
       if (ii < 0 || jj < 0 || ii >= CHUNK_N || jj >= CHUNK_N) continue;
-      loadChunkCollider(jj * CHUNK_N + ii);
+      const idx = jj * CHUNK_N + ii;
+      if (!colliderBody[idx]) {
+        const body = new CANNON.Body({ mass: 0, material: physWorld });
+        for (const b of buildChunkColliderBoxes(idx)) {
+          body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+        }
+        body.updateAABB();
+        world.addBody(body);
+        colliderBody[idx] = body;
+      }
     }
   }
 

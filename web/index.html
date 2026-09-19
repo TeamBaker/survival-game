@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 93;
+  var v = 94;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6794,38 +6794,9 @@ function tick() {
         loadChunkCollider(cj * CHUNK_N + ci);
       }
     }
-    // Also load chunks that contain debris pieces
-    const debrisChunks = new Set();
-    for (const f of fallingChunks) {
-      const lat = f.mesh.userData.blocks;
-      for (const b of lat) {
-        const wx = b.gi * BLOCK - GEN_R + BLOCK * 0.5;
-        const wz = b.gj * BLOCK - GEN_R + BLOCK * 0.5;
-        const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
-        if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
-          const idx = cj * CHUNK_N + ci;
-          debrisChunks.add(idx);
-          loadChunkCollider(idx);
-        }
-      }
-    }
-    for (const f of restedChunks) {
-      const lat = f.mesh.userData.blocks;
-      for (const b of lat) {
-        const wx = b.gi * BLOCK - GEN_R + BLOCK * 0.5;
-        const wz = b.gj * BLOCK - GEN_R + BLOCK * 0.5;
-        const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
-        if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
-          const idx = cj * CHUNK_N + ci;
-          debrisChunks.add(idx);
-          loadChunkCollider(idx);
-        }
-      }
-    }
     // Unload distant chunk colliders (but keep chunks that have debris)
     for (let c = 0; c < colliderBody.length; c++) {
       if (!colliderBody[c]) continue;
-      if (debrisChunks.has(c)) continue;  // keep debris-occupied chunks loaded
       const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
       const cx = (ci + 0.5) * CHUNK * BLOCK - GEN_R, cz = (cj + 0.5) * CHUNK * BLOCK - GEN_R;
       const dx = cx - playerBody.position.x, dz = cz - playerBody.position.z;

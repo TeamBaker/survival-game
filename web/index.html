@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 102;
+  var v = 103;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -59,7 +59,7 @@
   #hud {
     position: fixed;
     top: calc(10px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
+    left: calc(10px + env(safe-area-inset-left));
     padding: 8px 11px;
     font-size: 13px;
     line-height: 1.5;
@@ -454,7 +454,7 @@
   /* ---------- Shovel (temporary block-moving tool) ---------- */
   #btn-shovel {
     position: fixed;
-    top: calc(94px + env(safe-area-inset-top));
+    top: calc(134px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
@@ -544,7 +544,7 @@
   /* ---------- Hammer (knocks a block loose, keeps nothing) ---------- */
   #btn-hammer {
     position: fixed;
-    top: calc(130px + env(safe-area-inset-top));
+    top: calc(170px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
@@ -603,8 +603,8 @@
   body.hammer-on #btn-up     { bottom: calc(208px + env(safe-area-inset-bottom)); }
 
   @media (max-width: 620px) {
-    #btn-shovel { top: calc(84px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
-    #btn-hammer { top: calc(118px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-shovel { top: calc(124px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-hammer { top: calc(158px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
     #hammer-note { font-size: 11px; padding: 4px 11px; }
     .sv-btn { width: 106px; height: 58px; font-size: 10px; }
     #shovel-held { font-size: 11px; padding: 4px 11px; }
@@ -1085,7 +1085,7 @@
   /* ---- Place tool (creative) ---- */
   #btn-placer {
     position: fixed;
-    top: calc(152px + env(safe-area-inset-top));
+    top: calc(192px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;

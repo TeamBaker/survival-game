@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 94;
+  var v = 95;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4691,21 +4691,6 @@ function restFallingChunk(n) {
   const f = fallingChunks[n];
   fallingChunks.splice(n, 1);
   restedChunks.push(f);
-  // Belt-and-suspenders: make sure the chunks this piece settled into have
-  // their colliders loaded.
-  {
-    const lat = f.mesh.userData.blocks;
-    const loaded = new Set();
-    for (const b of lat) {
-      const wx = b.gi * BLOCK - GEN_R + BLOCK * 0.5;
-      const wz = b.gj * BLOCK - GEN_R + BLOCK * 0.5;
-      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
-      if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
-        const idx = cj * CHUNK_N + ci;
-        if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
-      }
-    }
-  }
   while (restedChunks.length > FALL_MESH_CAP) dropChunk(restedChunks.shift());
 }
 
@@ -4896,20 +4881,6 @@ function spawnFallingChunk(unit) {
   // Oldest piece gives up its body if the field is already full of them.
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
-  // Immediately load collision for the chunk this piece is in.
-  {
-    const lat = mesh.userData.blocks;
-    const loaded = new Set();
-    for (const b of lat) {
-      const wx = b.gi * BLOCK - GEN_R + BLOCK * 0.5;
-      const wz = b.gj * BLOCK - GEN_R + BLOCK * 0.5;
-      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
-      if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
-        const idx = cj * CHUNK_N + ci;
-        if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
-      }
-    }
-  }
   fallingChunks.push({ mesh, body, still: 0 });
 }
 
@@ -5487,21 +5458,6 @@ function spawnDebrisPart(parent, blocks, pbody) {
   body.angularVelocity.z += (Math.random() - 0.5) * 0.4;
 
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
-  linkBody(mesh, body);
-  // Immediately load collision for the chunk this piece is in.
-  {
-    const lat = mesh.userData.blocks;
-    const loaded = new Set();
-    for (const b of lat) {
-      const wx = b.gi * BLOCK - GEN_R + BLOCK * 0.5;
-      const wz = b.gj * BLOCK - GEN_R + BLOCK * 0.5;
-      const ci = (colI(wx) / CHUNK) | 0, cj = (colJ(wz) / CHUNK) | 0;
-      if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
-        const idx = cj * CHUNK_N + ci;
-        if (!loaded.has(idx)) { loaded.add(idx); loadChunkCollider(idx); }
-      }
-    }
-  }
   fallingChunks.push({ mesh, body, still: 0 });
 }
 

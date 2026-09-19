@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 82;
+  var v = 83;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6458,20 +6458,16 @@ function updateColTest() {
 
   const ci = (colI(colTestSphere.position.x) / CHUNK) | 0;
   const cj = (colJ(colTestSphere.position.z) / CHUNK) | 0;
-  for (let dj = -1; dj <= 1; dj++) {
-    for (let di = -1; di <= 1; di++) {
-      const ii = ci + di, jj = cj + dj;
-      if (ii < 0 || jj < 0 || ii >= CHUNK_N || jj >= CHUNK_N) continue;
-      const idx = jj * CHUNK_N + ii;
-      if (!colliderBody[idx]) {
-        const body = new CANNON.Body({ mass: 0, material: physWorld });
-        for (const b of buildChunkColliderBoxes(idx)) {
-          body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-        }
-        body.updateAABB();
-        world.addBody(body);
-        colliderBody[idx] = body;
+  if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
+    const idx = cj * CHUNK_N + ci;
+    if (!colliderBody[idx]) {
+      const body = new CANNON.Body({ mass: 0, material: physWorld });
+      for (const b of buildChunkColliderBoxes(idx)) {
+        body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
       }
+      body.updateAABB();
+      world.addBody(body);
+      colliderBody[idx] = body;
     }
   }
 

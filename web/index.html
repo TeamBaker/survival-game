@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 107;
+  var v = 108;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -5647,10 +5647,20 @@ function placeOnDebris(mesh, local, m) {
   mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, color: colour, gi, gj, lvl });
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
-  // heavier, a collider round the new block, and shoved awake to feel it.
+  // heavier, a collider round the new block, and shoved awake to feel it. A full
+  // rebuildDebrisBody (with its recentreDebris) would shift every block's position
+  // to keep the centre of mass exact, and that sudden shift is what makes the body
+  // jump and jitter — so a single placed block just gets its own box added instead.
   const f = chunkOfMesh(mesh);
   if (!f) return;
-  rebuildDebrisBody(mesh, f.body);
+  const body = f.body;
+  body.addShape(new CANNON.Box(new CANNON.Vec3(HALF_BLOCK, HALF_BLOCK, HALF_BLOCK)),
+                new CANNON.Vec3(local.x, local.y, local.z));
+  body.mass = Math.min(mesh.userData.blocks.length * 0.5, FALL_MASS_CAP);
+  body.updateMassProperties();
+  body.updateBoundingRadius();
+  body.updateAABB();
+  body.wakeUp();
   f.still = 0;                  // it has been disturbed: let it settle again
 }
 

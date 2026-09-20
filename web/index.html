@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 105;
+  var v = 106;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6697,20 +6697,28 @@ placerMatOverlay.addEventListener('pointerdown', (e) => {
 });
 
 bindTap(placerDo, () => {
-  if (!placerOn || !creative.spot) return;
-  const { i, j, lvl } = creative.spot;
-  if (lvl < VOX_FLOOR || i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return;
-  const k = j * GEN_N + i;
-  if (topLvl[k] === NO_COLUMN && sandboxMode) createColumn(k, lvl);
-  if (topLvl[k] !== NO_COLUMN && lvl <= voxCap(k) && voxelAt(i, j, lvl) === AIR) {
-    editBlock(i, j, lvl, placerMat);
+  if (!placerOn) return;
+  if (creative.spot) {
+    const { i, j, lvl } = creative.spot;
+    if (lvl < VOX_FLOOR || i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return;
+    const k = j * GEN_N + i;
+    if (topLvl[k] === NO_COLUMN && sandboxMode) createColumn(k, lvl);
+    if (topLvl[k] !== NO_COLUMN && lvl <= voxCap(k) && voxelAt(i, j, lvl) === AIR) {
+      editBlock(i, j, lvl, placerMat);
+    }
+  } else if (creative.debris && creative.debris.local) {
+    placeOnDebris(creative.debris.mesh, creative.debris.local, placerMat);
   }
 });
 
 bindTap(placerDel, () => {
-  if (!placerOn || !creative.hit) return;
-  const { i, j, lvl } = creative.hit;
-  if (voxelAt(i, j, lvl) !== AIR) editBlock(i, j, lvl, AIR);
+  if (!placerOn) return;
+  if (creative.hit) {
+    const { i, j, lvl } = creative.hit;
+    if (voxelAt(i, j, lvl) !== AIR) editBlock(i, j, lvl, AIR);
+  } else if (creative.debris) {
+    digDebrisBlock(creative.debris.mesh, creative.debris.inst, creative.debris.child);
+  }
 });
 
 // Called every frame while the Place tool is active — same job as updateShovel

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 106;
+  var v = 107;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -6645,6 +6645,60 @@ function creativeAim() {
   creative.hit = shovel.hit;
   creative.spot = shovel.spot;
   creative.debris = shovel.debris;
+
+  // shovelAim() only falls back to debris when the terrain ray misses
+  // outright, so a piece resting on the ground it came from — same cell,
+  // same distance — never wins there. Re-run the debris ray here and let it
+  // take over whenever it is at least as close as whatever terrain the DDA
+  // found, so the placer can still target rubble sitting on solid ground.
+  camera.getWorldDirection(aimDir);
+  let ox, oy, oz;
+  if (camMode === CAM.FREE) {
+    ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
+  } else {
+    const p = playerBody.position;
+    ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
+  }
+  const dHit = debrisAim(ox, oy, oz);
+  if (dHit) {
+    let terrainDist = Infinity;
+    if (creative.hit) {
+      const h = creative.hit;
+      const x0 = -GEN_R + h.i * BLOCK, z0 = -GEN_R + h.j * BLOCK, y0 = h.lvl * BLOCK;
+      terrainDist = rayBoxDist(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z,
+                               x0, y0, z0, x0 + BLOCK, y0 + BLOCK, z0 + BLOCK);
+    }
+    if (dHit.distance <= terrainDist) {
+      const p = dHit.point;
+      const dm = dHit.piece;
+      const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
+      const child = dHit.object !== dm ? dHit.object : null;
+      const lat = dm.userData.blocks;
+      let blockLocal = null;
+      if (child) blockLocal = child.position;
+      else if (inst >= 0 && inst < lat.length) blockLocal = lat[inst].pos;
+      creative.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), inst, child, blockLocal },
+                                      cellOf(p.x, p.y, p.z));
+      creative.hit = null;
+      creative.spot = null;
+    }
+  }
+}
+
+// Ray-AABB entry distance, used only to compare a debris hit against whatever
+// terrain cell creativeAim()'s DDA found — not a general-purpose intersector.
+function rayBoxDist(ox, oy, oz, dx, dy, dz, x0, y0, z0, x1, y1, z1) {
+  let tmin = -Infinity, tmax = Infinity;
+  const axes = [[ox, dx, x0, x1], [oy, dy, y0, y1], [oz, dz, z0, z1]];
+  for (const [o, d, lo, hi] of axes) {
+    if (d === 0) { if (o < lo || o > hi) return Infinity; continue; }
+    let t1 = (lo - o) / d, t2 = (hi - o) / d;
+    if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+    tmin = Math.max(tmin, t1);
+    tmax = Math.min(tmax, t2);
+  }
+  if (tmax < tmin || tmax < 0) return Infinity;
+  return tmin < 0 ? 0 : tmin;
 }
 
 for (let m = 0; m < N_MATS; m++) {

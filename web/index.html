@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 112;
+  var v = 113;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -4731,7 +4731,7 @@ const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
 // A block that hangs off a piece rather than being one of its instances: the
 // powder ones, which need grainGeo's speckle instead of a flat instance colour,
 // and the ones the player lays on. Both ride with the piece as children, which
-// is what cutDebrisLat and recentreDebris already key off.
+// is what cutDebrisLat already keys off.
 function grainChild(m, pos, parent) {
   const mat = TERRAIN_FACE_MATS[m].clone();
   mat.color.multiplyScalar(0.85 + Math.random() * 0.30);   // same range as terrain's per-block tint
@@ -5211,32 +5211,6 @@ function removeDebrisMesh(mesh) {
   mesh.dispose();
 }
 
-// Cannon turns a body about its origin, so a piece's origin has to sit on its
-// centre of mass. Blocks dug off or laid on move that centre: put the lattice,
-// the colliders and the drawn cubes back in step with it, then slide the body
-// the same way in world space so none of it appears to move.
-const debrisCoM = new THREE.Vector3();
-function recentreDebris(mesh, body) {
-  const lat = mesh.userData.blocks;
-  if (!lat.length) return;
-  const c = debrisCoM.set(0, 0, 0);
-  for (const b of lat) c.add(b.pos);
-  c.multiplyScalar(1 / lat.length);
-  if (c.lengthSq() < 1e-12) return;
-  const m4 = new THREE.Matrix4();
-  for (let q = 0; q < lat.length; q++) {
-    lat[q].pos.sub(c);
-    if (lat[q].child) lat[q].child.position.copy(lat[q].pos);
-    else mesh.setMatrixAt(q, m4.makeTranslation(lat[q].pos.x, lat[q].pos.y, lat[q].pos.z));
-  }
-  mesh.instanceMatrix.needsUpdate = true;
-  for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
-  body.position.x += c.x;
-  body.position.y += c.y;
-  body.position.z += c.z;
-  mesh.position.copy(body.position);
-}
-
 // Redo a piece's collider and its weight from the lattice it has left. Runs
 // after a dig: a piece is a few dozen boxes at most, so building the shapes
 // again costs less than trying to patch the ones that are there.
@@ -5326,7 +5300,6 @@ function rebuildDebrisBody(mesh, body) {
       }
     }
   }
-  recentreDebris(mesh, body);
   body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
   body.updateMassProperties();
   body.updateBoundingRadius();

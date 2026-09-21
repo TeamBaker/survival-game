@@ -5216,6 +5216,7 @@ function removeDebrisMesh(mesh) {
 // the colliders and the drawn cubes back in step with it, then slide the body
 // the same way in world space so none of it appears to move.
 const debrisCoM = new THREE.Vector3();
+const debrisShift = new CANNON.Vec3();
 function recentreDebris(mesh, body) {
   const lat = mesh.userData.blocks;
   if (!lat.length) return;
@@ -5231,9 +5232,10 @@ function recentreDebris(mesh, body) {
   }
   mesh.instanceMatrix.needsUpdate = true;
   for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
-  body.position.x += c.x;
-  body.position.y += c.y;
-  body.position.z += c.z;
+  body.quaternion.vmult(debrisShift.set(c.x, c.y, c.z), debrisShift);
+  body.position.x += debrisShift.x;
+  body.position.y += debrisShift.y;
+  body.position.z += debrisShift.z;
   mesh.position.copy(body.position);
 }
 
@@ -5544,6 +5546,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
   body.angularVelocity.z += (Math.random() - 0.5) * 0.4;
 
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
+  linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
   fallingChunks.push({ mesh, body, still: 0 });
 }
 

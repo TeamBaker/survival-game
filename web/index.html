@@ -4528,6 +4528,11 @@ window.addEventListener('wheel', (e) => {
 // ---------------------------------------------------------------------------
 const SHOVEL_REACH = 6.0;      // metres of reach from the eye
 const SHOVEL_CAP   = 64;       // blocks your hands hold
+// A terrain cell's AABB-entry distance can read slightly closer than a debris
+// mesh's true surface distance at oblique angles even though the debris is
+// what's actually in front, so debris gets this much tolerance in its favor
+// when the two distances are compared.
+const AIM_EPS = 0.05;
 const MAT_NAMES = [
   'sand', 'dirt', 'rock', 'water',
   'fine dirt', 'mud', 'hard dirt', 'fine mud',
@@ -4648,9 +4653,11 @@ function shovelAim() {
   }
 
   // Whichever surface is nearer wins: the voxel ray is only let through as far
-  // as the piece of rubble in front of it.
+  // as the piece of rubble in front of it, minus a little slack so a terrain
+  // cell that only reads closer within AIM_EPS doesn't beat debris that's
+  // actually the nearer surface.
   const dHit = debrisAim(ox, oy, oz);
-  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
+  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance - AIM_EPS : SHOVEL_REACH)) {
     shovel.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
     shovel.spot = { i: ddaHit.i + ddaFace.di, j: ddaHit.j + ddaFace.dj, lvl: ddaHit.lvl + ddaFace.dl };
   } else if (dHit) {
@@ -6671,7 +6678,7 @@ function creativeAim() {
       terrainDist = rayBoxDist(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z,
                                x0, y0, z0, x0 + BLOCK, y0 + BLOCK, z0 + BLOCK);
     }
-    if (dHit.distance <= terrainDist) {
+    if (dHit.distance <= terrainDist + AIM_EPS) {
       const p = dHit.point;
       const dm = dHit.piece;
       const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;

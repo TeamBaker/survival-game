@@ -5233,6 +5233,11 @@ function recentreDebris(mesh, body) {
     else mesh.setMatrixAt(q, m4.makeTranslation(lat[q].pos.x, lat[q].pos.y, lat[q].pos.z));
   }
   mesh.instanceMatrix.needsUpdate = true;
+  // Instances moved: the InstancedMesh caches this on first raycast/frustum
+  // check and never recomputes it, so a stale sphere left over from the
+  // piece's original shape starts missing a beam's own raycasts (and
+  // culling it from view) as it grows past the sphere's old bounds.
+  mesh.boundingSphere = null;
   for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
   body.quaternion.vmult(debrisShift.set(c.x, c.y, c.z), debrisShift);
   body.position.x += debrisShift.x;
@@ -5355,6 +5360,7 @@ function cutDebrisLat(mesh, q) {
     mesh.count -= 1;
     mesh.instanceMatrix.needsUpdate = true;
     mesh.instanceColor.needsUpdate = true;
+    mesh.boundingSphere = null;
   }
   lat.splice(q, 1);
 }

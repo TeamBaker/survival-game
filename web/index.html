@@ -4528,11 +4528,6 @@ window.addEventListener('wheel', (e) => {
 // ---------------------------------------------------------------------------
 const SHOVEL_REACH = 6.0;      // metres of reach from the eye
 const SHOVEL_CAP   = 64;       // blocks your hands hold
-// A terrain cell's AABB-entry distance can read slightly closer than a debris
-// mesh's true surface distance at oblique angles even though the debris is
-// what's actually in front, so debris gets this much tolerance in its favor
-// when the two distances are compared.
-const AIM_EPS = 0.05;
 const MAT_NAMES = [
   'sand', 'dirt', 'rock', 'water',
   'fine dirt', 'mud', 'hard dirt', 'fine mud',
@@ -4565,6 +4560,7 @@ const hammer = {
 const ddaHit  = { i: 0, j: 0, lvl: 0 };
 const ddaPrev = { i: 0, j: 0, lvl: 0 };
 const ddaFace = { di: 0, dj: 0, dl: 0 }; // face normal of the hit block's entry face
+const ddaT    = { v: 0 };                   // parametric distance (grid units) to the face the DDA entered
 function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
   // One grid unit per block, so the DDA is the textbook unit-cell one and the
   // direction carries over unchanged (the scaling is uniform).
@@ -4585,6 +4581,7 @@ function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
     if (voxelAt(i, j, lvl) !== AIR) {
       ddaHit.i = i;   ddaHit.j = j;   ddaHit.lvl = lvl;
       ddaPrev.i = pi; ddaPrev.j = pj; ddaPrev.lvl = pl;
+      ddaT.v = t;
       return true;
     }
     pi = i; pj = j; pl = lvl;
@@ -4653,11 +4650,9 @@ function shovelAim() {
   }
 
   // Whichever surface is nearer wins: the voxel ray is only let through as far
-  // as the piece of rubble in front of it, minus a little slack so a terrain
-  // cell that only reads closer within AIM_EPS doesn't beat debris that's
-  // actually the nearer surface.
+  // as the piece of rubble in front of it.
   const dHit = debrisAim(ox, oy, oz);
-  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance - AIM_EPS : SHOVEL_REACH)) {
+  if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
     shovel.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
     shovel.spot = { i: ddaHit.i + ddaFace.di, j: ddaHit.j + ddaFace.dj, lvl: ddaHit.lvl + ddaFace.dl };
   } else if (dHit) {
@@ -6671,14 +6666,10 @@ function creativeAim() {
   }
   const dHit = debrisAim(ox, oy, oz);
   if (dHit) {
-    let terrainDist = Infinity;
-    if (creative.hit) {
-      const h = creative.hit;
-      const x0 = -GEN_R + h.i * BLOCK, z0 = -GEN_R + h.j * BLOCK, y0 = h.lvl * BLOCK;
-      terrainDist = rayBoxDist(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z,
-                               x0, y0, z0, x0 + BLOCK, y0 + BLOCK, z0 + BLOCK);
-    }
-    if (dHit.distance <= terrainDist + AIM_EPS) {
+    // ddaT.v only reflects this call's DDA when it actually hit something —
+    // it's stale otherwise, so treat a miss as no terrain to compete with.
+    const terrainFaceDist = creative.hit ? ddaT.v * BLOCK : Infinity;
+    if (dHit.distance <= terrainFaceDist) {
       const p = dHit.point;
       const dm = dHit.piece;
       const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
@@ -6695,21 +6686,6 @@ function creativeAim() {
   }
 }
 
-// Ray-AABB entry distance, used only to compare a debris hit against whatever
-// terrain cell creativeAim()'s DDA found — not a general-purpose intersector.
-function rayBoxDist(ox, oy, oz, dx, dy, dz, x0, y0, z0, x1, y1, z1) {
-  let tmin = -Infinity, tmax = Infinity;
-  const axes = [[ox, dx, x0, x1], [oy, dy, y0, y1], [oz, dz, z0, z1]];
-  for (const [o, d, lo, hi] of axes) {
-    if (d === 0) { if (o < lo || o > hi) return Infinity; continue; }
-    let t1 = (lo - o) / d, t2 = (hi - o) / d;
-    if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
-    tmin = Math.max(tmin, t1);
-    tmax = Math.min(tmax, t2);
-  }
-  if (tmax < tmin || tmax < 0) return Infinity;
-  return tmin < 0 ? 0 : tmin;
-}
 
 for (let m = 0; m < N_MATS; m++) {
   if (m === WATER) continue;

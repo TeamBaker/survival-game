@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 112;
+  var v = 120;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -3706,7 +3706,6 @@ function rebuildFilletChunk(c) {
 // heightfield only knows the top of a column, so it cannot represent an
 // overhang, a tunnel, or a floating block. Boxes can.
 const HF_FLOOR = -3.2;         // where the field bottoms out under open water
-const COLLISION_DEPTH = 32;    // levels below the surface a chunk's collider reaches down to
 
 // Build greedy-merged collision boxes for one chunk.
 function buildChunkColliderBoxes(c) {
@@ -3730,7 +3729,7 @@ function buildChunkColliderBoxes(c) {
       const t = sTop[k];
       if (t === NO_COLUMN) continue;
       let floorLvl = t;
-      for (let lvl = t; lvl >= Math.max(VOX_FLOOR, t - COLLISION_DEPTH); lvl--) {
+      for (let lvl = t; lvl >= VOX_FLOOR; lvl--) {
         if (solidVisible(k, lvl)) floorLvl = lvl;
       }
       const idx = jj * w + ii;

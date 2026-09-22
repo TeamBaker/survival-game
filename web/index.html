@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 120;
+  var v = 122;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -5340,6 +5340,23 @@ function rebuildDebrisBody(mesh, body) {
   body.updateBoundingRadius();
   body.updateAABB();
   body.wakeUp();
+  // Mass changed — wake every sleeping debris body that might be in contact,
+  // so the weight shift is felt immediately.  cannon.js only wakes a sleeping
+  // body when the *other* body has speed >= sleepSpeedLimit * sqrt(2), which
+  // fails when both are nearly still (the "scale" deadlock).
+  const _rr = body.boundingRadius;
+  for (const _list of [fallingChunks, restedChunks]) {
+    for (const _f of _list) {
+      if (_f.body === body) continue;
+      if (_f.body.sleepState !== CANNON.Body.SLEEPING) continue;
+      const _dx = _f.body.position.x - body.position.x,
+            _dy = _f.body.position.y - body.position.y,
+            _dz = _f.body.position.z - body.position.z;
+      if (_dx*_dx + _dy*_dy + _dz*_dz < (_rr + _f.body.boundingRadius + 4) ** 2) {
+        _f.body.wakeUp();
+      }
+    }
+  }
 }
 
 // Take block `q` off a piece. A placed block is a child mesh; one of the piece's

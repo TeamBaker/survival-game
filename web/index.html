@@ -2996,32 +2996,6 @@ function collectColumn(i, j, step = 1) {
 // 20x20-block grid chunk is drawn. Innermost band is full detail; each band
 // out merges blocks into bigger cubes (see mergeSizeFor), so the same island
 // stays cheap to draw far away without popping right at the edge of view.
-const LOD_SPHERES = [
-  { radius: 30, color: 0x669d34 },  // green  — normal quality (step 1, no merge)
-  { radius: 50, color: 0xf5ec00 },  // yellow — middle quality (step 2, 2x2x2 merge)
-  { radius: 80, color: 0xb51a00 },  // red    — low quality    (step 3, 4x4x4 merge)
-];
-// Everything outside every sphere: really low quality (step 4, 5x5x5 merge).
-
-// The innermost sphere (smallest radius) the distance still falls inside,
-// 1-indexed (band i's step is i + 1); mergeSizeFor turns that step into the
-// cube size collectColumn merges blocks into.
-function lodStepFor(dist) {
-  for (let i = 0; i < LOD_SPHERES.length; i++) {
-    if (dist < LOD_SPHERES[i].radius) return i + 1;
-  }
-  return LOD_SPHERES.length + 1;
-}
-
-// step 1 is full detail (no merging); steps 2-4 merge blocks into 2x2x2,
-// 4x4x4, and 5x5x5 cubes respectively.
-const MERGE_SIZE = [1, 2, 4, 5];
-const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
-
-// Scratch histogram collectColumn's LOD path reuses every call to find the
-// most common non-air material in a merged cube — sized for every material id
-// (AIR itself is never counted, so index N_MATS is never touched).
-const mergeMatCounts = new Uint32Array(N_MATS);
 
 // One grid cell (of the GRID_N x GRID_N, 20-block overlay) per CHUNK mesh
 // chunk, chosen by which cell the mesh chunk's own centre falls in. Built

@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Tension Sandbox</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#151d2b;color:#c8d0dc;font-family:-apple-system,sans-serif;
+  display:flex;flex-direction:column;height:100dvh;overflow:hidden;touch-action:none}
+.top-bar{display:flex;align-items:center;gap:6px;padding:6px 8px;flex-wrap:wrap}
+.mswatch{width:32px;height:32px;border-radius:8px;border:2px solid transparent;cursor:pointer}
+.mswatch.on{border-color:#fff}
+.mswatch.ground{border:2px dashed #666}
+.btn{padding:4px 12px;border:1px solid rgba(255,255,255,.25);background:rgba(20,34,54,.62);
+  color:#c8d0dc;border-radius:999px;cursor:pointer;font-size:12px;-webkit-tap-highlight-color:transparent}
+.btn.on{background:rgba(102,181,244,.25);border-color:#66b5f4}
+.btn.red{border-color:rgba(255,100,80,.5)}
+.stats{padding:4px 8px;font-size:11px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <div class="mswatch ground" id="sw-0" title="Ground"></div>
+  <div class="mswatch" id="sw-1"></div>
+  <div class="mswatch" id="sw-2"></div>
+  <div class="mswatch" id="sw-3"></div>
+  <div class="mswatch" id="sw-4"></div>
+  <div class="mswatch" id="sw-5"></div>
+  <div class="mswatch" id="sw-custom" title="Custom"></div>
+  <button class="btn" id="btn-place">Place</button>
+  <button class="btn" id="btn-remove">Remove</button>
+  <button class="btn" id="btn-step">Step</button>
+  <button class="btn red" id="btn-sim">Simulate</button>
+  <button class="btn red" id="btn-reset">Reset</button>
+</div>
+<div class="stats" id="stats"></div>
+<canvas id="cv" style="width:100%;flex:1;touch-action:none"></canvas>
+<script>
+const MATERIALS=[
+  {name:'Ground',color:'#6a7a6a',weight:0,maxStrength:100,ground:true},
+  {name:'Sand',color:'#c8b464',weight:1.1,maxStrength:40},
+  {name:'Dirt',color:'#8b6914',weight:1.0,maxStrength:50},
+  {name:'Rock',color:'#9e9e9e',weight:3.0,maxStrength:100},
+  {name:'Clay',color:'#cd7f32',weight:1.2,maxStrength:30},
+  {name:'Iron',color:'#5c7a8a',weight:5.0,maxStrength:120},
+];
+const CUSTOM={name:'Custom',color:'#c080ff',weight:2.0,maxStrength:60};
+const CUSTOM_IDX=MATERIALS.length;
+function matOf(idx){return MATERIALS[idx]||CUSTOM;}
+
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+let W,H,rows,cols,cell,grid=[],sel=1,mode='place';
+let simming=false,simInterval=null,dragging=false,dragErase=false;
+let brokenEdges=new Set();
+function edgeKey(r,c,nr,nc){
+  const a=`${r},${c}`,b=`${nr},${nc}`;
+  return a<b?`${a}-${b}`:`${b}-${a}`;
+}
+
+const COLOR_STOPS=[
+  [0.0,[70,190,80]],   // green
+  [0.3,[230,210,40]],  // yellow
+  [0.7,[240,140,30]],  // orange
+  [1.5,[220,40,30]],   // red
+  [3.0,[255,70,70]],   // bright red
+];
+function colorScale(v){
+  v=Math.max(0,v);
+  const lerp=(a,b,t)=>a+(b-a)*t;
+  for(let i=0;i<COLOR_STOPS.length-1;i++){
+    const[r0,c0]=COLOR_STOPS[i],[r1,c1]=COLOR_STOPS[i+1];
+    if(v<=r1||i===COLOR_STOPS.length-2){
+      const t=Math.min(1,Math.max(0,(v-r0)/(r1-r0)));
+      return`rgb(${lerp(c0[0],c1[0],t)|0},${lerp(c0[1],c1[1],t)|0},${lerp(c0[2],c1[2],t)|0})`;
+    }
+  }
+}
+// Maps a maxStress/maxStrength ratio onto the danger color scale:
+// 0 stress -> green, stress at the breaking point -> bright red.
+function stressColor(stress,maxStrength){
+  const ratio=maxStrength>0?Math.min(1,Math.max(0,stress)/maxStrength):0;
+  return colorScale(ratio*6);
+}
+
+function resize(){
+  const par=cv.parentElement;
+  const tbar=par.querySelector('.top-bar'),statsEl=par.querySelector('.stats');
+  const parR=par.getBoundingClientRect();
+  const tH=tbar?tbar.getBoundingClientRect().height:0;
+  const sH=statsEl?statsEl.getBoundingClientRect().height:0;
+  const cvH=Math.max(100,parR.height-tH-sH);
+  cv.style.width=parR.width+'px';cv.style.height=cvH+'px';
+  cv.width=parR.width*devicePixelRatio;cv.height=cvH*devicePixelRatio;
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  W=parR.width;H=cvH;calcGrid();draw();
+}
+
+function calcGrid(){
+  cell=Math.floor(Math.min(W/20,(H-10)/14));
+  if(cell<16)cell=16;
+  cols=Math.floor(W/cell);rows=Math.floor(H/cell);
+  while(grid.length<rows)grid.push(new Array(cols).fill(null));
+  if(grid.length>rows)grid.length=rows;
+  while(grid[0]&&grid[0].length<cols)for(let r=0;r<grid.length;r++)grid[r].push(null);
+  if(grid[0]&&grid[0].length>cols)for(let r=0;r<grid.length;r++)grid[r].length=cols;
+  if(!grid[rows-1])grid[rows-1]=new Array(cols).fill(null);
+  for(let c=0;c<cols;c++)if(!grid[rows-1][c])grid[rows-1][c]={mat:0};
+  recalculate();
+  buildStats();
+}
+
+/*
+ * 2D DIRECT STIFFNESS METHOD (FRAME/BEAM FEM)
+ *
+ * Every connected block is a node with 3 DOFs (x displacement, y
+ * displacement, rotation); every face-adjacent pair of connected blocks is a
+ * 2D Euler-Bernoulli beam element with both axial stiffness (EA/L) and
+ * bending stiffness (EI/L^3), so horizontal beams resist vertical loads
+ * instead of collapsing the way a truss (pin-jointed, no bending) does.
+ * Ground blocks are fixed supports — all 3 DOFs are locked at zero. Gravity
+ * is a downward point load at each free node equal to its material's
+ * weight (no applied moments). Assembling the global 3n x 3n stiffness
+ * matrix K and solving Ku=F (Gaussian elimination) gives each free node's
+ * displacement/rotation; transforming an element's global DOFs into its
+ * local axis and multiplying by the local stiffness matrix recovers its end
+ * forces: axial force N (+ tension, - compression) and bending moment M. A
+ * block's displayed stress is the largest combined stress (|N| + |M|/L) of
+ * any edge touching it; if that worst edge is compressive (and clears a
+ * small noise floor relative to material strength) the block is flagged as
+ * in compression.
+ *
+ * Disconnected blocks (nothing BFS-reachable from ground) fall, restarting
+ * the computation from scratch. Any edge whose combined stress exceeds the
+ * weaker of its two blocks' material strength breaks — but instead of
+ * removing a block, the edge is just recorded in brokenEdges and marked
+ * with a red X in draw(); the blocks themselves stay put and there's no
+ * restart.
+ */
+function solveLinear(K,F,n){
+  const A=new Array(n);
+  for(let i=0;i<n;i++){A[i]=Array.from(K[i]);A[i].push(F[i]);A[i][i]+=1e-9;}
+  for(let p=0;p<n;p++){
+    let piv=p,best=Math.abs(A[p][p]);
+    for(let r=p+1;r<n;r++){const v=Math.abs(A[r][p]);if(v>best){best=v;piv=r;}}
+    if(piv!==p){const t=A[p];A[p]=A[piv];A[piv]=t;}
+    const d=A[p][p];
+    if(Math.abs(d)<1e-12)continue;
+    for(let r=p+1;r<n;r++){
+      const f=A[r][p]/d;
+      if(!f)continue;
+      for(let cIdx=p;cIdx<=n;cIdx++)A[r][cIdx]-=f*A[p][cIdx];
+    }
+  }
+  const u=new Float64Array(n);
+  for(let p=n-1;p>=0;p--){
+    let sum=A[p][n];
+    for(let cIdx=p+1;cIdx<n;cIdx++)sum-=A[p][cIdx]*u[cIdx];
+    const d=A[p][p];
+    u[p]=Math.abs(d)<1e-12?0:sum/d;
+  }
+  return u;
+}
+
+function recalculate(){
+  const R=rows,C=cols;
+  if(!R||!C)return;
+  const bAt=(r,c)=>(r>=0&&r<R&&c>=0&&c<C&&grid[r])?grid[r][c]:null;
+  const NB=[[-1,0],[1,0],[0,-1],[0,1]];
+  const RIGHT_DOWN=[[1,0],[0,1]];
+
+  const geo=el=>{
+    const dx=el.nc-el.c,dy=el.nr-el.r,L=Math.sqrt(dx*dx+dy*dy);
+    const matA=matOf(bAt(el.r,el.c).mat),matB=matOf(bAt(el.nr,el.nc).mat);
+    const EA=(matA.maxStrength+matB.maxStrength)/2;
+    const EI=EA*L*L/12;
+    return{L,cs:dx/L,sn:dy/L,EA,EI};
+  };
+  // 6x6 local beam stiffness: axial DOFs (0,3) + bending DOFs (1,2,4,5),
+  // ordered [uA,vA,thetaA,uB,vB,thetaB].
+  const localK=(L,EA,EI)=>{
+    const k=EI/(L*L*L);
+    return[
+      [EA/L,0,0,-EA/L,0,0],
+      [0,12*k,6*L*k,0,-12*k,6*L*k],
+      [0,6*L*k,4*L*L*k,0,-6*L*k,2*L*L*k],
+      [-EA/L,0,0,EA/L,0,0],
+      [0,-12*k,-6*L*k,0,12*k,-6*L*k],
+      [0,6*L*k,2*L*L*k,0,-6*L*k,4*L*L*k],
+    ];
+  };
+  // Local-axis rotation matrix (global -> local): u_local = T * u_global.
+  const rotT=(cs,sn)=>[
+    [cs,sn,0,0,0,0],
+    [-sn,cs,0,0,0,0],
+    [0,0,1,0,0,0],
+    [0,0,0,cs,sn,0],
+    [0,0,0,-sn,cs,0],
+    [0,0,0,0,0,1],
+  ];
+  const matMul6=(A,B)=>{
+    const out=[];for(let i=0;i<6;i++){out.push(new Array(6).fill(0));
+      for(let j=0;j<6;j++){let s=0;for(let k=0;k<6;k++)s+=A[i][k]*B[k][j];out[i][j]=s;}}
+    return out;
+  };
+  const transpose6=A=>{const out=[];for(let i=0;i<6;i++){out.push(new Array(6));for(let j=0;j<6;j++)out[i][j]=A[j][i];}return out;};
+
+  restart:
+  while(true){
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+      const bl=grid[r][c];if(!bl)continue;
+      const mat=matOf(bl.mat);
+      bl.weight=mat.weight;bl.maxStress=0;bl.compression=false;
+      bl.connected=false;
+    }
+
+    // BFS from ground anchors; anything unreached is floating debris.
+    const q=[];
+    for(let c=0;c<C;c++){
+      const g=bAt(R-1,c);
+      if(g&&matOf(g.mat).ground){g.connected=true;q.push([R-1,c]);}
+    }
+    for(let qi=0;qi<q.length;qi++){
+      const[r,c]=q[qi];
+      for(const[dr,dc]of NB){
+        const nb=bAt(r+dr,c+dc);
+        if(nb&&!nb.connected){nb.connected=true;q.push([r+dr,c+dc]);}
+      }
+    }
+    let collapsed=false;
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+      const bl=bAt(r,c);
+      if(bl&&!matOf(bl.mat).ground&&!bl.connected){grid[r][c]=null;collapsed=true;}
+    }
+    if(collapsed)continue restart;
+
+    // 1. Node list & DOF map — every connected non-ground block gets a
+    // free-node index (3 DOFs: x, y, rotation); ground blocks stay fixed.
+    const nodeIdx=[];for(let r=0;r<R;r++)nodeIdx.push(new Array(C).fill(-1));
+    let nFree=0;
+    const order=[];
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+      const bl=bAt(r,c);
+      if(bl&&bl.connected&&!matOf(bl.mat).ground){nodeIdx[r][c]=nFree++;order.push([r,c]);}
+    }
+
+    // 2. Element list — RIGHT/DOWN pairs of adjacent connected blocks.
+    const elements=[];
+    for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+      const me=bAt(r,c);if(!me||!me.connected)continue;
+      for(const[dr,dc]of RIGHT_DOWN){
+        const nr=r+dr,nc=c+dc,nb=bAt(nr,nc);
+        if(nb&&nb.connected)elements.push({r,c,nr,nc});
+      }
+    }
+
+    // 3. Assemble global stiffness matrix K, 4. force vector F (gravity).
+    const nDOF=3*nFree;
+    const K=[];for(let i=0;i<nDOF;i++)K.push(new Float64Array(nDOF));
+    const F=new Float64Array(nDOF);
+    for(const[r,c]of order)F[3*nodeIdx[r][c]+1]+=bAt(r,c).weight;
+
+    for(const el of elements){
+      const{L,cs,sn,EA,EI}=geo(el);
+      const Kg=matMul6(transpose6(rotT(cs,sn)),matMul6(localK(L,EA,EI),rotT(cs,sn)));
+
+      const iA=nodeIdx[el.r][el.c],iB=nodeIdx[el.nr][el.nc];
+      const dofs=[
+        iA>=0?3*iA:-1,iA>=0?3*iA+1:-1,iA>=0?3*iA+2:-1,
+        iB>=0?3*iB:-1,iB>=0?3*iB+1:-1,iB>=0?3*iB+2:-1,
+      ];
+      for(let i=0;i<6;i++){
+        if(dofs[i]<0)continue;
+        for(let j=0;j<6;j++){
+          if(dofs[j]<0)continue;
+          K[dofs[i]][dofs[j]]+=Kg[i][j];
+        }
+      }
+    }
+
+    // 5. Solve Ku=F for the free-node displacements/rotations.
+    const u=solveLinear(K,F,nDOF);
+
+    // 6. Extract internal forces per element (axial N, bending moment M in
+    // the element's local frame), tracking each block's worst edge, then
+    // 8. break anything overloaded past the weaker material.
+    let broke=false;
+    for(const el of elements){
+      const A=bAt(el.r,el.c),B=bAt(el.nr,el.nc);
+      if(!A||!B)continue; // already broken earlier this pass
+
+      const{L,cs,sn,EA,EI}=geo(el);
+      const Kl=localK(L,EA,EI),T=rotT(cs,sn);
+
+      const iA=nodeIdx[el.r][el.c],iB=nodeIdx[el.nr][el.nc];
+      const uGlobal=[
+        iA>=0?u[3*iA]:0,iA>=0?u[3*iA+1]:0,iA>=0?u[3*iA+2]:0,
+        iB>=0?u[3*iB]:0,iB>=0?u[3*iB+1]:0,iB>=0?u[3*iB+2]:0,
+      ];
+      const uLocal=new Array(6).fill(0);
+      for(let i=0;i<6;i++){let s=0;for(let j=0;j<6;j++)s+=T[i][j]*uGlobal[j];uLocal[i]=s;}
+      const fLocal=new Array(6).fill(0);
+      for(let i=0;i<6;i++){let s=0;for(let j=0;j<6;j++)s+=Kl[i][j]*uLocal[j];fLocal[i]=s;}
+
+      const N=fLocal[3]; // + tension, - compression
+      const M=Math.max(Math.abs(fLocal[2]),Math.abs(fLocal[5])); // worst end moment
+      const combined=Math.abs(N)+M/L; // axial + bending, folded into one stress metric
+
+      for(const blk of[A,B]){
+        if(combined>=blk.maxStress){blk.maxStress=combined;blk._worstCompressive=N<0;}
+      }
+
+      const matA=matOf(A.mat),matB=matOf(B.mat);
+      const limit=Math.min(matA.maxStrength,matB.maxStrength);
+      if(combined>limit){
+        brokenEdges.add(edgeKey(el.r,el.c,el.nr,el.nc));
+        broke=false;
+        break;
+      }
+    }
+    if(broke)continue restart;
+
+    // 7. Compression flag: only when a block's worst edge is compressive
+    // and its stress ratio clears a small noise floor.
+    for(const[r,c]of order){
+      const bl=bAt(r,c);
+      const ratio=bl.maxStress/matOf(bl.mat).maxStrength;
+      bl.compression=bl._worstCompressive&&ratio>0.01;
+    }
+
+    break;
+  }
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle='rgba(255,255,255,0.07)';ctx.lineWidth=1;
+  for(let c=0;c<=cols;c++){ctx.beginPath();ctx.moveTo(c*cell+.5,0);ctx.lineTo(c*cell+.5,rows*cell);ctx.stroke();}
+  for(let r=0;r<=rows;r++){ctx.beginPath();ctx.moveTo(0,r*cell+.5);ctx.lineTo(cols*cell,r*cell+.5);ctx.stroke();}
+
+  const edgeW=Math.max(2.5,cell*0.15);
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    const bl=grid[r][c]; if(!bl) continue;
+    const mat=matOf(bl.mat);
+    const x=c*cell,y=r*cell;
+    if(mat.ground){
+      ctx.fillStyle=mat.color;ctx.fillRect(x,y,cell,cell);
+      ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=1;ctx.strokeRect(x+.5,y+.5,cell-1,cell-1);
+      continue;
+    }
+    ctx.fillStyle=mat.color;ctx.fillRect(x+1,y+1,cell-2,cell-2);
+    ctx.lineWidth=edgeW;ctx.strokeStyle=stressColor(bl.maxStress,mat.maxStrength);
+    ctx.strokeRect(x+edgeW/2,y+edgeW/2,cell-edgeW,cell-edgeW);
+    if(bl.compression){
+      ctx.fillStyle='#3fa9f5';
+      ctx.beginPath();ctx.arc(x+cell/2,y+cell/2,Math.max(2,cell*0.12),0,Math.PI*2);ctx.fill();
+    }
+  }
+
+  ctx.strokeStyle='red';ctx.lineWidth=3;
+  const xSize=cell*0.18;
+  for(const key of brokenEdges){
+    const[a,b]=key.split('-');
+    const[r,c]=a.split(',').map(Number),[nr,nc]=b.split(',').map(Number);
+    const mx=((c+nc)/2+0.5)*cell,my=((r+nr)/2+0.5)*cell;
+    ctx.beginPath();
+    ctx.moveTo(mx-xSize,my-xSize);ctx.lineTo(mx+xSize,my+xSize);
+    ctx.moveTo(mx-xSize,my+xSize);ctx.lineTo(mx+xSize,my-xSize);
+    ctx.stroke();
+  }
+}
+
+function buildStats(){
+  let total=0,ground=0,compression=0,matCount={};
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const b=grid[r][c];if(!b)continue;total++;
+    const mat=matOf(b.mat);
+    if(mat.ground){ground++;continue;}
+    matCount[b.mat]=(matCount[b.mat]||0)+1;
+    if(b.compression)compression++;
+  }
+  document.getElementById('stats').innerHTML=
+    `<span>Blocks: <b>${total}</b></span> <span>Ground: <b>${ground}</b></span> `+
+    `<span>Compression: <b>${compression}</b></span> <span>Broken: <b>${brokenEdges.size}</b></span>`+
+    Object.entries(matCount).map(([m,n])=>{
+      const mat=matOf(m);return`<span style=\"color:${mat.color}\">■</span> ${mat.name}: ${n}`;
+    }).join(' ');
+}
+
+/* ===== INPUT ===== */
+function getCell(e){
+  const r=cv.getBoundingClientRect();
+  const x=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
+  const y=(e.touches?e.touches[0].clientY:e.clientY)-r.top;
+  const c=Math.floor(x/cell),row=Math.floor(y/cell);
+  return(row>=0&&row<rows&&c>=0&&c<cols)?{r:row,c}:null;
+}
+function placeOrRemove(cl){
+  if(!cl)return;
+  if(mode==='remove'){if(grid[cl.r][cl.c])grid[cl.r][cl.c]=null;}
+  else{if(grid[cl.r][cl.c])return;grid[cl.r][cl.c]={mat:sel};}
+  recalculate();buildStats();draw();
+}
+cv.addEventListener('mousedown',e=>{dragging=true;const c=getCell(e);if(!c)return;
+  dragErase=!!grid[c.r][c.c]&&mode==='place';if(dragErase){mode='remove';ui_syncMode();}placeOrRemove(c);});
+cv.addEventListener('mousemove',e=>{if(dragging)placeOrRemove(getCell(e));});
+cv.addEventListener('mouseup',()=>{if(dragErase){mode='place';ui_syncMode();}dragging=false;});
+cv.addEventListener('mouseleave',()=>{if(dragErase){mode='place';ui_syncMode();}dragging=false;});
+cv.addEventListener('touchstart',e=>{e.preventDefault();dragging=true;const c=getCell(e);if(!c)return;
+  dragErase=!!grid[c.r][c.c]&&mode==='place';if(dragErase){mode='remove';ui_syncMode();}placeOrRemove(c);},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();if(dragging)placeOrRemove(getCell(e));},{passive:false});
+cv.addEventListener('touchend',()=>{if(dragErase){mode='place';ui_syncMode();}dragging=false;});
+
+/* ===== BUTTONS ===== */
+function ui_syncMode(){
+  document.getElementById('btn-place').classList.toggle('on',mode==='place');
+  document.getElementById('btn-remove').classList.toggle('on',mode==='remove');
+}
+document.getElementById('btn-place').onclick=()=>{mode='place';ui_syncMode();};
+document.getElementById('btn-remove').onclick=()=>{mode='remove';ui_syncMode();};
+document.getElementById('btn-reset').onclick=()=>{grid=[];brokenEdges=new Set();simming=false;
+  if(simInterval){clearInterval(simInterval);simInterval=null;}
+  document.getElementById('btn-sim').classList.remove('on');calcGrid();draw();};
+document.getElementById('btn-step').onclick=()=>{recalculate();buildStats();draw();};
+document.getElementById('btn-sim').onclick=()=>{
+  simming=!simming;document.getElementById('btn-sim').classList.toggle('on',simming);
+  if(simming)simInterval=setInterval(()=>{recalculate();buildStats();draw();},200);
+  else if(simInterval){clearInterval(simInterval);simInterval=null;}
+};
+
+function selM(m){sel=m;mode='place';ui_syncMode();
+  document.querySelectorAll('.mswatch').forEach((e,i)=>e.classList.toggle('on',i===m));}
+for(let i=0;i<MATERIALS.length;i++){
+  const el=document.getElementById('sw-'+i);if(!el)continue;
+  el.style.background=MATERIALS[i].color;el.title=MATERIALS[i].name;el.onclick=()=>selM(i);
+}
+document.getElementById('sw-custom').onclick=()=>{
+  const s=prompt('Max strength:',CUSTOM.maxStrength);if(s===null)return;
+  const c=prompt('Color:',CUSTOM.color);
+  CUSTOM.maxStrength=parseFloat(s)||1;CUSTOM.color=c||CUSTOM.color;
+  document.getElementById('sw-custom').style.background=CUSTOM.color;selM(CUSTOM_IDX);
+};
+selM(1);ui_syncMode();window.addEventListener('resize',resize);resize();
+</script>
+</body>
+</html>

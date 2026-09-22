@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 5;
+  var v = 124;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -76,6 +76,28 @@
   }
   #hud .k { color: #7fa8d8; }
   #hud .v { color: #eaf2ff; }
+
+  #coltest-hud {
+    display: none;
+    position: fixed;
+    top: calc(90px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    padding: 8px 11px;
+    font-size: 13px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    background: rgba(40, 8, 8, 0.5);
+    border: 1px solid rgba(255, 120, 100, 0.25);
+    border-radius: 8px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    pointer-events: none;
+    white-space: pre;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+    color: #ffcfc0;
+    z-index: 10;
+  }
+  #coltest-hud.on { display: block; }
 
   #crosshair {
     position: fixed;
@@ -276,7 +298,7 @@
   #cam-mode {
     position: fixed;
     top: calc(62px + env(safe-area-inset-top));
-    left: calc(10px + env(safe-area-inset-left));
+    right: calc(10px + env(safe-area-inset-right));
     padding: 5px 10px;
     font-size: 11px;
     font-weight: 700;
@@ -292,6 +314,31 @@
     white-space: nowrap;
     z-index: 10;
   }
+
+  #cam-toggle {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    padding: 13px 18px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.7);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    white-space: nowrap;
+    user-select: none;
+    -webkit-user-select: none;
+    z-index: 14;
+  }
+  #cam-toggle:active { transform: translateY(1px); }
 
   #instructions {
     width: 100%;
@@ -417,7 +464,7 @@
   /* ---------- Shovel (temporary block-moving tool) ---------- */
   #btn-shovel {
     position: fixed;
-    top: calc(94px + env(safe-area-inset-top));
+    top: calc(134px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
@@ -507,7 +554,7 @@
   /* ---------- Hammer (knocks a block loose, keeps nothing) ---------- */
   #btn-hammer {
     position: fixed;
-    top: calc(130px + env(safe-area-inset-top));
+    top: calc(170px + env(safe-area-inset-top));
     left: calc(10px + env(safe-area-inset-left));
     padding: 8px 14px;
     font-family: inherit;
@@ -566,8 +613,8 @@
   body.hammer-on #btn-up     { bottom: calc(208px + env(safe-area-inset-bottom)); }
 
   @media (max-width: 620px) {
-    #btn-shovel { top: calc(84px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
-    #btn-hammer { top: calc(118px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-shovel { top: calc(124px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
+    #btn-hammer { top: calc(158px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
     #hammer-note { font-size: 11px; padding: 4px 11px; }
     .sv-btn { width: 106px; height: 58px; font-size: 10px; }
     #shovel-held { font-size: 11px; padding: 4px 11px; }
@@ -783,6 +830,7 @@
     #btn-chart, #btn-debug-chunks, #sel-lod-override { font-size: 10px; padding: 7px 12px; }
     #chart-panel { padding: 12px; }
     #chart-grid { font-size: 10px; min-width: 460px; }
+    #btn-menu { font-size: 15px; width: 36px; height: 36px; }
   }
 
   /* ---------- Menu overlay (game mode, mats/chart, debug tools) ---------- */
@@ -952,6 +1000,444 @@
     white-space: pre-wrap;
     text-align: left;
   }
+
+  /* ---- 2-D tension sandbox overlay ---- */
+  #f2d-overlay {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.f2d-open #f2d-overlay { display: flex; }
+  #f2d-panel {
+    position: relative;
+    display: flex; flex-direction: column;
+    width: min(900px, 100%);
+    height: min(700px, 80dvh);
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+  }
+  #f2d-panel .f2d-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(20, 28, 42, 0.95);
+    border-bottom: 1px solid rgba(140, 175, 230, 0.15);
+  }
+  #f2d-panel .f2d-header span {
+    font-size: 12px; letter-spacing: 0.16em; color: #6f92bd; text-transform: uppercase;
+  }
+  #f2d-close {
+    position: static;
+    width: 28px; height: 28px;
+    border: none; background: rgba(255,255,255,.08);
+    color: #8a9bb5; font-size: 18px;
+    border-radius: 50%; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #f2d-close:hover { background: rgba(255,80,60,.25); color: #ff6450; }
+  #f2d-frame {
+    flex: 1; border: none; width: 100%; height: 100%;
+    background: #151d2b;
+  }
+
+  /* ---------- Menu button (opens the menu overlay) ---------- */
+  #btn-menu {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    width: 40px;
+    height: 40px;
+    font-family: inherit;
+    font-size: 17px;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 60;
+  }
+  #btn-menu.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-menu:active { transform: translateY(1px); }
+
+  /* ---------- Menu overlay ---------- */
+  #menu-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.menu-open #menu-overlay { display: flex; }
+  body.menu-open #instructions { display: none; }
+
+  #menu-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: min(420px, 100%);
+    max-height: 100%;
+    padding: 20px;
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #menu-panel .title {
+    display: block;
+    margin: 0 34px 16px 0;
+    align-self: flex-start;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+  .menu-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-bottom: 22px;
+  }
+  .menu-section:last-child { margin-bottom: 0; }
+  .menu-row { display: flex; gap: 10px; justify-content: center; }
+  .menu-label {
+    align-self: flex-start;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: #6f92bd;
+    text-transform: uppercase;
+  }
+
+  #menu-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #menu-close:active { transform: translateY(1px); }
+
+  /* Settings section */
+  .settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    width: 100%;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(140, 175, 230, 0.1);
+  }
+  .settings-row:last-child { border-bottom: none; }
+  .settings-row label {
+    font-size: 12px;
+    color: #b9c9dc;
+  }
+  .settings-row input[type="range"] {
+    width: 120px;
+    accent-color: #54b0f0;
+  }
+  .settings-row .val {
+    font-size: 11px;
+    color: #6f92bd;
+    min-width: 32px;
+    text-align: right;
+  }
+  #btn-f2d {
+    position: fixed;
+    top: calc(248px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-f2d:active { transform: translateY(1px); }
+
+  /* ---- Sandbox mode ---- */
+  #btn-sandbox {
+    position: fixed;
+    top: calc(284px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-sandbox.on {
+    color: #06101f;
+    background: linear-gradient(180deg, #b8ffcf, #54f0a0);
+    border-color: transparent;
+  }
+  #btn-sandbox:active { transform: translateY(1px); }
+
+  /* Inside the menu panel these buttons flow normally — the fixed
+     positioning above is vestigial from when they were HUD buttons. */
+  #menu-panel #btn-materials,
+  #menu-panel #btn-chart,
+  #menu-panel #btn-f2d,
+  #menu-panel #btn-sandbox {
+    position: static;
+    top: auto;
+    left: auto;
+    z-index: auto;
+  }
+
+  /* ---- Place tool (creative) ---- */
+  #btn-placer {
+    position: fixed;
+    top: calc(192px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-placer.on {
+    color: #06101f;
+    background: linear-gradient(180deg, #a8e0ff, #54b0f0);
+    border-color: transparent;
+  }
+  #placer-ui {
+    position: fixed;
+    left: 50%; bottom: calc(10px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: none;
+    flex-direction: column; align-items: center; gap: 7px;
+    z-index: 13;
+  }
+  body.placer-on #placer-ui { display: flex; }
+  #placer-mat-name {
+    font-size: 11px; color: #8ab4d8; letter-spacing: 0.1em;
+    text-transform: uppercase; margin-bottom: 2px;
+  }
+  #placer-do {
+    width: 106px; height: 58px;
+    padding: 0; border: 1px solid rgba(150, 195, 245, 0.4);
+    background: rgba(20, 34, 54, 0.72); color: #cfe6ff;
+    border-radius: 12px; cursor: pointer;
+    font-family: inherit; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #placer-do .glyph { font-size: 19px; }
+  #placer-do:active { background: rgba(90, 160, 235, 0.6); border-color: rgba(220, 240, 255, 0.85); color: #fff; }
+  #placer-row { display: flex; gap: 12px; }
+  #placer-del {
+    padding: 0; border: 1px solid rgba(200, 100, 100, 0.4);
+    background: rgba(54, 20, 20, 0.72); color: #ffb0b0;
+    width: 106px; height: 58px;
+    border-radius: 12px; cursor: pointer;
+    font-family: inherit; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #placer-del .glyph { font-size: 19px; }
+  #placer-del:active { background: rgba(235, 90, 90, 0.6); border-color: rgba(255, 220, 220, 0.85); color: #fff; }
+  /* Material selector overlay */
+  #placer-mat-overlay {
+    position: fixed; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    background: rgba(4, 8, 16, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 100;
+  }
+  body.placer-mat-open #placer-mat-overlay { display: flex; }
+  #placer-mat-panel {
+    position: relative;
+    display: flex; flex-direction: column; align-items: center;
+    width: min(420px, 100%);
+    max-height: 100%;
+    padding: 20px;
+    background: #1a1a2e;
+    border: 1px solid rgba(140, 175, 230, 0.28);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #placer-mat-panel .title {
+    display: block; margin: 0 34px 16px 0; align-self: flex-start;
+    font-size: 12px; letter-spacing: 0.16em; color: #6f92bd; text-transform: uppercase;
+  }
+  #placer-mat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 8px; width: 100%;
+  }
+  .placer-mat-sel-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    padding: 10px 6px;
+    border: 1px solid rgba(140, 175, 230, 0.2);
+    border-radius: 10px; cursor: pointer;
+    background: rgba(255,255,255,0.03);
+    color: #c8d0dc; font-size: 10px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .placer-mat-sel-btn:active { background: rgba(90, 160, 235, 0.35); }
+  .placer-mat-sel-btn .swatch {
+    width: 28px; height: 28px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15);
+  }
+  #placer-mat-close {
+    position: absolute; top: 10px; right: 10px;
+    width: 28px; height: 28px;
+    border: none; background: rgba(255,255,255,.08);
+    color: #8a9bb5; font-size: 18px;
+    border-radius: 50%; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #placer-mat-close:hover { background: rgba(255,80,60,.25); color: #ff6450; }
+
+  /* ---- Material bar (creative tool) ---- */
+  #mat-bar {
+    position: fixed;
+    top: 50%;
+    right: calc(10px + env(safe-area-inset-right));
+    transform: translateY(-50%);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background: rgba(8, 14, 24, 0.72);
+    border-left: 1px solid rgba(150, 195, 245, 0.2);
+    border-radius: 8px 0 0 8px;
+    z-index: 13;
+    scrollbar-width: none;
+    max-height: 60vh;
+  }
+  #mat-bar::-webkit-scrollbar { display: none; }
+  #mat-bar.visible { display: flex; }
+  .mat-sq {
+    flex-shrink: 0;
+    width: 40px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mat-sq .sw {
+    width: 32px; height: 32px;
+    border-radius: 6px;
+    border: 2px solid transparent;
+  }
+  .mat-sq.sel .sw {
+    border-color: #a8e0ff;
+    box-shadow: 0 0 6px rgba(168, 224, 255, 0.6);
+  }
+  .mat-sq span {
+    font-size: 8px;
+    color: #8ab4d8;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    text-align: center;
+    line-height: 1;
+    max-width: 44px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+
+  #btn-matbar {
+    position: fixed;
+    bottom: calc(100px + env(safe-area-inset-bottom));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+    display: none;
+  }
+  #btn-matbar.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-matbar:active { transform: translateY(1px); }
+  @media (max-width: 620px) {
+    #btn-matbar { bottom: calc(80px + env(safe-area-inset-bottom)); font-size: 10px; padding: 7px 12px; }
+  }
 </style>
 </head>
 <body>
@@ -962,6 +1448,8 @@
 <span class="k">BLKS</span> <span class="v" id="blocks-hud">--</span>
 <span class="k">HELD</span> <span class="v" id="held-hud">0</span>
 <span class="k" style="color:#ff0">v10-voxel</span></div>
+
+<div id="coltest-hud"></div>
 
 <div id="cam-mode">Cam &mdash; Free</div>
 <button id="btn-menu" aria-label="Menu">&#9881;</button>
@@ -1704,22 +2192,22 @@ const AIR = N_MATS;
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 0.5, powder: true  },  // SAND
-  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 1,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 7,   powder: false },  // ROCK
+  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 25,  powder: true  },  // SAND
+  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 50,  powder: false },  // DIRT
+  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 350, powder: false },  // ROCK
   null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 0.5, powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 1.3, powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 2,   powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 1.5, powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 1,   powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 1.5, powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 2,   powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 1.2, powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 1.5, powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 2.5, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 0.8, powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 1.4, powder: false },  // HARD_SAND
+  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 25,  powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 65,  powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 100, powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 75,  powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 50,  powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 75,  powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 100, powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 60,  powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 75,  powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 125, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 40,  powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 70,  powder: false },  // HARD_SAND
 ];
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
@@ -2278,6 +2766,29 @@ const SHADE_FLOOR = 0.62;   // how dark the deepest step is, as a factor on the 
 const shadeStep = (d) => (d <= 0 ? 0 : Math.min(SHADE_STEPS, (d / SHADE_SPAN) | 0));
 const shadeOf = (step) => 1 - (1 - SHADE_FLOOR) * (step / SHADE_STEPS);
 
+// LOD — concentric distance bands around the camera control how coarsely each
+// 20x20-block grid chunk is drawn. Innermost band is full detail; each band
+// out merges blocks into bigger cubes (see mergeSizeFor), so the same island
+// stays cheap to draw far away without popping right at the edge of view.
+const LOD_SPHERES = [
+  { radius: 30, color: 0x669d34 },  // green  — normal quality (step 1, no merge)
+  { radius: 50, color: 0xf5ec00 },  // yellow — middle quality (step 2, 2x2x2 merge)
+  { radius: 80, color: 0xb51a00 },  // red    — low quality    (step 3, 4x4x4 merge)
+];
+// Everything outside every sphere: really low quality (step 4, 5x5x5 merge).
+
+function lodStepFor(dist) {
+  for (let i = 0; i < LOD_SPHERES.length; i++) {
+    if (dist < LOD_SPHERES[i].radius) return i + 1;
+  }
+  return LOD_SPHERES.length + 1;
+}
+
+const MERGE_SIZE = [1, 2, 4, 5];
+const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
+
+const mergeMatCounts = new Uint32Array(N_MATS);
+
 // Scratch, reused by every rebuild: per material, the loose vertices of one
 // chunk's exposed faces — position, normal and colour, four vertices a quad and
 // nothing shared between quads. Two faces meeting at an edge disagree about both
@@ -2358,9 +2869,9 @@ function pushFace(m, f, cx, cy, cz, r, g, b, scale = 1) {
       for (let q = 0; q < 4; q++) {
         const u = q === 0 || q === 3 ? u0 : u1;
         const w = q < 2 ? w0 : w1;
-        B.pos.push(cx + (v[0] + u * dux + w * dvx) * HALF_BLOCK,
-                   cy + (v[1] + u * duy + w * dvy) * HALF_BLOCK,
-                   cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK);
+        B.pos.push(cx + (v[0] + u * dux + w * dvx) * HALF_BLOCK * S,
+                   cy + (v[1] + u * duy + w * dvy) * HALF_BLOCK * S,
+                   cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK * S);
         B.nor.push(n[0], n[1], n[2]);
         B.col.push(cr, cg, cb);
       }
@@ -3709,6 +4220,17 @@ SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
 // happens to walk into range.
 updateChunkColliders(SPAWN.x, SPAWN.z);
 
+// Bring in colliders around the spawn point so the player starts on solid ground.
+{
+  const sci = (colI(SPAWN.x) / CHUNK) | 0, scj = (colJ(SPAWN.z) / CHUNK) | 0;
+  for (let cj = scj - COLLIDER_RADIUS; cj <= scj + COLLIDER_RADIUS; cj++) {
+    for (let ci = sci - COLLIDER_RADIUS; ci <= sci + COLLIDER_RADIUS; ci++) {
+      if (ci < 0 || cj < 0 || ci >= CHUNK_N || cj >= CHUNK_N) continue;
+      loadChunkCollider(cj * CHUNK_N + ci);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // There is no sea mesh. The WATER blocks in the voxel store are the whole of the
 // water: the field generates them from the bed up to sea level, so the sea is
@@ -3795,8 +4317,8 @@ renderer.domElement.addEventListener('mousedown', (e) => {
 
 document.addEventListener('mousemove', (e) => {
   if (!isLocked()) return;
-  state.yaw   -= (e.movementX || 0) * MOUSE_SENSITIVITY * DEG;
-  state.pitch -= (e.movementY || 0) * MOUSE_SENSITIVITY * DEG;
+  state.yaw   -= (e.movementX || 0) * mouseSensitivity * DEG;
+  state.pitch -= (e.movementY || 0) * mouseSensitivity * DEG;
   state.pitch = THREE.MathUtils.clamp(state.pitch, -PITCH_LIMIT, PITCH_LIMIT);
 });
 
@@ -3892,8 +4414,8 @@ function onTouchMove(e) {
     if (rec.role === 'look') {
       const dx = t.clientX - rec.x;
       const dy = t.clientY - rec.y;
-      state.yaw   -= dx * MOUSE_SENSITIVITY * TOUCH_LOOK_MULT * DEG;
-      state.pitch -= dy * MOUSE_SENSITIVITY * TOUCH_LOOK_MULT * DEG;
+      state.yaw   -= dx * mouseSensitivity * TOUCH_LOOK_MULT * DEG;
+      state.pitch -= dy * mouseSensitivity * TOUCH_LOOK_MULT * DEG;
       state.pitch = THREE.MathUtils.clamp(state.pitch, -PITCH_LIMIT, PITCH_LIMIT);
     } else if (rec.role === 'move') {
       let dx = t.clientX - moveOrigin.x;
@@ -4380,6 +4902,7 @@ const hammer = {
 const ddaHit  = { i: 0, j: 0, lvl: 0 };
 const ddaPrev = { i: 0, j: 0, lvl: 0 };
 const ddaFace = { di: 0, dj: 0, dl: 0 }; // face normal of the hit block's entry face
+const ddaT    = { v: 0 };                   // parametric distance (grid units) to the face the DDA entered
 function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
   // One grid unit per block, so the DDA is the textbook unit-cell one and the
   // direction carries over unchanged (the scaling is uniform).
@@ -4400,6 +4923,7 @@ function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
     if (voxelAt(i, j, lvl) !== AIR) {
       ddaHit.i = i;   ddaHit.j = j;   ddaHit.lvl = lvl;
       ddaPrev.i = pi; ddaPrev.j = pj; ddaPrev.lvl = pl;
+      ddaT.v = t;
       return true;
     }
     pi = i; pj = j; pl = lvl;
@@ -4967,8 +5491,6 @@ function updateFallingChunks() {
     f.still = slow ? f.still + 1 : 0;
     if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) restFallingChunk(n);
   }
-  // Settled pieces are still live bodies, so one shoved off the edge of the
-  // field has to be caught here as well.
   for (let n = restedChunks.length - 1; n >= 0; n--) {
     const f = restedChunks[n];
     if (f.body.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); }
@@ -5096,7 +5618,8 @@ function removeDebrisMesh(mesh) {
 // centre of mass. Blocks dug off or laid on move that centre: put the lattice,
 // the colliders and the drawn cubes back in step with it, then slide the body
 // the same way in world space so none of it appears to move.
-const debrisCoM = new THREE.Vector3(), debrisArm = new CANNON.Vec3();
+const debrisCoM = new THREE.Vector3();
+const debrisShift = new CANNON.Vec3();
 function recentreDebris(mesh, body) {
   const lat = mesh.userData.blocks;
   if (!lat.length) return;
@@ -5104,8 +5627,10 @@ function recentreDebris(mesh, body) {
   if (c.lengthSq() < 1e-12) return;
   for (const b of lat) b.pos.sub(c);
   for (const o of body.shapeOffsets) { o.x -= c.x; o.y -= c.y; o.z -= c.z; }
-  body.quaternion.vmult(debrisArm.set(c.x, c.y, c.z), debrisArm);
-  body.position.vadd(debrisArm, body.position);
+  body.quaternion.vmult(debrisShift.set(c.x, c.y, c.z), debrisShift);
+  body.position.x += debrisShift.x;
+  body.position.y += debrisShift.y;
+  body.position.z += debrisShift.z;
   mesh.position.copy(body.position);
 }
 
@@ -5447,7 +5972,7 @@ const GRAV_MAX  = 1024;   // blocks one fill walks before it gives the group up 
 // the group's blocks, or null if it is anchored, or too big to be worth walking.
 function adriftGroup(i, j, lvl) {
   if (!gravSolid(i, j, lvl)) return null;
-  const first = { i, j, lvl, m: voxelAt(i, j, lvl) };
+  const first = { i, j, lvl, m: voxelAt(i, j, lvl), color: terrainBlockColor(i, j, lvl, voxelAt(i, j, lvl)) };
   const unit = new Map([[gravKey(i, j, lvl), first]]);
   const stack = [first];
   while (stack.length) {
@@ -5458,7 +5983,7 @@ function adriftGroup(i, j, lvl) {
       const key = gravKey(ii, jj, ll);
       if (unit.has(key) || !gravSolid(ii, jj, ll)) continue;
       if (unit.size >= GRAV_MAX) return null;
-      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll) };
+      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll), color: terrainBlockColor(ii, jj, ll, voxelAt(ii, jj, ll)) };
       unit.set(key, nb);
       stack.push(nb);
     }
@@ -5645,7 +6170,7 @@ function hammerStrike() {
   }
 
   // A group of one — the same path a broken-off cliff takes, just smaller.
-  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat }]]));
+  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat) }]]));
   // And whatever the hole left hanging comes down after it.
   applyGravity(i, j, lvl);
   hammer.hit = null;
@@ -5720,9 +6245,20 @@ const hlHammer = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(BLOCK * 1.05, BLOCK * 1.05, BLOCK * 1.05)),
   new THREE.LineBasicMaterial({ color: 0xff8a3c, transparent: true, opacity: 0.95, depthWrite: false })
 );
-hlPick.visible = hlPlace.visible = hlHammer.visible = false;
-hlPick.frustumCulled = hlPlace.frustumCulled = hlHammer.frustumCulled = false;
-scene.add(hlPick, hlPlace, hlHammer);
+// The creative tool's own cage and ghost. The ghost's color is repainted each
+// frame to match whichever material is selected, so the preview shows what is
+// about to be placed rather than a generic tint.
+const hlCreative = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(BLOCK * 1.05, BLOCK * 1.05, BLOCK * 1.05)),
+  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, depthWrite: false })
+);
+const creativeGhost = new THREE.Mesh(
+  new THREE.BoxGeometry(BLOCK * 0.92, BLOCK * 0.92, BLOCK * 0.92),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false })
+);
+hlPick.visible = hlPlace.visible = hlHammer.visible = hlCreative.visible = creativeGhost.visible = false;
+hlPick.frustumCulled = hlPlace.frustumCulled = hlHammer.frustumCulled = hlCreative.frustumCulled = creativeGhost.frustumCulled = false;
+scene.add(hlPick, hlPlace, hlHammer, hlCreative, creativeGhost);
 
 const cellCenter = (o, v) => v.set(colX(o.i), (o.lvl + 0.5) * BLOCK, colZ(o.j));
 
@@ -5885,6 +6421,7 @@ refreshHammerUI();
 const camModeEl = document.getElementById('cam-mode');
 const instrEl   = document.getElementById('instructions');
 const modeBtn   = document.getElementById('mode-btn');
+const camToggle = document.getElementById('cam-toggle');
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
@@ -5932,6 +6469,7 @@ function refreshModeUI() {
   const inGame = camMode !== CAM.FREE;
   camModeEl.innerHTML = 'Cam &mdash; ' + CAM_NAMES[camMode];
   modeBtn.textContent = inGame ? 'Free Camera' : 'Game Mode';
+  camToggle.textContent = inGame ? CAM_NAMES[camMode] : 'First Person';
   modeBtn.classList.toggle('game', inGame);
 
   let rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
@@ -5958,6 +6496,7 @@ function refreshModeUI() {
 // "didn't always work". Esc frees the cursor (and pops the overlay, which this
 // button now sits above); a click in the world captures it again.
 bindTap(modeBtn, () => toggleGameMode());
+bindTap(camToggle, () => cycleCamera());
 refreshModeUI();
 
 // ---------------------------------------------------------------------------
@@ -6187,9 +6726,12 @@ function updateFreeCam(dt) {
   }
 }
 
+let frameCount = 0;
 function tick() {
+  buildPendingColliders();
   const dt = Math.min(clock.getDelta(), 0.1);
   elapsed += dt;
+  frameCount++;
 
   if (camMode === CAM.FREE) {
     updateFreeCam(dt);
@@ -6219,12 +6761,42 @@ function tick() {
   updatePowderBlocks(dt);
   checkTerrainPowder();
 
+  // Bring in nearby chunk colliders and let distant ones go, a few dozen at a
+  // time so the sweep costs nothing next to the physics step itself.
+  if (true) {
+    const pci = (colI(playerBody.position.x) / CHUNK) | 0, pcj = (colJ(playerBody.position.z) / CHUNK) | 0;
+    // Load chunks around the player
+    for (let cj = pcj - COLLIDER_RADIUS; cj <= pcj + COLLIDER_RADIUS; cj++) {
+      for (let ci = pci - COLLIDER_RADIUS; ci <= pci + COLLIDER_RADIUS; ci++) {
+        if (ci < 0 || cj < 0 || ci >= CHUNK_N || cj >= CHUNK_N) continue;
+        loadChunkCollider(cj * CHUNK_N + ci);
+      }
+    }
+    // Unload distant chunk colliders (but keep chunks that have debris)
+    for (let c = 0; c < colliderBody.length; c++) {
+      if (!colliderBody[c]) continue;
+      const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
+      const cx = (ci + 0.5) * CHUNK * BLOCK - GEN_R, cz = (cj + 0.5) * CHUNK * BLOCK - GEN_R;
+      const dx = cx - playerBody.position.x, dz = cz - playerBody.position.z;
+      if (dx * dx + dz * dz > (COLLIDER_RADIUS * CHUNK * BLOCK) * (COLLIDER_RADIUS * CHUNK * BLOCK) * 1.2) {
+        unloadChunkCollider(c);
+      }
+    }
+  }
+
+  // Redraw the collider wireframe now and then to pick up newly loaded chunks.
+  if (debugColOn && !colTestOn && frameCount % 60 === 0) {
+    rebuildDebugCollision();
+  }
+
   updateCamera(dt);
   refreshGridLOD();
   // After the camera, since the aim is taken down the view direction, and before
   // the render so the highlight boxes are in the right place this frame.
+  if (colTestOn) updateColTest();
   if (shovel.on) updateShovel();
   if (hammer.on) updateHammer();
+  if (placerOn) updatePlacer();
   flushDirtyChunks();
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);

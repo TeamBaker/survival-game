@@ -3706,7 +3706,7 @@ function rebuildFilletChunk(c) {
 // heightfield only knows the top of a column, so it cannot represent an
 // overhang, a tunnel, or a floating block. Boxes can.
 const HF_FLOOR = -3.2;         // where the field bottoms out under open water
-const COLLISION_DEPTH = 5;     // levels below the surface a chunk's collider reaches down to
+const COLLISION_DEPTH = 32;    // levels below the surface a chunk's collider reaches down to
 
 // Build greedy-merged collision boxes for one chunk.
 function buildChunkColliderBoxes(c) {

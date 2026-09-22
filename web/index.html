@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 122;
+  var v = 123;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -5222,9 +5222,13 @@ function recentreDebris(mesh, body) {
   const lat = mesh.userData.blocks;
   if (!lat.length) return;
   const c = debrisCoM.set(0, 0, 0);
-  for (const b of lat) c.add(b.pos);
-  c.multiplyScalar(1 / lat.length);
-  if (c.lengthSq() < 1e-12) return;
+  let tw = 0;
+  for (const b of lat) {
+    const w = MAT_STATS[b.mat]?.weight ?? 1;
+    c.x += b.pos.x * w; c.y += b.pos.y * w; c.z += b.pos.z * w;
+    tw += w;
+  }
+  if (tw > 0) c.multiplyScalar(1 / tw);
   const m4 = new THREE.Matrix4();
   for (let q = 0; q < lat.length; q++) {
     lat[q].pos.sub(c);
@@ -5335,7 +5339,7 @@ function rebuildDebrisBody(mesh, body) {
     }
   }
   recentreDebris(mesh, body);
-  body.mass = Math.min(lat.length * 0.5, FALL_MASS_CAP);
+  { let mw = 0; for (const b of lat) mw += (MAT_STATS[b.mat]?.weight ?? 1) * 0.5; body.mass = Math.min(mw, FALL_MASS_CAP); }
   body.updateMassProperties();
   body.updateBoundingRadius();
   body.updateAABB();

@@ -2869,9 +2869,9 @@ function pushFace(m, f, cx, cy, cz, r, g, b, scale = 1) {
       for (let q = 0; q < 4; q++) {
         const u = q === 0 || q === 3 ? u0 : u1;
         const w = q < 2 ? w0 : w1;
-        B.pos.push(cx + (v[0] + u * dux + w * dvx) * HALF_BLOCK * S,
-                   cy + (v[1] + u * duy + w * dvy) * HALF_BLOCK * S,
-                   cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK * S);
+        B.pos.push(cx + (v[0] + u * dux + w * dvx) * HALF_BLOCK * scale,
+                   cy + (v[1] + u * duy + w * dvy) * HALF_BLOCK * scale,
+                   cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK * scale);
         B.nor.push(n[0], n[1], n[2]);
         B.col.push(cr, cg, cb);
       }

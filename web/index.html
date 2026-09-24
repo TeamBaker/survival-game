@@ -6635,38 +6635,6 @@ function updateColTestPhysics() {
   colTestHud.textContent = `PHYSICS CHUNKS: ${chunksToLoad.size}\nLOADED: ${chunksToLoad.size} chunks`;
   colTestHud.classList.toggle('on', colTestPhysicsOn);
 }
-
-// ---------------------------------------------------------------------------
-// Sandbox mode — clears the world to air and drops a flat platform under the
-  camera.getWorldDirection(colTestAimDir);
-  colTestSphere.position.copy(camera.position).addScaledVector(colTestAimDir, 5);
-
-  const ci = (colI(colTestSphere.position.x) / CHUNK) | 0;
-  const cj = (colJ(colTestSphere.position.z) / CHUNK) | 0;
-  if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
-    const idx = cj * CHUNK_N + ci;
-    if (!colliderBody[idx]) {
-      const body = new CANNON.Body({ mass: 0, material: physWorld });
-      for (const b of buildChunkColliderBoxes(idx)) {
-        body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-      }
-      body.updateAABB();
-      world.addBody(body);
-      colliderBody[idx] = body;
-    }
-  }
-
-  if (ci !== colTestPrevCiMin || cj !== colTestPrevCjMin) {
-    colTestPrevCiMin = ci; colTestPrevCiMax = ci;
-    colTestPrevCjMin = cj; colTestPrevCjMax = cj;
-    rebuildDebugCollision();
-  }
-
-  let loaded = 0;
-  for (let c = 0; c < colliderBody.length; c++) if (colliderBody[c]) loaded++;
-  colTestHud.textContent = `CHUNK: ${ci}, ${cj}\nLOADED: ${loaded} chunks`;
-}
-
 // ---------------------------------------------------------------------------
 // Sandbox mode — clears the world to air and drops a flat platform under the
 // player so it can be rebuilt from scratch with the shovel / hammer / placer.

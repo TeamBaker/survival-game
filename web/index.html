@@ -1430,6 +1430,7 @@
       <button id="btn-debug-chunks" class="ui-el">Chunks: Off</button>
       <button id="btn-debug-collision" class="ui-el">Collision: Off</button>
       <button id="btn-coltest" class="ui-el">COL TEST: Off</button>
+      <button id="btn-coltest-physics" class="ui-el">Collision Test: Physics Objects: Off</button>
     </div>
   </div>
 </div>
@@ -6555,8 +6556,88 @@ bindTap(btnColTest, () => {
   btnColTest.textContent = colTestOn ? 'COL TEST: On' : 'COL TEST: Off';
 });
 
-// Called every frame from tick() while colTestOn.
-function updateColTest() {
+// ---------------------------------------------------------------------------
+// Collision Test: Physics Objects — enables collision chunks for every block
+// of every physics-simulated debris piece (fallingChunks + restedChunks).
+// Iterates all physics objects, gets each block's world position, finds its
+// chunk, loads that chunk's collider, and updates the debug collision wireframe.
+// ---------------------------------------------------------------------------
+let colTestPhysicsOn = false;
+let colTestPhysicsPrevDebugCol = false;
+
+function toggleColTestPhysics() {
+  colTestPhysicsOn = !colTestPhysicsOn;
+  if (colTestPhysicsOn) {
+    colTestPhysicsPrevDebugCol = debugColOn;
+    if (!debugColOn) { debugColOn = true; debugCollision.visible = true; }
+  } else {
+    if (!colTestPhysicsPrevDebugCol) { debugColOn = false; debugCollision.visible = false; }
+  }
+}
+
+const btnColTestPhysics = document.getElementById('btn-coltest-physics');
+bindTap(btnColTestPhysics, () => {
+  toggleColTestPhysics();
+  btnColTestPhysics.textContent = colTestPhysicsOn ? 'Collision Test: Physics Objects: On' : 'Collision Test: Physics Objects: Off';
+});
+
+// Called every frame from tick() while colTestPhysicsOn.
+function updateColTestPhysics() {
+  const chunksToLoad = new Set();
+
+  // Iterate all falling physics chunks
+  for (const f of fallingChunks) {
+    const mesh = f.mesh;
+    mesh.updateWorldMatrix(true, false);
+    const lat = mesh.userData.blocks;
+    for (const b of lat) {
+      const wp = new THREE.Vector3().copy(b.pos).applyMatrix4(mesh.matrixWorld);
+      const ci = (colI(wp.x) / CHUNK) | 0;
+      const cj = (colJ(wp.z) / CHUNK) | 0;
+      if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
+        chunksToLoad.add(cj * CHUNK_N + ci);
+      }
+    }
+  }
+
+  // Iterate all rested physics chunks
+  for (const f of restedChunks) {
+    const mesh = f.mesh;
+    mesh.updateWorldMatrix(true, false);
+    const lat = mesh.userData.blocks;
+    for (const b of lat) {
+      const wp = new THREE.Vector3().copy(b.pos).applyMatrix4(mesh.matrixWorld);
+      const ci = (colI(wp.x) / CHUNK) | 0;
+      const cj = (colJ(wp.z) / CHUNK) | 0;
+      if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
+        chunksToLoad.add(cj * CHUNK_N + ci);
+      }
+    }
+  }
+
+  // Load colliders for all collected chunks
+  for (const idx of chunksToLoad) {
+    if (!colliderBody[idx]) {
+      const body = new CANNON.Body({ mass: 0, material: physWorld });
+      for (const b of buildChunkColliderBoxes(idx)) {
+        body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+      }
+      body.updateAABB();
+      world.addBody(body);
+      colliderBody[idx] = body;
+    }
+  }
+
+  // Rebuild debug collision wireframe
+  rebuildDebugCollision();
+
+  // Update HUD
+  colTestHud.textContent = `PHYSICS CHUNKS: ${chunksToLoad.size}\nLOADED: ${chunksToLoad.size} chunks`;
+  colTestHud.classList.toggle('on', colTestPhysicsOn);
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox mode — clears the world to air and drops a flat platform under the
   camera.getWorldDirection(colTestAimDir);
   colTestSphere.position.copy(camera.position).addScaledVector(colTestAimDir, 5);
 
@@ -7051,6 +7132,7 @@ function tick() {
   // After the camera, since the aim is taken down the view direction, and before
   // the render so the highlight boxes are in the right place this frame.
   if (colTestOn) updateColTest();
+  if (colTestPhysicsOn) updateColTestPhysics();
   if (shovel.on) updateShovel();
   if (hammer.on) updateHammer();
   if (placerOn) updatePlacer();

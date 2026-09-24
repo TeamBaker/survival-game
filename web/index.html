@@ -1543,7 +1543,7 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: 'high-performance',
   stencil: false,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isTouchDevice ? 2 : 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isTouchDevice ? 1.5 : 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -2493,12 +2493,15 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 
 // A falling powder grain's own box, vertex-coloured like a tiny slice of
 // terrain instead of one flat material colour: each of the cube's 6 faces is
-// diced into a GRAIN_GRID x GRAIN_GRID grid, same as the terrain powder path
-// (pushFace) below, and each cell gets its own hashed shade — wide enough to
-// read as speckle on a face this small, where a per-face-only shade would be
-// nearly invisible. Built fresh every call rather than cached: the geometry
-// is tiny (6 faces x GRAIN_GRID² cells) and grainGeo is only called a
-// handful of times a frame.
+// diced into a GRAIN_GRID x GRAIN_GRID grid, and each cell gets its own hashed
+// shade — wide enough to read as speckle on a face this small, where a
+// per-face-only shade would be nearly invisible. The static terrain mesh no
+// longer bothers with this (it is one flat colour an instance, like every
+// other block); loose grains — falling, or resting on a piece of debris —
+// still get it here, where per-block cost does not multiply by the whole
+// island. Built fresh every call rather than cached: the geometry is tiny
+// (6 faces x GRAIN_GRID² cells) and grainGeo is only called a handful of
+// times a frame.
 function grainGeo(m, seed = 0) {
   const base = TERRAIN_MATS[m].color;
   const nq = 6 * GRAIN_GRID * GRAIN_GRID;
@@ -2551,23 +2554,17 @@ function grainGeo(m, seed = 0) {
 const terrain = new THREE.Group();
 scene.add(terrain);
 
-// Per chunk: one mesh per material (null where the chunk has no block of that
-// material), and what it contributes to the two HUD totals.
-const chunkMesh   = new Array(CHUNK_N * CHUNK_N).fill(null);
+// What each chunk last contributed to the two HUD totals — the only per-chunk
+// bookkeeping the mesh itself still needs, now that the mesh is 16 shared
+// InstancedMeshes rather than up to 16 per chunk.
 const chunkBlocks = new Int32Array(CHUNK_N * CHUNK_N);
 const chunkFaces  = new Int32Array(CHUNK_N * CHUNK_N);
 let blockCount = 0, faceCount = 0;
 
 // Cubes are the only terrain surface. The smooth fillet skin of pass 3b still
 // exists in this file but is never built, so nothing ever covers the blocks and
-// every chunk's cubes stay visible. Declared up here because rebuildChunk() calls
-// applyChunkView() on a chunk it has just rebuilt.
+// every chunk's cubes stay visible.
 const filletMesh = new Array(CHUNK_N * CHUNK_N).fill(null);
-
-function applyChunkView(c) {
-  const ms = chunkMesh[c];
-  if (ms) for (const im of ms) if (im) im.visible = true;
-}
 
 // How much darker a block is for sitting below the top of its own column. The
 // per-column tint alone gives the field its speckle but says nothing about
@@ -2607,12 +2604,6 @@ const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
 
 const mergeMatCounts = new Uint32Array(N_MATS);
 
-// Scratch, reused by every rebuild: per material, the loose vertices of one
-// chunk's exposed faces — position, normal and colour, four vertices a quad and
-// nothing shared between quads. Two faces meeting at an edge disagree about both
-// the normal and the colour there, so a shared corner would round the block off.
-const faceBuf = Array.from({ length: N_MATS }, () => ({ pos: [], nor: [], col: [] }));
-
 // The six faces of a block: the neighbour that has to be air for the face to be
 // worth drawing at all, the direction the face looks in, and its four corners as
 // offsets in half-blocks from the centre of the block. The corners are wound
@@ -2634,67 +2625,134 @@ const GRAIN_GRID = 3;
 const GRAIN_PIXEL = 0.06;
 const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
 
-// One face of the block centred on (cx, cy, cz), in the one colour that block
-// is — except powder, which is diced into flat-shaded pixels.
-function pushFace(m, f, cx, cy, cz, r, g, b, S = 1) {
-  const B = faceBuf[m], v = f.v, n = f.n;
+// ----- terrain instancing -----
+// One unit block, scaled per instance — BLOCK-sized for ordinary blocks, and
+// bigger (uniformly, in all three axes) for the merged cubes the LOD steps
+// draw. Shared across all 16 materials' InstancedMeshes, the same way fallGeo
+// is shared across every falling piece.
+const TERRAIN_CUBE_GEO = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
 
-  if (!MAT_STATS[m]?.powder) {
-    for (let q = 0; q < 4; q++) {
-      const o = q * 3;
-      B.pos.push(cx + v[o] * HALF_BLOCK * S, cy + v[o + 1] * HALF_BLOCK * S, cz + v[o + 2] * HALF_BLOCK * S);
-      B.nor.push(n[0], n[1], n[2]);
-      B.col.push(r, g, b);
-    }
-    return;
-  }
-
-  // Powder is loose grain, so it is not painted flat: the face is cut into a
-  // grid of little quads, each carrying one colour across all four of its
-  // corners so it reads as a pixel rather than a gradient. The offset is hashed
-  // from where the cell's centre stands in the world, so the same block always
-  // speckles the same way however often the mesh is rebuilt.
-  //
-  // The quad runs v0, v1, v2, v3, so du walks it one way and dv the other, and
-  // a cell is v0 + u * du + w * dv. Its corners are pushed in that same order —
-  // (u0,w0), (u1,w0), (u1,w1), (u0,w1) — to keep the winding the face had.
-  const dux = v[3] - v[0], duy = v[4] - v[1], duz = v[5] - v[2];
-  const dvx = v[9] - v[0], dvy = v[10] - v[1], dvz = v[11] - v[2];
-
-  for (let row = 0; row < GRAIN_GRID; row++) {
-    const w0 = row / GRAIN_GRID, w1 = (row + 1) / GRAIN_GRID;
-    for (let col = 0; col < GRAIN_GRID; col++) {
-      const u0 = col / GRAIN_GRID, u1 = (col + 1) / GRAIN_GRID;
-      const um = (u0 + u1) / 2, wm = (w0 + w1) / 2;
-
-      // Random tint pick from a discrete palette — same range as per-column
-      // tint (0.86–1.14) but applied per-pixel for a speckled grain look.
-      const tintPalette = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
-      const ti = (Math.sin(cx * 99.1 + cz * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
-      const s = tintPalette[Math.abs(ti) % tintPalette.length];
-      const cr = clamp01(r * s), cg = clamp01(g * s), cb = clamp01(b * s);
-
-      for (let q = 0; q < 4; q++) {
-        const u = q === 0 || q === 3 ? u0 : u1;
-        const w = q < 2 ? w0 : w1;
-        B.pos.push(cx + (v[0] + u * dux + w * dvx) * HALF_BLOCK * S,
-                   cy + (v[1] + u * duy + w * dvy) * HALF_BLOCK * S,
-                   cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK * S);
-        B.nor.push(n[0], n[1], n[2]);
-        B.col.push(cr, cg, cb);
-      }
-    }
-  }
+// Scratch, reused by every rebuild: per material, the instances one chunk's
+// visible blocks turn into — position, uniform scale and colour, one entry a
+// block (or one entry a whole LOD-merged cube). Parallel arrays rather than
+// objects, so a chunk with a lot of exposed blocks doesn't allocate one each;
+// .length is reset to 0 at the top of every rebuild and the backing arrays'
+// capacity carries over.
+const instBuf = Array.from({ length: N_MATS }, () => ({
+  px: [], py: [], pz: [], s: [], r: [], g: [], b: [],
+}));
+function pushInstance(m, cx, cy, cz, r, g, b, s = 1) {
+  const B = instBuf[m];
+  B.px.push(cx); B.py.push(cy); B.pz.push(cz);
+  B.s.push(s);
+  B.r.push(r); B.g.push(g); B.b.push(b);
 }
 
+// One InstancedMesh per material, covering the whole terrain rather than one
+// chunk — 16 draw calls total instead of up to 16 per chunk. The cost is
+// per-chunk frustum culling: with one mesh for the whole island there is
+// nothing left to cull against, so every instance is submitted every frame
+// regardless of where the camera looks. That trade is the whole point: draw
+// calls, not triangles, were what a phone was paying for.
+//
+// Every mesh chunk's instances live in one contiguous run of the buffer, in
+// chunk order, so rebuilding chunk c only ever touches c's own run — the rest
+// of the buffer shifts by copyWithin (a memmove) when that run changes length,
+// rather than every chunk being re-uploaded.
+class TerrainBucket {
+  constructor(m) {
+    this.capacity = 4096;
+    this.total = 0;
+    this.start = new Int32Array(CHUNK_N * CHUNK_N);
+    this.count = new Int32Array(CHUNK_N * CHUNK_N);
+    this.mesh = this._makeMesh(this.capacity, TERRAIN_FACE_MATS[m]);
+    terrain.add(this.mesh);
+  }
 
-// Every exposed face of every visible block in column (i, j), pushed into the
-// scratch buffers. A block is visible when blockVisible says it has at least one
-// face touching air — the array is the sole authority on visibility, so digging
-// never leaves a pillar and placing never leaves a ghost — and of a visible
-// block only the faces that touch air themselves are drawn, so the six-sided box
-// that used to stand in for every block is down to the one or two sides of it
-// anything could ever see. Returns the blocks it drew something for.
+  _makeMesh(capacity, material) {
+    const mesh = new THREE.InstancedMesh(TERRAIN_CUBE_GEO, material, capacity);
+    mesh.count = 0;
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
+    mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    // One mesh, the whole island: a per-frame bounds check buys nothing here,
+    // since the answer is always "yes, submit it".
+    mesh.frustumCulled = false;
+    mesh.receiveShadow = true;
+    // Casting is a second full pass over every instance. A phone gets the
+    // sun's shading and the player's shadow, but not the island shadowing
+    // itself.
+    mesh.castShadow = !isTouchDevice;
+    return mesh;
+  }
+
+  // Swap in a bigger backing buffer, carrying every live instance across.
+  // Rare in practice — capacity only runs out well above what a chunk rebuild
+  // needs, so this is the safety net, not the common path.
+  _grow(need) {
+    let cap = this.capacity;
+    while (cap < need) cap *= 2;
+    const next = this._makeMesh(cap, this.mesh.material);
+    next.instanceMatrix.array.set(this.mesh.instanceMatrix.array.subarray(0, this.total * 16));
+    next.instanceColor.array.set(this.mesh.instanceColor.array.subarray(0, this.total * 3));
+    next.count = this.total;
+    terrain.add(next);
+    terrain.remove(this.mesh);
+    this.mesh.dispatchEvent({ type: 'dispose' });   // frees the old instance buffers on the GPU
+    this.mesh = next;
+    this.capacity = cap;
+  }
+
+  // Replace chunk c's run of instances with the first `n` entries of scratch
+  // buffer B (one of instBuf's per-material scratch objects). Everything after
+  // c's old run shifts by however much the run's length changed.
+  setChunk(c, B, n) {
+    const oldN = this.count[c];
+    const delta = n - oldN;
+    if (delta !== 0) {
+      if (this.total + delta > this.capacity) this._grow(this.total + delta);
+      const start = this.start[c];
+      const tailStart = start + oldN;
+      const tailLen = this.total - tailStart;
+      if (tailLen > 0) {
+        this.mesh.instanceMatrix.array.copyWithin((tailStart + delta) * 16, tailStart * 16, (tailStart + tailLen) * 16);
+        this.mesh.instanceColor.array.copyWithin((tailStart + delta) * 3, tailStart * 3, (tailStart + tailLen) * 3);
+      }
+      for (let cc = c + 1; cc < this.start.length; cc++) this.start[cc] += delta;
+      this.total += delta;
+    }
+    const start = this.start[c];
+    for (let q = 0; q < n; q++) {
+      terrainScratchPos.set(B.px[q], B.py[q], B.pz[q]);
+      terrainScratchScale.setScalar(B.s[q]);
+      terrainScratchM4.compose(terrainScratchPos, terrainScratchQuat, terrainScratchScale);
+      this.mesh.setMatrixAt(start + q, terrainScratchM4);
+      terrainScratchColor.setRGB(B.r[q], B.g[q], B.b[q]);
+      this.mesh.setColorAt(start + q, terrainScratchColor);
+    }
+    this.count[c] = n;
+    this.mesh.count = this.total;
+    this.mesh.instanceMatrix.needsUpdate = true;
+    this.mesh.instanceColor.needsUpdate = true;
+  }
+}
+const terrainScratchPos   = new THREE.Vector3();
+const terrainScratchQuat  = new THREE.Quaternion();   // terrain instances never rotate
+const terrainScratchScale = new THREE.Vector3();
+const terrainScratchM4    = new THREE.Matrix4();
+const terrainScratchColor = new THREE.Color();
+
+const terrainBuckets = Array.from({ length: N_MATS }, (_, m) => new TerrainBucket(m));
+
+
+// Every visible block in column (i, j), pushed into the scratch buffers as one
+// instance apiece. A block is visible when blockVisible says it has at least
+// one face touching air — the array is the sole authority on visibility, so
+// digging never leaves a pillar and placing never leaves a ghost. Unlike the
+// old per-face mesh, an instance draws all six faces of its cube whether or
+// not each one is exposed: trading a little overdraw on buried faces for not
+// having to rebuild a vertex buffer over every dig is the whole point of this
+// pass. Returns the blocks it drew something for.
 function collectColumn(i, j, step = 1) {
   if (step === 1) {
     const k = j * GEN_N + i;
@@ -2709,19 +2767,14 @@ function collectColumn(i, j, step = 1) {
       // The one colour the whole block is drawn in — its material, the column's
       // own tint, whether it is still in the soil band, and how far below the top
       // of the column it sits — baked in here because the mesh carries a colour
-      // per vertex and the material itself is plain white.
+      // per instance and the material itself is plain white.
       const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
       const h = nhash3(i, j, lvl);
       const variation = 0.85 + h * 0.30;
       const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl)) * variation;
       const c = TERRAIN_MATS[m].color;
-      const r = c.r * s, g = c.g * s, b = c.b * s;
       const cy = (lvl + 0.5) * BLOCK;
-      for (let f = 0; f < 6; f++) {
-        const F = FACES[f];
-        if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
-        pushFace(m, F, cx, cy, cz, r, g, b);
-      }
+      pushInstance(m, cx, cy, cz, c.r * s, c.g * s, c.b * s);
       drawn++;
     }
     return drawn;
@@ -2744,7 +2797,6 @@ function collectColumn(i, j, step = 1) {
     }
   }
   if (bestK < 0) return 0;
-  const bestI = bestK % GEN_N, bestJ = (bestK / GEN_N) | 0;
 
   const bandBottom = Math.max(VOX_FLOOR, top - S + 1);
 
@@ -2763,18 +2815,9 @@ function collectColumn(i, j, step = 1) {
 
   const s = tint[bestK] * 0.94;
   const c = TERRAIN_MATS[m].color;
-  const r = c.r * s, g = c.g * s, b = c.b * s;
   const cx = colX(i) + (S - 1) * HALF_BLOCK, cz = colZ(j) + (S - 1) * HALF_BLOCK;
   const cy = ((bandBottom + top) / 2 + 0.5) * BLOCK;
-  for (let f = 0; f < 6; f++) {
-    const F = FACES[f];
-    let nb;
-    if (F.dl > 0) nb = voxelAt(bestI, bestJ, top + 1);
-    else if (F.dl < 0) nb = voxelAt(bestI, bestJ, bandBottom - 1);
-    else nb = voxelAt(i + F.di * S, j + F.dj * S, top);
-    if (nb !== AIR) continue;
-    pushFace(m, F, cx, cy, cz, r, g, b, S);
-  }
+  pushInstance(m, cx, cy, cz, c.r * s, c.g * s, c.b * s, S);
   return 1;
 }
 
@@ -2808,21 +2851,15 @@ for (let gj = 0; gj < GRID_N; gj++) {
 const gridStep = new Int8Array(GRID_N * GRID_N).fill(1);
 let lodOverride = null;
 
-// (Re)build one chunk's meshes from the store. Cheap enough to call from a tap:
-// the whole cost is one pass over the chunk's columns plus a buffer upload per
-// material.
+// (Re)build one chunk's instances from the store. Cheap enough to call from a
+// tap: the whole cost is one pass over the chunk's columns plus, per material
+// that chunk touches, writing its run into that material's InstancedMesh.
 function rebuildChunk(c) {
-  const old = chunkMesh[c];
-  if (old) {
-    for (const me of old) {
-      if (!me) continue;
-      terrain.remove(me);
-      me.geometry.dispose();     // frees the vertex buffers, not the shared material
-    }
-  }
   for (let m = 0; m < N_MATS; m++) {
-    const B = faceBuf[m];
-    B.pos.length = 0; B.nor.length = 0; B.col.length = 0;
+    const B = instBuf[m];
+    B.px.length = 0; B.py.length = 0; B.pz.length = 0;
+    B.s.length = 0;
+    B.r.length = 0; B.g.length = 0; B.b.length = 0;
   }
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
@@ -2832,39 +2869,14 @@ function rebuildChunk(c) {
   const stride = mergeSizeFor(step);
   for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
 
-  const meshes = new Array(N_MATS).fill(null);
-  let faces = 0;
+  let instances = 0;
   for (let m = 0; m < N_MATS; m++) {
-    const B = faceBuf[m];
-    const nv = B.pos.length / 3, nq = nv / 4;
-    if (nq === 0) continue;                      // plenty of chunks are all sand
-    // Two triangles a quad, over the four corners the quad already pushed.
-    const idx = nv > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
-    for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
-      idx[p]     = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
-      idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(B.pos), 3));
-    geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(B.nor), 3));
-    geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(B.col), 3));
-    geo.setIndex(new THREE.BufferAttribute(idx, 1));
-    // The per-chunk bound is the whole reason for the split — without it three
-    // quarters of the island would be drawn from behind the camera.
-    geo.computeBoundingSphere();
-
-    const me = new THREE.Mesh(geo, TERRAIN_FACE_MATS[m]);
-    me.receiveShadow = true;
-    // Casting is a second full pass over every face. A phone gets the sun's
-    // shading and the player's shadow, but not the island shadowing itself.
-    me.castShadow = !isTouchDevice;
-    terrain.add(me);
-    meshes[m] = me;
-    faces += nq;
+    const B = instBuf[m];
+    terrainBuckets[m].setChunk(c, B, B.px.length);
+    instances += B.px.length;
   }
 
-  chunkMesh[c] = meshes;
-  applyChunkView(c);
+  const faces = instances * 6;   // every instance draws all six faces of its cube
   blockCount    += blocks - chunkBlocks[c];
   faceCount     += faces  - chunkFaces[c];
   chunkBlocks[c] = blocks;
@@ -2888,7 +2900,7 @@ function updateLOD() {
   }
   for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
     const g = chunkGridIdx[c];
-    if (chunkMesh[c] && gridStep[g] !== prevStep[g]) rebuildChunk(c);
+    if (gridStep[g] !== prevStep[g]) rebuildChunk(c);
   }
 }
 
@@ -3694,7 +3706,6 @@ function rebuildFilletChunk(c) {
     filletTris[c] = 0;
   }
   buildFilletChunk(c);
-  applyChunkView(c);                // the cubes under it hide or come back
 }
 
 // The skin is not built at startup and not rebuilt by the shovel — the cubes are
@@ -3831,6 +3842,7 @@ function buildPendingColliders() {
     }
     body.updateAABB();
     world.addBody(body);
+    body.sleep();
     colliderBody[c] = body;
     built++;
   }
@@ -3857,6 +3869,7 @@ function rebuildChunkCollider(c) {
   }
   body.updateAABB();
   world.addBody(body);
+  body.sleep();
   colliderBody[c] = body;
   // v124 — wake sleeping debris whose friction surfaces vanished.
   // When terrain is dug away, cannon.js does not notify sleeping bodies
@@ -6571,6 +6584,7 @@ function updateColTest() {
       }
       body.updateAABB();
       world.addBody(body);
+      body.sleep();
       colliderBody[idx] = body;
     }
   }
@@ -6630,9 +6644,7 @@ function toggleSandbox() {
     sTop.fill(NO_COLUMN);
     blockVisible.fill(0);
     powderDirty.clear();
-    for (let c = 0; c < chunkMesh.length; c++) {
-      if (chunkMesh[c]) rebuildChunk(c);
-    }
+    for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
     // Flat platform of ROCK under the player's feet.
     const p = playerBody.position;
     const ci = colI(p.x), cj = colJ(p.z);
@@ -6929,7 +6941,7 @@ function resize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
   const aspect = w / Math.max(h, 1);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isTouchDevice ? 1.5 : 2));
   renderer.setSize(w, h, false);
   camera.aspect = aspect;
   // Original used a 90-degree vertical FOV at 16:9. Here the horizontal FOV is

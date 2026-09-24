@@ -1417,6 +1417,7 @@
       <span class="menu-label">Debug</span>
       <button id="btn-f2d" class="ui-el">2D Sandbox</button>
       <button id="btn-sandbox" class="ui-el">Sandbox Mode</button>
+      <button id="btn-set-all-blocks" class="ui-el">Set All Blocks</button>
       <div class="settings-row">
         <label>LOD Override</label>
         <select id="sel-lod-override">
@@ -6661,6 +6662,71 @@ function toggleSandbox() {
   }
 }
 bindTap(sandboxBtn, toggleSandbox);
+
+// ---------------------------------------------------------------------------
+// Set All Blocks — replace every block in the voxel store with one material
+// ---------------------------------------------------------------------------
+const btnSetAllBlocks = document.getElementById('btn-set-all-blocks');
+
+function setAllBlocksToMaterial() {
+  // Prompt for material ID
+  const matNames = MAT_NAMES.join(', ');
+  const input = prompt(`Enter material ID (0-${N_MATS - 1})\n${matNames}`, String(ROCK));
+  if (input === null) return; // cancelled
+  const m = Number(input);
+  if (!Number.isInteger(m) || m < 0 || m >= N_MATS) {
+    alert(`Invalid material ID: ${m}. Must be 0-${N_MATS - 1}.`);
+    return;
+  }
+  if (m === WATER) {
+    alert('Water is not supported for this operation (it would flood the world).');
+    return;
+  }
+
+  // Iterate all columns and all levels, set each block
+  let changed = 0;
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    if (topLvl[k] === NO_COLUMN) continue;
+    const cap = voxCap(k);
+    for (let lvl = VOX_FLOOR; lvl <= cap; lvl++) {
+      const p = voxOff[k] + lvl - VOX_FLOOR;
+      if (voxMat[p] !== m) {
+        voxMat[p] = m;
+        if (m !== AIR) worldBlocks++;
+        else worldBlocks--;
+        changed++;
+      }
+    }
+    // Update cached surface
+    sTop[k] = m !== AIR ? cap : NO_COLUMN;
+    colDug[k] = 1;
+    colDugLo[k] = VOX_FLOOR;
+  }
+
+  // Refresh visibility for all blocks
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    if (topLvl[k] === NO_COLUMN) continue;
+    const o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
+    for (let lvl = VOX_FLOOR; lvl <= cap; lvl++) {
+      if (voxMat[o + lvl] === AIR) continue;
+      blockVisible[o + lvl] = countExposedFaces(k % GEN_N, (k / GEN_N) | 0, lvl) > 0 ? 1 : 0;
+    }
+  }
+
+  // Rebuild all chunks
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+    if (chunkMesh[c]) rebuildChunk(c);
+  }
+
+  // Rebuild collider chunks that are loaded
+  for (let c = 0; c < colliderBody.length; c++) {
+    if (colliderBody[c]) rebuildChunkCollider(c);
+  }
+
+  alert(`Set ${changed} blocks to ${MAT_NAMES[m] || 'material ' + m}.`);
+}
+
+bindTap(btnSetAllBlocks, setAllBlocksToMaterial);
 
 // ---------------------------------------------------------------------------
 // Creative tool (placer) — pick a material from the palette, then place or

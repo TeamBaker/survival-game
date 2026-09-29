@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 124;
+  var v = 127;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1020,6 +1020,57 @@
     min-width: 32px;
     text-align: right;
   }
+  .settings-row select {
+    flex: 1;
+    max-width: 180px;
+    background: rgba(20, 34, 54, 0.6);
+    border: 1px solid rgba(150, 195, 245, 0.3);
+    border-radius: 6px;
+    color: #cfe6ff;
+    font-family: inherit;
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+
+  /* Save status */
+  .save-status {
+    width: 100%;
+    text-align: center;
+    font-size: 11px;
+    min-height: 18px;
+    margin-top: 4px;
+  }
+  .save-status.saved { color: #5cff8a; }
+  .save-status.loaded { color: #5cff8a; }
+  .save-status.info { color: #7fd4ff; }
+
+  /* Global toast notification */
+  .toast {
+    position: fixed;
+    bottom: calc(24px + env(safe-area-inset-bottom));
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    padding: 12px 20px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #0b1220;
+    background: linear-gradient(180deg, #cfe6ff, #7db4ee);
+    border-radius: 999px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(150, 195, 245, 0.3);
+    z-index: 200;
+    opacity: 0;
+    transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.2s ease;
+    pointer-events: none;
+    white-space: nowrap;
+    max-width: 90vw;
+    text-align: center;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.error { background: linear-gradient(180deg, #ff6b6b, #e04040); color: #fff; }
+  .toast.warning { background: linear-gradient(180deg, #ffd9a8, #f0a054); color: #0b1220; }
+
   #btn-f2d {
     position: fixed;
     top: calc(248px + env(safe-area-inset-top));
@@ -1108,6 +1159,31 @@
     background: linear-gradient(180deg, #a8e0ff, #54b0f0);
     border-color: transparent;
   }
+  #btn-volume {
+    position: fixed;
+    top: calc(240px + env(safe-area-inset-top));
+    left: calc(10px + env(safe-area-inset-left));
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: pointer;
+    touch-action: manipulation;
+    z-index: 14;
+  }
+  #btn-volume.on {
+    color: #1a1000;
+    background: linear-gradient(180deg, #ffe07a, #f0a030);
+    border-color: transparent;
+  }
   #placer-ui {
     position: fixed;
     left: 50%; bottom: calc(10px + env(safe-area-inset-bottom));
@@ -1117,6 +1193,7 @@
     z-index: 13;
   }
   body.placer-on #placer-ui { display: flex; }
+  body.volume-on #placer-ui { display: flex; }
   #placer-mat-name {
     font-size: 11px; color: #8ab4d8; letter-spacing: 0.1em;
     text-transform: uppercase; margin-bottom: 2px;
@@ -1311,6 +1388,7 @@
 </div>
 
 <button id="btn-placer" class="ui-el">Creative &mdash; Off</button>
+<button id="btn-volume" class="ui-el">Volume &mdash; Off</button>
 <button id="btn-matbar" class="ui-el">MAT</button>
 <div id="placer-ui">
   <div id="placer-mat-name">Rock</div>
@@ -1413,6 +1491,19 @@
       </div>
     </div>
 
+    <div class="menu-section">
+      <span class="menu-label">World</span>
+      <div class="menu-row">
+        <button id="btn-save-world" class="ui-el">Save World</button>
+        <button id="btn-load-world" class="ui-el">Load World</button>
+      </div>
+      <div class="menu-row">
+        <button id="btn-export-world" class="ui-el">Export File</button>
+        <button id="btn-import-world" class="ui-el">Import File</button>
+      </div>
+      <div id="save-status" class="save-status"></div>
+    </div>
+
     <div class="menu-section menu-debug">
       <span class="menu-label">Debug</span>
       <button id="btn-f2d" class="ui-el">2D Sandbox</button>
@@ -1433,6 +1524,8 @@
     </div>
   </div>
 </div>
+
+<div id="toast" class="toast hidden"></div>
 
 <div id="overlay">
   <div>
@@ -3820,6 +3913,20 @@ function loadChunkCollider(c) {
   _pendingColliders.push(c);
 }
 
+// Build a chunk collider immediately (synchronously), used for spawn area.
+function buildChunkColliderSync(c) {
+  if (colliderBody[c]) return;
+  const pi = _pendingColliders.indexOf(c);
+  if (pi >= 0) _pendingColliders.splice(pi, 1);
+  const body = new CANNON.Body({ mass: 0, material: physWorld });
+  for (const b of buildChunkColliderBoxes(c)) {
+    body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+  }
+  body.updateAABB();
+  world.addBody(body);
+  colliderBody[c] = body;
+}
+
 function buildPendingColliders() {
   let built = 0;
   while (_pendingColliders.length > 0 && built < 2) {
@@ -3902,7 +4009,12 @@ SPAWN.set(0, groundHeightAt(0, 0) + PLAYER.standCenter + 0.05, 0);
   for (let cj = scj - COLLIDER_RADIUS; cj <= scj + COLLIDER_RADIUS; cj++) {
     for (let ci = sci - COLLIDER_RADIUS; ci <= sci + COLLIDER_RADIUS; ci++) {
       if (ci < 0 || cj < 0 || ci >= CHUNK_N || cj >= CHUNK_N) continue;
-      loadChunkCollider(cj * CHUNK_N + ci);
+      const c = cj * CHUNK_N + ci;
+      loadChunkCollider(c);
+      // Build the spawn chunk and immediate neighbors synchronously so the player
+      // has collision from the first frame.
+      const dc = Math.max(Math.abs(ci - sci), Math.abs(cj - scj));
+      if (dc <= 1) buildChunkColliderSync(c);
     }
   }
 }
@@ -3986,6 +4098,10 @@ renderer.domElement.addEventListener('mousedown', (e) => {
   // clickable, so there is nothing to steal them from.
   // The hammer takes the left button on its own — it is the only thing it does.
   if (hammer.on) { if (e.button === 0) hammerStrike(); return; }
+  // The Volume tool's PLACE button can't be reached under pointer lock, so the
+  // left button stands in for it.
+  // Right button starts the box over.
+  if (volumeOn) { if (e.button === 0) volumePlace(); else if (e.button === 2) volumeCancel(); return; }
   if (!shovel.on) return;
   if (e.button === 0) shovelPickUp();
   else if (e.button === 2) shovelPlace();
@@ -4248,7 +4364,21 @@ function setPlayerShape(crouch) {
   playerBody.updateMassProperties();   // honours fixedRotation, keeps mass = 1
 }
 setPlayerShape(false);
-playerBody.position.set(SPAWN.x, SPAWN.y, SPAWN.z);
+// Find a valid spawn height by raycasting downward, in case the heightmap
+// was wrong or the spawn chunk hasn't been generated correctly yet.
+// Uses synchronous CANNON.RaycastResult (not callback) for reliable hit detection.
+function findSpawnY() {
+  let spawnY = SPAWN.y;
+  const from = new CANNON.Vec3(SPAWN.x, SPAWN.y + 50, SPAWN.z);
+  const to   = new CANNON.Vec3(SPAWN.x, -50, SPAWN.z);
+  const result = new CANNON.RaycastResult();
+  world.raycastClosest(from, to, {}, result);
+  if (result.hasHit && result.body !== playerBody) {
+    spawnY = result.hitPointWorld.y + PLAYER.standCenter + 0.05;
+  }
+  return spawnY;
+}
+playerBody.position.set(SPAWN.x, findSpawnY(), SPAWN.z);
 playerBody.updateAABB();
 world.addBody(playerBody);
 
@@ -4303,7 +4433,19 @@ function hasHeadroom() {
 }
 
 function respawn() {
-  playerBody.position.set(SPAWN.x, SPAWN.y, SPAWN.z);
+  // Try the predefined SPAWN position first.
+  let spawnY = SPAWN.y;
+  // Raycast downward from well above to find the actual ground, in case the
+  // heightmap was wrong or terrain was modified.
+  const from = new CANNON.Vec3(SPAWN.x, SPAWN.y + 50, SPAWN.z);
+  const to   = new CANNON.Vec3(SPAWN.x, -50, SPAWN.z);
+  const result = new CANNON.RaycastResult();
+  world.raycastClosest(from, to, {}, result);
+  if (result.hasHit && result.body !== playerBody) {
+    // Place feet on the hit point + small clearance.
+    spawnY = result.hitPointWorld.y + PLAYER.standCenter + 0.05;
+  }
+  playerBody.position.set(SPAWN.x, spawnY, SPAWN.z);
   playerBody.velocity.setZero();
   playerBody.wakeUp();
   state.yaw = SPAWN_YAW * DEG;
@@ -6067,6 +6209,7 @@ function updateShovel() {
 
 function setShovel(on) {
   if (on && hammer.on) setHammer(false);   // one tool out at a time
+  if (on && volumeOn) setVolume(false);
   shovel.on = on;
   document.body.classList.toggle('shovel-on', on);
   if (!on) hlPick.visible = hlPlace.visible = false;
@@ -6156,6 +6299,7 @@ function updateHammer() {
 
 function setHammer(on) {
   if (on && shovel.on) setShovel(false);   // one tool out at a time
+  if (on && volumeOn) setVolume(false);
   hammer.on = on;
   document.body.classList.toggle('hammer-on', on);
   if (!on) { hlHammer.visible = false; hammer.hit = null; hammer.debris = null; hammer.debrisWp = null; }
@@ -6748,7 +6892,8 @@ for (let m = 0; m < N_MATS; m++) {
     placerMat = m;
     placerMatName.textContent = s.name;
     setPlacerMatUI(false);
-    setPlacer(true);
+    if (volumeOn) updateVolumeGhosts();   // picking a material shouldn't swap tools
+    else setPlacer(true);
   });
   placerMatGrid.appendChild(btn);
 }
@@ -6760,14 +6905,15 @@ function setPlacerMatUI(on) {
 function setPlacer(on) {
   if (on && shovel.on) setShovel(false);
   if (on && hammer.on) setHammer(false);
+  if (on && volumeOn) setVolume(false);
   placerOn = on;
   placerBtn.classList.toggle('on', on);
   placerBtn.innerHTML = 'Creative &mdash; ' + (on ? 'On' : 'Off');
   document.body.classList.toggle('placer-on', on);
   if (!on) hlCreative.visible = creativeGhost.visible = false;
   // Show/hide the mat bar toggle button; hide the bar itself when turning off.
-  btnMatBar.style.display = on ? 'block' : 'none';
-  if (!on) setMatBarVis(false);
+  btnMatBar.style.display = on || volumeOn ? 'block' : 'none';
+  if (!on && !volumeOn) setMatBarVis(false);
 }
 
 placerBtn.addEventListener('click', () => {
@@ -6780,7 +6926,260 @@ placerMatOverlay.addEventListener('pointerdown', (e) => {
   if (e.target.id === 'placer-mat-overlay') setPlacerMatUI(false);
 });
 
+// ---- Volume Placer (4-step box builder) ----
+// Step 0: aim at a block, PLACE sets corner 1 (the empty cell against the face).
+// Step 1: look elsewhere, PLACE fixes the far corner of the XZ plane at corner 1's level.
+// Step 2: look up or down, PLACE fixes the height of the box.
+// Step 3: PLACE fills every empty cell in the box with the selected material.
+// The ghost follows the aim live between clicks, so each PLACE commits what is shown.
+const volumeBtn = document.getElementById('btn-volume');
+const VOLUME_REACH = 24;            // metres — boxes are bigger than a shovel's reach
+const VOLUME_MAX_SPAN = 128;        // blocks along any one axis
+const VOLUME_MAX_BLOCKS = 32768;    // biggest box a single fill will take
+let volumeOn = false;
+let volumeStep = 0;     // 0 = idle, 1 = corner 1 set, 2 = plane set, 3 = height set
+let volumeC1 = null;    // {i, j, lvl} first corner
+let volumeC2 = null;    // {i, j} far corner of the plane
+let volumeTop = 0;      // level of the opposite face of the box
+let volumeLive = null;  // what the aim currently points at, in the current step's terms
+let volumeGhostKey = '';
+
+const volumeGhost = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(BLOCK * 0.92, BLOCK * 0.92, BLOCK * 0.92),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false }),
+  VOLUME_MAX_BLOCKS
+);
+const volumeOutline = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+  new THREE.LineBasicMaterial({ color: 0xffc04a, transparent: true, opacity: 0.95, depthWrite: false })
+);
+volumeGhost.count = 0;
+volumeGhost.visible = volumeOutline.visible = false;
+volumeGhost.frustumCulled = volumeOutline.frustumCulled = false;
+scene.add(volumeGhost, volumeOutline);
+const _volM = new THREE.Matrix4();
+
+const volMatName = () => MAT_STATS[placerMat]?.name || titleCase(MAT_NAMES[placerMat]);
+const clampSpan = (from, to) => from + THREE.MathUtils.clamp(to - from, -(VOLUME_MAX_SPAN - 1), VOLUME_MAX_SPAN - 1);
+
+// The eye the aim is taken from — the free camera, or the player's head in game mode.
+function volumeEye() {
+  if (camMode === CAM.FREE) return camera.position;
+  const p = playerBody.position;
+  return _volEye.set(p.x, p.y - centerOffset() + eyeH, p.z);
+}
+const _volEye = new THREE.Vector3();
+
+// The box the ghost should show right now: committed corners plus the live aim.
+function volumeBox() {
+  if (volumeStep === 0) {
+    if (!volumeLive) return null;
+    const { i, j, lvl } = volumeLive;
+    return { i1: i, i2: i, j1: j, j2: j, l1: lvl, l2: lvl };
+  }
+  const c2 = volumeStep === 1 ? (volumeLive || volumeC1) : volumeC2;
+  const top = volumeStep === 2 ? (volumeLive ? volumeLive.lvl : volumeC1.lvl)
+            : volumeStep === 3 ? volumeTop : volumeC1.lvl;
+  return {
+    i1: Math.min(volumeC1.i, c2.i), i2: Math.max(volumeC1.i, c2.i),
+    j1: Math.min(volumeC1.j, c2.j), j2: Math.max(volumeC1.j, c2.j),
+    l1: Math.min(volumeC1.lvl, top), l2: Math.max(volumeC1.lvl, top),
+  };
+}
+const volumeBoxSize = (b) => (b.i2 - b.i1 + 1) * (b.j2 - b.j1 + 1) * (b.l2 - b.l1 + 1);
+
+// Work out what the crosshair means for the current step.
+function volumeAimRay() {
+  camera.getWorldDirection(aimDir);
+  const o = volumeEye();
+  const hit = voxelRay(o.x, o.y, o.z, aimDir.x, aimDir.y, aimDir.z, VOLUME_REACH);
+
+  if (volumeStep === 0) {
+    // The empty cell in front of the face under the crosshair — where a block would go.
+    volumeLive = hit ? { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl } : null;
+  } else if (volumeStep === 1) {
+    // Far corner of the plane: the cell being aimed at, or failing that where the
+    // ray crosses corner 1's level, so the plane can be stretched out over air.
+    let cell = hit ? { i: ddaPrev.i, j: ddaPrev.j } : null;
+    if (!cell && Math.abs(aimDir.y) > 1e-4) {
+      const t = ((volumeC1.lvl + 0.5) * BLOCK - o.y) / aimDir.y;
+      if (t > 0 && t <= VOLUME_REACH) cell = { i: colI(o.x + aimDir.x * t), j: colJ(o.z + aimDir.z * t) };
+    }
+    if (cell) {
+      volumeLive = { i: clampSpan(volumeC1.i, cell.i), j: clampSpan(volumeC1.j, cell.j) };
+    }
+  } else if (volumeStep === 2) {
+    // Height: the point on the vertical line through the plane's far corner that
+    // the ray passes closest to. Works looking at terrain or up into open sky.
+    const px = colX(volumeC2.i), pz = colZ(volumeC2.j);
+    const wx = o.x - px, wy = o.y, wz = o.z - pz;
+    const b = aimDir.y, d = aimDir.x * wx + aimDir.y * wy + aimDir.z * wz;
+    const denom = 1 - b * b;
+    // Looking straight up/down the line, or with it behind the eye, there is no
+    // useful closest point — fall back to the eye's own height, so flying the
+    // camera up or down still drags the top of the box along.
+    const t = denom > 1e-3 ? (b * wy - d) / denom : 0;   // distance along the ray
+    // The line is vertical, so the closest point's height is the ray's height at t.
+    const y = t > 0 ? o.y + aimDir.y * t : o.y;
+    volumeLive = { lvl: Math.max(VOX_FLOOR, clampSpan(volumeC1.lvl, Math.floor(y / BLOCK))) };
+  }
+}
+
+// Redraw the ghost only when the box or the material actually changed.
+function updateVolumeGhosts() {
+  const box = volumeOn ? volumeBox() : null;
+  if (!box) {
+    volumeGhost.visible = volumeOutline.visible = false;
+    volumeGhostKey = '';
+    return;
+  }
+  const key = `${box.i1},${box.i2},${box.j1},${box.j2},${box.l1},${box.l2},${placerMat}`;
+  volumeGhost.visible = volumeOutline.visible = true;
+  if (key === volumeGhostKey) return;
+  volumeGhostKey = key;
+
+  volumeGhost.material.color.copy(TERRAIN_MATS[placerMat].color);
+  let n = 0;
+  outer:
+  for (let lvl = box.l1; lvl <= box.l2; lvl++) {
+    for (let j = box.j1; j <= box.j2; j++) {
+      for (let i = box.i1; i <= box.i2; i++) {
+        if (n >= VOLUME_MAX_BLOCKS) break outer;
+        _volM.makeTranslation(colX(i), (lvl + 0.5) * BLOCK, colZ(j));
+        volumeGhost.setMatrixAt(n++, _volM);
+      }
+    }
+  }
+  volumeGhost.count = n;
+  volumeGhost.instanceMatrix.needsUpdate = true;
+
+  // Outline around the whole box, so its extent reads even through the ghosts.
+  const sx = (box.i2 - box.i1 + 1) * BLOCK, sy = (box.l2 - box.l1 + 1) * BLOCK, sz = (box.j2 - box.j1 + 1) * BLOCK;
+  volumeOutline.scale.set(sx * 1.01, sy * 1.01, sz * 1.01);
+  volumeOutline.position.set((colX(box.i1) + colX(box.i2)) / 2,
+                             ((box.l1 + box.l2 + 1) / 2) * BLOCK,
+                             (colZ(box.j1) + colZ(box.j2)) / 2);
+}
+
+function resetVolume() {
+  volumeStep = 0;
+  volumeC1 = volumeC2 = volumeLive = null;
+  updateVolumeGhosts();
+}
+
+function setVolume(on) {
+  if (on && shovel.on) setShovel(false);
+  if (on && hammer.on) setHammer(false);
+  if (on && placerOn) setPlacer(false);
+  volumeOn = on;
+  volumeBtn.classList.toggle('on', on);
+  volumeBtn.innerHTML = 'Volume &mdash; ' + (on ? 'On' : 'Off');
+  document.body.classList.toggle('volume-on', on);
+  // PLACE is shared with the creative tool; DELETE has no meaning for a box.
+  placerDel.style.display = on ? 'none' : '';
+  btnMatBar.style.display = on || placerOn ? 'block' : 'none';
+  if (!on && !placerOn) setMatBarVis(false);
+  resetVolume();
+  if (on) {
+    placerMatName.textContent = volMatName();
+    showToast('Volume: aim at a block and PLACE to set Corner 1', 'info');
+  }
+}
+
+bindTap(volumeBtn, () => setVolume(!volumeOn));
+
+// PLACE while the Volume tool is out — advances the four steps.
+function volumePlace() {
+  if (!volumeOn) return;
+  if (volumeStep === 0) {
+    if (!volumeLive) { showToast('Aim at a block to set Corner 1', 'warning'); return; }
+    volumeC1 = { ...volumeLive };
+    volumeStep = 1;
+    volumeLive = null;
+    showToast('Corner 1 set. Look at the far corner and PLACE to set the floor', 'info');
+  } else if (volumeStep === 1) {
+    volumeC2 = { ...(volumeLive || volumeC1) };
+    volumeStep = 2;
+    volumeLive = null;
+    showToast('Floor set. Move the camera up or down and PLACE to set the height', 'info');
+  } else if (volumeStep === 2) {
+    // Checked before committing, so the height can just be adjusted and retried.
+    const n = volumeBoxSize(volumeBox());
+    if (n > VOLUME_MAX_BLOCKS) {
+      showToast(`Volume too large (${n} blocks, max ${VOLUME_MAX_BLOCKS})`, 'error');
+      return;
+    }
+    volumeTop = volumeLive ? volumeLive.lvl : volumeC1.lvl;
+    volumeStep = 3;
+    volumeLive = null;
+    showToast(`${n} blocks. PLACE again to fill with ${volMatName()}`, 'warning');
+  } else {
+    const placed = volumeFill(volumeBox(), placerMat);
+    showToast(`Filled ${placed} blocks!`);
+    resetVolume();
+    return;
+  }
+  updateVolumeGhosts();
+}
+
+// Throw away the corners set so far and go back to step 1.
+function volumeCancel() {
+  if (!volumeOn || volumeStep === 0) return;
+  resetVolume();
+  showToast('Volume cleared. Aim at a block and PLACE to set Corner 1', 'info');
+}
+
+// Fill every empty cell in the box. The same bookkeeping as editBlock(), but done
+// once for the whole box — per block, editBlock would rebuild a chunk collider for
+// every single cell.
+function volumeFill(box, m) {
+  let placed = 0;
+  const chunks = new Set();
+  for (let j = box.j1; j <= box.j2; j++) {
+    for (let i = box.i1; i <= box.i2; i++) {
+      if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) continue;
+      const k = j * GEN_N + i;
+      if (topLvl[k] === NO_COLUMN && sandboxMode) createColumn(k, Math.max(VOX_FLOOR, box.l1));
+      if (topLvl[k] === NO_COLUMN) continue;
+      let any = false;
+      for (let lvl = Math.max(VOX_FLOOR, box.l1); lvl <= box.l2; lvl++) {
+        if (voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) continue;
+        setVoxel(i, j, lvl, m);
+        placed++;
+        any = true;
+      }
+      if (!any) continue;
+      colDug[k] = 1;
+      powderDirty.add(k);
+      chunks.add(chunkOf(i, j));
+    }
+  }
+  if (!placed) return 0;
+  // Visibility of the box and the shell of neighbours around it.
+  for (let lvl = box.l1 - 1; lvl <= box.l2 + 1; lvl++) {
+    for (let j = box.j1 - 1; j <= box.j2 + 1; j++) {
+      for (let i = box.i1 - 1; i <= box.i2 + 1; i++) refreshVisible(i, j, lvl);
+    }
+  }
+  // Every chunk the box or its one-block shell touches gets redrawn.
+  for (let j = Math.max(0, box.j1 - 1); j <= Math.min(GEN_N - 1, box.j2 + 1); j++) {
+    for (let i = Math.max(0, box.i1 - 1); i <= Math.min(GEN_N - 1, box.i2 + 1); i++) {
+      dirtyChunks.add(chunkOf(i, j));
+    }
+  }
+  for (const c of chunks) rebuildChunkCollider(c);
+  return placed;
+}
+
+// Called every frame while the Volume tool is active — updates aim and ghost preview.
+function updateVolume() {
+  if (volumeStep < 3) volumeAimRay();
+  updateVolumeGhosts();
+}
+
+// Bind volume place action to the placer's PLACE button (shown when volume is on)
 bindTap(placerDo, () => {
+  if (volumeOn) { volumePlace(); return; }
   if (!placerOn) return;
   if (creative.spot) {
     const { i, j, lvl } = creative.spot;
@@ -6858,6 +7257,7 @@ const matBar = document.getElementById('mat-bar');
       placerMat = m;
       placerMatName.textContent = s.name;
       updateMatBar();
+      if (volumeOn) updateVolumeGhosts();
     });
     matBar.appendChild(sq);
   }
@@ -7054,6 +7454,7 @@ function tick() {
   if (shovel.on) updateShovel();
   if (hammer.on) updateHammer();
   if (placerOn) updatePlacer();
+  if (volumeOn) updateVolume();
   flushDirtyChunks();
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
@@ -7083,6 +7484,425 @@ function tick() {
   renderer.render(scene, camera);
 }
 
+// ---------------------------------------------------------------------------
+// World Save / Load
+// ---------------------------------------------------------------------------
+const SAVE_VERSION = 1;
+const SAVE_KEY = 'sv_world_save';
+const IDB_NAME = 'sv_game_db';
+const IDB_STORE = 'world_saves';
+
+// IndexedDB helpers
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbSet(key, value) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function collectWorldState() {
+  // Voxel store
+  const voxelStore = {
+    voxMat: Array.from(voxMat),
+    topLvl: Array.from(topLvl),
+    bedLvl: Array.from(bedLvl),
+    bedMat: Array.from(bedMat),
+    sTop: Array.from(sTop),
+    colDug: Array.from(colDug),
+    colDugLo: Array.from(colDugLo),
+    voxOff: Array.from(voxOff),
+    colMaxCap: Array.from(colMaxCap),
+    blockVisible: Array.from(blockVisible),
+    worldBlocks,
+    tint: Array.from(tint),
+    hRaw: Array.from(hRaw),
+    voxCount,
+  };
+
+  // Player state
+  const playerState = {
+    pos: playerBody.position.toArray(),
+    vel: playerBody.velocity.toArray(),
+    angVel: playerBody.angularVelocity.toArray(),
+    yaw: state.yaw,
+    pitch: state.pitch,
+    crouched,
+    eyeH,
+    sprint: state.sprint,
+  };
+
+  // Camera state
+  const cameraState = {
+    camMode,
+    lastGameCam,
+    topZoom,
+    blendT,
+  };
+
+  // Tools state
+  const toolsState = {
+    shovel: {
+      on: shovel.on,
+      held: [...shovel.held],
+    },
+    hammer: {
+      on: hammer.on,
+    },
+    placer: {
+      on: placerOn,
+      mat: placerMat,
+    },
+    sandboxMode,
+  };
+
+  // Debris state
+  const debrisState = {
+    fallingChunks: fallingChunks.map(f => ({
+      blocks: f.mesh.userData.blocks.map(b => ({ ...b, pos: b.pos.toArray() })),
+      pos: f.body.position.toArray(),
+      quat: f.body.quaternion.toArray(),
+      vel: f.body.velocity.toArray(),
+      angVel: f.body.angularVelocity.toArray(),
+      still: f.still,
+    })),
+    restedChunks: restedChunks.map(f => ({
+      blocks: f.mesh.userData.blocks.map(b => ({ ...b, pos: b.pos.toArray() })),
+      pos: f.body.position.toArray(),
+      quat: f.body.quaternion.toArray(),
+      vel: f.body.velocity.toArray(),
+      angVel: f.body.angularVelocity.toArray(),
+    })),
+    powderFalling: powderFalling.map(g => ({
+      pos: g.pos.toArray(),
+      mat: g.mat,
+      v: g.v,
+      from: g.from ? g.from.toArray() : null,
+    })),
+    powderQueue: [...powderQueue],
+    powderDirty: [...powderDirty],
+  };
+
+  // World generation
+  const genState = {
+    SEED,
+  };
+
+  // Settings
+  const settingsState = {
+    mouseSensitivity,
+    lodOverride,
+    debugChunksOn,
+    debugColOn,
+    colTestOn,
+  };
+
+  return {
+    version: SAVE_VERSION,
+    timestamp: Date.now(),
+    voxelStore,
+    playerState,
+    cameraState,
+    toolsState,
+    debrisState,
+    genState,
+    settingsState,
+  };
+}
+
+function applyWorldState(s) {
+  if (!s || s.version !== SAVE_VERSION) {
+    console.warn('Save version mismatch or invalid save');
+    return false;
+  }
+
+  // Restore voxel store
+  const vs = s.voxelStore;
+  voxMat.set(vs.voxMat);
+  topLvl.set(vs.topLvl);
+  bedLvl.set(vs.bedLvl);
+  bedMat.set(vs.bedMat);
+  sTop.set(vs.sTop);
+  colDug.set(vs.colDug);
+  colDugLo.set(vs.colDugLo);
+  voxOff.set(vs.voxOff);
+  colMaxCap.set(vs.colMaxCap);
+  blockVisible.set(vs.blockVisible);
+  worldBlocks = vs.worldBlocks;
+  tint.set(vs.tint);
+  hRaw.set(vs.hRaw);
+  voxCount = vs.voxCount;
+
+  // Restore player state
+  const ps = s.playerState;
+  playerBody.position.set(...ps.pos);
+  playerBody.velocity.set(...ps.vel);
+  playerBody.angularVelocity.set(...ps.angVel);
+  playerBody.updateAABB();
+  state.yaw = ps.yaw;
+  state.pitch = ps.pitch;
+  crouched = ps.crouched;
+  eyeH = ps.eyeH;
+  state.sprint = ps.sprint;
+  setPlayerShape(crouched);
+
+  // Restore camera state
+  const cs = s.cameraState;
+  camMode = cs.camMode;
+  lastGameCam = cs.lastGameCam;
+  topZoom = cs.topZoom;
+  blendT = cs.blendT;
+
+  // Restore tools state
+  const ts = s.toolsState;
+  setShovel(ts.shovel.on);
+  shovel.held.length = 0;
+  shovel.held.push(...ts.shovel.held);
+  setHammer(ts.hammer.on);
+  setPlacer(ts.placer.on);
+  placerMat = ts.placer.mat;
+  placerMatName.textContent = MAT_STATS[placerMat]?.name || MAT_NAMES[placerMat];
+  sandboxMode = ts.sandboxMode;
+  document.body.classList.toggle('sandbox-mode', sandboxMode);
+  sandboxBtn.classList.toggle('on', sandboxMode);
+
+  // Restore debris
+  const ds = s.debrisState;
+  // Clear existing debris
+  for (const f of fallingChunks) dropChunk(f);
+  fallingChunks.length = 0;
+  for (const f of restedChunks) dropChunk(f);
+  restedChunks.length = 0;
+  for (const g of powderFalling) scene.remove(g.mesh);
+  powderFalling.length = 0;
+  powderQueue.length = 0;
+  powderDirty.clear();
+
+  // Restore falling chunks
+  for (const fc of ds.fallingChunks) {
+    const blocks = new Map();
+    for (const b of fc.blocks) {
+      blocks.set(b.gi + ',' + b.gj + ',' + b.lvl, { ...b, pos: new THREE.Vector3(...b.pos) });
+    }
+    spawnFallingChunk(blocks);
+    const f = fallingChunks[fallingChunks.length - 1];
+    if (f) {
+      f.body.position.set(...fc.pos);
+      f.body.quaternion.set(...fc.quat);
+      f.body.velocity.set(...fc.vel);
+      f.body.angularVelocity.set(...fc.angVel);
+      f.still = fc.still;
+      f.body.updateAABB();
+    }
+  }
+
+  // Restore rested chunks
+  for (const rc of ds.restedChunks) {
+    const blocks = new Map();
+    for (const b of rc.blocks) {
+      blocks.set(b.gi + ',' + b.gj + ',' + b.lvl, { ...b, pos: new THREE.Vector3(...b.pos) });
+    }
+    spawnFallingChunk(blocks);
+    const f = fallingChunks[fallingChunks.length - 1];
+    if (f) {
+      f.body.position.set(...rc.pos);
+      f.body.quaternion.set(...rc.quat);
+      f.body.velocity.set(...rc.vel);
+      f.body.angularVelocity.set(...rc.angVel);
+      f.body.updateAABB();
+      restFallingChunk(fallingChunks.length - 1);
+    }
+  }
+
+  // Restore powder falling
+  for (const g of ds.powderFalling) {
+    const grain = new THREE.Mesh(grainGeo(g.mat), TERRAIN_FACE_MATS[g.mat]);
+    grain.scale.setScalar(BLOCK);
+    grain.position.set(...g.pos);
+    scene.add(grain);
+    powderFalling.push({ pos: new THREE.Vector3(...g.pos), mat: g.mat, v: g.v, from: g.from ? new THREE.Vector3(...g.from) : null, mesh: grain });
+  }
+  powderQueue.push(...ds.powderQueue);
+  for (const c of ds.powderDirty) powderDirty.add(c);
+
+  // Restore world generation
+  SEED = s.genState.SEED;
+
+  // Restore settings
+  const ss = s.settingsState;
+  mouseSensitivity = ss.mouseSensitivity;
+  lodOverride = ss.lodOverride;
+  debugChunksOn = ss.debugChunksOn;
+  debugChunks.visible = debugChunksOn;
+  debugColOn = ss.debugColOn;
+  debugCollision.visible = debugColOn;
+  colTestOn = ss.colTestOn;
+  updateColTestUI();
+
+  // Rebuild all meshes and colliders from voxel store
+  for (let c = 0; c < chunkMesh.length; c++) {
+    if (chunkMesh[c]) rebuildChunk(c);
+  }
+  for (let c = 0; c < colliderBody.length; c++) {
+    if (colliderBody[c]) rebuildChunkCollider(c);
+  }
+
+  // Update UI
+  refreshShovelUI();
+  refreshHammerUI();
+  refreshPlacerUI();
+  refreshModeUI();
+  blocksHudEl.textContent = worldBlocks.toLocaleString();
+
+  return true;
+}
+
+function saveWorld() {
+  try {
+    const state = collectWorldState();
+    const json = JSON.stringify(state);
+    idbSet(SAVE_KEY, json);
+    return { ok: true, size: json.length };
+  } catch (e) {
+    console.error('Save failed:', e);
+    return { ok: false, error: e.message };
+  }
+}
+
+async function loadWorld() {
+  try {
+    const json = await idbGet(SAVE_KEY);
+    if (!json) return { ok: false, error: 'No save found' };
+    const state = JSON.parse(json);
+    const ok = applyWorldState(state);
+    return { ok, error: ok ? null : 'Failed to apply save' };
+  } catch (e) {
+    console.error('Load failed:', e);
+    return { ok: false, error: e.message };
+  }
+}
+
+function exportWorld() {
+  try {
+    const state = collectWorldState();
+    const json = JSON.stringify(state);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `survival-world-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    return { ok: true };
+  } catch (e) {
+    console.error('Export failed:', e);
+    return { ok: false, error: e.message };
+  }
+}
+
+function importWorld(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const state = JSON.parse(e.target.result);
+        const ok = applyWorldState(state);
+        resolve({ ok, error: ok ? null : 'Failed to apply save' });
+      } catch (err) {
+        resolve({ ok: false, error: err.message });
+      }
+    };
+    reader.onerror = () => resolve({ ok: false, error: 'File read error' });
+    reader.readAsText(file);
+  });
+}
+
+// UI bindings
+const saveStatusEl = document.getElementById('save-status');
+const toastEl = document.getElementById('toast');
+let toastTimer = 0;
+function setSaveStatus(msg, cls = '') {
+  saveStatusEl.textContent = msg;
+  saveStatusEl.className = 'save-status ' + cls;
+  setTimeout(() => { if (saveStatusEl.textContent === msg) saveStatusEl.textContent = ''; }, 3000);
+  showToast(msg, cls);   // visible even if the menu is closed
+}
+
+// Global toast at the bottom of the screen.
+function showToast(msg, cls = '') {
+  const isError = cls === 'error';
+  const isWarning = cls === 'warning' || cls === 'info';
+  toastEl.textContent = msg;
+  toastEl.className = 'toast' + (isError ? ' error' : isWarning ? ' warning' : '');
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.classList.remove('show'); }, 4000);
+}
+
+const btnSaveWorld = document.getElementById('btn-save-world');
+const btnLoadWorld = document.getElementById('btn-load-world');
+const btnExportWorld = document.getElementById('btn-export-world');
+const btnImportWorld = document.getElementById('btn-import-world');
+
+bindTap(btnSaveWorld, () => {
+  const r = saveWorld();
+  if (r.ok) setSaveStatus(`Saved (${(r.size/1024).toFixed(1)} KB)`, 'saved');
+  else setSaveStatus('Save failed: ' + r.error, 'error');
+});
+
+bindTap(btnLoadWorld, async () => {
+  const r = await loadWorld();
+  if (r.ok) setSaveStatus('World loaded', 'loaded');
+  else setSaveStatus('Load failed: ' + r.error, 'error');
+});
+
+bindTap(btnExportWorld, () => {
+  const r = exportWorld();
+  if (r.ok) setSaveStatus('File exported', 'saved');
+  else setSaveStatus('Export failed: ' + r.error, 'error');
+});
+
+btnImportWorld.addEventListener('click', () => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setSaveStatus('Importing...', 'info');
+    const r = await importWorld(file);
+    if (r.ok) setSaveStatus('World imported', 'loaded');
+    else setSaveStatus('Import failed: ' + r.error, 'error');
+  };
+  input.click();
+});
+
 // Debug handle — handy from the console / remote inspector on a phone.
 window.hermes = {
   THREE, CANNON, scene, camera, renderer, state, keys, world, playerBody,
@@ -7105,6 +7925,10 @@ window.hermes = {
   shovel, setShovel, shovelPickUp, shovelPlace, rebuildChunk, chunkOf,
   // The hammer. One block out of the grid and into the rubble, nothing kept.
   hammer, setHammer, hammerStrike,
+  // The Volume tool — step 0..3 and the corners committed so far.
+  setVolume, volumePlace,
+  volume: () => ({ on: volumeOn, step: volumeStep, c1: volumeC1, c2: volumeC2, top: volumeTop,
+                   live: volumeLive, ghosts: volumeGhost.visible ? volumeGhost.count : 0 }),
   // The voxel store — the material of every block in the volume, not just the
   // surface, which is what a digging system would work against. voxelAtWorld
   // takes metres; the rest take column indices and levels. The MAT_STATS ids and

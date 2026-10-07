@@ -3943,7 +3943,7 @@ function buildPendingColliders() {
   }
 }
 
-// Every chunk a dynamic body overlaps (its bounding sphere, padded by a block
+// Every chunk a dynamic body overlaps (its world AABB, padded by a block
 // plus the distance it can cover this frame) gets its collider built *now*,
 // before the step, and is flagged in _physKeep so the distance sweep leaves it
 // alone. Checking only the body's centre, or only skipping the unload, is not
@@ -3954,12 +3954,14 @@ function ensurePhysicsObjectColliders(dt) {
   _physKeep.fill(0);
   for (let n = 0; n < syncList.length; n++) {
     const b = syncList[n].body;
-    const p = b.position, v = b.velocity;
-    const r = b.boundingRadius + BLOCK + Math.hypot(v.x, v.z) * dt;
-    const ci0 = Math.max(0, Math.floor(colI(p.x - r) / CHUNK));
-    const ci1 = Math.min(CHUNK_N - 1, Math.floor(colI(p.x + r) / CHUNK));
-    const cj0 = Math.max(0, Math.floor(colJ(p.z - r) / CHUNK));
-    const cj1 = Math.min(CHUNK_N - 1, Math.floor(colJ(p.z + r) / CHUNK));
+    const v = b.velocity;
+    if (b.aabbNeedsUpdate) b.updateAABB();
+    const lo = b.aabb.lowerBound, hi = b.aabb.upperBound;
+    const pad = BLOCK + Math.hypot(v.x, v.z) * dt;
+    const ci0 = Math.max(0, Math.floor(colI(lo.x - pad) / CHUNK));
+    const ci1 = Math.min(CHUNK_N - 1, Math.floor(colI(hi.x + pad) / CHUNK));
+    const cj0 = Math.max(0, Math.floor(colJ(lo.z - pad) / CHUNK));
+    const cj1 = Math.min(CHUNK_N - 1, Math.floor(colJ(hi.z + pad) / CHUNK));
     for (let cj = cj0; cj <= cj1; cj++) {
       for (let ci = ci0; ci <= ci1; ci++) {
         const c = cj * CHUNK_N + ci;

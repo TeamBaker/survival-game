@@ -1,0 +1,7 @@
+{
+  "theme": "dark",
+  "skipDangerousModePermissionPrompt": true,
+  "permissions": {
+    "allow": ["Edit", "Write", "Read", "Glob", "Grep", "Bash"]
+  }
+}

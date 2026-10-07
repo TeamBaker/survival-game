@@ -7001,19 +7001,38 @@ function volumeEye() {
 const _volEye = new THREE.Vector3();
 
 // The box the ghost should show right now: committed corners plus the live aim.
+// A corner set on a fallen piece rides along with it: its cell is re-read from
+// the piece's current transform, the way the shovel's ghost follows the piece.
+// If the piece is gone, the corner stays at the last cell it was seen in.
+function volumeCell(c) {
+  if (c && c.mesh && c.mesh.parent) {
+    _volP.copy(c.local).applyMatrix4(c.mesh.matrixWorld);
+    Object.assign(c, cellOf(_volP.x, _volP.y, _volP.z));
+  }
+  return c;
+}
+const _volP = new THREE.Vector3();
+
+// The plane's far corner where it is now, kept within reach of corner 1.
+function volumeFar(c) {
+  const c1 = volumeCell(volumeC1), c2 = volumeCell(c);
+  return { i: clampSpan(c1.i, c2.i), j: clampSpan(c1.j, c2.j) };
+}
+
 function volumeBox() {
   if (volumeStep === 0) {
     if (!volumeLive) return null;
-    const { i, j, lvl } = volumeLive;
+    const { i, j, lvl } = volumeCell(volumeLive);
     return { i1: i, i2: i, j1: j, j2: j, l1: lvl, l2: lvl };
   }
-  const c2 = volumeStep === 1 ? (volumeLive || volumeC1) : volumeC2;
-  const top = volumeStep === 2 ? (volumeLive ? volumeLive.lvl : volumeC1.lvl)
-            : volumeStep === 3 ? volumeTop : volumeC1.lvl;
+  const c1 = volumeCell(volumeC1);
+  const c2 = volumeFar(volumeStep === 1 ? (volumeLive || volumeC1) : volumeC2);
+  const top = volumeStep === 2 ? (volumeLive ? volumeLive.lvl : c1.lvl)
+            : volumeStep === 3 ? volumeTop : c1.lvl;
   return {
-    i1: Math.min(volumeC1.i, c2.i), i2: Math.max(volumeC1.i, c2.i),
-    j1: Math.min(volumeC1.j, c2.j), j2: Math.max(volumeC1.j, c2.j),
-    l1: Math.min(volumeC1.lvl, top), l2: Math.max(volumeC1.lvl, top),
+    i1: Math.min(c1.i, c2.i), i2: Math.max(c1.i, c2.i),
+    j1: Math.min(c1.j, c2.j), j2: Math.max(c1.j, c2.j),
+    l1: Math.min(c1.lvl, top), l2: Math.max(c1.lvl, top),
   };
 }
 const volumeBoxSize = (b) => (b.i2 - b.i1 + 1) * (b.j2 - b.j1 + 1) * (b.l2 - b.l1 + 1);
@@ -7026,21 +7045,21 @@ function volumeAimRay() {
   // voxel ray only runs as far as the piece in front of it, like the shovel's.
   const dHit = debrisAim(o.x, o.y, o.z, VOLUME_REACH);
   let hit = voxelRay(o.x, o.y, o.z, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : VOLUME_REACH);
+  // Aiming at a piece: anchor to the spot on it where a block would go, the same
+  // spot the shovel and creative tool place into, so the corner moves with it.
+  let anchor = null;
   if (!hit && dHit) {
-    // Snap to the grid cell just in front of the piece's face, standing in for
-    // the DDA's last empty cell so the steps below need not know the difference.
-    const p = dHit.point, e = BLOCK * 0.01;
-    const c = cellOf(p.x - aimDir.x * e, p.y - aimDir.y * e, p.z - aimDir.z * e);
-    ddaPrev.i = c.i; ddaPrev.j = c.j; ddaPrev.lvl = c.lvl;
-    hit = true;
+    const local = debrisSpot(dHit.piece, dHit.point, aimDir);
+    if (local) anchor = volumeCell({ mesh: dHit.piece, local: local.clone() });
   }
 
   if (volumeStep === 0) {
     // The empty cell in front of the face under the crosshair — where a block would go.
-    volumeLive = hit ? { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl } : null;
+    volumeLive = anchor || (hit ? { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl } : null);
   } else if (volumeStep === 1) {
     // Far corner of the plane: the cell being aimed at, or failing that where the
     // ray crosses corner 1's level, so the plane can be stretched out over air.
+    if (anchor) { volumeLive = anchor; return; }
     let cell = hit ? { i: ddaPrev.i, j: ddaPrev.j } : null;
     if (!cell && Math.abs(aimDir.y) > 1e-4) {
       const t = ((volumeC1.lvl + 0.5) * BLOCK - o.y) / aimDir.y;
@@ -7052,7 +7071,8 @@ function volumeAimRay() {
   } else if (volumeStep === 2) {
     // Height: the point on the vertical line through the plane's far corner that
     // the ray passes closest to. Works looking at terrain or up into open sky.
-    const px = colX(volumeC2.i), pz = colZ(volumeC2.j);
+    const c2 = volumeFar(volumeC2);
+    const px = colX(c2.i), pz = colZ(c2.j);
     const wx = o.x - px, wy = o.y, wz = o.z - pz;
     const b = aimDir.y, d = aimDir.x * wx + aimDir.y * wy + aimDir.z * wz;
     const denom = 1 - b * b;
@@ -7062,7 +7082,7 @@ function volumeAimRay() {
     const t = denom > 1e-3 ? (b * wy - d) / denom : 0;   // distance along the ray
     // The line is vertical, so the closest point's height is the ray's height at t.
     const y = t > 0 ? o.y + aimDir.y * t : o.y;
-    volumeLive = { lvl: Math.max(VOX_FLOOR, clampSpan(volumeC1.lvl, Math.floor(y / BLOCK))) };
+    volumeLive = { lvl: Math.max(VOX_FLOOR, clampSpan(volumeCell(volumeC1).lvl, Math.floor(y / BLOCK))) };
   }
 }
 

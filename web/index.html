@@ -7112,7 +7112,6 @@ function setVolume(on) {
   resetVolume();
   if (on) {
     placerMatName.textContent = volMatName();
-    showToast('Volume: aim at a block and PLACE to set Corner 1', 'info');
   }
 }
 
@@ -7122,30 +7121,23 @@ bindTap(volumeBtn, () => setVolume(!volumeOn));
 function volumePlace() {
   if (!volumeOn) return;
   if (volumeStep === 0) {
-    if (!volumeLive) { showToast('Aim at a block to set Corner 1', 'warning'); return; }
+    if (!volumeLive) return;
     volumeC1 = { ...volumeLive };
     volumeStep = 1;
     volumeLive = null;
-    showToast('Corner 1 set. Look at the far corner and PLACE to set the floor', 'info');
   } else if (volumeStep === 1) {
     volumeC2 = { ...(volumeLive || volumeC1) };
     volumeStep = 2;
     volumeLive = null;
-    showToast('Floor set. Move the camera up or down and PLACE to set the height', 'info');
   } else if (volumeStep === 2) {
     // Checked before committing, so the height can just be adjusted and retried.
     const n = volumeBoxSize(volumeBox());
-    if (n > VOLUME_MAX_BLOCKS) {
-      showToast(`Volume too large (${n} blocks, max ${VOLUME_MAX_BLOCKS})`, 'error');
-      return;
-    }
+    if (n > VOLUME_MAX_BLOCKS) return;
     volumeTop = volumeLive ? volumeLive.lvl : volumeC1.lvl;
     volumeStep = 3;
     volumeLive = null;
-    showToast(`${n} blocks. PLACE again to fill with ${volMatName()}`, 'warning');
   } else {
-    const placed = volumeFill(volumeBox(), placerMat);
-    showToast(`Filled ${placed} blocks!`);
+    volumeFill(volumeBox(), placerMat);
     resetVolume();
     return;
   }
@@ -7156,7 +7148,6 @@ function volumePlace() {
 function volumeCancel() {
   if (!volumeOn || volumeStep === 0) return;
   resetVolume();
-  showToast('Volume cleared. Aim at a block and PLACE to set Corner 1', 'info');
 }
 
 // Fill every empty cell in the box. The same bookkeeping as editBlock(), but done

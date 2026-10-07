@@ -7095,12 +7095,18 @@ function updateVolumeGhosts() {
     volumeGhostKey = '';
     return;
   }
-  const key = `${box.i1},${box.i2},${box.j1},${box.j2},${box.l1},${box.l2},${placerMat}`;
   volumeGhost.visible = volumeOutline.visible = true;
+  // Corner 1 on a fallen piece: draw the box in the piece's own frame so it
+  // tilts with it, and redraw every frame since the piece keeps moving.
+  const c1 = volumeStep === 0 ? volumeLive : volumeC1;
+  const mesh = c1 && c1.mesh && c1.mesh.parent && c1.mesh.userData.blocks?.length ? c1.mesh : null;
+  if (mesh) { volumeGhostDebris(box, mesh); volumeGhostKey = ''; return; }
+  const key = `${box.i1},${box.i2},${box.j1},${box.j2},${box.l1},${box.l2},${placerMat}`;
   if (key === volumeGhostKey) return;
   volumeGhostKey = key;
 
   volumeGhost.material.color.copy(TERRAIN_MATS[placerMat].color);
+  volumeOutline.quaternion.identity();
   let n = 0;
   outer:
   for (let lvl = box.l1; lvl <= box.l2; lvl++) {
@@ -7121,6 +7127,44 @@ function updateVolumeGhosts() {
   volumeOutline.position.set((colX(box.i1) + colX(box.i2)) / 2,
                              ((box.l1 + box.l2 + 1) / 2) * BLOCK,
                              (colZ(box.j1) + colZ(box.j2)) / 2);
+}
+
+// The ghost for a box anchored on a piece: each world cell is snapped onto the
+// piece's block lattice the same way volumeFillDebris does, so the preview
+// shows exactly the blocks a fill would add, tilted with the piece.
+function volumeGhostDebris(box, mesh) {
+  const lat = mesh.userData.blocks, ref = lat[0];
+  mesh.updateWorldMatrix(true, false);
+  const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
+  volumeGhost.material.color.copy(TERRAIN_MATS[placerMat].color);
+  const seen = new Set();
+  let n = 0, gi1 = Infinity, gi2 = -Infinity, gj1 = Infinity, gj2 = -Infinity, gl1 = Infinity, gl2 = -Infinity;
+  outer:
+  for (let lvl = box.l1; lvl <= box.l2; lvl++) {
+    for (let j = box.j1; j <= box.j2; j++) {
+      for (let i = box.i1; i <= box.i2; i++) {
+        if (n >= VOLUME_MAX_BLOCKS) break outer;
+        const p = mesh.worldToLocal(_volP.set(colX(i), (lvl + 0.5) * BLOCK, colZ(j)));
+        const gi = Math.round((p.x - kx) / BLOCK), gj = Math.round((p.z - kz) / BLOCK), gl = Math.round((p.y - ky) / BLOCK - 0.5);
+        const key = `${gi},${gj},${gl}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        gi1 = Math.min(gi1, gi); gi2 = Math.max(gi2, gi);
+        gj1 = Math.min(gj1, gj); gj2 = Math.max(gj2, gj);
+        gl1 = Math.min(gl1, gl); gl2 = Math.max(gl2, gl);
+        _volM.makeTranslation(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK).premultiply(mesh.matrixWorld);
+        volumeGhost.setMatrixAt(n++, _volM);
+      }
+    }
+  }
+  volumeGhost.count = n;
+  volumeGhost.instanceMatrix.needsUpdate = true;
+
+  // Outline around the snapped cells, in the piece's frame.
+  volumeOutline.scale.set((gi2 - gi1 + 1) * BLOCK * 1.01, (gl2 - gl1 + 1) * BLOCK * 1.01, (gj2 - gj1 + 1) * BLOCK * 1.01);
+  volumeOutline.position.set(kx + (gi1 + gi2) / 2 * BLOCK, ky + ((gl1 + gl2 + 1) / 2) * BLOCK, kz + (gj1 + gj2) / 2 * BLOCK)
+    .applyMatrix4(mesh.matrixWorld);
+  mesh.getWorldQuaternion(volumeOutline.quaternion);
 }
 
 function resetVolume() {

@@ -7004,15 +7004,26 @@ const _volEye = new THREE.Vector3();
 // The box the ghost should show right now: committed corners plus the live aim.
 // A corner set on a fallen piece rides along with it: its cell is re-read from
 // the piece's current transform, the way the shovel's ghost follows the piece.
-// If the piece is gone, the corner stays at the last cell it was seen in.
+// Its i/j/lvl are then cells of the piece's own lattice (gi/gj/lvl), not the
+// world grid, so the whole box is measured along the piece's axes.
 function volumeCell(c) {
-  if (c && c.mesh && c.mesh.parent) {
-    _volP.copy(c.local).applyMatrix4(c.mesh.matrixWorld);
-    Object.assign(c, cellOf(_volP.x, _volP.y, _volP.z));
+  if (c && c.mesh && c.mesh.parent && c.mesh.userData.blocks?.length) {
+    const K = volumeLattice(c.mesh);
+    c.i = Math.round((c.local.x - K.x) / BLOCK);
+    c.j = Math.round((c.local.z - K.z) / BLOCK);
+    c.lvl = Math.round((c.local.y - K.y) / BLOCK - 0.5);
   }
   return c;
 }
 const _volP = new THREE.Vector3();
+
+// Origin of a piece's block lattice in its local frame: cell (gi, gj, lvl) has
+// its centre at K + (gi, lvl + 0.5, gj) * BLOCK.
+function volumeLattice(mesh) {
+  const ref = mesh.userData.blocks[0];
+  return _volK.set(ref.pos.x - ref.gi * BLOCK, ref.pos.y - (ref.lvl + 0.5) * BLOCK, ref.pos.z - ref.gj * BLOCK);
+}
+const _volK = new THREE.Vector3(), _volO = new THREE.Vector3(), _volD = new THREE.Vector3(), _volInv = new THREE.Matrix4();
 
 // The plane's far corner where it is now, kept within reach of corner 1.
 function volumeFar(c) {
@@ -7052,6 +7063,37 @@ function volumeAimRay() {
   if (!hit && dHit) {
     const local = debrisSpot(dHit.piece, dHit.point, aimDir);
     if (local) anchor = volumeCell({ mesh: dHit.piece, local: local.clone() });
+  }
+
+  // Corner 1 on a piece: steps 1 and 2 run on the piece's lattice, with the ray
+  // taken into its frame, so the box stretches along the piece's own axes.
+  const pm = volumeStep > 0 && volumeC1.mesh && volumeC1.mesh.parent ? volumeC1.mesh : null;
+  if (pm) {
+    pm.updateWorldMatrix(true, false);
+    const c1 = volumeCell(volumeC1), K = volumeLattice(pm);
+    const ol = pm.worldToLocal(_volO.copy(o));
+    const dl = _volD.copy(aimDir).transformDirection(_volInv.copy(pm.matrixWorld).invert());
+    if (volumeStep === 1) {
+      // Far corner: a cell on this piece, else where the ray crosses corner 1's layer.
+      let cell = anchor && anchor.mesh === pm ? { i: anchor.i, j: anchor.j } : null;
+      if (!cell && Math.abs(dl.y) > 1e-4) {
+        const t = (K.y + (c1.lvl + 0.5) * BLOCK - ol.y) / dl.y;
+        if (t > 0 && t <= VOLUME_REACH) {
+          cell = { i: Math.round((ol.x + dl.x * t - K.x) / BLOCK), j: Math.round((ol.z + dl.z * t - K.z) / BLOCK) };
+        }
+      }
+      if (cell) volumeLive = { i: clampSpan(c1.i, cell.i), j: clampSpan(c1.j, cell.j) };
+    } else if (volumeStep === 2) {
+      // Height along the piece's up axis, through the far corner — as below, in local space.
+      const c2 = volumeFar(volumeC2);
+      const wx = ol.x - (K.x + c2.i * BLOCK), wy = ol.y, wz = ol.z - (K.z + c2.j * BLOCK);
+      const b = dl.y, d = dl.x * wx + dl.y * wy + dl.z * wz;
+      const denom = 1 - b * b;
+      const t = denom > 1e-3 ? (b * wy - d) / denom : 0;
+      const y = t > 0 ? ol.y + dl.y * t : ol.y;
+      volumeLive = { lvl: clampSpan(c1.lvl, Math.floor((y - K.y) / BLOCK)) };
+    }
+    return;
   }
 
   if (volumeStep === 0) {
@@ -7129,29 +7171,18 @@ function updateVolumeGhosts() {
                              (colZ(box.j1) + colZ(box.j2)) / 2);
 }
 
-// The ghost for a box anchored on a piece: each world cell is snapped onto the
-// piece's block lattice the same way volumeFillDebris does, so the preview
-// shows exactly the blocks a fill would add, tilted with the piece.
+// The ghost for a box anchored on a piece: the box is already in the piece's
+// lattice cells (see volumeCell), so it is drawn in the piece's frame, tilted with it.
 function volumeGhostDebris(box, mesh) {
-  const lat = mesh.userData.blocks, ref = lat[0];
   mesh.updateWorldMatrix(true, false);
-  const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
+  const { x: kx, y: ky, z: kz } = volumeLattice(mesh);
   volumeGhost.material.color.copy(TERRAIN_MATS[placerMat].color);
-  const seen = new Set();
-  let n = 0, gi1 = Infinity, gi2 = -Infinity, gj1 = Infinity, gj2 = -Infinity, gl1 = Infinity, gl2 = -Infinity;
+  let n = 0;
   outer:
-  for (let lvl = box.l1; lvl <= box.l2; lvl++) {
-    for (let j = box.j1; j <= box.j2; j++) {
-      for (let i = box.i1; i <= box.i2; i++) {
+  for (let gl = box.l1; gl <= box.l2; gl++) {
+    for (let gj = box.j1; gj <= box.j2; gj++) {
+      for (let gi = box.i1; gi <= box.i2; gi++) {
         if (n >= VOLUME_MAX_BLOCKS) break outer;
-        const p = mesh.worldToLocal(_volP.set(colX(i), (lvl + 0.5) * BLOCK, colZ(j)));
-        const gi = Math.round((p.x - kx) / BLOCK), gj = Math.round((p.z - kz) / BLOCK), gl = Math.round((p.y - ky) / BLOCK - 0.5);
-        const key = `${gi},${gj},${gl}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        gi1 = Math.min(gi1, gi); gi2 = Math.max(gi2, gi);
-        gj1 = Math.min(gj1, gj); gj2 = Math.max(gj2, gj);
-        gl1 = Math.min(gl1, gl); gl2 = Math.max(gl2, gl);
         _volM.makeTranslation(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK).premultiply(mesh.matrixWorld);
         volumeGhost.setMatrixAt(n++, _volM);
       }
@@ -7160,9 +7191,9 @@ function volumeGhostDebris(box, mesh) {
   volumeGhost.count = n;
   volumeGhost.instanceMatrix.needsUpdate = true;
 
-  // Outline around the snapped cells, in the piece's frame.
-  volumeOutline.scale.set((gi2 - gi1 + 1) * BLOCK * 1.01, (gl2 - gl1 + 1) * BLOCK * 1.01, (gj2 - gj1 + 1) * BLOCK * 1.01);
-  volumeOutline.position.set(kx + (gi1 + gi2) / 2 * BLOCK, ky + ((gl1 + gl2 + 1) / 2) * BLOCK, kz + (gj1 + gj2) / 2 * BLOCK)
+  // Outline around the box, in the piece's frame.
+  volumeOutline.scale.set((box.i2 - box.i1 + 1) * BLOCK * 1.01, (box.l2 - box.l1 + 1) * BLOCK * 1.01, (box.j2 - box.j1 + 1) * BLOCK * 1.01);
+  volumeOutline.position.set(kx + (box.i1 + box.i2) / 2 * BLOCK, ky + ((box.l1 + box.l2 + 1) / 2) * BLOCK, kz + (box.j1 + box.j2) / 2 * BLOCK)
     .applyMatrix4(mesh.matrixWorld);
   mesh.getWorldQuaternion(volumeOutline.quaternion);
 }
@@ -7271,22 +7302,18 @@ function volumeFill(box, m) {
 }
 
 // Corner 1 is on a fallen piece: the box goes onto the piece instead of the
-// terrain. Each cell's centre is taken into the piece's frame and snapped to its
-// lattice, then placed the way the creative tool places on a piece — with the
-// collider rebuilt once at the end rather than once per block.
+// terrain. The box is in the piece's lattice cells, each placed the way the
+// creative tool places on a piece — with the collider rebuilt once at the end
+// rather than once per block.
 function volumeFillDebris(f, box, m) {
   const mesh = f.mesh, lat = mesh.userData.blocks;
   if (!lat || !lat.length) return 0;
-  mesh.updateWorldMatrix(true, false);
-  const ref = lat[0];
-  const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
+  const { x: kx, y: ky, z: kz } = volumeLattice(mesh);
   const taken = new Set(lat.map((b) => `${b.gi},${b.gj},${b.lvl}`));
   let placed = 0;
-  for (let lvl = box.l1; lvl <= box.l2; lvl++) {
-    for (let j = box.j1; j <= box.j2; j++) {
-      for (let i = box.i1; i <= box.i2; i++) {
-        const p = mesh.worldToLocal(_volP.set(colX(i), (lvl + 0.5) * BLOCK, colZ(j)));
-        const gi = Math.round((p.x - kx) / BLOCK), gj = Math.round((p.z - kz) / BLOCK), gl = Math.round((p.y - ky) / BLOCK - 0.5);
+  for (let gl = box.l1; gl <= box.l2; gl++) {
+    for (let gj = box.j1; gj <= box.j2; gj++) {
+      for (let gi = box.i1; gi <= box.i2; gi++) {
         const key = `${gi},${gj},${gl}`;
         if (taken.has(key)) continue;
         taken.add(key);
@@ -7303,6 +7330,8 @@ function volumeFillDebris(f, box, m) {
 
 // Called every frame while the Volume tool is active — updates aim and ghost preview.
 function updateVolume() {
+  // The piece the box was anchored on is gone — its lattice cells mean nothing now.
+  if (volumeC1 && volumeC1.mesh && !volumeC1.mesh.parent) resetVolume();
   if (volumeStep < 3) volumeAimRay();
   updateVolumeGhosts();
 }

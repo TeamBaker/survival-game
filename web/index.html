@@ -7430,24 +7430,13 @@ function tick() {
         loadChunkCollider(cj * CHUNK_N + ci);
       }
     }
-    // True if any dynamic physics object sits inside chunk c's X/Z footprint.
-    function chunkHasPhysicsObject(c) {
-      const ci = c % CHUNK_N, cj = (c / CHUNK_N) | 0;
-      const x0 = ci * CHUNK * BLOCK - GEN_R, x1 = (ci + 1) * CHUNK * BLOCK - GEN_R;
-      const z0 = cj * CHUNK * BLOCK - GEN_R, z1 = (cj + 1) * CHUNK * BLOCK - GEN_R;
-      for (let i = 0; i < syncList.length; i++) {
-        const p = syncList[i].body.position;
-        if (p.x >= x0 && p.x < x1 && p.z >= z0 && p.z < z1) return true;
-      }
-      return false;
-    }
     // Unload distant chunk colliders (but keep chunks that have debris)
     for (let c = 0; c < colliderBody.length; c++) {
       if (!colliderBody[c]) continue;
       const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
       const cx = (ci + 0.5) * CHUNK * BLOCK - GEN_R, cz = (cj + 0.5) * CHUNK * BLOCK - GEN_R;
       const dx = cx - playerBody.position.x, dz = cz - playerBody.position.z;
-      if (dx * dx + dz * dz > (COLLIDER_RADIUS * CHUNK * BLOCK) * (COLLIDER_RADIUS * CHUNK * BLOCK) * 1.2 && !chunkHasPhysicsObject(c)) {
+      if (dx * dx + dz * dz > (COLLIDER_RADIUS * CHUNK * BLOCK) * (COLLIDER_RADIUS * CHUNK * BLOCK) * 1.2) {
         unloadChunkCollider(c);
       }
     }

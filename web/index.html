@@ -7154,6 +7154,19 @@ function volumeCancel() {
 // once for the whole box — per block, editBlock would rebuild a chunk collider for
 // every single cell.
 function volumeFill(box, m) {
+  // Loose pieces inside the box are taken up by the fill — left in place they
+  // would be buried in solid ground, and cannon would fling them back out.
+  const x0 = colX(box.i1) - BLOCK / 2, x1 = colX(box.i2) + BLOCK / 2;
+  const z0 = colZ(box.j1) - BLOCK / 2, z1 = colZ(box.j2) + BLOCK / 2;
+  const y0 = Math.max(VOX_FLOOR, box.l1) * BLOCK, y1 = (box.l2 + 1) * BLOCK;
+  for (const list of [fallingChunks, restedChunks]) {
+    for (let n = list.length - 1; n >= 0; n--) {
+      const p = list[n].body.position;
+      if (p.x < x0 || p.x > x1 || p.y < y0 || p.y > y1 || p.z < z0 || p.z > z1) continue;
+      dropChunk(list[n]);
+      list.splice(n, 1);
+    }
+  }
   let placed = 0;
   const chunks = new Set();
   for (let j = box.j1; j <= box.j2; j++) {

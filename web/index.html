@@ -5842,7 +5842,7 @@ function debrisSpot(mesh, point, dir) {
 // Put a held block onto a fallen piece. The cube hangs off the piece's mesh in
 // local coordinates, so it turns and tumbles with it, and the body it is glued
 // to gets heavier and grows a collider to match.
-function placeOnDebris(mesh, local, m) {
+function placeOnDebris(mesh, local, m, rebuild = true) {
   // Powder gets grainGeo's speckle, the same as the piece's own powder blocks.
   // Anything else gets its own shade off the cell it lands in, so a wall built
   // on a piece is not one flat colour the way TERRAIN_MATS alone would make it.
@@ -5870,6 +5870,7 @@ function placeOnDebris(mesh, local, m) {
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it.
+  if (!rebuild) return;
   const f = chunkOfMesh(mesh);
   if (!f) return;
   rebuildDebrisBody(mesh, f.body);
@@ -7185,6 +7186,8 @@ function volumeCancel() {
 // once for the whole box — per block, editBlock would rebuild a chunk collider for
 // every single cell.
 function volumeFill(box, m) {
+  const f = volumeC1 && volumeC1.mesh && volumeC1.mesh.parent && chunkOfMesh(volumeC1.mesh);
+  if (f) return volumeFillDebris(f, box, m);
   let placed = 0;
   const chunks = new Set();
   for (let j = box.j1; j <= box.j2; j++) {
@@ -7220,6 +7223,37 @@ function volumeFill(box, m) {
     }
   }
   for (const c of chunks) rebuildChunkCollider(c);
+  return placed;
+}
+
+// Corner 1 is on a fallen piece: the box goes onto the piece instead of the
+// terrain. Each cell's centre is taken into the piece's frame and snapped to its
+// lattice, then placed the way the creative tool places on a piece — with the
+// collider rebuilt once at the end rather than once per block.
+function volumeFillDebris(f, box, m) {
+  const mesh = f.mesh, lat = mesh.userData.blocks;
+  if (!lat || !lat.length) return 0;
+  mesh.updateWorldMatrix(true, false);
+  const ref = lat[0];
+  const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
+  const taken = new Set(lat.map((b) => `${b.gi},${b.gj},${b.lvl}`));
+  let placed = 0;
+  for (let lvl = box.l1; lvl <= box.l2; lvl++) {
+    for (let j = box.j1; j <= box.j2; j++) {
+      for (let i = box.i1; i <= box.i2; i++) {
+        const p = mesh.worldToLocal(_volP.set(colX(i), (lvl + 0.5) * BLOCK, colZ(j)));
+        const gi = Math.round((p.x - kx) / BLOCK), gj = Math.round((p.z - kz) / BLOCK), gl = Math.round((p.y - ky) / BLOCK - 0.5);
+        const key = `${gi},${gj},${gl}`;
+        if (taken.has(key)) continue;
+        taken.add(key);
+        placeOnDebris(mesh, new THREE.Vector3(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK), m, false);
+        placed++;
+      }
+    }
+  }
+  if (!placed) return 0;
+  rebuildDebrisBody(mesh, f.body);
+  f.still = 0;
   return placed;
 }
 

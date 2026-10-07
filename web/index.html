@@ -3943,6 +3943,34 @@ function buildPendingColliders() {
   }
 }
 
+// Every chunk a dynamic body overlaps (its bounding sphere, padded by a block
+// plus the distance it can cover this frame) gets its collider built *now*,
+// before the step, and is flagged in _physKeep so the distance sweep leaves it
+// alone. Checking only the body's centre, or only skipping the unload, is not
+// enough: a body straddling a chunk edge rests on the neighbour's collider, and
+// one that rolls into a chunk the player never visited has no collider at all.
+const _physKeep = new Uint8Array(CHUNK_N * CHUNK_N);
+function ensurePhysicsObjectColliders(dt) {
+  _physKeep.fill(0);
+  for (let n = 0; n < syncList.length; n++) {
+    const b = syncList[n].body;
+    const p = b.position, v = b.velocity;
+    const r = b.boundingRadius + BLOCK + Math.hypot(v.x, v.z) * dt;
+    const ci0 = Math.max(0, Math.floor(colI(p.x - r) / CHUNK));
+    const ci1 = Math.min(CHUNK_N - 1, Math.floor(colI(p.x + r) / CHUNK));
+    const cj0 = Math.max(0, Math.floor(colJ(p.z - r) / CHUNK));
+    const cj1 = Math.min(CHUNK_N - 1, Math.floor(colJ(p.z + r) / CHUNK));
+    for (let cj = cj0; cj <= cj1; cj++) {
+      for (let ci = ci0; ci <= ci1; ci++) {
+        const c = cj * CHUNK_N + ci;
+        if (_physKeep[c]) continue;
+        _physKeep[c] = 1;
+        if (!colliderBody[c]) buildChunkColliderSync(c);
+      }
+    }
+  }
+}
+
 function unloadChunkCollider(c) {
   const body = colliderBody[c];
   if (!body) return;
@@ -7409,6 +7437,7 @@ function tick() {
   // Twice the old rate: a shorter step resolves the block-edge contacts before
   // they build into a shove, which is the one thing here that helps the walk.
   // Nothing touches the body afterwards — the solver's answer is the answer.
+  ensurePhysicsObjectColliders(dt);
   world.step(PHYS_STEP, dt, 8);
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
@@ -7432,7 +7461,7 @@ function tick() {
     }
     // Unload distant chunk colliders (but keep chunks that have debris)
     for (let c = 0; c < colliderBody.length; c++) {
-      if (!colliderBody[c]) continue;
+      if (!colliderBody[c] || _physKeep[c]) continue;
       const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
       const cx = (ci + 0.5) * CHUNK * BLOCK - GEN_R, cz = (cj + 0.5) * CHUNK * BLOCK - GEN_R;
       const dx = cx - playerBody.position.x, dz = cz - playerBody.position.z;

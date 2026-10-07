@@ -4805,10 +4805,10 @@ const cellOf = (x, y, z) => ({ i: colI(x), j: colJ(z), lvl: Math.floor(y / BLOCK
 // all — they get their own raycast.
 const debrisRay = new THREE.Raycaster();
 const debrisOrigin = new THREE.Vector3();
-function debrisAim(ox, oy, oz) {
+function debrisAim(ox, oy, oz, reach = SHOVEL_REACH) {
   if (debris.children.length === 0) return null;
   debrisRay.set(debrisOrigin.set(ox, oy, oz), aimDir);
-  debrisRay.far = SHOVEL_REACH;
+  debrisRay.far = reach;
   // Recursive: blocks placed onto a piece hang off its mesh as children, and a
   // hit on one of those is a hit on the piece.
   const hits = debrisRay.intersectObjects(debris.children, true);
@@ -7022,7 +7022,18 @@ const volumeBoxSize = (b) => (b.i2 - b.i1 + 1) * (b.j2 - b.j1 + 1) * (b.l2 - b.l
 function volumeAimRay() {
   camera.getWorldDirection(aimDir);
   const o = volumeEye();
-  const hit = voxelRay(o.x, o.y, o.z, aimDir.x, aimDir.y, aimDir.z, VOLUME_REACH);
+  // Fallen pieces are invisible to the DDA, so they get their own raycast; the
+  // voxel ray only runs as far as the piece in front of it, like the shovel's.
+  const dHit = debrisAim(o.x, o.y, o.z, VOLUME_REACH);
+  let hit = voxelRay(o.x, o.y, o.z, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : VOLUME_REACH);
+  if (!hit && dHit) {
+    // Snap to the grid cell just in front of the piece's face, standing in for
+    // the DDA's last empty cell so the steps below need not know the difference.
+    const p = dHit.point, e = BLOCK * 0.01;
+    const c = cellOf(p.x - aimDir.x * e, p.y - aimDir.y * e, p.z - aimDir.z * e);
+    ddaPrev.i = c.i; ddaPrev.j = c.j; ddaPrev.lvl = c.lvl;
+    hit = true;
+  }
 
   if (volumeStep === 0) {
     // The empty cell in front of the face under the crosshair — where a block would go.

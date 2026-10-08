@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 127;
+  var v = 133;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -3807,10 +3807,10 @@ function buildChunkColliderBoxes(c) {
   const w = i1 - i0, h = j1 - j0;
   if (w <= 0 || h <= 0) return [];
 
-  const solidVisible = (k, lvl) => {
-    const p = voxOff[k] - VOX_FLOOR + lvl;
-    return voxMat[p] !== AIR && blockVisible[p] === 1;
-  };
+  // Every solid block counts, buried or not: a hidden block is still solid, and
+  // letting the merge run through the interior turns a hollow shell of thin
+  // slabs into a few deep boxes. (Rendering still draws exposed faces only.)
+  const solidVisible = (k, lvl) => voxMat[voxOff[k] - VOX_FLOOR + lvl] !== AIR;
 
   const top = new Int32Array(w * h).fill(NO_COLUMN);
   const floor = new Int32Array(w * h);
@@ -3859,11 +3859,14 @@ function buildChunkColliderBoxes(c) {
       for (let ii = 0; ii < w; ii++) {
         const idx = jj * w + ii;
         if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) continue;
-        if (lvl >= consumedTo[idx]) continue;
         const k = (j0 + jj) * GEN_N + (i0 + ii);
         if (!solidVisible(k, lvl)) continue;
-        solid[idx] = 1;
-        any = true;
+        // 2 = still needs covering at this level; 1 = solid here but already
+        // inside a box from higher up. A box may grow across 1s (overlap is free
+        // on a static body), so a slope's contour merges into a few wide boxes
+        // reaching uphill instead of a fringe of narrow strips along each step.
+        solid[idx] = lvl >= consumedTo[idx] ? 1 : 2;
+        if (solid[idx] === 2) any = true;
       }
     }
     if (!any) continue;
@@ -3872,26 +3875,30 @@ function buildChunkColliderBoxes(c) {
     for (let jj = 0; jj < h; jj++) {
       for (let ii = 0; ii < w; ii++) {
         const idx = jj * w + ii;
-        if (!solid[idx] || visited[idx]) continue;
-        let ii1 = ii + 1;
-        while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
-        let jj1 = jj + 1;
-        for (;;) {
-          if (jj1 >= h) break;
-          let full = true;
-          for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
-          if (!full) break;
-          jj1++;
-        }
-        for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+        if (solid[idx] !== 2 || visited[idx]) continue;
+        // Grow both ways along each axis — the covered cells can lie on either
+        // side, wherever the ground rises.
+        let ii0 = ii, ii1 = ii + 1, jj0 = jj, jj1 = jj + 1;
+        while (ii0 > 0 && solid[jj * w + ii0 - 1]) ii0--;
+        while (ii1 < w && solid[jj * w + ii1]) ii1++;
+        const rowFull = (y) => {
+          for (let x = ii0; x < ii1; x++) if (!solid[y * w + x]) return false;
+          return true;
+        };
+        while (jj0 > 0 && rowFull(jj0 - 1)) jj0--;
+        while (jj1 < h && rowFull(jj1)) jj1++;
+        for (let y = jj0; y < jj1; y++) for (let x = ii0; x < ii1; x++) visited[y * w + x] = 1;
 
         let botLvl = lvl;
-        while (botLvl - 1 >= lo && footprintSolidAt(ii, ii1, jj, jj1, botLvl - 1)) botLvl--;
+        while (botLvl - 1 >= lo && footprintSolidAt(ii0, ii1, jj0, jj1, botLvl - 1)) botLvl--;
         if (botLvl < lvl) {
-          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) consumedTo[y * w + x] = botLvl;
+          for (let y = jj0; y < jj1; y++) for (let x = ii0; x < ii1; x++) {
+            const ci = y * w + x;
+            if (botLvl < consumedTo[ci]) consumedTo[ci] = botLvl;
+          }
         }
 
-        const bi0 = i0 + ii, bi1 = i0 + ii1 - 1, bj0 = j0 + jj, bj1 = j0 + jj1 - 1;
+        const bi0 = i0 + ii0, bi1 = i0 + ii1 - 1, bj0 = j0 + jj0, bj1 = j0 + jj1 - 1;
         boxes.push({
           hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: (lvl - botLvl + 1) * BLOCK * 0.5, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
           x: (colX(bi0) + colX(bi1)) * 0.5, y: ((botLvl + lvl) / 2 + 0.5) * BLOCK, z: (colZ(bj0) + colZ(bj1)) * 0.5,
@@ -3940,6 +3947,36 @@ function buildPendingColliders() {
     world.addBody(body);
     colliderBody[c] = body;
     built++;
+  }
+}
+
+// Every chunk a dynamic body overlaps (its world AABB, padded by a block
+// plus the distance it can cover this frame) gets its collider built *now*,
+// before the step, and is flagged in _physKeep so the distance sweep leaves it
+// alone. Checking only the body's centre, or only skipping the unload, is not
+// enough: a body straddling a chunk edge rests on the neighbour's collider, and
+// one that rolls into a chunk the player never visited has no collider at all.
+const _physKeep = new Uint8Array(CHUNK_N * CHUNK_N);
+function ensurePhysicsObjectColliders(dt) {
+  _physKeep.fill(0);
+  for (let n = 0; n < syncList.length; n++) {
+    const b = syncList[n].body;
+    const v = b.velocity;
+    if (b.aabbNeedsUpdate) b.updateAABB();
+    const lo = b.aabb.lowerBound, hi = b.aabb.upperBound;
+    const pad = BLOCK + Math.hypot(v.x, v.z) * dt;
+    const ci0 = Math.max(0, Math.floor(colI(lo.x - pad) / CHUNK));
+    const ci1 = Math.min(CHUNK_N - 1, Math.floor(colI(hi.x + pad) / CHUNK));
+    const cj0 = Math.max(0, Math.floor(colJ(lo.z - pad) / CHUNK));
+    const cj1 = Math.min(CHUNK_N - 1, Math.floor(colJ(hi.z + pad) / CHUNK));
+    for (let cj = cj0; cj <= cj1; cj++) {
+      for (let ci = ci0; ci <= ci1; ci++) {
+        const c = cj * CHUNK_N + ci;
+        if (_physKeep[c]) continue;
+        _physKeep[c] = 1;
+        if (!colliderBody[c]) buildChunkColliderSync(c);
+      }
+    }
   }
 }
 
@@ -4775,10 +4812,10 @@ const cellOf = (x, y, z) => ({ i: colI(x), j: colJ(z), lvl: Math.floor(y / BLOCK
 // all — they get their own raycast.
 const debrisRay = new THREE.Raycaster();
 const debrisOrigin = new THREE.Vector3();
-function debrisAim(ox, oy, oz) {
+function debrisAim(ox, oy, oz, reach = SHOVEL_REACH) {
   if (debris.children.length === 0) return null;
   debrisRay.set(debrisOrigin.set(ox, oy, oz), aimDir);
-  debrisRay.far = SHOVEL_REACH;
+  debrisRay.far = reach;
   // Recursive: blocks placed onto a piece hang off its mesh as children, and a
   // hit on one of those is a hit on the piece.
   const hits = debrisRay.intersectObjects(debris.children, true);
@@ -4888,8 +4925,75 @@ const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
 const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+// Which face each vertex belongs to: BoxGeometry lays its faces down four
+// vertices apiece, in the order +x, -x, +y, -y, +z, -z.
+fallGeo.setAttribute('faceId', new THREE.BufferAttribute(Float32Array.from({ length: 24 }, (_, v) => v >> 2), 1));
 // White, because the colour of every cube comes in per instance.
 const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
+// Like the terrain, a piece only draws its outside: each instance carries a
+// bitmask of the faces that have another block of the piece against them
+// (debrisFaceMask), and those are thrown off-screen before they rasterise.
+fallMat.onBeforeCompile = (sh) => {
+  sh.vertexShader = 'attribute float faceId;\nattribute float faceHide;\n' + sh.vertexShader.replace(
+    '#include <project_vertex>',
+    '#include <project_vertex>\n  if (mod(floor(faceHide / exp2(faceId)), 2.0) > 0.5) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);');
+};
+// The shadow pass draws with its own depth material, which knows nothing of the
+// mask — without this it renders every face of every block, buried or not, and
+// a big piece costs its whole volume in the shadow map each frame.
+const fallDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+fallDepthMat.onBeforeCompile = fallMat.onBeforeCompile;
+// The mask is per instance, so each piece needs its own copy of the cube to
+// carry it — 24 vertices, freed with the piece.
+function debrisInstances(n) {
+  const g = fallGeo.clone();
+  g.setAttribute('faceHide', new THREE.InstancedBufferAttribute(new Float32Array(Math.max(n, 1)), 1));
+  const m = new THREE.InstancedMesh(g, fallMat, n);
+  m.customDepthMaterial = fallDepthMat;
+  return m;
+}
+const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+// A child block has no instance to carry a mask, but it owns its geometry, and
+// both kinds lay the cube's six faces down one after another in FACE_DIRS order
+// — so pack the faces it still shows to the front of its index and draw only those.
+function debrisChildFaces(c, bits) {
+  const g = c.geometry, idx = g.index;
+  const full = g.userData.fullIndex ??= idx.array.slice();
+  const per = full.length / 6;
+  let n = 0;
+  for (let f = 0; f < 6; f++) {
+    if (bits & (1 << f)) continue;
+    idx.array.set(full.subarray(f * per, (f + 1) * per), n);
+    n += per;
+  }
+  g.setDrawRange(0, n);
+  idx.needsUpdate = true;
+  // Fully buried: a draw call (two, with the shadow) for nothing. Hidden, it
+  // drops out of the render lists altogether.
+  c.visible = n > 0;
+}
+// Recompute that mask from the piece's lattice. Every block counts as a
+// neighbour — powder and placed children too — and every block gets culled:
+// the instances, which sit at the front of the lattice, through their mask,
+// the children through their own index.
+function debrisFaceMask(mesh) {
+  const lat = mesh.userData.blocks, attr = mesh.geometry.attributes.faceHide;
+  if (!lat.length) return;
+  const a0 = lat[0].pos;
+  const key = (x, y, z) => Math.round((x - a0.x) / BLOCK) + ',' + Math.round((y - a0.y) / BLOCK)
+                                                         + ',' + Math.round((z - a0.z) / BLOCK);
+  const at = new Set(lat.map((b) => key(b.pos.x, b.pos.y, b.pos.z)));
+  for (let q = 0; q < lat.length; q++) {
+    const p = lat[q].pos;
+    let bits = 0;
+    FACE_DIRS.forEach(([dx, dy, dz], f) => {
+      if (at.has(key(p.x + dx * BLOCK, p.y + dy * BLOCK, p.z + dz * BLOCK))) bits |= 1 << f;
+    });
+    if (lat[q].child) debrisChildFaces(lat[q].child, bits);
+    else attr.array[q] = bits;
+  }
+  attr.needsUpdate = true;
+}
 // A block that hangs off a piece rather than being one of its instances: the
 // powder ones, which need grainGeo's speckle instead of a flat instance colour,
 // and the ones the player lays on. Both ride with the piece as children, which
@@ -4949,7 +5053,8 @@ function dropChunk(f) {
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
   for (const c of f.mesh.children) freeDebrisChild(c);
-  f.mesh.dispose();  // the per-instance buffers only — geometry and material are shared
+  f.mesh.dispose();  // the per-instance buffers
+  f.mesh.geometry.dispose();  // the piece's own cube copy — the material is shared
 }
 
 // The entry for a piece, whether it is still being watched or has settled. A
@@ -4997,7 +5102,7 @@ function spawnFallingChunk(unit) {
 
   // The mesh: one cube per block, positioned relative to that centre so the
   // whole thing rotates about it.
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, nSolid);
+  const mesh = debrisInstances(nSolid);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
   for (let q = 0; q < nSolid; q++) {
     const b = blocks[q];
@@ -5021,6 +5126,7 @@ function spawnFallingChunk(unit) {
     if (q >= nSolid) e.child = grainChild(b.m, pos, mesh);
     return e;
   });
+  debrisFaceMask(mesh);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   debris.add(mesh);
@@ -5049,21 +5155,9 @@ function spawnFallingChunk(unit) {
       if (!cells) byLevel.set(b.lvl, cells = new Set());
       cells.add(b.gi + ',' + b.gj);
     }
-    const hasCell = (gi, gj, lvl) => {
-      const cells = byLevel.get(lvl);
-      return !!cells && cells.has(gi + ',' + gj);
-    };
-    const exposedByLevel = new Map();
-    for (const [lvl, cells] of byLevel) {
-      const exp = new Set();
-      for (const key of cells) {
-        const [gi, gj] = key.split(',').map(Number);
-        if (!hasCell(gi - 1, gj, lvl) || !hasCell(gi + 1, gj, lvl) ||
-            !hasCell(gi, gj - 1, lvl) || !hasCell(gi, gj + 1, lvl) ||
-            !hasCell(gi, gj, lvl - 1) || !hasCell(gi, gj, lvl + 1)) exp.add(key);
-      }
-      if (exp.size) exposedByLevel.set(lvl, exp);
-    }
+    // Every block counts, buried or not (as with the terrain collider): merging
+    // through the interior gives a few deep boxes instead of a hollow shell.
+    const exposedByLevel = byLevel;
     function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
       const cellsAt = exposedByLevel.get(lvl);
       if (!cellsAt) return false;
@@ -5274,20 +5368,29 @@ function shedPowder() {
       const dx = ax >= ay && ax >= az ? Math.sign(powderLocalDown.x) * BLOCK : 0;
       const dy = ay > ax && ay >= az ? Math.sign(powderLocalDown.y) * BLOCK : 0;
       const dz = az > ax && az > ay ? Math.sign(powderLocalDown.z) * BLOCK : 0;
+      // Nothing to shed unless the lattice or the way down has changed since the
+      // last look — a resting piece would otherwise be walked every frame.
+      const shedKey = dx + ',' + dy + ',' + dz + ',' + lat.length;
+      if (f.shedKey === shedKey) continue;
+      f.shedKey = shedKey;
+      if (!lat.some((b) => MAT_STATS[b.mat]?.powder)) continue;
+      const a0 = lat[0].pos.clone();
+      const cell = (x, y, z) => Math.round((x - a0.x) / BLOCK) + ',' + Math.round((y - a0.y) / BLOCK)
+                                                              + ',' + Math.round((z - a0.z) / BLOCK);
+      const at = new Set(lat.map((u) => cell(u.pos.x, u.pos.y, u.pos.z)));
       mesh.updateWorldMatrix(true, false);   // it was moved by the body this frame
       let cut = false;
       for (let q = lat.length - 1; q >= 0; q--) {
         const b = lat[q];
         if (!MAT_STATS[b.mat]?.powder) continue;
-        const nx = b.pos.x + dx, ny = b.pos.y + dy, nz = b.pos.z + dz;
-        if (lat.some((u) => Math.abs(u.pos.x - nx) < 0.01 && Math.abs(u.pos.y - ny) < 0.01
-                                                          && Math.abs(u.pos.z - nz) < 0.01)) continue;
+        if (at.has(cell(b.pos.x + dx, b.pos.y + dy, b.pos.z + dz))) continue;
         const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
         g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);   // grainGeo builds a speckled unit cube: scale it to block size
         g.mesh.scale.setScalar(BLOCK);
         g.mesh.position.copy(g.pos);
         scene.add(g.mesh);
         powderFalling.push(g);
+        at.delete(cell(b.pos.x, b.pos.y, b.pos.z));
         cutDebrisLat(mesh, q);   // the same gap-close a dig does
         cut = true;
       }
@@ -5371,6 +5474,7 @@ function removeDebrisMesh(mesh) {
   debris.remove(mesh);
   for (const c of mesh.children) freeDebrisChild(c);
   mesh.dispose();
+  mesh.geometry.dispose();
 }
 
 // Cannon turns a body about its origin, so a piece's origin has to sit on its
@@ -5427,21 +5531,9 @@ function rebuildDebrisBody(mesh, body) {
       if (!cells) byLevel.set(b.lvl, cells = new Set());
       cells.add(b.gi + ',' + b.gj);
     }
-    const hasCell = (gi, gj, lvl) => {
-      const cells = byLevel.get(lvl);
-      return !!cells && cells.has(gi + ',' + gj);
-    };
-    const exposedByLevel = new Map();
-    for (const [lvl, cells] of byLevel) {
-      const exp = new Set();
-      for (const key of cells) {
-        const [gi, gj] = key.split(',').map(Number);
-        if (!hasCell(gi - 1, gj, lvl) || !hasCell(gi + 1, gj, lvl) ||
-            !hasCell(gi, gj - 1, lvl) || !hasCell(gi, gj + 1, lvl) ||
-            !hasCell(gi, gj, lvl - 1) || !hasCell(gi, gj, lvl + 1)) exp.add(key);
-      }
-      if (exp.size) exposedByLevel.set(lvl, exp);
-    }
+    // Every block counts, buried or not (as with the terrain collider): merging
+    // through the interior gives a few deep boxes instead of a hollow shell.
+    const exposedByLevel = byLevel;
     function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
       const cellsAt = exposedByLevel.get(lvl);
       if (!cellsAt) return false;
@@ -5544,6 +5636,7 @@ function cutDebrisLat(mesh, q) {
     mesh.boundingSphere = null;
   }
   lat.splice(q, 1);
+  debrisFaceMask(mesh);
 }
 
 // After blocks are cut from a debris piece, check if the remaining lattice
@@ -5599,7 +5692,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
   if (nPowder) blocks.sort((a, b) => (MAT_STATS[a.mat]?.powder ? 1 : 0) - (MAT_STATS[b.mat]?.powder ? 1 : 0));
   const nSolid = n - nPowder;
 
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, nSolid);
+  const mesh = debrisInstances(nSolid);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   mesh.userData.blocks = blocks.map((b, q) => {
@@ -5620,6 +5713,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (q >= nSolid) e.child = grainChild(b.mat, p, mesh);
     return e;
   });
+  debrisFaceMask(mesh);
   if (nSolid) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.instanceColor.needsUpdate = true;
@@ -5647,21 +5741,9 @@ function spawnDebrisPart(parent, blocks, pbody) {
       if (!cells) byLevel.set(b.lvl, cells = new Set());
       cells.add(b.gi + ',' + b.gj);
     }
-    const hasCell = (gi, gj, lvl) => {
-      const cells = byLevel.get(lvl);
-      return !!cells && cells.has(gi + ',' + gj);
-    };
-    const exposedByLevel = new Map();
-    for (const [lvl, cells] of byLevel) {
-      const exp = new Set();
-      for (const key of cells) {
-        const [gi, gj] = key.split(',').map(Number);
-        if (!hasCell(gi - 1, gj, lvl) || !hasCell(gi + 1, gj, lvl) ||
-            !hasCell(gi, gj - 1, lvl) || !hasCell(gi, gj + 1, lvl) ||
-            !hasCell(gi, gj, lvl - 1) || !hasCell(gi, gj, lvl + 1)) exp.add(key);
-      }
-      if (exp.size) exposedByLevel.set(lvl, exp);
-    }
+    // Every block counts, buried or not (as with the terrain collider): merging
+    // through the interior gives a few deep boxes instead of a hollow shell.
+    const exposedByLevel = byLevel;
     function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
       const cellsAt = exposedByLevel.get(lvl);
       if (!cellsAt) return false;
@@ -5812,7 +5894,7 @@ function debrisSpot(mesh, point, dir) {
 // Put a held block onto a fallen piece. The cube hangs off the piece's mesh in
 // local coordinates, so it turns and tumbles with it, and the body it is glued
 // to gets heavier and grows a collider to match.
-function placeOnDebris(mesh, local, m) {
+function placeOnDebris(mesh, local, m, rebuild = true) {
   // Powder gets grainGeo's speckle, the same as the piece's own powder blocks.
   // Anything else gets its own shade off the cell it lands in, so a wall built
   // on a piece is not one flat colour the way TERRAIN_MATS alone would make it.
@@ -5823,7 +5905,7 @@ function placeOnDebris(mesh, local, m) {
     const variation = 0.85 + nhash3(Math.round(local.x / BLOCK), Math.round(local.z / BLOCK), Math.round(local.y / BLOCK)) * 0.30;
     const cubeMat = TERRAIN_MATS[m].clone();
     cubeMat.color.multiplyScalar(variation);
-    cube = new THREE.Mesh(fallGeo, cubeMat);
+    cube = new THREE.Mesh(fallGeo.clone(), cubeMat);   // its own, so debrisChildFaces can cull it
     cube.position.copy(local);
     cube.castShadow = true;
     cube.receiveShadow = true;
@@ -5837,9 +5919,11 @@ function placeOnDebris(mesh, local, m) {
   const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
   const gi = Math.round((local.x - kx) / BLOCK), gj = Math.round((local.z - kz) / BLOCK), lvl = Math.round((local.y - ky) / BLOCK - 0.5);
   mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, color: colour, gi, gj, lvl });
+  debrisFaceMask(mesh);
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it.
+  if (!rebuild) return;
   const f = chunkOfMesh(mesh);
   if (!f) return;
   rebuildDebrisBody(mesh, f.body);
@@ -6648,6 +6732,45 @@ function rebuildDebugCollision() {
   }
 }
 
+// Physics object (debris) colliders move every frame, so they get their own group that
+// is redrawn each frame from shared unit shapes, scaled and placed per collision shape.
+const debugDebris = new THREE.Group();
+scene.add(debugDebris);
+const _debugDebrisMat = new THREE.LineBasicMaterial({ color: 0x00ccff, opacity: 0.7, transparent: true, depthTest: true });
+const _debugBoxGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(2, 2, 2));
+const _debugSphereGeo = new THREE.WireframeGeometry(new THREE.SphereGeometry(1, 8, 6));
+const _debugQ = new THREE.Quaternion(), _debugQ2 = new THREE.Quaternion(), _debugV = new THREE.Vector3();
+function updateDebugDebris() {
+  debugDebris.visible = debugColOn;
+  if (!debugColOn) return;
+  let n = 0;
+  for (const list of [fallingChunks, restedChunks]) {
+    for (const e of list) {
+      const body = e.body;
+      if (!body) continue;
+      const bq = body.quaternion;
+      _debugQ.set(bq.x, bq.y, bq.z, bq.w);
+      for (let i = 0; i < body.shapes.length; i++) {
+        const sh = body.shapes[i];
+        let geo, sx, sy, sz;
+        if (sh instanceof CANNON.Box) { geo = _debugBoxGeo; sx = sh.halfExtents.x; sy = sh.halfExtents.y; sz = sh.halfExtents.z; }
+        else if (sh instanceof CANNON.Sphere) { geo = _debugSphereGeo; sx = sy = sz = sh.radius; }
+        else continue;
+        let ls = debugDebris.children[n++];
+        if (!ls) { ls = new THREE.LineSegments(geo, _debugDebrisMat); debugDebris.add(ls); }
+        ls.geometry = geo;
+        ls.visible = true;
+        ls.scale.set(sx, sy, sz);
+        const off = body.shapeOffsets[i], so = body.shapeOrientations[i];
+        _debugV.set(off.x, off.y, off.z).applyQuaternion(_debugQ);
+        ls.position.set(body.position.x + _debugV.x, body.position.y + _debugV.y, body.position.z + _debugV.z);
+        ls.quaternion.copy(_debugQ).multiply(_debugQ2.set(so.x, so.y, so.z, so.w));
+      }
+    }
+  }
+  for (let i = n; i < debugDebris.children.length; i++) debugDebris.children[i].visible = false;
+}
+
 const btnDebugChunks = document.getElementById('btn-debug-chunks');
 const btnDebugCollision = document.getElementById('btn-debug-collision');
 bindTap(btnDebugChunks, () => {
@@ -6971,19 +7094,49 @@ function volumeEye() {
 const _volEye = new THREE.Vector3();
 
 // The box the ghost should show right now: committed corners plus the live aim.
+// A corner set on a fallen piece rides along with it: its cell is re-read from
+// the piece's current transform, the way the shovel's ghost follows the piece.
+// Its i/j/lvl are then cells of the piece's own lattice (gi/gj/lvl), not the
+// world grid, so the whole box is measured along the piece's axes.
+function volumeCell(c) {
+  if (c && c.mesh && c.mesh.parent && c.mesh.userData.blocks?.length) {
+    const K = volumeLattice(c.mesh);
+    c.i = Math.round((c.local.x - K.x) / BLOCK);
+    c.j = Math.round((c.local.z - K.z) / BLOCK);
+    c.lvl = Math.round((c.local.y - K.y) / BLOCK - 0.5);
+  }
+  return c;
+}
+const _volP = new THREE.Vector3();
+
+// Origin of a piece's block lattice in its local frame: cell (gi, gj, lvl) has
+// its centre at K + (gi, lvl + 0.5, gj) * BLOCK.
+function volumeLattice(mesh) {
+  const ref = mesh.userData.blocks[0];
+  return _volK.set(ref.pos.x - ref.gi * BLOCK, ref.pos.y - (ref.lvl + 0.5) * BLOCK, ref.pos.z - ref.gj * BLOCK);
+}
+const _volK = new THREE.Vector3(), _volO = new THREE.Vector3(), _volD = new THREE.Vector3(), _volInv = new THREE.Matrix4();
+
+// The plane's far corner where it is now, kept within reach of corner 1.
+function volumeFar(c) {
+  const c1 = volumeCell(volumeC1), c2 = volumeCell(c);
+  return { i: clampSpan(c1.i, c2.i), j: clampSpan(c1.j, c2.j) };
+}
+
 function volumeBox() {
   if (volumeStep === 0) {
     if (!volumeLive) return null;
-    const { i, j, lvl } = volumeLive;
+    const { i, j, lvl } = volumeCell(volumeLive);
     return { i1: i, i2: i, j1: j, j2: j, l1: lvl, l2: lvl };
   }
-  const c2 = volumeStep === 1 ? (volumeLive || volumeC1) : volumeC2;
-  const top = volumeStep === 2 ? (volumeLive ? volumeLive.lvl : volumeC1.lvl)
-            : volumeStep === 3 ? volumeTop : volumeC1.lvl;
+  const c1 = volumeCell(volumeC1);
+  const c2 = volumeFar(volumeStep === 1 ? (volumeLive || volumeC1) : volumeC2);
+  const top = volumeStep === 2 ? (volumeLive ? volumeLive.lvl : c1.lvl)
+            : volumeStep === 3 ? volumeTop : c1.lvl;
   return {
-    i1: Math.min(volumeC1.i, c2.i), i2: Math.max(volumeC1.i, c2.i),
-    j1: Math.min(volumeC1.j, c2.j), j2: Math.max(volumeC1.j, c2.j),
-    l1: Math.min(volumeC1.lvl, top), l2: Math.max(volumeC1.lvl, top),
+    i1: Math.min(c1.i, c2.i), i2: Math.max(c1.i, c2.i),
+    j1: Math.min(c1.j, c2.j), j2: Math.max(c1.j, c2.j),
+    l1: Math.min(c1.lvl, top), l2: Math.max(c1.lvl, top),
   };
 }
 const volumeBoxSize = (b) => (b.i2 - b.i1 + 1) * (b.j2 - b.j1 + 1) * (b.l2 - b.l1 + 1);
@@ -6992,14 +7145,56 @@ const volumeBoxSize = (b) => (b.i2 - b.i1 + 1) * (b.j2 - b.j1 + 1) * (b.l2 - b.l
 function volumeAimRay() {
   camera.getWorldDirection(aimDir);
   const o = volumeEye();
-  const hit = voxelRay(o.x, o.y, o.z, aimDir.x, aimDir.y, aimDir.z, VOLUME_REACH);
+  // Fallen pieces are invisible to the DDA, so they get their own raycast; the
+  // voxel ray only runs as far as the piece in front of it, like the shovel's.
+  const dHit = debrisAim(o.x, o.y, o.z, VOLUME_REACH);
+  let hit = voxelRay(o.x, o.y, o.z, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : VOLUME_REACH);
+  // Aiming at a piece: anchor to the spot on it where a block would go, the same
+  // spot the shovel and creative tool place into, so the corner moves with it.
+  let anchor = null;
+  if (!hit && dHit) {
+    const local = debrisSpot(dHit.piece, dHit.point, aimDir);
+    if (local) anchor = volumeCell({ mesh: dHit.piece, local: local.clone() });
+  }
+
+  // Corner 1 on a piece: steps 1 and 2 run on the piece's lattice, with the ray
+  // taken into its frame, so the box stretches along the piece's own axes.
+  const pm = volumeStep > 0 && volumeC1.mesh && volumeC1.mesh.parent ? volumeC1.mesh : null;
+  if (pm) {
+    pm.updateWorldMatrix(true, false);
+    const c1 = volumeCell(volumeC1), K = volumeLattice(pm);
+    const ol = pm.worldToLocal(_volO.copy(o));
+    const dl = _volD.copy(aimDir).transformDirection(_volInv.copy(pm.matrixWorld).invert());
+    if (volumeStep === 1) {
+      // Far corner: a cell on this piece, else where the ray crosses corner 1's layer.
+      let cell = anchor && anchor.mesh === pm ? { i: anchor.i, j: anchor.j } : null;
+      if (!cell && Math.abs(dl.y) > 1e-4) {
+        const t = (K.y + (c1.lvl + 0.5) * BLOCK - ol.y) / dl.y;
+        if (t > 0 && t <= VOLUME_REACH) {
+          cell = { i: Math.round((ol.x + dl.x * t - K.x) / BLOCK), j: Math.round((ol.z + dl.z * t - K.z) / BLOCK) };
+        }
+      }
+      if (cell) volumeLive = { i: clampSpan(c1.i, cell.i), j: clampSpan(c1.j, cell.j) };
+    } else if (volumeStep === 2) {
+      // Height along the piece's up axis, through the far corner — as below, in local space.
+      const c2 = volumeFar(volumeC2);
+      const wx = ol.x - (K.x + c2.i * BLOCK), wy = ol.y, wz = ol.z - (K.z + c2.j * BLOCK);
+      const b = dl.y, d = dl.x * wx + dl.y * wy + dl.z * wz;
+      const denom = 1 - b * b;
+      const t = denom > 1e-3 ? (b * wy - d) / denom : 0;
+      const y = t > 0 ? ol.y + dl.y * t : ol.y;
+      volumeLive = { lvl: clampSpan(c1.lvl, Math.floor((y - K.y) / BLOCK)) };
+    }
+    return;
+  }
 
   if (volumeStep === 0) {
     // The empty cell in front of the face under the crosshair — where a block would go.
-    volumeLive = hit ? { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl } : null;
+    volumeLive = anchor || (hit ? { i: ddaPrev.i, j: ddaPrev.j, lvl: ddaPrev.lvl } : null);
   } else if (volumeStep === 1) {
     // Far corner of the plane: the cell being aimed at, or failing that where the
     // ray crosses corner 1's level, so the plane can be stretched out over air.
+    if (anchor) { volumeLive = anchor; return; }
     let cell = hit ? { i: ddaPrev.i, j: ddaPrev.j } : null;
     if (!cell && Math.abs(aimDir.y) > 1e-4) {
       const t = ((volumeC1.lvl + 0.5) * BLOCK - o.y) / aimDir.y;
@@ -7011,7 +7206,8 @@ function volumeAimRay() {
   } else if (volumeStep === 2) {
     // Height: the point on the vertical line through the plane's far corner that
     // the ray passes closest to. Works looking at terrain or up into open sky.
-    const px = colX(volumeC2.i), pz = colZ(volumeC2.j);
+    const c2 = volumeFar(volumeC2);
+    const px = colX(c2.i), pz = colZ(c2.j);
     const wx = o.x - px, wy = o.y, wz = o.z - pz;
     const b = aimDir.y, d = aimDir.x * wx + aimDir.y * wy + aimDir.z * wz;
     const denom = 1 - b * b;
@@ -7021,7 +7217,7 @@ function volumeAimRay() {
     const t = denom > 1e-3 ? (b * wy - d) / denom : 0;   // distance along the ray
     // The line is vertical, so the closest point's height is the ray's height at t.
     const y = t > 0 ? o.y + aimDir.y * t : o.y;
-    volumeLive = { lvl: Math.max(VOX_FLOOR, clampSpan(volumeC1.lvl, Math.floor(y / BLOCK))) };
+    volumeLive = { lvl: Math.max(VOX_FLOOR, clampSpan(volumeCell(volumeC1).lvl, Math.floor(y / BLOCK))) };
   }
 }
 
@@ -7033,12 +7229,18 @@ function updateVolumeGhosts() {
     volumeGhostKey = '';
     return;
   }
-  const key = `${box.i1},${box.i2},${box.j1},${box.j2},${box.l1},${box.l2},${placerMat}`;
   volumeGhost.visible = volumeOutline.visible = true;
+  // Corner 1 on a fallen piece: draw the box in the piece's own frame so it
+  // tilts with it, and redraw every frame since the piece keeps moving.
+  const c1 = volumeStep === 0 ? volumeLive : volumeC1;
+  const mesh = c1 && c1.mesh && c1.mesh.parent && c1.mesh.userData.blocks?.length ? c1.mesh : null;
+  if (mesh) { volumeGhostDebris(box, mesh); volumeGhostKey = ''; return; }
+  const key = `${box.i1},${box.i2},${box.j1},${box.j2},${box.l1},${box.l2},${placerMat}`;
   if (key === volumeGhostKey) return;
   volumeGhostKey = key;
 
   volumeGhost.material.color.copy(TERRAIN_MATS[placerMat].color);
+  volumeOutline.quaternion.identity();
   let n = 0;
   outer:
   for (let lvl = box.l1; lvl <= box.l2; lvl++) {
@@ -7059,6 +7261,33 @@ function updateVolumeGhosts() {
   volumeOutline.position.set((colX(box.i1) + colX(box.i2)) / 2,
                              ((box.l1 + box.l2 + 1) / 2) * BLOCK,
                              (colZ(box.j1) + colZ(box.j2)) / 2);
+}
+
+// The ghost for a box anchored on a piece: the box is already in the piece's
+// lattice cells (see volumeCell), so it is drawn in the piece's frame, tilted with it.
+function volumeGhostDebris(box, mesh) {
+  mesh.updateWorldMatrix(true, false);
+  const { x: kx, y: ky, z: kz } = volumeLattice(mesh);
+  volumeGhost.material.color.copy(TERRAIN_MATS[placerMat].color);
+  let n = 0;
+  outer:
+  for (let gl = box.l1; gl <= box.l2; gl++) {
+    for (let gj = box.j1; gj <= box.j2; gj++) {
+      for (let gi = box.i1; gi <= box.i2; gi++) {
+        if (n >= VOLUME_MAX_BLOCKS) break outer;
+        _volM.makeTranslation(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK).premultiply(mesh.matrixWorld);
+        volumeGhost.setMatrixAt(n++, _volM);
+      }
+    }
+  }
+  volumeGhost.count = n;
+  volumeGhost.instanceMatrix.needsUpdate = true;
+
+  // Outline around the box, in the piece's frame.
+  volumeOutline.scale.set((box.i2 - box.i1 + 1) * BLOCK * 1.01, (box.l2 - box.l1 + 1) * BLOCK * 1.01, (box.j2 - box.j1 + 1) * BLOCK * 1.01);
+  volumeOutline.position.set(kx + (box.i1 + box.i2) / 2 * BLOCK, ky + ((box.l1 + box.l2 + 1) / 2) * BLOCK, kz + (box.j1 + box.j2) / 2 * BLOCK)
+    .applyMatrix4(mesh.matrixWorld);
+  mesh.getWorldQuaternion(volumeOutline.quaternion);
 }
 
 function resetVolume() {
@@ -7082,7 +7311,6 @@ function setVolume(on) {
   resetVolume();
   if (on) {
     placerMatName.textContent = volMatName();
-    showToast('Volume: aim at a block and PLACE to set Corner 1', 'info');
   }
 }
 
@@ -7092,30 +7320,23 @@ bindTap(volumeBtn, () => setVolume(!volumeOn));
 function volumePlace() {
   if (!volumeOn) return;
   if (volumeStep === 0) {
-    if (!volumeLive) { showToast('Aim at a block to set Corner 1', 'warning'); return; }
+    if (!volumeLive) return;
     volumeC1 = { ...volumeLive };
     volumeStep = 1;
     volumeLive = null;
-    showToast('Corner 1 set. Look at the far corner and PLACE to set the floor', 'info');
   } else if (volumeStep === 1) {
     volumeC2 = { ...(volumeLive || volumeC1) };
     volumeStep = 2;
     volumeLive = null;
-    showToast('Floor set. Move the camera up or down and PLACE to set the height', 'info');
   } else if (volumeStep === 2) {
     // Checked before committing, so the height can just be adjusted and retried.
     const n = volumeBoxSize(volumeBox());
-    if (n > VOLUME_MAX_BLOCKS) {
-      showToast(`Volume too large (${n} blocks, max ${VOLUME_MAX_BLOCKS})`, 'error');
-      return;
-    }
+    if (n > VOLUME_MAX_BLOCKS) return;
     volumeTop = volumeLive ? volumeLive.lvl : volumeC1.lvl;
     volumeStep = 3;
     volumeLive = null;
-    showToast(`${n} blocks. PLACE again to fill with ${volMatName()}`, 'warning');
   } else {
-    const placed = volumeFill(volumeBox(), placerMat);
-    showToast(`Filled ${placed} blocks!`);
+    volumeFill(volumeBox(), placerMat);
     resetVolume();
     return;
   }
@@ -7126,13 +7347,14 @@ function volumePlace() {
 function volumeCancel() {
   if (!volumeOn || volumeStep === 0) return;
   resetVolume();
-  showToast('Volume cleared. Aim at a block and PLACE to set Corner 1', 'info');
 }
 
 // Fill every empty cell in the box. The same bookkeeping as editBlock(), but done
 // once for the whole box — per block, editBlock would rebuild a chunk collider for
 // every single cell.
 function volumeFill(box, m) {
+  const f = volumeC1 && volumeC1.mesh && volumeC1.mesh.parent && chunkOfMesh(volumeC1.mesh);
+  if (f) return volumeFillDebris(f, box, m);
   let placed = 0;
   const chunks = new Set();
   for (let j = box.j1; j <= box.j2; j++) {
@@ -7171,8 +7393,37 @@ function volumeFill(box, m) {
   return placed;
 }
 
+// Corner 1 is on a fallen piece: the box goes onto the piece instead of the
+// terrain. The box is in the piece's lattice cells, each placed the way the
+// creative tool places on a piece — with the collider rebuilt once at the end
+// rather than once per block.
+function volumeFillDebris(f, box, m) {
+  const mesh = f.mesh, lat = mesh.userData.blocks;
+  if (!lat || !lat.length) return 0;
+  const { x: kx, y: ky, z: kz } = volumeLattice(mesh);
+  const taken = new Set(lat.map((b) => `${b.gi},${b.gj},${b.lvl}`));
+  let placed = 0;
+  for (let gl = box.l1; gl <= box.l2; gl++) {
+    for (let gj = box.j1; gj <= box.j2; gj++) {
+      for (let gi = box.i1; gi <= box.i2; gi++) {
+        const key = `${gi},${gj},${gl}`;
+        if (taken.has(key)) continue;
+        taken.add(key);
+        placeOnDebris(mesh, new THREE.Vector3(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK), m, false);
+        placed++;
+      }
+    }
+  }
+  if (!placed) return 0;
+  rebuildDebrisBody(mesh, f.body);
+  f.still = 0;
+  return placed;
+}
+
 // Called every frame while the Volume tool is active — updates aim and ghost preview.
 function updateVolume() {
+  // The piece the box was anchored on is gone — its lattice cells mean nothing now.
+  if (volumeC1 && volumeC1.mesh && !volumeC1.mesh.parent) resetVolume();
   if (volumeStep < 3) volumeAimRay();
   updateVolumeGhosts();
 }
@@ -7409,6 +7660,7 @@ function tick() {
   // Twice the old rate: a shorter step resolves the block-edge contacts before
   // they build into a shove, which is the one thing here that helps the walk.
   // Nothing touches the body afterwards — the solver's answer is the answer.
+  ensurePhysicsObjectColliders(dt);
   world.step(PHYS_STEP, dt, 8);
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
@@ -7432,7 +7684,7 @@ function tick() {
     }
     // Unload distant chunk colliders (but keep chunks that have debris)
     for (let c = 0; c < colliderBody.length; c++) {
-      if (!colliderBody[c]) continue;
+      if (!colliderBody[c] || _physKeep[c]) continue;
       const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
       const cx = (ci + 0.5) * CHUNK * BLOCK - GEN_R, cz = (cj + 0.5) * CHUNK * BLOCK - GEN_R;
       const dx = cx - playerBody.position.x, dz = cz - playerBody.position.z;
@@ -7446,6 +7698,7 @@ function tick() {
   if (debugColOn && !colTestOn && frameCount % 60 === 0) {
     rebuildDebugCollision();
   }
+  updateDebugDebris();
 
   updateCamera(dt);
   // After the camera, since the aim is taken down the view direction, and before

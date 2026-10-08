@@ -3859,11 +3859,14 @@ function buildChunkColliderBoxes(c) {
       for (let ii = 0; ii < w; ii++) {
         const idx = jj * w + ii;
         if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) continue;
-        if (lvl >= consumedTo[idx]) continue;
         const k = (j0 + jj) * GEN_N + (i0 + ii);
         if (!solidVisible(k, lvl)) continue;
-        solid[idx] = 1;
-        any = true;
+        // 2 = still needs covering at this level; 1 = solid here but already
+        // inside a box from higher up. A box may grow across 1s (overlap is free
+        // on a static body), so a slope's contour merges into a few wide boxes
+        // reaching uphill instead of a fringe of narrow strips along each step.
+        solid[idx] = lvl >= consumedTo[idx] ? 1 : 2;
+        if (solid[idx] === 2) any = true;
       }
     }
     if (!any) continue;
@@ -3872,26 +3875,30 @@ function buildChunkColliderBoxes(c) {
     for (let jj = 0; jj < h; jj++) {
       for (let ii = 0; ii < w; ii++) {
         const idx = jj * w + ii;
-        if (!solid[idx] || visited[idx]) continue;
-        let ii1 = ii + 1;
-        while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
-        let jj1 = jj + 1;
-        for (;;) {
-          if (jj1 >= h) break;
-          let full = true;
-          for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
-          if (!full) break;
-          jj1++;
-        }
-        for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
+        if (solid[idx] !== 2 || visited[idx]) continue;
+        // Grow both ways along each axis — the covered cells can lie on either
+        // side, wherever the ground rises.
+        let ii0 = ii, ii1 = ii + 1, jj0 = jj, jj1 = jj + 1;
+        while (ii0 > 0 && solid[jj * w + ii0 - 1]) ii0--;
+        while (ii1 < w && solid[jj * w + ii1]) ii1++;
+        const rowFull = (y) => {
+          for (let x = ii0; x < ii1; x++) if (!solid[y * w + x]) return false;
+          return true;
+        };
+        while (jj0 > 0 && rowFull(jj0 - 1)) jj0--;
+        while (jj1 < h && rowFull(jj1)) jj1++;
+        for (let y = jj0; y < jj1; y++) for (let x = ii0; x < ii1; x++) visited[y * w + x] = 1;
 
         let botLvl = lvl;
-        while (botLvl - 1 >= lo && footprintSolidAt(ii, ii1, jj, jj1, botLvl - 1)) botLvl--;
+        while (botLvl - 1 >= lo && footprintSolidAt(ii0, ii1, jj0, jj1, botLvl - 1)) botLvl--;
         if (botLvl < lvl) {
-          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) consumedTo[y * w + x] = botLvl;
+          for (let y = jj0; y < jj1; y++) for (let x = ii0; x < ii1; x++) {
+            const ci = y * w + x;
+            if (botLvl < consumedTo[ci]) consumedTo[ci] = botLvl;
+          }
         }
 
-        const bi0 = i0 + ii, bi1 = i0 + ii1 - 1, bj0 = j0 + jj, bj1 = j0 + jj1 - 1;
+        const bi0 = i0 + ii0, bi1 = i0 + ii1 - 1, bj0 = j0 + jj0, bj1 = j0 + jj1 - 1;
         boxes.push({
           hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: (lvl - botLvl + 1) * BLOCK * 0.5, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
           x: (colX(bi0) + colX(bi1)) * 0.5, y: ((botLvl + lvl) / 2 + 0.5) * BLOCK, z: (colZ(bj0) + colZ(bj1)) * 0.5,

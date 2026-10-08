@@ -6679,6 +6679,45 @@ function rebuildDebugCollision() {
   }
 }
 
+// Physics object (debris) colliders move every frame, so they get their own group that
+// is redrawn each frame from shared unit shapes, scaled and placed per collision shape.
+const debugDebris = new THREE.Group();
+scene.add(debugDebris);
+const _debugDebrisMat = new THREE.LineBasicMaterial({ color: 0x00ccff, opacity: 0.7, transparent: true, depthTest: true });
+const _debugBoxGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(2, 2, 2));
+const _debugSphereGeo = new THREE.WireframeGeometry(new THREE.SphereGeometry(1, 8, 6));
+const _debugQ = new THREE.Quaternion(), _debugQ2 = new THREE.Quaternion(), _debugV = new THREE.Vector3();
+function updateDebugDebris() {
+  debugDebris.visible = debugColOn;
+  if (!debugColOn) return;
+  let n = 0;
+  for (const list of [fallingChunks, restedChunks]) {
+    for (const e of list) {
+      const body = e.body;
+      if (!body) continue;
+      const bq = body.quaternion;
+      _debugQ.set(bq.x, bq.y, bq.z, bq.w);
+      for (let i = 0; i < body.shapes.length; i++) {
+        const sh = body.shapes[i];
+        let geo, sx, sy, sz;
+        if (sh instanceof CANNON.Box) { geo = _debugBoxGeo; sx = sh.halfExtents.x; sy = sh.halfExtents.y; sz = sh.halfExtents.z; }
+        else if (sh instanceof CANNON.Sphere) { geo = _debugSphereGeo; sx = sy = sz = sh.radius; }
+        else continue;
+        let ls = debugDebris.children[n++];
+        if (!ls) { ls = new THREE.LineSegments(geo, _debugDebrisMat); debugDebris.add(ls); }
+        ls.geometry = geo;
+        ls.visible = true;
+        ls.scale.set(sx, sy, sz);
+        const off = body.shapeOffsets[i], so = body.shapeOrientations[i];
+        _debugV.set(off.x, off.y, off.z).applyQuaternion(_debugQ);
+        ls.position.set(body.position.x + _debugV.x, body.position.y + _debugV.y, body.position.z + _debugV.z);
+        ls.quaternion.copy(_debugQ).multiply(_debugQ2.set(so.x, so.y, so.z, so.w));
+      }
+    }
+  }
+  for (let i = n; i < debugDebris.children.length; i++) debugDebris.children[i].visible = false;
+}
+
 const btnDebugChunks = document.getElementById('btn-debug-chunks');
 const btnDebugCollision = document.getElementById('btn-debug-collision');
 bindTap(btnDebugChunks, () => {
@@ -7606,6 +7645,7 @@ function tick() {
   if (debugColOn && !colTestOn && frameCount % 60 === 0) {
     rebuildDebugCollision();
   }
+  updateDebugDebris();
 
   updateCamera(dt);
   // After the camera, since the aim is taken down the view direction, and before

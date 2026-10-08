@@ -4925,8 +4925,47 @@ const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
 const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+// Which face each vertex belongs to: BoxGeometry lays its faces down four
+// vertices apiece, in the order +x, -x, +y, -y, +z, -z.
+fallGeo.setAttribute('faceId', new THREE.BufferAttribute(Float32Array.from({ length: 24 }, (_, v) => v >> 2), 1));
 // White, because the colour of every cube comes in per instance.
 const fallMat = mat(0xffffff, 0.95, 0.00, { envMapIntensity: 0.45 });
+// Like the terrain, a piece only draws its outside: each instance carries a
+// bitmask of the faces that have another block of the piece against them
+// (debrisFaceMask), and those are thrown off-screen before they rasterise.
+fallMat.onBeforeCompile = (sh) => {
+  sh.vertexShader = 'attribute float faceId;\nattribute float faceHide;\n' + sh.vertexShader.replace(
+    '#include <project_vertex>',
+    '#include <project_vertex>\n  if (mod(floor(faceHide / exp2(faceId)), 2.0) > 0.5) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);');
+};
+// The mask is per instance, so each piece needs its own copy of the cube to
+// carry it — 24 vertices, freed with the piece.
+function debrisInstances(n) {
+  const g = fallGeo.clone();
+  g.setAttribute('faceHide', new THREE.InstancedBufferAttribute(new Float32Array(Math.max(n, 1)), 1));
+  return new THREE.InstancedMesh(g, fallMat, n);
+}
+const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+// Recompute that mask from the piece's lattice. Every block counts as a
+// neighbour — powder and placed children too — but only the instances, which
+// sit at the front of the lattice, have a mask to set.
+function debrisFaceMask(mesh) {
+  const lat = mesh.userData.blocks, attr = mesh.geometry.attributes.faceHide;
+  if (!lat.length) return;
+  const a0 = lat[0].pos;
+  const key = (x, y, z) => Math.round((x - a0.x) / BLOCK) + ',' + Math.round((y - a0.y) / BLOCK)
+                                                         + ',' + Math.round((z - a0.z) / BLOCK);
+  const at = new Set(lat.map((b) => key(b.pos.x, b.pos.y, b.pos.z)));
+  for (let q = 0; q < mesh.count; q++) {
+    const p = lat[q].pos;
+    let bits = 0;
+    FACE_DIRS.forEach(([dx, dy, dz], f) => {
+      if (at.has(key(p.x + dx * BLOCK, p.y + dy * BLOCK, p.z + dz * BLOCK))) bits |= 1 << f;
+    });
+    attr.array[q] = bits;
+  }
+  attr.needsUpdate = true;
+}
 // A block that hangs off a piece rather than being one of its instances: the
 // powder ones, which need grainGeo's speckle instead of a flat instance colour,
 // and the ones the player lays on. Both ride with the piece as children, which
@@ -4986,7 +5025,8 @@ function dropChunk(f) {
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
   for (const c of f.mesh.children) freeDebrisChild(c);
-  f.mesh.dispose();  // the per-instance buffers only — geometry and material are shared
+  f.mesh.dispose();  // the per-instance buffers
+  f.mesh.geometry.dispose();  // the piece's own cube copy — the material is shared
 }
 
 // The entry for a piece, whether it is still being watched or has settled. A
@@ -5034,7 +5074,7 @@ function spawnFallingChunk(unit) {
 
   // The mesh: one cube per block, positioned relative to that centre so the
   // whole thing rotates about it.
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, nSolid);
+  const mesh = debrisInstances(nSolid);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
   for (let q = 0; q < nSolid; q++) {
     const b = blocks[q];
@@ -5058,6 +5098,7 @@ function spawnFallingChunk(unit) {
     if (q >= nSolid) e.child = grainChild(b.m, pos, mesh);
     return e;
   });
+  debrisFaceMask(mesh);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   debris.add(mesh);
@@ -5396,6 +5437,7 @@ function removeDebrisMesh(mesh) {
   debris.remove(mesh);
   for (const c of mesh.children) freeDebrisChild(c);
   mesh.dispose();
+  mesh.geometry.dispose();
 }
 
 // Cannon turns a body about its origin, so a piece's origin has to sit on its
@@ -5557,6 +5599,7 @@ function cutDebrisLat(mesh, q) {
     mesh.boundingSphere = null;
   }
   lat.splice(q, 1);
+  debrisFaceMask(mesh);
 }
 
 // After blocks are cut from a debris piece, check if the remaining lattice
@@ -5612,7 +5655,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
   if (nPowder) blocks.sort((a, b) => (MAT_STATS[a.mat]?.powder ? 1 : 0) - (MAT_STATS[b.mat]?.powder ? 1 : 0));
   const nSolid = n - nPowder;
 
-  const mesh = new THREE.InstancedMesh(fallGeo, fallMat, nSolid);
+  const mesh = debrisInstances(nSolid);
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   mesh.userData.blocks = blocks.map((b, q) => {
@@ -5633,6 +5676,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (q >= nSolid) e.child = grainChild(b.mat, p, mesh);
     return e;
   });
+  debrisFaceMask(mesh);
   if (nSolid) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.instanceColor.needsUpdate = true;
@@ -5838,6 +5882,7 @@ function placeOnDebris(mesh, local, m, rebuild = true) {
   const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
   const gi = Math.round((local.x - kx) / BLOCK), gj = Math.round((local.z - kz) / BLOCK), lvl = Math.round((local.y - ky) / BLOCK - 0.5);
   mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, color: colour, gi, gj, lvl });
+  debrisFaceMask(mesh);
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it.

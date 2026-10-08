@@ -3807,10 +3807,10 @@ function buildChunkColliderBoxes(c) {
   const w = i1 - i0, h = j1 - j0;
   if (w <= 0 || h <= 0) return [];
 
-  const solidVisible = (k, lvl) => {
-    const p = voxOff[k] - VOX_FLOOR + lvl;
-    return voxMat[p] !== AIR && blockVisible[p] === 1;
-  };
+  // Every solid block counts, buried or not: a hidden block is still solid, and
+  // letting the merge run through the interior turns a hollow shell of thin
+  // slabs into a few deep boxes. (Rendering still draws exposed faces only.)
+  const solidVisible = (k, lvl) => voxMat[voxOff[k] - VOX_FLOOR + lvl] !== AIR;
 
   const top = new Int32Array(w * h).fill(NO_COLUMN);
   const floor = new Int32Array(w * h);

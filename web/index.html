@@ -5086,21 +5086,9 @@ function spawnFallingChunk(unit) {
       if (!cells) byLevel.set(b.lvl, cells = new Set());
       cells.add(b.gi + ',' + b.gj);
     }
-    const hasCell = (gi, gj, lvl) => {
-      const cells = byLevel.get(lvl);
-      return !!cells && cells.has(gi + ',' + gj);
-    };
-    const exposedByLevel = new Map();
-    for (const [lvl, cells] of byLevel) {
-      const exp = new Set();
-      for (const key of cells) {
-        const [gi, gj] = key.split(',').map(Number);
-        if (!hasCell(gi - 1, gj, lvl) || !hasCell(gi + 1, gj, lvl) ||
-            !hasCell(gi, gj - 1, lvl) || !hasCell(gi, gj + 1, lvl) ||
-            !hasCell(gi, gj, lvl - 1) || !hasCell(gi, gj, lvl + 1)) exp.add(key);
-      }
-      if (exp.size) exposedByLevel.set(lvl, exp);
-    }
+    // Every block counts, buried or not (as with the terrain collider): merging
+    // through the interior gives a few deep boxes instead of a hollow shell.
+    const exposedByLevel = byLevel;
     function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
       const cellsAt = exposedByLevel.get(lvl);
       if (!cellsAt) return false;
@@ -5464,21 +5452,9 @@ function rebuildDebrisBody(mesh, body) {
       if (!cells) byLevel.set(b.lvl, cells = new Set());
       cells.add(b.gi + ',' + b.gj);
     }
-    const hasCell = (gi, gj, lvl) => {
-      const cells = byLevel.get(lvl);
-      return !!cells && cells.has(gi + ',' + gj);
-    };
-    const exposedByLevel = new Map();
-    for (const [lvl, cells] of byLevel) {
-      const exp = new Set();
-      for (const key of cells) {
-        const [gi, gj] = key.split(',').map(Number);
-        if (!hasCell(gi - 1, gj, lvl) || !hasCell(gi + 1, gj, lvl) ||
-            !hasCell(gi, gj - 1, lvl) || !hasCell(gi, gj + 1, lvl) ||
-            !hasCell(gi, gj, lvl - 1) || !hasCell(gi, gj, lvl + 1)) exp.add(key);
-      }
-      if (exp.size) exposedByLevel.set(lvl, exp);
-    }
+    // Every block counts, buried or not (as with the terrain collider): merging
+    // through the interior gives a few deep boxes instead of a hollow shell.
+    const exposedByLevel = byLevel;
     function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
       const cellsAt = exposedByLevel.get(lvl);
       if (!cellsAt) return false;
@@ -5684,21 +5660,9 @@ function spawnDebrisPart(parent, blocks, pbody) {
       if (!cells) byLevel.set(b.lvl, cells = new Set());
       cells.add(b.gi + ',' + b.gj);
     }
-    const hasCell = (gi, gj, lvl) => {
-      const cells = byLevel.get(lvl);
-      return !!cells && cells.has(gi + ',' + gj);
-    };
-    const exposedByLevel = new Map();
-    for (const [lvl, cells] of byLevel) {
-      const exp = new Set();
-      for (const key of cells) {
-        const [gi, gj] = key.split(',').map(Number);
-        if (!hasCell(gi - 1, gj, lvl) || !hasCell(gi + 1, gj, lvl) ||
-            !hasCell(gi, gj - 1, lvl) || !hasCell(gi, gj + 1, lvl) ||
-            !hasCell(gi, gj, lvl - 1) || !hasCell(gi, gj, lvl + 1)) exp.add(key);
-      }
-      if (exp.size) exposedByLevel.set(lvl, exp);
-    }
+    // Every block counts, buried or not (as with the terrain collider): merging
+    // through the interior gives a few deep boxes instead of a hollow shell.
+    const exposedByLevel = byLevel;
     function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
       const cellsAt = exposedByLevel.get(lvl);
       if (!cellsAt) return false;

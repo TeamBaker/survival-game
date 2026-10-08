@@ -4938,12 +4938,19 @@ fallMat.onBeforeCompile = (sh) => {
     '#include <project_vertex>',
     '#include <project_vertex>\n  if (mod(floor(faceHide / exp2(faceId)), 2.0) > 0.5) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);');
 };
+// The shadow pass draws with its own depth material, which knows nothing of the
+// mask — without this it renders every face of every block, buried or not, and
+// a big piece costs its whole volume in the shadow map each frame.
+const fallDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+fallDepthMat.onBeforeCompile = fallMat.onBeforeCompile;
 // The mask is per instance, so each piece needs its own copy of the cube to
 // carry it — 24 vertices, freed with the piece.
 function debrisInstances(n) {
   const g = fallGeo.clone();
   g.setAttribute('faceHide', new THREE.InstancedBufferAttribute(new Float32Array(Math.max(n, 1)), 1));
-  return new THREE.InstancedMesh(g, fallMat, n);
+  const m = new THREE.InstancedMesh(g, fallMat, n);
+  m.customDepthMaterial = fallDepthMat;
+  return m;
 }
 const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 // A child block has no instance to carry a mask, but it owns its geometry, and
@@ -4961,6 +4968,9 @@ function debrisChildFaces(c, bits) {
   }
   g.setDrawRange(0, n);
   idx.needsUpdate = true;
+  // Fully buried: a draw call (two, with the shadow) for nothing. Hidden, it
+  // drops out of the render lists altogether.
+  c.visible = n > 0;
 }
 // Recompute that mask from the piece's lattice. Every block counts as a
 // neighbour — powder and placed children too — and every block gets culled:
@@ -5358,20 +5368,29 @@ function shedPowder() {
       const dx = ax >= ay && ax >= az ? Math.sign(powderLocalDown.x) * BLOCK : 0;
       const dy = ay > ax && ay >= az ? Math.sign(powderLocalDown.y) * BLOCK : 0;
       const dz = az > ax && az > ay ? Math.sign(powderLocalDown.z) * BLOCK : 0;
+      // Nothing to shed unless the lattice or the way down has changed since the
+      // last look — a resting piece would otherwise be walked every frame.
+      const shedKey = dx + ',' + dy + ',' + dz + ',' + lat.length;
+      if (f.shedKey === shedKey) continue;
+      f.shedKey = shedKey;
+      if (!lat.some((b) => MAT_STATS[b.mat]?.powder)) continue;
+      const a0 = lat[0].pos.clone();
+      const cell = (x, y, z) => Math.round((x - a0.x) / BLOCK) + ',' + Math.round((y - a0.y) / BLOCK)
+                                                              + ',' + Math.round((z - a0.z) / BLOCK);
+      const at = new Set(lat.map((u) => cell(u.pos.x, u.pos.y, u.pos.z)));
       mesh.updateWorldMatrix(true, false);   // it was moved by the body this frame
       let cut = false;
       for (let q = lat.length - 1; q >= 0; q--) {
         const b = lat[q];
         if (!MAT_STATS[b.mat]?.powder) continue;
-        const nx = b.pos.x + dx, ny = b.pos.y + dy, nz = b.pos.z + dz;
-        if (lat.some((u) => Math.abs(u.pos.x - nx) < 0.01 && Math.abs(u.pos.y - ny) < 0.01
-                                                          && Math.abs(u.pos.z - nz) < 0.01)) continue;
+        if (at.has(cell(b.pos.x + dx, b.pos.y + dy, b.pos.z + dz))) continue;
         const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
         g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);   // grainGeo builds a speckled unit cube: scale it to block size
         g.mesh.scale.setScalar(BLOCK);
         g.mesh.position.copy(g.pos);
         scene.add(g.mesh);
         powderFalling.push(g);
+        at.delete(cell(b.pos.x, b.pos.y, b.pos.z));
         cutDebrisLat(mesh, q);   // the same gap-close a dig does
         cut = true;
       }

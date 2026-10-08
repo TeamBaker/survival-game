@@ -4946,9 +4946,26 @@ function debrisInstances(n) {
   return new THREE.InstancedMesh(g, fallMat, n);
 }
 const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+// A child block has no instance to carry a mask, but it owns its geometry, and
+// both kinds lay the cube's six faces down one after another in FACE_DIRS order
+// — so pack the faces it still shows to the front of its index and draw only those.
+function debrisChildFaces(c, bits) {
+  const g = c.geometry, idx = g.index;
+  const full = g.userData.fullIndex ??= idx.array.slice();
+  const per = full.length / 6;
+  let n = 0;
+  for (let f = 0; f < 6; f++) {
+    if (bits & (1 << f)) continue;
+    idx.array.set(full.subarray(f * per, (f + 1) * per), n);
+    n += per;
+  }
+  g.setDrawRange(0, n);
+  idx.needsUpdate = true;
+}
 // Recompute that mask from the piece's lattice. Every block counts as a
-// neighbour — powder and placed children too — but only the instances, which
-// sit at the front of the lattice, have a mask to set.
+// neighbour — powder and placed children too — and every block gets culled:
+// the instances, which sit at the front of the lattice, through their mask,
+// the children through their own index.
 function debrisFaceMask(mesh) {
   const lat = mesh.userData.blocks, attr = mesh.geometry.attributes.faceHide;
   if (!lat.length) return;
@@ -4956,13 +4973,14 @@ function debrisFaceMask(mesh) {
   const key = (x, y, z) => Math.round((x - a0.x) / BLOCK) + ',' + Math.round((y - a0.y) / BLOCK)
                                                          + ',' + Math.round((z - a0.z) / BLOCK);
   const at = new Set(lat.map((b) => key(b.pos.x, b.pos.y, b.pos.z)));
-  for (let q = 0; q < mesh.count; q++) {
+  for (let q = 0; q < lat.length; q++) {
     const p = lat[q].pos;
     let bits = 0;
     FACE_DIRS.forEach(([dx, dy, dz], f) => {
       if (at.has(key(p.x + dx * BLOCK, p.y + dy * BLOCK, p.z + dz * BLOCK))) bits |= 1 << f;
     });
-    attr.array[q] = bits;
+    if (lat[q].child) debrisChildFaces(lat[q].child, bits);
+    else attr.array[q] = bits;
   }
   attr.needsUpdate = true;
 }
@@ -5868,7 +5886,7 @@ function placeOnDebris(mesh, local, m, rebuild = true) {
     const variation = 0.85 + nhash3(Math.round(local.x / BLOCK), Math.round(local.z / BLOCK), Math.round(local.y / BLOCK)) * 0.30;
     const cubeMat = TERRAIN_MATS[m].clone();
     cubeMat.color.multiplyScalar(variation);
-    cube = new THREE.Mesh(fallGeo, cubeMat);
+    cube = new THREE.Mesh(fallGeo.clone(), cubeMat);   // its own, so debrisChildFaces can cull it
     cube.position.copy(local);
     cube.castShadow = true;
     cube.receiveShadow = true;

@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 133;
+  var v = 134;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -2241,13 +2241,14 @@ const DEEP_MAT = [
 // keep resident. Every column starts at the same VOX_FLOOR, so the bottom of the
 // world is flat and a level maps to an index by subtraction alone.
 const VOX_FLOOR = Math.round(-24 / BLOCK);  // level -120: bedrock, under the deepest sea floor
-// Levels of empty space allocated on top of every column, so a block can be
-// *put back* somewhere higher than the ground was ever generated. Without this
-// the store has no room above the surface and the shovel could only ever fill in
-// holes it had already dug. Generous headroom for building: at 20 cm a block
-// that is forty metres over the generated surface, so a tower goes up until you
-// run out of blocks rather than until the store runs out of room.
-const VOX_HEAD = 200;
+// Levels of empty space allocated on top of every column when it is laid out.
+// This used to be two hundred, which made three in every five bytes of the
+// store air nobody would ever build in and was a real out-of-memory risk on a
+// phone. It only has to be enough that ordinary digging and stacking near the
+// surface never moves anything: a place above it grows that one column instead
+// (growColumn below), so a tower still goes up until you run out of blocks and
+// not until the store runs out of room — it just pays for its height itself.
+const VOX_HEAD = 16;
 // Blocks of surface material before it turns to rock — a metre and a half of
 // soil, so a gentle hillside is dirt the whole way through anything you would dig
 // by hand, and the face of a bluff shows a band of earth over stone rather than
@@ -2256,28 +2257,80 @@ const SOIL_DEPTH = 8;
 
 // The current storage cap for column k — grows when building above it. Every
 // column starts at its generated surface plus the headroom, and a place that
-// lands higher than that grows the column instead of being refused, so a tower
-// goes up until you run out of blocks and not until the store runs out of room.
+// lands higher than that grows the column instead of being refused.
 const colMaxCap = new Int32Array(GEN_N * GEN_N);
 for (let k = 0; k < GEN_N * GEN_N; k++) colMaxCap[k] = topLvl[k] === NO_COLUMN ? 0 : topLvl[k] + VOX_HEAD;
 const voxCap = (k) => colMaxCap[k];
+// Levels column k holds, bedrock to cap inclusive.
+const voxLen = (k) => colMaxCap[k] - VOX_FLOOR + 1;
+// Every column starts on a multiple of eight, so its run of visibility bits
+// (below) starts on a byte and a column can be moved with two plain copies.
+const voxSpan = (len) => (len + 7) & ~7;
 
-// Where column k's blocks start in voxMat, or -1 where there is no column.
+// The store is an arena: voxMat is allocated a little larger than the columns
+// in it need, and voxCount is how much of it is handed out. A column that grows
+// past its cap is moved to the end of the arena rather than having the whole
+// store rebuilt around it, and the slot it leaves is dead space (voxWaste) until
+// the arena next fills up, when everything live is packed into a fresh one.
+// voxMat[voxOff[k] + lvl - VOX_FLOOR] is the material of block `lvl` in column k.
 const voxOff = new Int32Array(GEN_N * GEN_N).fill(-1);
 let voxCount = 0;
+let voxWaste = 0;
 for (let k = 0; k < GEN_N * GEN_N; k++) {
   if (topLvl[k] === NO_COLUMN) continue;
   voxOff[k] = voxCount;
-  voxCount += voxCap(k) - VOX_FLOOR + 1;
+  voxCount += voxSpan(voxLen(k));
 }
-// voxMat[voxOff[k] + lvl - VOX_FLOOR] is the material of block `lvl` in column k.
-let voxMat = new Uint8Array(voxCount);
+// Room left over after `used` bytes: enough for a good deal of building before
+// the arena has to be repacked, without doubling the footprint to get it.
+const voxSlack = (used) => Math.max(1 << 16, used >> 4);
+let voxMat = new Uint8Array(voxSpan(voxCount + voxSlack(voxCount)));
 // Whether that block has anything to draw: 1 where at least one of its six
 // faces touches air, 0 where all six touch another block and nothing that drew
-// it could ever be seen. Same indexing as voxMat, and the only thing the mesh
-// builder consults about visibility — which is what keeps the question per
-// block instead of per column, so a dig leaves a wall and not a pillar.
-let blockVisible = new Uint8Array(voxCount);
+// it could ever be seen. One bit per voxMat entry — bit (p & 7) of byte p >> 3 —
+// and the only thing the mesh builder consults about visibility, which is what
+// keeps the question per block instead of per column, so a dig leaves a wall and
+// not a pillar.
+let visBits = new Uint8Array(voxMat.length >> 3);
+const isVisible = (p) => (visBits[p >> 3] >> (p & 7)) & 1;
+function setVisible(p, on) {
+  if (on) visBits[p >> 3] |= 1 << (p & 7);
+  else visBits[p >> 3] &= ~(1 << (p & 7));
+}
+
+// Copy every live column into a fresh arena with room for `extra` more, closing
+// up the slots growColumn left behind. Offsets all move, so nothing may hold an
+// index into the store across a call that can allocate.
+function repackVox(extra) {
+  const live = voxCount - voxWaste;
+  const nv = new Uint8Array(voxSpan(live + extra + voxSlack(live + extra)));
+  const nb = new Uint8Array(nv.length >> 3);
+  let at = 0;
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    const o = voxOff[k];
+    if (o < 0) continue;
+    const span = voxSpan(voxLen(k));
+    nv.set(voxMat.subarray(o, o + span), at);
+    nb.set(visBits.subarray(o >> 3, (o + span) >> 3), at >> 3);
+    voxOff[k] = at;
+    at += span;
+  }
+  voxMat = nv;
+  visBits = nb;
+  voxCount = at;
+  voxWaste = 0;
+}
+
+// Hand out a fresh, byte-aligned run of `len` levels at the end of the arena.
+// The contents are whatever was there — callers fill it.
+function voxAlloc(len) {
+  const span = voxSpan(len);
+  if (voxCount + span > voxMat.length) repackVox(span);
+  const off = voxCount;
+  voxCount += span;
+  return off;
+}
+
 // Solid blocks in the world. The shovel moves blocks between here and the
 // player's hands and never anywhere else, so this plus what is held is an
 // invariant of the whole session.
@@ -2423,7 +2476,7 @@ function countExposedFaces(i, j, lvl) {
 function refreshVisible(i, j, lvl) {
   if (!inVoxelRange(i, j, lvl)) return;
   const p = voxOff[j * GEN_N + i] + lvl - VOX_FLOOR;
-  blockVisible[p] = voxMat[p] !== AIR && countExposedFaces(i, j, lvl) > 0 ? 1 : 0;
+  setVisible(p, voxMat[p] !== AIR && countExposedFaces(i, j, lvl) > 0);
 }
 
 // The generated world, answered once. After this only editBlock() moves it, and
@@ -2435,36 +2488,36 @@ for (let j = 0; j < GEN_N; j++) {
     const o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
     for (let lvl = VOX_FLOOR; lvl <= cap; lvl++) {
       if (voxMat[o + lvl] === AIR) continue;
-      blockVisible[o + lvl] = countExposedFaces(i, j, lvl) > 0 ? 1 : 0;
+      if (countExposedFaces(i, j, lvl) > 0) setVisible(o + lvl, true);
     }
   }
 }
 
-// Make room over column k up to at least `needLv`. The store is one flat array,
-// so growing a column in the middle of it means rebuilding the array with a gap
-// of air opened at that column's end and every offset after it pushed along —
-// O(columns) for the offsets, which is why the cap doubles rather than growing
-// by the one level asked for. It only ever fires on a place above the cap.
+// Make room over column k up to at least `needLv`. A column is one contiguous
+// run of the arena, so it either extends where it stands — when it is the last
+// thing in the arena and there is room after it — or moves to the end and
+// leaves its old slot as waste for the next repack. Either way nothing but this
+// column is touched, and the cap grows by half again at least so a tower going
+// up a block at a time moves only every so often.
 function growColumn(k, needLv) {
-  const oldCap = colMaxCap[k];
-  const newCap = Math.max(needLv + 1, oldCap * 2);   // double to amortize
-  const growth = newCap - oldCap;
-  const oldEnd = voxOff[k] + oldCap - VOX_FLOOR + 1;
-  const nv = new Uint8Array(voxCount + growth);
-  nv.set(voxMat.subarray(0, oldEnd));                 // everything before the gap
-  nv.fill(AIR, oldEnd, oldEnd + growth);              // the new headroom
-  nv.set(voxMat.subarray(oldEnd), oldEnd + growth);   // everything after
-  // blockVisible shares the indexing, so it takes the same gap in the same place.
-  const nbv = new Uint8Array(voxCount + growth);
-  nbv.set(blockVisible.subarray(0, oldEnd));
-  nbv.fill(0, oldEnd, oldEnd + growth);
-  nbv.set(blockVisible.subarray(oldEnd), oldEnd + growth);
-  for (let c = 0; c < GEN_N * GEN_N; c++) {
-    if (voxOff[c] >= oldEnd) voxOff[c] += growth;
+  const oldCap = colMaxCap[k], oldLen = voxLen(k);
+  const newCap = Math.max(needLv + VOX_HEAD, oldCap + (oldLen >> 1));
+  const newLen = newCap - VOX_FLOOR + 1;
+  const oldSpan = voxSpan(oldLen), newSpan = voxSpan(newLen);
+  let o = voxOff[k];
+  if (o + oldSpan === voxCount && o + newSpan <= voxMat.length) {
+    voxCount = o + newSpan;
+  } else {
+    const n = voxAlloc(newLen);   // may repack, which moves this column too
+    o = voxOff[k];
+    voxMat.copyWithin(n, o, o + oldLen);
+    visBits.copyWithin(n >> 3, o >> 3, (o + oldSpan) >> 3);
+    voxWaste += oldSpan;
+    voxOff[k] = o = n;
   }
-  voxMat = nv;
-  blockVisible = nbv;
-  voxCount += growth;
+  // The new headroom is empty, and has nothing to draw.
+  voxMat.fill(AIR, o + oldLen, o + newLen);
+  for (let p = o + oldLen; p < o + newLen; p++) setVisible(p, false);
   colMaxCap[k] = newCap;
 }
 
@@ -2510,7 +2563,8 @@ function solidTopAt(i, j) {
 
 // A whole column, for anyone who wants to read down it: a view onto the store
 // running from `base` upwards, one entry per level. It aliases the store, so
-// writes through setVoxel show up in a view already taken.
+// writes through setVoxel show up in a view already taken — until something
+// grows a column or repacks the arena, after which take a fresh one.
 function voxelColumn(i, j) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return null;
   const k = j * GEN_N + i;
@@ -2782,7 +2836,7 @@ function pushFace(m, f, cx, cy, cz, r, g, b, S = 1) {
 
 
 // Every exposed face of every visible block in column (i, j), pushed into the
-// scratch buffers. A block is visible when blockVisible says it has at least one
+// scratch buffers. A block is visible when visBits says it has at least one
 // face touching air — the array is the sole authority on visibility, so digging
 // never leaves a pillar and placing never leaves a ghost — and of a visible
 // block only the faces that touch air themselves are drawn, so the six-sided box
@@ -2798,7 +2852,7 @@ function collectColumn(i, j, step = 1) {
     let drawn = 0;
     for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
       const m = voxMat[o + lvl];
-      if (m === AIR || !blockVisible[o + lvl]) continue;
+      if (m === AIR || !isVisible(o + lvl)) continue;
       // The one colour the whole block is drawn in — its material, the column's
       // own tint, whether it is still in the soil band, and how far below the top
       // of the column it sits — baked in here because the mesh carries a colour
@@ -5245,7 +5299,8 @@ function shedColumn(c, budget) {
   if (top === NO_COLUMN) return budget;
   // Ground nobody has touched is solid all the way down, so only a dug column
   // can have air under anything but its own surface.
-  const dug = colDug[c] !== 0, o = voxOff[c] - VOX_FLOOR;
+  const dug = colDug[c] !== 0;
+  let o = voxOff[c] - VOX_FLOOR;
   const hi = dug ? voxCap(c) : top;
   const lo = dug ? Math.max(VOX_FLOOR, Math.min(top, colDugLo[c])) : top;
   for (let lvl = hi; lvl >= lo && budget > 0; lvl--) {
@@ -5258,6 +5313,7 @@ function shedColumn(c, budget) {
         && !MAT_STATS[voxMat[o + lvl + 1]]?.powder) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
     editBlock(i, j, lvl, AIR);   // refreshes the faces, and brings down what was above
+    o = voxOff[c] - VOX_FLOOR;   // and whatever that placed may have moved the store
     // Mark neighboring columns dirty so blocks that lost their sand bridge
     // get rechecked for adrift status by the next cascade pass.
     for (const [di, dj] of [[-1,0],[1,0],[0,-1],[0,1]]) {
@@ -6860,26 +6916,19 @@ function updateColTest() {
 let sandboxMode = false;
 const sandboxBtn = document.getElementById('btn-sandbox');
 
-// Give column k a fresh, empty (all-AIR) voxel range up through lvl + headroom.
+// Give column k a fresh, empty (all-AIR) voxel range up through lvl + VOX_HEAD.
 // A no-op for a column that already exists — the sandbox reset below empties
 // existing columns in place rather than tearing down their metadata.
 function createColumn(k, lvl) {
   if (topLvl[k] !== NO_COLUMN) return;
-  const headroom = 200;
   topLvl[k] = lvl;
   bedLvl[k] = lvl;
   bedMat[k] = ROCK;
-  colMaxCap[k] = lvl + headroom;
-  voxOff[k] = voxCount;
-  const newCap = colMaxCap[k] - VOX_FLOOR + 1;
-  voxCount += newCap;
-  const newVox = new Uint8Array(voxCount);
-  newVox.set(voxMat);
-  voxMat = newVox;
-  const newVis = new Uint8Array(voxCount);
-  newVis.set(blockVisible);
-  blockVisible = newVis;
-  voxMat.fill(AIR, voxOff[k], voxOff[k] + newCap);
+  colMaxCap[k] = lvl + VOX_HEAD;
+  const len = voxLen(k);
+  const o = voxOff[k] = voxAlloc(len);
+  voxMat.fill(AIR, o, o + len);
+  for (let p = o; p < o + len; p++) setVisible(p, false);
   sTop[k] = NO_COLUMN;
   worldBlocks++;
 }
@@ -6895,7 +6944,7 @@ function toggleSandbox() {
     colDug.fill(0);
     colDugLo.fill(0);
     sTop.fill(NO_COLUMN);
-    blockVisible.fill(0);
+    visBits.fill(0);
     powderDirty.clear();
     for (let c = 0; c < chunkMesh.length; c++) {
       if (chunkMesh[c]) rebuildChunk(c);
@@ -6910,7 +6959,8 @@ function toggleSandbox() {
         if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
         const k = jj * GEN_N + ii;
         createColumn(k, platLvl);
-        if (platLvl < VOX_FLOOR || platLvl > voxCap(k)) continue;
+        if (platLvl < VOX_FLOOR) continue;
+        if (platLvl > voxCap(k)) growColumn(k, platLvl);
         const off = voxOff[k] + platLvl - VOX_FLOOR;
         voxMat[off] = ROCK;
         sTop[k] = platLvl;
@@ -7437,7 +7487,8 @@ bindTap(placerDo, () => {
     if (lvl < VOX_FLOOR || i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return;
     const k = j * GEN_N + i;
     if (topLvl[k] === NO_COLUMN && sandboxMode) createColumn(k, lvl);
-    if (topLvl[k] !== NO_COLUMN && lvl <= voxCap(k) && voxelAt(i, j, lvl) === AIR) {
+    // No cap check: setVoxel grows the column to meet a place above it.
+    if (topLvl[k] !== NO_COLUMN && voxelAt(i, j, lvl) === AIR) {
       editBlock(i, j, lvl, placerMat);
     }
   } else if (creative.debris && creative.debris.local) {
@@ -7781,9 +7832,11 @@ async function idbGet(key) {
 }
 
 function collectWorldState() {
-  // Voxel store
+  // Voxel store — only the part of the arena handed out, with the slots grown
+  // columns left behind closed up first so none of it is dead space.
+  if (voxWaste) repackVox(0);
   const voxelStore = {
-    voxMat: Array.from(voxMat),
+    voxMat: Array.from(voxMat.subarray(0, voxCount)),
     topLvl: Array.from(topLvl),
     bedLvl: Array.from(bedLvl),
     bedMat: Array.from(bedMat),
@@ -7792,7 +7845,7 @@ function collectWorldState() {
     colDugLo: Array.from(colDugLo),
     voxOff: Array.from(voxOff),
     colMaxCap: Array.from(colMaxCap),
-    blockVisible: Array.from(blockVisible),
+    visBits: Array.from(visBits.subarray(0, voxCount >> 3)),
     worldBlocks,
     tint: Array.from(tint),
     hRaw: Array.from(hRaw),
@@ -7889,6 +7942,47 @@ function collectWorldState() {
   };
 }
 
+// Rebuild the arena from a saved store. topLvl and sTop must already be
+// restored. A save from this layout is the packed arena and a bit per block; a
+// save from before it is one byte of visibility per block, columns at any
+// offset and two hundred levels of headroom on each, which is repacked here and
+// trimmed back to VOX_HEAD over whatever is actually standing in the column.
+function restoreVoxStore(vs) {
+  if (vs.visBits) {
+    voxOff.set(vs.voxOff);
+    colMaxCap.set(vs.colMaxCap);
+    voxCount = vs.voxCount;
+    voxWaste = 0;
+    voxMat = new Uint8Array(voxSpan(voxCount + voxSlack(voxCount)));
+    voxMat.set(vs.voxMat);
+    visBits = new Uint8Array(voxMat.length >> 3);
+    visBits.set(vs.visBits);
+    return;
+  }
+  const oldOff = vs.voxOff, oldCap = vs.colMaxCap;
+  let total = 0;
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    if (oldOff[k] < 0 || topLvl[k] === NO_COLUMN) { voxOff[k] = -1; continue; }
+    const high = sTop[k] === NO_COLUMN ? topLvl[k] : Math.max(sTop[k], topLvl[k]);
+    colMaxCap[k] = Math.min(oldCap[k], high + VOX_HEAD);
+    voxOff[k] = total;
+    total += voxSpan(voxLen(k));
+  }
+  voxCount = total;
+  voxWaste = 0;
+  voxMat = new Uint8Array(voxSpan(total + voxSlack(total)));
+  visBits = new Uint8Array(voxMat.length >> 3);
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    const o = voxOff[k];
+    if (o < 0) continue;
+    const src = oldOff[k], len = voxLen(k);
+    for (let n = 0; n < len; n++) {
+      voxMat[o + n] = vs.voxMat[src + n];
+      if (vs.blockVisible[src + n]) setVisible(o + n, true);
+    }
+  }
+}
+
 function applyWorldState(s) {
   if (!s || s.version !== SAVE_VERSION) {
     console.warn('Save version mismatch or invalid save');
@@ -7897,20 +7991,16 @@ function applyWorldState(s) {
 
   // Restore voxel store
   const vs = s.voxelStore;
-  voxMat.set(vs.voxMat);
   topLvl.set(vs.topLvl);
   bedLvl.set(vs.bedLvl);
   bedMat.set(vs.bedMat);
   sTop.set(vs.sTop);
   colDug.set(vs.colDug);
   colDugLo.set(vs.colDugLo);
-  voxOff.set(vs.voxOff);
-  colMaxCap.set(vs.colMaxCap);
-  blockVisible.set(vs.blockVisible);
+  restoreVoxStore(vs);
   worldBlocks = vs.worldBlocks;
   tint.set(vs.tint);
   hRaw.set(vs.hRaw);
-  voxCount = vs.voxCount;
 
   // Restore player state
   const ps = s.playerState;

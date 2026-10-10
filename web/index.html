@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 137;
+  var v = 138;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -2675,9 +2675,9 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 // diced into a GRAIN_GRID x GRAIN_GRID grid, same as the terrain powder path
 // (pushFace) below, and each cell gets its own hashed shade — wide enough to
 // read as speckle on a face this small, where a per-face-only shade would be
-// nearly invisible. Built fresh every call rather than cached: the geometry
-// is tiny (6 faces x GRAIN_GRID² cells) and grainGeo is only called a
-// handful of times a frame.
+// nearly invisible. Built fresh every call: falling grains share one per
+// material through fallingGrainGeo, and only debris children (grainChild) get
+// their own seeded copy, which freeDebrisChild disposes.
 function grainGeo(m, seed = 0) {
   const base = TERRAIN_MATS[m].color;
   const nq = 6 * GRAIN_GRID * GRAIN_GRID;
@@ -2725,6 +2725,16 @@ function grainGeo(m, seed = 0) {
   geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
   geo.setIndex(new THREE.BufferAttribute(idx, 1));
   return geo;
+}
+
+// A falling grain is always grainGeo's seed-0 speckle on the shared
+// TERRAIN_FACE_MATS material, so one geometry per material does for every grain
+// in the air. Built once and kept: nothing per grain to free when it lands.
+const fallingGrainGeos = new Map();
+function fallingGrainGeo(m) {
+  let g = fallingGrainGeos.get(m);
+  if (!g) fallingGrainGeos.set(m, g = grainGeo(m));
+  return g;
 }
 
 const terrain = new THREE.Group();
@@ -5395,7 +5405,7 @@ function shedColumn(c, budget) {
     }
     // It is not gone, it is falling: hand it to the same grain path the rubble uses.
     const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
-    g.mesh = new THREE.Mesh(grainGeo(m), TERRAIN_FACE_MATS[m]);   // grainGeo builds a speckled unit cube: scale it to block size
+    g.mesh = new THREE.Mesh(fallingGrainGeo(m), TERRAIN_FACE_MATS[m]);   // a speckled unit cube: scale it to block size
     g.mesh.scale.setScalar(BLOCK);
     g.mesh.position.copy(g.pos);
     scene.add(g.mesh);
@@ -5414,7 +5424,7 @@ function checkTerrainPowder() {
     if (mat === AIR || !MAT_STATS[mat]?.powder) continue;
     if (qLvl - 1 >= VOX_FLOOR && voxelAt(i, j, qLvl - 1) !== AIR) continue;
     editBlock(i, j, qLvl, AIR);
-    const grain = new THREE.Mesh(grainGeo(mat), TERRAIN_FACE_MATS[mat]);   // grainGeo builds a speckled unit cube: scale it to block size
+    const grain = new THREE.Mesh(fallingGrainGeo(mat), TERRAIN_FACE_MATS[mat]);   // a speckled unit cube: scale it to block size
     grain.scale.setScalar(BLOCK);
     grain.position.set(colX(i), (qLvl + 0.5) * BLOCK, colZ(j));
     scene.add(grain);
@@ -5514,7 +5524,7 @@ function shedPowder() {
         if (!MAT_STATS[b.mat]?.powder) continue;
         if (at.has(cell(b.pos.x + dx, b.pos.y + dy, b.pos.z + dz))) continue;
         const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
-        g.mesh = new THREE.Mesh(grainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);   // grainGeo builds a speckled unit cube: scale it to block size
+        g.mesh = new THREE.Mesh(fallingGrainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);   // a speckled unit cube: scale it to block size
         g.mesh.scale.setScalar(BLOCK);
         g.mesh.position.copy(g.pos);
         scene.add(g.mesh);
@@ -8506,7 +8516,7 @@ function applyWorldState(s) {
 
   // Restore powder falling
   for (const g of ds.powderFalling) {
-    const grain = new THREE.Mesh(grainGeo(g.mat), TERRAIN_FACE_MATS[g.mat]);
+    const grain = new THREE.Mesh(fallingGrainGeo(g.mat), TERRAIN_FACE_MATS[g.mat]);
     grain.scale.setScalar(BLOCK);
     grain.position.set(...g.pos);
     scene.add(grain);

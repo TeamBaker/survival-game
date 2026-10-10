@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 134;
+  var v = 135;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -7791,14 +7791,35 @@ function tick() {
 // ---------------------------------------------------------------------------
 // World Save / Load
 // ---------------------------------------------------------------------------
-const SAVE_VERSION = 1;
+// A save is binary: a small JSON header for everything that is not the voxel
+// store, then the store itself as typed-array sections — the per-column arrays
+// delta-coded and split into byte planes, the columns run-length coded — and the
+// whole thing gzipped. A column is a few long runs (rock, soil, water, air) and
+// almost none of its visibility bits are set, so the island comes out a few MB
+// instead of the hundreds a JSON array of every voxel did, and no step of it
+// ever holds the world as JS numbers or one giant string.
+//
+// Version 1 saves are that JSON string, under SAVE_KEY. They are still read —
+// with a scanner that parses the big arrays straight into typed arrays rather
+// than through JSON.parse, which is what crashed a phone — and rewritten in the
+// new format as soon as they load.
+const SAVE_VERSION = 2;
+const LEGACY_SAVE_VERSION = 1;
 const SAVE_KEY = 'sv_world_save';
+const SAVE_KEY_BIN = 'sv_world_save_v2';
+const SAVE_MAGIC = [0x53, 0x56, 0x57, 0x32];   // "SVW2"
+const SAVE_GZIP = 1;
 const IDB_NAME = 'sv_game_db';
 const IDB_STORE = 'world_saves';
+// The seed the current tint was drawn from: this session's until a save is
+// loaded, then the save's. SEED itself is const and only drives the weather.
+let worldSeed = SEED;
 
 // IndexedDB helpers
+let dbPromise = null;
 function openDB() {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(IDB_NAME, 1);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
@@ -7807,8 +7828,9 @@ function openDB() {
       }
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onerror = () => { dbPromise = null; reject(req.error); };
   });
+  return dbPromise;
 }
 
 async function idbSet(key, value) {
@@ -7818,6 +7840,7 @@ async function idbSet(key, value) {
     tx.objectStore(IDB_STORE).put(value, key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Save aborted (storage full?)'));
   });
 }
 
@@ -7831,27 +7854,98 @@ async function idbGet(key) {
   });
 }
 
-function collectWorldState() {
-  // Voxel store — only the part of the arena handed out, with the slots grown
-  // columns left behind closed up first so none of it is dead space.
-  if (voxWaste) repackVox(0);
-  const voxelStore = {
-    voxMat: Array.from(voxMat.subarray(0, voxCount)),
-    topLvl: Array.from(topLvl),
-    bedLvl: Array.from(bedLvl),
-    bedMat: Array.from(bedMat),
-    sTop: Array.from(sTop),
-    colDug: Array.from(colDug),
-    colDugLo: Array.from(colDugLo),
-    voxOff: Array.from(voxOff),
-    colMaxCap: Array.from(colMaxCap),
-    visBits: Array.from(visBits.subarray(0, voxCount >> 3)),
-    worldBlocks,
-    tint: Array.from(tint),
-    hRaw: Array.from(hRaw),
-    voxCount,
-  };
+async function idbDelete(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
+// ----- encoding helpers -----
+// A growable byte buffer, with LEB128 varints for run lengths.
+class ByteBuf {
+  constructor(n) { this.a = new Uint8Array(n); this.n = 0; }
+  room(k) {
+    if (this.n + k <= this.a.length) return;
+    const b = new Uint8Array(Math.max(this.a.length * 2, this.n + k));
+    b.set(this.a.subarray(0, this.n));
+    this.a = b;
+  }
+  byte(x) { this.room(1); this.a[this.n++] = x; }
+  uvar(x) {
+    this.room(5);
+    while (x >= 0x80) { this.a[this.n++] = (x & 0x7f) | 0x80; x >>>= 7; }
+    this.a[this.n++] = x;
+  }
+  bytes() { return this.a.subarray(0, this.n); }
+}
+function readUvar(r) {
+  let x = 0, s = 0, c;
+  do {
+    if (r.p >= r.b.length) throw new Error('Save is truncated');
+    c = r.b[r.p++];
+    x += (c & 0x7f) * 2 ** s;
+    s += 7;
+  } while (c & 0x80);
+  return x;
+}
+
+// A 2- or 4-byte typed array, losslessly: each element's bits minus the one
+// before, then the low bytes of every element, then the next bytes, and so on —
+// smooth fields turn into long runs of 0x00/0xff that gzip all but erases.
+function packDelta(arr) {
+  const n = arr.length, bpe = arr.BYTES_PER_ELEMENT;
+  const u = bpe === 2 ? new Uint16Array(arr.buffer, arr.byteOffset, n)
+                      : new Uint32Array(arr.buffer, arr.byteOffset, n);
+  const out = new Uint8Array(n * bpe);
+  let prev = 0;
+  for (let k = 0; k < n; k++) {
+    const x = u[k], d = (x - prev) >>> 0;
+    prev = x;
+    for (let b = 0; b < bpe; b++) out[b * n + k] = (d >>> (8 * b)) & 0xff;
+  }
+  return out;
+}
+function unpackDelta(bytes, Type, n) {
+  const out = new Type(n), bpe = out.BYTES_PER_ELEMENT;
+  if (!bytes || bytes.length !== n * bpe) throw new Error('Save is damaged');
+  const u = bpe === 2 ? new Uint16Array(out.buffer) : new Uint32Array(out.buffer);
+  const mask = bpe === 2 ? 0xffff : 0xffffffff;
+  let prev = 0;
+  for (let k = 0; k < n; k++) {
+    let d = 0;
+    for (let b = 0; b < bpe; b++) d += bytes[b * n + k] * 2 ** (8 * b);
+    prev = (prev + d) % (mask + 1);
+    u[k] = prev;
+  }
+  return out;
+}
+function rawBytes(bytes, n) {
+  if (!bytes || bytes.length !== n) throw new Error('Save is damaged');
+  return bytes;
+}
+
+// The tint pass of the generator, replayed from a seed. It draws exactly once
+// per column in column order, so the seed alone reproduces it bit for bit.
+function tintMatchesSeed(seed) {
+  const rnd = mulberry32((seed ^ 0x9e3779b9) >>> 0);
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    if (tint[k] !== Math.fround(0.86 + rnd() * 0.28)) return false;
+  }
+  return true;
+}
+function tintFromSeed(seed) {
+  const out = new Float32Array(GEN_N * GEN_N);
+  const rnd = mulberry32((seed ^ 0x9e3779b9) >>> 0);
+  for (let k = 0; k < out.length; k++) out[k] = 0.86 + rnd() * 0.28;
+  return out;
+}
+
+// Everything that is not the voxel store — small, so it stays JSON.
+function collectWorldMeta() {
   // Player state
   const playerState = {
     pos: playerBody.position.toArray(),
@@ -7917,7 +8011,7 @@ function collectWorldState() {
 
   // World generation
   const genState = {
-    SEED,
+    SEED: worldSeed,
   };
 
   // Settings
@@ -7932,7 +8026,6 @@ function collectWorldState() {
   return {
     version: SAVE_VERSION,
     timestamp: Date.now(),
-    voxelStore,
     playerState,
     cameraState,
     toolsState,
@@ -7942,12 +8035,261 @@ function collectWorldState() {
   };
 }
 
+// The voxel store as named byte sections. Each column is its materials as
+// (material, length) runs and its visibility as alternating hidden/visible run
+// lengths starting hidden, both bedrock up; the column's length is colMaxCap, so
+// neither needs a terminator. Materials, lengths and visibility go in separate
+// streams so each one is uniform enough for gzip to find its repeats.
+function encodeVoxStore() {
+  const N = GEN_N * GEN_N;
+  const present = new Uint8Array(N);
+  const mats = new ByteBuf(1 << 20), lens = new ByteBuf(1 << 20), vis = new ByteBuf(1 << 20);
+  for (let k = 0; k < N; k++) {
+    const o = voxOff[k];
+    if (o < 0) continue;
+    present[k] = 1;
+    const end = o + voxLen(k);
+    for (let p = o; p < end;) {
+      const m = voxMat[p];
+      let q = p + 1;
+      while (q < end && voxMat[q] === m) q++;
+      mats.byte(m);
+      lens.uvar(q - p);
+      p = q;
+    }
+    // Columns start on a byte of visBits, so whole bytes of one value can be
+    // stepped over eight blocks at a time.
+    for (let p = o, bit = 0; p < end; bit ^= 1) {
+      const fill = bit ? 0xff : 0;
+      let q = p;
+      while (q < end) {
+        if ((q & 7) === 0 && q + 8 <= end && visBits[q >> 3] === fill) { q += 8; continue; }
+        if (isVisible(q) !== bit) break;
+        q++;
+      }
+      vis.uvar(q - p);
+      p = q;
+    }
+  }
+  const tintSeeded = tintMatchesSeed(worldSeed);
+  const sections = [
+    ['present', present],
+    ['topLvl', packDelta(topLvl)],
+    ['bedLvl', packDelta(bedLvl)],
+    ['sTop', packDelta(sTop)],
+    ['colDugLo', packDelta(colDugLo)],
+    ['colMaxCap', packDelta(colMaxCap)],
+    ['bedMat', bedMat],
+    ['topMat', topMat],
+    ['colDug', colDug],
+    ['runMat', mats.bytes()],
+    ['runLen', lens.bytes()],
+    ['runVis', vis.bytes()],
+  ];
+  if (!tintSeeded) sections.push(['tint', packDelta(tint)]);
+  return { sections, store: { worldBlocks, tintSeeded } };
+}
+
+// Build the save file: magic, flags, then the (gzipped) body
+// [u32 header length][header JSON][sections…]. Everything up to the gzip is done
+// synchronously so the snapshot is of one frame; only the compression waits.
+async function buildSaveBlob() {
+  const meta = collectWorldMeta();
+  const { sections, store } = encodeVoxStore();
+  meta.voxelStore = store;
+  meta.sections = sections.map(([name, b]) => [name, b.length]);
+  const header = new TextEncoder().encode(JSON.stringify(meta));
+  const len = new Uint8Array(4);
+  new DataView(len.buffer).setUint32(0, header.length, true);
+  const body = new Blob([len, header, ...sections.map(s => s[1])]);
+  let flags = 0, packed = body;
+  if (typeof CompressionStream === 'function' && body.stream) {
+    packed = await new Response(body.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+    flags |= SAVE_GZIP;
+  }
+  const head = new Uint8Array([...SAVE_MAGIC, flags, 0, 0, 0]);
+  return new Blob([head, packed], { type: 'application/octet-stream' });
+}
+
+function isBinarySave(u8) {
+  return u8.length >= 8 && SAVE_MAGIC.every((b, i) => u8[i] === b);
+}
+
+async function blobBytes(blob) {
+  if (blob.arrayBuffer) return new Uint8Array(await blob.arrayBuffer());
+  return new Uint8Array(await new Response(blob).arrayBuffer());
+}
+
+// Back into a world state that applyWorldState takes: the header, with the
+// voxel store's sections decoded into typed arrays.
+async function decodeBinarySave(u8) {
+  const flags = u8[4];
+  let body = u8.subarray(8);
+  if (flags & SAVE_GZIP) {
+    if (typeof DecompressionStream !== 'function') throw new Error('This browser cannot read compressed saves');
+    const s = new Blob([body]).stream().pipeThrough(new DecompressionStream('gzip'));
+    body = new Uint8Array(await new Response(s).arrayBuffer());
+  }
+  const hlen = new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(0, true);
+  const meta = JSON.parse(new TextDecoder().decode(body.subarray(4, 4 + hlen)));
+  const sec = {};
+  let at = 4 + hlen;
+  for (const [name, n] of meta.sections) {
+    if (at + n > body.length) throw new Error('Save is truncated');
+    sec[name] = body.subarray(at, at + n);
+    at += n;
+  }
+  const N = GEN_N * GEN_N;
+  meta.voxelStore = {
+    worldBlocks: meta.voxelStore.worldBlocks,
+    present: rawBytes(sec.present, N),
+    topLvl: unpackDelta(sec.topLvl, Int16Array, N),
+    bedLvl: unpackDelta(sec.bedLvl, Int16Array, N),
+    sTop: unpackDelta(sec.sTop, Int16Array, N),
+    colDugLo: unpackDelta(sec.colDugLo, Int16Array, N),
+    colMaxCap: unpackDelta(sec.colMaxCap, Int32Array, N),
+    bedMat: rawBytes(sec.bedMat, N),
+    topMat: rawBytes(sec.topMat, N),
+    colDug: rawBytes(sec.colDug, N),
+    tint: meta.voxelStore.tintSeeded ? tintFromSeed(meta.genState.SEED)
+                                      : unpackDelta(sec.tint, Float32Array, N),
+    runs: { mat: sec.runMat, len: sec.runLen, vis: sec.runVis },
+  };
+  return meta;
+}
+
+// Lay the run-coded columns out into a fresh, packed arena — without touching
+// the live world, so a damaged save is refused before anything is overwritten.
+function decodeVoxRuns(vs) {
+  const N = GEN_N * GEN_N, off = new Int32Array(N);
+  let total = 0;
+  for (let k = 0; k < N; k++) {
+    if (!vs.present[k]) { off[k] = -1; continue; }
+    const len = vs.colMaxCap[k] - VOX_FLOOR + 1;
+    if (len <= 0) throw new Error('Save is damaged');
+    off[k] = total;
+    total += voxSpan(len);
+  }
+  const mat = new Uint8Array(voxSpan(total + voxSlack(total)));
+  const bits = new Uint8Array(mat.length >> 3);
+  const mats = vs.runs.mat, lr = { b: vs.runs.len, p: 0 }, vr = { b: vs.runs.vis, p: 0 };
+  let mi = 0;
+  for (let k = 0; k < N; k++) {
+    const o = off[k];
+    if (o < 0) continue;
+    const end = o + vs.colMaxCap[k] - VOX_FLOOR + 1;
+    for (let p = o; p < end;) {
+      const n = readUvar(lr);
+      if (mi >= mats.length || n <= 0 || p + n > end) throw new Error('Save is damaged');
+      mat.fill(mats[mi++], p, p + n);
+      p += n;
+    }
+    for (let p = o, bit = 0; p < end; bit ^= 1) {
+      const n = readUvar(vr);
+      if (p + n > end) throw new Error('Save is damaged');
+      if (bit) for (let q = p; q < p + n; q++) bits[q >> 3] |= 1 << (q & 7);
+      p += n;
+    }
+  }
+  if (mi !== mats.length || lr.p !== lr.b.length || vr.p !== vr.b.length) throw new Error('Save is damaged');
+  return { off, mat, bits, count: total };
+}
+
+// ----- version 1 (JSON) saves -----
+// The element type each array of the old voxelStore is read into. Anything not
+// listed is read as plain doubles.
+const LEGACY_ARRAY_TYPES = {
+  voxMat: Uint8Array, visBits: Uint8Array, blockVisible: Uint8Array,
+  bedMat: Uint8Array, colDug: Uint8Array,
+  topLvl: Int16Array, bedLvl: Int16Array, sTop: Int16Array, colDugLo: Int16Array,
+  voxOff: Int32Array, colMaxCap: Int32Array,
+  tint: Float32Array, hRaw: Float32Array,
+};
+
+// Parse the voxelStore object of a version 1 save — numbers and arrays of
+// numbers only — out of json[from, to) straight into typed arrays.
+function parseLegacyVoxelStore(json, from, to) {
+  const out = {};
+  let p = from;
+  for (;;) {
+    const q0 = json.indexOf('"', p);
+    if (q0 < 0 || q0 >= to) break;
+    const q1 = json.indexOf('"', q0 + 1);
+    const key = json.slice(q0 + 1, q1);
+    p = json.indexOf(':', q1) + 1;
+    while (json.charCodeAt(p) <= 32) p++;
+    if (json.charCodeAt(p) !== 91 /* [ */) {
+      let e = p;
+      while (e < to && json[e] !== ',') e++;
+      out[key] = Number(json.slice(p, e));
+      p = e + 1;
+      continue;
+    }
+    const close = json.indexOf(']', p);
+    let n = 0, any = false;
+    for (let c = p + 1; c < close; c++) {
+      const ch = json.charCodeAt(c);
+      if (ch === 44 /* , */) n++;
+      else if (ch > 32) any = true;
+    }
+    if (any) n++;
+    const arr = new (LEGACY_ARRAY_TYPES[key] || Float64Array)(n);
+    let c = p + 1;
+    for (let k = 0; k < n; k++) {
+      while (json.charCodeAt(c) <= 32) c++;
+      const start = c;
+      let neg = false, v = 0, simple = true;
+      if (json.charCodeAt(c) === 45 /* - */) { neg = true; c++; }
+      for (;;) {
+        const ch = json.charCodeAt(c);
+        if (ch >= 48 && ch <= 57) { v = v * 10 + (ch - 48); c++; continue; }
+        if (ch !== 44 && ch !== 93 && ch > 32) simple = false;
+        break;
+      }
+      if (!simple) {
+        while (c < close && json.charCodeAt(c) !== 44) c++;
+        const tok = json.slice(start, c).trim();
+        v = tok === 'true' ? 1 : tok === 'false' || tok === 'null' ? 0 : Number(tok);
+        neg = false;
+      }
+      arr[k] = neg ? -v : v;
+      while (c < close && json.charCodeAt(c) !== 44) c++;
+      c++;
+    }
+    out[key] = arr;
+    p = close + 1;
+  }
+  return out;
+}
+
+function parseLegacySave(json) {
+  const key = '"voxelStore":{';
+  const a = json.indexOf(key);
+  if (a < 0) return JSON.parse(json);
+  // Nothing in the voxel store is an object or a string, so its first closing
+  // brace is its own. The rest of the save is small enough for JSON.parse.
+  const from = a + key.length, b = json.indexOf('}', from);
+  const s = JSON.parse(json.slice(0, a) + '"voxelStore":{}' + json.slice(b + 1));
+  s.voxelStore = parseLegacyVoxelStore(json, from, b);
+  return s;
+}
+
 // Rebuild the arena from a saved store. topLvl and sTop must already be
-// restored. A save from this layout is the packed arena and a bit per block; a
-// save from before it is one byte of visibility per block, columns at any
-// offset and two hundred levels of headroom on each, which is repacked here and
-// trimmed back to VOX_HEAD over whatever is actually standing in the column.
-function restoreVoxStore(vs) {
+// restored. A current save arrives already laid out by decodeVoxRuns; a version
+// 1 save from this layout is the packed arena and a bit per block; one from
+// before it is one byte of visibility per block, columns at any offset and two
+// hundred levels of headroom on each, which is repacked here and trimmed back to
+// VOX_HEAD over whatever is actually standing in the column.
+function restoreVoxStore(vs, laid) {
+  if (laid) {
+    voxOff.set(laid.off);
+    colMaxCap.set(vs.colMaxCap);
+    voxCount = laid.count;
+    voxWaste = 0;
+    voxMat = laid.mat;
+    visBits = laid.bits;
+    return;
+  }
   if (vs.visBits) {
     voxOff.set(vs.voxOff);
     colMaxCap.set(vs.colMaxCap);
@@ -7984,23 +8326,28 @@ function restoreVoxStore(vs) {
 }
 
 function applyWorldState(s) {
-  if (!s || s.version !== SAVE_VERSION) {
+  if (!s || (s.version !== SAVE_VERSION && s.version !== LEGACY_SAVE_VERSION)) {
     console.warn('Save version mismatch or invalid save');
     return false;
   }
 
-  // Restore voxel store
+  // Restore voxel store — a current save is laid out (and checked) first, so a
+  // damaged one fails here with the world untouched.
   const vs = s.voxelStore;
+  const laid = vs.runs ? decodeVoxRuns(vs) : null;
   topLvl.set(vs.topLvl);
   bedLvl.set(vs.bedLvl);
   bedMat.set(vs.bedMat);
   sTop.set(vs.sTop);
   colDug.set(vs.colDug);
   colDugLo.set(vs.colDugLo);
-  restoreVoxStore(vs);
+  restoreVoxStore(vs, laid);
   worldBlocks = vs.worldBlocks;
   tint.set(vs.tint);
-  hRaw.set(vs.hRaw);
+  if (vs.hRaw) hRaw.set(vs.hRaw);
+  if (vs.topMat) topMat.set(vs.topMat);
+  // The tint came from the save's seed, and the next save is checked against it.
+  if (s.genState && Number.isFinite(s.genState.SEED)) worldSeed = s.genState.SEED >>> 0;
 
   // Restore player state
   const ps = s.playerState;
@@ -8094,9 +8441,6 @@ function applyWorldState(s) {
   powderQueue.push(...ds.powderQueue);
   for (const c of ds.powderDirty) powderDirty.add(c);
 
-  // Restore world generation
-  SEED = s.genState.SEED;
-
   // Restore settings
   const ss = s.settingsState;
   mouseSensitivity = ss.mouseSensitivity;
@@ -8126,63 +8470,89 @@ function applyWorldState(s) {
   return true;
 }
 
-function saveWorld() {
-  try {
-    const state = collectWorldState();
-    const json = JSON.stringify(state);
-    idbSet(SAVE_KEY, json);
-    return { ok: true, size: json.length };
-  } catch (e) {
-    console.error('Save failed:', e);
-    return { ok: false, error: e.message };
-  }
+// A save or load in flight; a second tap while one runs is refused rather than
+// interleaved with it.
+let saveBusy = false;
+async function exclusive(fn) {
+  if (saveBusy) return { ok: false, error: 'Busy — try again in a moment' };
+  saveBusy = true;
+  try { return await fn(); }
+  catch (e) { console.error('Save/load failed:', e); return { ok: false, error: e.message || String(e) }; }
+  finally { saveBusy = false; }
 }
 
-async function loadWorld() {
-  try {
-    const json = await idbGet(SAVE_KEY);
-    if (!json) return { ok: false, error: 'No save found' };
-    const state = JSON.parse(json);
-    const ok = applyWorldState(state);
-    return { ok, error: ok ? null : 'Failed to apply save' };
-  } catch (e) {
-    console.error('Load failed:', e);
-    return { ok: false, error: e.message };
+// Write the current world in the current format, then drop any version 1 save,
+// which it supersedes — only once the new one is safely stored.
+async function writeSave() {
+  const blob = await buildSaveBlob();
+  const bytes = await blobBytes(blob);
+  await idbSet(SAVE_KEY_BIN, bytes.buffer);
+  try { await idbDelete(SAVE_KEY); } catch (e) { console.warn('Could not remove old save:', e); }
+  return bytes.length;
+}
+
+function saveWorld() {
+  return exclusive(async () => ({ ok: true, size: await writeSave() }));
+}
+
+// Either kind of save, as raw bytes / a string, into the world.
+async function applySaveData(data) {
+  let s;
+  if (typeof data === 'string') {
+    s = parseLegacySave(data);
+  } else {
+    const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+    if (isBinarySave(u8)) s = await decodeBinarySave(u8);
+    else s = parseLegacySave(new TextDecoder().decode(u8));
   }
+  return applyWorldState(s);
+}
+
+function loadWorld() {
+  return exclusive(async () => {
+    const bin = await idbGet(SAVE_KEY_BIN);
+    if (bin) {
+      const ok = await applySaveData(bin);
+      return { ok, error: ok ? null : 'Failed to apply save' };
+    }
+    let json = await idbGet(SAVE_KEY);
+    if (!json) return { ok: false, error: 'No save found' };
+    const ok = await applySaveData(json);
+    json = null;
+    if (!ok) return { ok, error: 'Failed to apply save' };
+    // Migrate: the old JSON save is rewritten in the new format straight away.
+    // If that fails the old save is left where it was.
+    let migrated = false;
+    try { await writeSave(); migrated = true; }
+    catch (e) { console.warn('Migrating old save failed:', e); }
+    return { ok: true, migrated };
+  });
 }
 
 function exportWorld() {
-  try {
-    const state = collectWorldState();
-    const json = JSON.stringify(state);
-    const blob = new Blob([json], { type: 'application/json' });
+  return exclusive(async () => {
+    const blob = await buildSaveBlob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `survival-world-${Date.now()}.json`;
+    a.download = `survival-world-${Date.now()}.svw`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
-    return { ok: true };
-  } catch (e) {
-    console.error('Export failed:', e);
-    return { ok: false, error: e.message };
-  }
+    a.remove();
+    // Safari reads the URL after click() returns, so it is not revoked at once.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    return { ok: true, size: blob.size };
+  });
 }
 
+// Takes a current .svw file or an old .json export.
 function importWorld(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const state = JSON.parse(e.target.result);
-        const ok = applyWorldState(state);
-        resolve({ ok, error: ok ? null : 'Failed to apply save' });
-      } catch (err) {
-        resolve({ ok: false, error: err.message });
-      }
-    };
-    reader.onerror = () => resolve({ ok: false, error: 'File read error' });
-    reader.readAsText(file);
+  return exclusive(async () => {
+    // An old JSON export is read as text directly, rather than as bytes and
+    // then a string, so the big one is only in memory once.
+    const isBin = isBinarySave(await blobBytes(file.slice(0, 8)));
+    const ok = await applySaveData(isBin ? await blobBytes(file) : await file.text());
+    return { ok, error: ok ? null : 'Failed to apply save' };
   });
 }
 
@@ -8213,28 +8583,33 @@ const btnLoadWorld = document.getElementById('btn-load-world');
 const btnExportWorld = document.getElementById('btn-export-world');
 const btnImportWorld = document.getElementById('btn-import-world');
 
-bindTap(btnSaveWorld, () => {
-  const r = saveWorld();
-  if (r.ok) setSaveStatus(`Saved (${(r.size/1024).toFixed(1)} KB)`, 'saved');
+const kb = (n) => n < 1 << 20 ? `${(n / 1024).toFixed(1)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`;
+
+bindTap(btnSaveWorld, async () => {
+  setSaveStatus('Saving...', 'info');
+  const r = await saveWorld();
+  if (r.ok) setSaveStatus(`Saved (${kb(r.size)})`, 'saved');
   else setSaveStatus('Save failed: ' + r.error, 'error');
 });
 
 bindTap(btnLoadWorld, async () => {
+  setSaveStatus('Loading...', 'info');
   const r = await loadWorld();
-  if (r.ok) setSaveStatus('World loaded', 'loaded');
+  if (r.ok) setSaveStatus(r.migrated ? 'World loaded (old save upgraded)' : 'World loaded', 'loaded');
   else setSaveStatus('Load failed: ' + r.error, 'error');
 });
 
-bindTap(btnExportWorld, () => {
-  const r = exportWorld();
-  if (r.ok) setSaveStatus('File exported', 'saved');
+bindTap(btnExportWorld, async () => {
+  const r = await exportWorld();
+  if (r.ok) setSaveStatus(`File exported (${kb(r.size)})`, 'saved');
   else setSaveStatus('Export failed: ' + r.error, 'error');
 });
 
 btnImportWorld.addEventListener('click', () => {
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.json';
+  // No accept filter: iOS greys out extensions it does not know, like .svw.
+  // importWorld tells the formats apart by their first bytes.
   input.onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;

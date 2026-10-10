@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 135;
+  var v = 136;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -1624,7 +1624,13 @@ const FOG_COLOR   = 0xb8d1e8;
 const FOG_DENSITY = 0.0028;
 
 const DEG = Math.PI / 180;
-const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+// Classified by the *primary* pointer, not by whether touch exists at all:
+// touchscreen laptops, Linux/Windows desktops with touch drivers, and some
+// browsers report `ontouchstart` / maxTouchPoints > 0 on an ordinary
+// mouse-and-keyboard computer, which used to switch off pointer lock entirely.
+const isTouchDevice = window.matchMedia
+  ? window.matchMedia('(pointer: coarse)').matches && !window.matchMedia('(hover: hover)').matches
+  : (('ontouchstart' in window) || navigator.maxTouchPoints > 0);
 
 // ---------------------------------------------------------------------------
 // Renderer / scene / camera
@@ -4172,7 +4178,9 @@ window.addEventListener('blur', () => keys.clear());
 
 // ----- pointer lock / mouse look -----
 function requestLock() {
-  if (isTouchDevice) return;
+  // Gate on touch actually being used, not on the device guess above, so a
+  // hybrid machine still gets mouse look when driven with the mouse.
+  if (isTouchDevice || state.touchActive) return;
   const el = renderer.domElement;
   const fn = el.requestPointerLock || el.mozRequestPointerLock;
   if (fn) {
@@ -4206,7 +4214,7 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('pointerlockchange', () => {
-  if (!isLocked() && !isTouchDevice) {
+  if (!isLocked() && !isTouchDevice && !state.touchActive) {
     keys.clear();
     showOverlay();
   }

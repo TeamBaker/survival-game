@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 138;
+  var v = 139;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -2675,9 +2675,8 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 // diced into a GRAIN_GRID x GRAIN_GRID grid, same as the terrain powder path
 // (pushFace) below, and each cell gets its own hashed shade — wide enough to
 // read as speckle on a face this small, where a per-face-only shade would be
-// nearly invisible. Built fresh every call: falling grains share one per
-// material through fallingGrainGeo, and only debris children (grainChild) get
-// their own seeded copy, which freeDebrisChild disposes.
+// nearly invisible. Built fresh every call; in practice once per material,
+// through fallingGrainGeo, which falling grains and debris grain layers share.
 function grainGeo(m, seed = 0) {
   const base = TERRAIN_MATS[m].color;
   const nq = 6 * GRAIN_GRID * GRAIN_GRID;
@@ -4953,8 +4952,8 @@ function debrisAim(ox, oy, oz, reach = SHOVEL_REACH) {
   if (debris.children.length === 0) return null;
   debrisRay.set(debrisOrigin.set(ox, oy, oz), aimDir);
   debrisRay.far = reach;
-  // Recursive: blocks placed onto a piece hang off its mesh as children, and a
-  // hit on one of those is a hit on the piece.
+  // Recursive: a piece's powder is drawn by grain layers that hang off its mesh
+  // as children, and a hit on one of those is a hit on the piece.
   const hits = debrisRay.intersectObjects(debris.children, true);
   if (!hits.length) return null;
   const hit = hits[0];
@@ -4995,16 +4994,11 @@ function shovelAim() {
     // see, and from then on rides with it — the world grid does not come into it.
     const p = dHit.point;
     const dm = dHit.piece;
-    // Which block that is: an instance of the piece itself, or one of the cubes
-    // placed on it since, which hang off it as children. Its position is in the
-    // piece's frame, which is what the highlight and the dig both want.
-    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
-    const child = dHit.object !== dm ? dHit.object : null;
-    const lat = dm.userData.blocks;
-    let blockLocal = null;
-    if (child) blockLocal = child.position;
-    else if (inst >= 0 && inst < lat.length) blockLocal = lat[inst].pos;
-    shovel.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), inst, child, blockLocal },
+    // Which block that is, as an index into the piece's lattice. Its position is
+    // in the piece's frame, which is what the highlight and the dig both want.
+    const q = debrisHitBlock(dHit);
+    const blockLocal = q >= 0 ? dm.userData.blocks[q].pos : null;
+    shovel.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), q, blockLocal },
                                   cellOf(p.x, p.y, p.z));
   } else if (camMode !== CAM.FREE) {
     // Nothing under the crosshair. Fall back to what you are standing on, and to
@@ -5082,37 +5076,127 @@ const fallDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepth
 fallDepthMat.onBeforeCompile = fallMat.onBeforeCompile;
 // The mask is per instance, so each piece needs its own copy of the cube to
 // carry it — 24 vertices, freed with the piece.
-function debrisInstances(n) {
-  const g = fallGeo.clone();
+function debrisInstances(n, geo = fallGeo, material = fallMat) {
+  const g = geo.clone();
   g.setAttribute('faceHide', new THREE.InstancedBufferAttribute(new Float32Array(Math.max(n, 1)), 1));
-  const m = new THREE.InstancedMesh(g, fallMat, n);
+  const m = new THREE.InstancedMesh(g, material, n);
   m.customDepthMaterial = fallDepthMat;
   return m;
 }
-const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
-// A child block has no instance to carry a mask, but it owns its geometry, and
-// both kinds lay the cube's six faces down one after another in FACE_DIRS order
-// — so pack the faces it still shows to the front of its index and draw only those.
-function debrisChildFaces(c, bits) {
-  const g = c.geometry, idx = g.index;
-  const full = g.userData.fullIndex ??= idx.array.slice();
-  const per = full.length / 6;
-  let n = 0;
-  for (let f = 0; f < 6; f++) {
-    if (bits & (1 << f)) continue;
-    idx.array.set(full.subarray(f * per, (f + 1) * per), n);
-    n += per;
-  }
-  g.setDrawRange(0, n);
-  idx.needsUpdate = true;
-  // Fully buried: a draw call (two, with the shadow) for nothing. Hidden, it
-  // drops out of the render lists altogether.
-  c.visible = n > 0;
+// Room for `n` instances. An InstancedMesh's buffers are the size it was made
+// with, and a piece that gets built on outgrows them: swap in bigger ones,
+// doubling, so a volume fill of thousands pays for it a dozen times rather than
+// per block. dispose() is what frees the old pair on the GPU — the renderer
+// picks the mesh up again with the new ones on its next draw.
+function debrisReserve(im, n) {
+  const cap = im.instanceMatrix.count;
+  if (n <= cap) return;
+  const size = Math.max(n, cap * 2, 8);
+  const mat4 = new THREE.InstancedBufferAttribute(new Float32Array(size * 16), 16);
+  mat4.array.set(im.instanceMatrix.array);
+  const col = new THREE.InstancedBufferAttribute(new Float32Array(size * 3), 3);
+  if (im.instanceColor) col.array.set(im.instanceColor.array);
+  im.dispose();
+  im.instanceMatrix = mat4;
+  im.instanceColor = col;
+  // The face mask lives on the geometry, so that has to grow with them.
+  const g = im.geometry.clone();
+  const hide = new THREE.InstancedBufferAttribute(new Float32Array(size), 1);
+  hide.array.set(im.geometry.attributes.faceHide.array.subarray(0, Math.min(cap, size)));
+  g.setAttribute('faceHide', hide);
+  im.geometry.dispose();
+  im.geometry = g;
 }
+const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
+// Powder on a piece needs grainGeo's speckle instead of a flat instance colour,
+// so it cannot share the piece's own cubes. It gets the next best thing: one
+// InstancedMesh per powder material per piece (a "grain layer"), hung off the
+// piece as a child so it rides with it, drawing every block of that material in
+// one call. The cube is the falling grain's speckle, scaled to block size, with
+// the same faceId the mask shader keys off; the material is the white,
+// vertex-coloured terrain one with that shader on, and the per-block tint comes
+// in as the instance colour on top of the speckle.
+const debrisGrainGeos = new Map();
+function debrisGrainGeo(m) {
+  let g = debrisGrainGeos.get(m);
+  if (g) return g;
+  g = fallingGrainGeo(m).clone();
+  g.scale(BLOCK, BLOCK, BLOCK);
+  // grainGeo lays its faces down one after another in FACE_DIRS order too.
+  const nv = g.attributes.position.count, per = nv / 6;
+  g.setAttribute('faceId', new THREE.BufferAttribute(Float32Array.from({ length: nv }, (_, v) => Math.floor(v / per)), 1));
+  debrisGrainGeos.set(m, g);
+  return g;
+}
+const debrisGrainMats = new Map();
+function debrisGrainMat(m) {
+  let mt = debrisGrainMats.get(m);
+  if (mt) return mt;
+  mt = TERRAIN_FACE_MATS[m].clone();
+  mt.onBeforeCompile = fallMat.onBeforeCompile;
+  debrisGrainMats.set(m, mt);
+  return mt;
+}
+// The piece's layer for material m, made on first use. Its owners list maps an
+// instance back to the lattice entry it draws; the entry keeps its instance
+// index as `k`.
+function grainLayer(mesh, m) {
+  const layers = mesh.userData.grains ??= {};
+  let L = layers[m];
+  if (L) return L;
+  L = debrisInstances(0, debrisGrainGeo(m), debrisGrainMat(m));
+  L.userData.owners = [];
+  L.castShadow = true;
+  L.receiveShadow = true;
+  L.visible = false;
+  layers[m] = L;
+  mesh.add(L);
+  return L;
+}
+const debrisM4 = new THREE.Matrix4(), debrisCol = new THREE.Color();
+// Draw lattice entry e as a grain on its piece.
+function addGrain(mesh, e) {
+  const L = grainLayer(mesh, e.mat), k = L.count;
+  debrisReserve(L, k + 1);
+  L.count = k + 1;
+  L.setMatrixAt(k, debrisM4.makeTranslation(e.pos.x, e.pos.y, e.pos.z));
+  // Same range as terrain's per-block tint.
+  L.setColorAt(k, debrisCol.setScalar(0.85 + Math.random() * 0.30));
+  L.userData.owners[k] = e;
+  e.k = k;
+  L.instanceMatrix.needsUpdate = true;
+  L.instanceColor.needsUpdate = true;
+  L.boundingSphere = null;
+  L.visible = true;
+}
+// And stop drawing it: the last instance moves into its slot, so nothing else
+// in the layer shifts.
+function removeGrain(mesh, e) {
+  const L = mesh.userData.grains[e.mat], owners = L.userData.owners;
+  const k = e.k, last = L.count - 1;
+  if (k !== last) {
+    L.getMatrixAt(last, debrisM4); L.setMatrixAt(k, debrisM4);
+    L.getColorAt(last, debrisCol); L.setColorAt(k, debrisCol);
+    const hide = L.geometry.attributes.faceHide.array;
+    hide[k] = hide[last];
+    owners[k] = owners[last];
+    owners[k].k = k;
+  }
+  owners.length = last;
+  L.count = last;
+  L.instanceMatrix.needsUpdate = true;
+  L.instanceColor.needsUpdate = true;
+  L.geometry.attributes.faceHide.needsUpdate = true;
+  L.boundingSphere = null;
+  // An empty layer would still cost a draw call (two, with the shadow).
+  L.visible = last > 0;
+}
+
 // Recompute that mask from the piece's lattice. Every block counts as a
-// neighbour — powder and placed children too — and every block gets culled:
-// the instances, which sit at the front of the lattice, through their mask,
-// the children through their own index.
+// neighbour, powder included, and every block gets culled: the piece's own
+// cubes, which sit at the front of the lattice, through the piece's mask, the
+// powder through its layer's.
 function debrisFaceMask(mesh) {
   const lat = mesh.userData.blocks, attr = mesh.geometry.attributes.faceHide;
   if (!lat.length) return;
@@ -5126,34 +5210,28 @@ function debrisFaceMask(mesh) {
     FACE_DIRS.forEach(([dx, dy, dz], f) => {
       if (at.has(key(p.x + dx * BLOCK, p.y + dy * BLOCK, p.z + dz * BLOCK))) bits |= 1 << f;
     });
-    if (lat[q].child) debrisChildFaces(lat[q].child, bits);
-    else attr.array[q] = bits;
+    if (q < mesh.count) attr.array[q] = bits;
+    else mesh.userData.grains[lat[q].mat].geometry.attributes.faceHide.array[lat[q].k] = bits;
   }
   attr.needsUpdate = true;
-}
-// A block that hangs off a piece rather than being one of its instances: the
-// powder ones, which need grainGeo's speckle instead of a flat instance colour,
-// and the ones the player lays on. Both ride with the piece as children, which
-// is what cutDebrisLat and recentreDebris already key off.
-function grainChild(m, pos, parent) {
-  const mat = TERRAIN_FACE_MATS[m].clone();
-  mat.color.multiplyScalar(0.85 + Math.random() * 0.30);   // same range as terrain's per-block tint
-  const c = new THREE.Mesh(grainGeo(m, (Math.random() * 100000) | 0), mat);
-  c.scale.setScalar(BLOCK);   // grainGeo builds a unit cube
-  c.position.copy(pos);
-  c.castShadow = true;
-  c.receiveShadow = true;
-  parent.add(c);
-  return c;
+  for (const L of Object.values(mesh.userData.grains || {})) L.geometry.attributes.faceHide.needsUpdate = true;
 }
 
-// Those children own something the shared fallGeo/fallMat instances do not: a
-// powder block its own geometry and its own tinted material clone, a placed
-// block its own shade as a material clone. Free whatever is theirs, and never
-// the shared pair.
-function freeDebrisChild(c) {
-  if (c.geometry !== fallGeo) c.geometry.dispose();
-  if (c.material !== fallMat) c.material.dispose();
+// Which block of its piece a debrisAim hit landed on, as a lattice index, or -1.
+function debrisHitBlock(hit) {
+  const dm = hit.piece, o = hit.object, k = hit.instanceId;
+  if (k == null) return -1;
+  if (o === dm) return k < dm.count ? k : -1;
+  const e = o.userData.owners?.[k];
+  return e ? dm.userData.blocks.indexOf(e) : -1;
+}
+
+// Everything a piece owns on the GPU: its instance buffers and its own cube
+// copy, and the same for each grain layer. The materials are shared.
+function freeDebrisMesh(mesh) {
+  for (const L of Object.values(mesh.userData.grains || {})) { L.dispose(); L.geometry.dispose(); }
+  mesh.dispose();
+  mesh.geometry.dispose();
 }
 
 // Its own group rather than `objects`: the camera boom raycasts that one to pull
@@ -5189,9 +5267,7 @@ function dropChunk(f) {
   const q = syncList.findIndex((e) => e.body === f.body);
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
-  for (const c of f.mesh.children) freeDebrisChild(c);
-  f.mesh.dispose();  // the per-instance buffers
-  f.mesh.geometry.dispose();  // the piece's own cube copy — the material is shared
+  freeDebrisMesh(f.mesh);
 }
 
 // The entry for a piece, whether it is still being watched or has settled. A
@@ -5230,7 +5306,7 @@ function spawnFallingChunk(unit) {
   cx /= n; cy /= n; cz /= n;
 
   // A flat instance colour reads as a plain cube on sand, which in the ground is
-  // speckled: powder is drawn as a grainGeo child instead. The instanced blocks
+  // speckled: powder is drawn through a grain layer instead. The piece's own cubes
   // have to sit at the front of the lattice, in step with the instance buffer,
   // so the piece is ordered solid first and powder after.
   const nPowder = blocks.filter((b) => MAT_STATS[b.m]?.powder).length;
@@ -5260,7 +5336,7 @@ function spawnFallingChunk(unit) {
   mesh.userData.blocks = blocks.map((b, q) => {
     const pos = new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
     const e = { pos, mat: b.m, color: b.color ? b.color.clone() : null, gi: b.i, gj: b.j, lvl: b.lvl };
-    if (q >= nSolid) e.child = grainChild(b.m, pos, mesh);
+    if (q >= nSolid) addGrain(mesh, e);
     return e;
   });
   debrisFaceMask(mesh);
@@ -5611,9 +5687,7 @@ function removeDebrisMesh(mesh) {
   const q = restedChunks.findIndex((f) => f.mesh === mesh);
   if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
-  for (const c of mesh.children) freeDebrisChild(c);
-  mesh.dispose();
-  mesh.geometry.dispose();
+  freeDebrisMesh(mesh);
 }
 
 // Cannon turns a body about its origin, so a piece's origin has to sit on its
@@ -5635,11 +5709,17 @@ function recentreDebris(mesh, body) {
   if (tw > 0) c.multiplyScalar(1 / tw);
   const m4 = new THREE.Matrix4();
   for (let q = 0; q < lat.length; q++) {
-    lat[q].pos.sub(c);
-    if (lat[q].child) lat[q].child.position.copy(lat[q].pos);
-    else mesh.setMatrixAt(q, m4.makeTranslation(lat[q].pos.x, lat[q].pos.y, lat[q].pos.z));
+    const b = lat[q];
+    b.pos.sub(c);
+    m4.makeTranslation(b.pos.x, b.pos.y, b.pos.z);
+    if (q < mesh.count) mesh.setMatrixAt(q, m4);
+    else mesh.userData.grains[b.mat].setMatrixAt(b.k, m4);
   }
   mesh.instanceMatrix.needsUpdate = true;
+  for (const L of Object.values(mesh.userData.grains || {})) {
+    L.instanceMatrix.needsUpdate = true;
+    L.boundingSphere = null;
+  }
   // Instances moved: the InstancedMesh caches this on first raycast/frustum
   // check and never recomputes it, so a stale sphere left over from the
   // piece's original shape starts missing a beam's own raycasts (and
@@ -5755,14 +5835,14 @@ function rebuildDebrisBody(mesh, body) {
   }
 }
 
-// Take block `q` off a piece. A placed block is a child mesh; one of the piece's
-// own is an instance, and those sit at the front of the lattice in step with the
-// instance buffer, so the gap behind it has to be closed and one fewer drawn.
+// Take block `q` off a piece. Powder is an instance in its grain layer, which
+// closes its own gap; one of the piece's own cubes sits at the front of the
+// lattice in step with the instance buffer, so the gap behind it has to be
+// closed and one fewer drawn.
 function cutDebrisLat(mesh, q) {
   const lat = mesh.userData.blocks;
-  if (lat[q].child) {
-    mesh.remove(lat[q].child);
-    freeDebrisChild(lat[q].child);
+  if (q >= mesh.count) {
+    removeGrain(mesh, lat[q]);
   } else {
     const m4 = new THREE.Matrix4(), col = new THREE.Color();
     for (let k = q + 1; k < mesh.count; k++) {
@@ -5849,7 +5929,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
     const e = { pos: p, mat: b.mat, color: b.color || null, gi: b.gi, gj: b.gj, lvl: b.lvl };
-    if (q >= nSolid) e.child = grainChild(b.mat, p, mesh);
+    if (q >= nSolid) addGrain(mesh, e);
     return e;
   });
   debrisFaceMask(mesh);
@@ -5964,12 +6044,9 @@ function spawnDebrisPart(parent, blocks, pbody) {
 // the rest of it standing. Dig the last block out and the piece goes with it;
 // dig one out of the middle and what is left may be two pieces, in which case
 // the biggest part keeps the mesh and the rest are spawned on their own.
-function digDebrisBlock(mesh, inst, child) {
+function digDebrisBlock(mesh, q) {
   const lat = mesh.userData.blocks;
-  let q = -1;
-  if (child) q = lat.findIndex((b) => b.child === child);
-  else if (inst >= 0 && inst < mesh.count) q = inst;
-  if (q < 0) return false;
+  if (!(q >= 0 && q < lat.length)) return false;
 
   cutDebrisLat(mesh, q);
   if (!lat.length) { removeDebrisMesh(mesh); return true; }   // nothing left of it
@@ -6030,39 +6107,48 @@ function debrisSpot(mesh, point, dir) {
   return debrisLocal.set(best.pos.x + bestFace.dx, best.pos.y + bestFace.dy, best.pos.z + bestFace.dz);
 }
 
-// Put a held block onto a fallen piece. The cube hangs off the piece's mesh in
-// local coordinates, so it turns and tumbles with it, and the body it is glued
-// to gets heavier and grows a collider to match.
+// Put a held block onto a fallen piece. It joins the piece's lattice, in the
+// piece's own frame, so it turns and tumbles with it, and the body it is glued
+// to gets heavier and grows a collider to match. Nothing is made per block: a
+// solid one is one more instance of the piece's own cubes, a powder one one
+// more in the grain layer for its material.
+// `rebuild` false is for a caller placing many at once (the volume fill): it
+// owes the piece one debrisFaceMask and one rebuildDebrisBody when it is done.
 function placeOnDebris(mesh, local, m, rebuild = true) {
-  // Powder gets grainGeo's speckle, the same as the piece's own powder blocks.
-  // Anything else gets its own shade off the cell it lands in, so a wall built
-  // on a piece is not one flat colour the way TERRAIN_MATS alone would make it.
-  let cube, colour = null;
-  if (MAT_STATS[m]?.powder) {
-    cube = grainChild(m, local, mesh);
-  } else {
-    const variation = 0.85 + nhash3(Math.round(local.x / BLOCK), Math.round(local.z / BLOCK), Math.round(local.y / BLOCK)) * 0.30;
-    const cubeMat = TERRAIN_MATS[m].clone();
-    cubeMat.color.multiplyScalar(variation);
-    cube = new THREE.Mesh(fallGeo.clone(), cubeMat);   // its own, so debrisChildFaces can cull it
-    cube.position.copy(local);
-    cube.castShadow = true;
-    cube.receiveShadow = true;
-    mesh.add(cube);
-    colour = cubeMat.color.clone();
-  }
+  const lat = mesh.userData.blocks;
   // The greedy collider merge keys blocks by grid index, so a placed block
   // needs one too: derive it from the piece's own lattice (block 0's grid
   // cell vs. its local position gives the offset every cell shares).
-  const ref = mesh.userData.blocks[0];
+  const ref = lat[0];
   const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
   const gi = Math.round((local.x - kx) / BLOCK), gj = Math.round((local.z - kz) / BLOCK), lvl = Math.round((local.y - ky) / BLOCK - 0.5);
-  mesh.userData.blocks.push({ pos: local.clone(), mat: m, child: cube, color: colour, gi, gj, lvl });
+  const e = { pos: local.clone(), mat: m, color: null, gi, gj, lvl };
+  if (MAT_STATS[m]?.powder) {
+    // Powder gets grainGeo's speckle, the same as the piece's own powder blocks.
+    lat.push(e);
+    addGrain(mesh, e);
+  } else {
+    // Its own shade off the cell it lands in, so a wall built on a piece is not
+    // one flat colour the way TERRAIN_MATS alone would make it. It goes in at
+    // the end of the piece's cubes, which is the end of the solid run of the
+    // lattice — ahead of any powder.
+    const variation = 0.85 + nhash3(Math.round(local.x / BLOCK), Math.round(local.z / BLOCK), Math.round(local.y / BLOCK)) * 0.30;
+    e.color = TERRAIN_MATS[m].color.clone().multiplyScalar(variation);
+    const q = mesh.count;
+    debrisReserve(mesh, q + 1);
+    mesh.count = q + 1;
+    mesh.setMatrixAt(q, debrisM4.makeTranslation(local.x, local.y, local.z));
+    mesh.setColorAt(q, e.color);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor.needsUpdate = true;
+    mesh.boundingSphere = null;
+    lat.splice(q, 0, e);
+  }
+  if (!rebuild) return;
   debrisFaceMask(mesh);
 
   // Settled pieces keep their bodies, so one gets fed the same as a falling one:
   // heavier, a collider round the new block, and shoved awake to feel it.
-  if (!rebuild) return;
   const f = chunkOfMesh(mesh);
   if (!f) return;
   rebuildDebrisBody(mesh, f.body);
@@ -6241,11 +6327,8 @@ function hammerStrike() {
     const gi = colI(wp.x), gj = colJ(wp.z), gl = lvlOfY(wp.y);
     // Spawn it as its own single-block falling piece.
     spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat, color: lat[idx].color || terrainBlockColor(gi, gj, gl, dropMat) }]]));
-    // Remove from the original piece (may split it). Powder and placed blocks
-    // hang off the piece as children and sit past the end of the instance
-    // buffer, so hand the child over or digDebrisBlock will not find the block
-    // and the strike would leave a copy of it behind.
-    digDebrisBlock(mesh, idx, lat[idx].child || null);
+    // Remove from the original piece (may split it).
+    digDebrisBlock(mesh, idx);
     hammer.hit = null;
     hammer.debris = null;
     return true;
@@ -6300,10 +6383,8 @@ function shovelPickUp() {
     // Rubble comes away a block at a time, into your hands like anything else.
     const d = shovel.debris;
     const lat = d.mesh.userData.blocks;
-    let mat = -1;
-    if (d.child) { const idx = lat.findIndex((b) => b.child === d.child); if (idx >= 0) mat = lat[idx].mat; }
-    else if (d.inst >= 0 && d.inst < d.mesh.count) mat = lat[d.inst].mat;
-    digDebrisBlock(d.mesh, d.inst, d.child);
+    const mat = d.q >= 0 && d.q < lat.length ? lat[d.q].mat : -1;
+    digDebrisBlock(d.mesh, d.q);
     if (mat >= 0 && shovel.held.length < SHOVEL_CAP) { shovel.held.push(mat); refreshShovelUI(); }
     shovel.debris = null;
     return true;
@@ -6474,15 +6555,8 @@ function hammerAim() {
   // Debris piece in the way — target the block on it.
   if (dHit) {
     const dm = dHit.piece;
-    const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
-    const child = dHit.object !== dm ? dHit.object : null;
     const lat = dm.userData.blocks;
-    let idx = -1;
-    if (child) {
-      for (let q = 0; q < lat.length; q++) { if (lat[q].child === child) { idx = q; break; } }
-    } else if (inst >= 0 && inst < lat.length) {
-      idx = inst;
-    }
+    const idx = debrisHitBlock(dHit);
     if (idx >= 0) {
       hammer.debris = { mesh: dm, idx };
       // Store the actual world position for the highlight.
@@ -7116,13 +7190,9 @@ function creativeAim() {
     if (dHit.distance <= terrainFaceDist) {
       const p = dHit.point;
       const dm = dHit.piece;
-      const inst = dHit.object === dm && dHit.instanceId != null ? dHit.instanceId : -1;
-      const child = dHit.object !== dm ? dHit.object : null;
-      const lat = dm.userData.blocks;
-      let blockLocal = null;
-      if (child) blockLocal = child.position;
-      else if (inst >= 0 && inst < lat.length) blockLocal = lat[inst].pos;
-      creative.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), inst, child, blockLocal },
+      const q = debrisHitBlock(dHit);
+      const blockLocal = q >= 0 ? dm.userData.blocks[q].pos : null;
+      creative.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), q, blockLocal },
                                       cellOf(p.x, p.y, p.z));
       creative.hit = null;
       creative.spot = null;
@@ -7548,6 +7618,7 @@ function volumeFillDebris(f, box, m) {
     }
   }
   if (!placed) return 0;
+  debrisFaceMask(mesh);
   rebuildDebrisBody(mesh, f.body);
   f.still = 0;
   return placed;
@@ -7585,7 +7656,7 @@ bindTap(placerDel, () => {
     const { i, j, lvl } = creative.hit;
     if (voxelAt(i, j, lvl) !== AIR) editBlock(i, j, lvl, AIR);
   } else if (creative.debris) {
-    digDebrisBlock(creative.debris.mesh, creative.debris.inst, creative.debris.child);
+    digDebrisBlock(creative.debris.mesh, creative.debris.q);
   }
 });
 

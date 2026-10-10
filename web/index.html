@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 139;
+  var v = 140;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -864,6 +864,26 @@
     z-index: 60;
   }
   #loading.hidden { display: none; }
+  #loading { flex-direction: column; gap: 14px; }
+  /* Once the terrain starts going up it is drawn behind the bar, so the screen
+     clears to show it and the bar drops to the bottom. Still covers the page, so
+     nothing under it can be tapped before the game is ready. */
+  #loading.preview { background: transparent; justify-content: flex-end; padding-bottom: 12vh; }
+  /* The title screen shows through, but its button does nothing until the game
+     is up, so it stays out of sight until then. */
+  body.gen-preview #start-btn { visibility: hidden; }
+  #load-bar {
+    width: min(260px, 60vw);
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(127, 168, 216, 0.22);
+    overflow: hidden;
+  }
+  #load-fill {
+    width: 0;
+    height: 100%;
+    background: #7fa8d8;
+  }
   #err {
     padding: 24px;
     color: #ffb4b4;
@@ -1687,6 +1707,85 @@ camera.rotation.order = 'YXZ';
 camera.position.copy(START_POS);
 
 // ---------------------------------------------------------------------------
+// Progressive start-up
+// ---------------------------------------------------------------------------
+// Generating the world is seconds of solid work on a phone, and done in one
+// stretch it froze the tab with nothing on screen until it was over. So every
+// long generation loop below watches the clock, and once a slice has run for
+// SLICE_MS it awaits genPause(): the browser gets a frame, the loading bar moves,
+// and the loop picks up exactly where it stopped. Nothing else of ours runs in
+// the gaps — no input handler or timer is bound until generation is over — so
+// the world that comes out is the same one the single long pass made.
+const SLICE_MS = 12;
+const loadingEl = document.getElementById('loading');
+loadingEl.innerHTML = '<div id="load-label">Loading&hellip;</div>' +
+                      '<div id="load-bar"><div id="load-fill"></div></div>';
+const loadLabel = document.getElementById('load-label');
+const loadFill  = document.getElementById('load-fill');
+// Each stage's share of the bar: [label, start, width]. Rough timings on a phone.
+const GEN_PHASES = {
+  height:  ['Raising the island',    0.00, 0.14],
+  mats:    ['Laying down materials', 0.14, 0.08],
+  fill:    ['Filling the ground',    0.22, 0.06],
+  swap:    ['Roughening edges',      0.28, 0.04],
+  vis:     ['Finding open faces',    0.32, 0.30],
+  chunks:  ['Building terrain',      0.62, 0.38],
+};
+let sliceEnd = performance.now() + SLICE_MS;
+// Set while the chunk meshes go up: pauses draw the scene, so the island
+// assembles on screen behind the bar instead of appearing all at once. A frame of
+// the whole scene can cost far more than a slice of building on a weak GPU, and
+// most of that cost turns up after render() has returned, so a frame is charged
+// everything from drawing it to getting control back, and the next one waits
+// four times that — the preview never takes more than a fifth of the time — and
+// never less than a quarter of a second.
+let loadPreview = false;
+let previewAt = 0, previewT0 = -1;
+const genDue = () => performance.now() > sliceEnd;
+function genProgress(phase, frac) {
+  const [label, start, width] = GEN_PHASES[phase];
+  loadLabel.textContent = label + '…';
+  loadFill.style.width = ((start + width * Math.min(1, frac)) * 100).toFixed(1) + '%';
+}
+// Hand the browser a frame and resolve on the far side of it. requestAnimationFrame
+// is the normal path; a hidden tab gets none of those, so it falls back to a
+// message, which is not throttled, and a timeout covers any frame that never comes.
+function genPause(phase, frac) {
+  genProgress(phase, frac);
+  return new Promise((resolve) => {
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      if (loadPreview) {
+        const now = performance.now();
+        if (previewT0 >= 0) {
+          previewAt = now + Math.max(250, (now - previewT0) * 4);
+          previewT0 = -1;
+        }
+        if (now >= previewAt) {
+          previewT0 = now;
+          renderer.render(scene, camera);
+        }
+      }
+      sliceEnd = performance.now() + SLICE_MS;
+      resolve();
+    };
+    if (document.hidden) {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = go;
+      ch.port2.postMessage(0);
+    } else {
+      requestAnimationFrame(go);
+    }
+    setTimeout(go, 200);
+  });
+}
+// The page has had no chance to paint since the libraries were parsed; give it
+// one so the loading screen is up before any of the heavy work starts.
+await genPause('height', 0);
+
+// ---------------------------------------------------------------------------
 // Gradient sky (custom shader dome that rides along with the camera)
 // ---------------------------------------------------------------------------
 const skyMat = new THREE.ShaderMaterial({
@@ -2102,6 +2201,7 @@ const hRaw = new Float32Array(GEN_N * GEN_N);
 for (let j = 0; j < GEN_N; j++) {
   const z = colZ(j);
   for (let i = 0; i < GEN_N; i++) hRaw[j * GEN_N + i] = islandHeight(colX(i), z);
+  if (genDue()) await genPause('height', (j + 1) / GEN_N);
 }
 // Clamped at the rim, so the slope stencil below never falls off the field.
 function fieldAt(i, j) {
@@ -2257,6 +2357,7 @@ const DEEP_MAT = [
         topLvl[k] = gl;
       }
     }
+    if (genDue()) await genPause('mats', (j + 1) / GEN_N);
   }
 }
 
@@ -2388,6 +2489,7 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
   // of, so it has to be written rather than left alone.
   voxMat.fill(AIR, o + top + 1, o + voxCap(k) + 1);
   worldBlocks += top - VOX_FLOOR + 1;
+  if (k % GEN_N === 0 && genDue()) await genPause('fill', k / (GEN_N * GEN_N));
 }
 
 // Post-generation swap pass: occasionally trades the surface material of two
@@ -2415,6 +2517,7 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
     voxMat[idxK] = voxMat[idxNb];
     voxMat[idxNb] = tmpVox;
   }
+  if (k % GEN_N === 0 && genDue()) await genPause('swap', k / (GEN_N * GEN_N));
 }
 
 // The highest solid level in each column, cached rather than searched for. It
@@ -2523,6 +2626,7 @@ for (let j = 0; j < GEN_N; j++) {
       if (countExposedFaces(i, j, lvl) > 0) setVisible(o + lvl, true);
     }
   }
+  if (genDue()) await genPause('vis', (j + 1) / GEN_N);
 }
 
 // Make room over column k up to at least `needLv`. A column is one contiguous
@@ -3059,7 +3163,28 @@ function rebuildChunk(c) {
   chunkFaces[c]  = faces;
 }
 
-for (let c = 0; c < CHUNK_N * CHUNK_N; c++) rebuildChunk(c);
+// The island is drawn as it goes up, from where the camera stands before the
+// game starts. resize() sets the canvas and lens up properly later; this is just
+// enough to frame the preview, and the camera's rotation is handed back as it was.
+{
+  const w = window.innerWidth, h = Math.max(window.innerHeight, 1);
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.fov = THREE.MathUtils.clamp(2 * Math.atan(Math.tan(45 * DEG) / camera.aspect) / DEG, 55, 95);
+  camera.updateProjectionMatrix();
+  camera.rotation.set(START_PITCH * DEG, START_YAW * DEG, 0);
+  loadingEl.classList.add('preview');
+  document.body.classList.add('gen-preview');
+  loadPreview = true;
+}
+for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+  rebuildChunk(c);
+  if (genDue()) await genPause('chunks', (c + 1) / (CHUNK_N * CHUNK_N));
+}
+loadPreview = false;
+camera.rotation.set(0, 0, 0);
+genProgress('chunks', 1);
+loadLabel.textContent = 'Starting…';
 
 // Re-derives every grid chunk's step from the camera each frame, then rebuilds
 // whichever mesh chunks fall in a grid cell that came out different from last
@@ -8830,6 +8955,7 @@ window.hermes = {
 renderer.setAnimationLoop(tick);
 renderer.compile(scene, camera);
 document.getElementById('loading').classList.add('hidden');
+document.body.classList.remove('gen-preview');
 </script>
 
 <script>
@@ -8837,6 +8963,7 @@ document.getElementById('loading').classList.add('hidden');
 window.addEventListener('error', (e) => {
   const el = document.getElementById('loading');
   if (!el || el.classList.contains('hidden')) return;
+  el.classList.remove('preview');
   el.innerHTML = '<div id="err">Failed to start.\n' +
     String((e && (e.message || e.error)) || 'Unknown error') +
     '\n\nThree.js (unpkg.com) and cannon-es (cdn.jsdelivr.net) are loaded from CDNs — ' +

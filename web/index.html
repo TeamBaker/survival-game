@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 136;
+  var v = 137;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -296,6 +296,31 @@
     white-space: nowrap;
     z-index: 10;
   }
+
+  /* Desktop mouse mode: cursor free for the HUD buttons, camera holds still. */
+  #mouse-hint {
+    display: none;
+    position: fixed;
+    top: calc(44px + env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(8, 14, 24, 0.6);
+    border: 1px solid rgba(160, 200, 255, 0.3);
+    border-radius: 7px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 10;
+  }
+  #mouse-hint b { color: #ffd9a8; }
+  body.mouse-mode #mouse-hint { display: block; }
 
   #cam-toggle {
     position: fixed;
@@ -1417,6 +1442,7 @@
 </div>
 
 <div id="crosshair"></div>
+<div id="mouse-hint">Mouse mode &mdash; <b>Tab</b> or click the view to look</div>
 <div id="sprint">SPRINT</div>
 
 <div id="touch-ui">
@@ -4156,6 +4182,14 @@ const TRACKED = new Set([
 const typing = (e) => !!e.target && (e.target.tagName === 'INPUT' || e.target.isContentEditable);
 
 window.addEventListener('keydown', (e) => {
+  // Tab is taken before the typing check: the only inputs are the settings
+  // sliders, and a slider that kept focus would otherwise swallow the way back
+  // to look mode. Its default (focus hopping between buttons) is never wanted.
+  if (e.code === 'Tab' && !(e.target && e.target.isContentEditable)) {
+    e.preventDefault();
+    if (!e.repeat) toggleMouseMode();
+    return;
+  }
   if (typing(e)) return;
   if (e.repeat) return;
   if (TRACKED.has(e.code)) { keys.add(e.code); e.preventDefault(); }
@@ -4213,8 +4247,39 @@ document.addEventListener('mousemove', (e) => {
   state.pitch = THREE.MathUtils.clamp(state.pitch, -PITCH_LIMIT, PITCH_LIMIT);
 });
 
+// ----- mouse mode (desktop) -----
+// Under pointer lock there is no cursor, so none of the HUD buttons can be hit.
+// Mouse mode frees the cursor without pausing: the overlay stays down, the
+// camera ignores the mouse, the keyboard keeps driving, and every button is a
+// plain click away. Tab flips between the two; a click in the view also goes
+// back to look mode, same as it always captured the mouse.
+let mouseMode = false;
+function setMouseModeFlag(on) {
+  mouseMode = on;
+  document.body.classList.toggle('mouse-mode', on);
+}
+function enterMouseMode() {
+  if (isTouchDevice || state.touchActive) return;
+  setMouseModeFlag(true);
+  overlay.classList.add('hidden');
+  if (isLocked()) document.exitPointerLock();
+}
+function enterLookMode() {
+  // A slider left focused would keep eating the arrow keys.
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  overlay.classList.add('hidden');
+  // The flag is cleared by pointerlockchange once the lock actually lands, so a
+  // refused request (the browser's cool-down after Esc) leaves mouse mode intact.
+  requestLock();
+}
+function toggleMouseMode() {
+  if (isTouchDevice || state.touchActive) return;
+  if (mouseMode) enterLookMode(); else enterMouseMode();
+}
+
 document.addEventListener('pointerlockchange', () => {
-  if (!isLocked() && !isTouchDevice && !state.touchActive) {
+  if (isLocked()) { setMouseModeFlag(false); return; }
+  if (!isTouchDevice && !state.touchActive && !mouseMode) {
     keys.clear();
     showOverlay();
   }
@@ -6472,22 +6537,22 @@ const HELP_DESKTOP = {
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
-                ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
+                ['Click view', 'Capture mouse'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
   [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
-                ['Click view', 'Capture mouse'], ['Esc', 'Free the cursor']],
+                ['Click view', 'Capture mouse'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
   [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
                 ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'],
                 ['T', 'Material chart'], ['F', 'Shovel on / off'],
                 ['H', 'Hammer on / off'], ['M', 'Terrain skin / cubes'],
-                ['V', 'Next camera'], ['G', 'Free camera'], ['Esc', 'Free the cursor']],
+                ['V', 'Next camera'], ['G', 'Free camera'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
                 ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
-                ['Esc', 'Free the cursor']],
+                ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
 };
 const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump'],
@@ -6580,7 +6645,7 @@ function setMaterialsUI(on) {
   materialsBtn.classList.toggle('on', on);
   // Full screen now, so it wants the cursor back — with the pointer locked there
   // is nothing to click the X with, and mouse look would run on under the panel.
-  if (on && document.pointerLockElement) document.exitPointerLock();
+  if (on && isLocked()) enterMouseMode();
 }
 function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
 bindTap(materialsBtn, toggleMaterialsUI);
@@ -6633,7 +6698,7 @@ function setChartUI(on) {
   chartBtn.classList.toggle('on', on);
   // Same deal as the materials panel: with the pointer locked there is no cursor
   // to hit the X with, and mouse look would keep running underneath.
-  if (on && document.pointerLockElement) document.exitPointerLock();
+  if (on && isLocked()) enterMouseMode();
 }
 function toggleChart() { setChartUI(!chartOpen); }
 bindTap(chartBtn, toggleChart);
@@ -6668,7 +6733,7 @@ let menuOpen = false;
 function setMenuUI(on) {
   menuOpen = on;
   document.body.classList.toggle('menu-open', on);
-  if (on && document.pointerLockElement) document.exitPointerLock();
+  if (on && isLocked()) enterMouseMode();
 }
 function toggleMenu() { setMenuUI(!menuOpen); }
 bindTap(menuBtn, toggleMenu);
@@ -7609,7 +7674,8 @@ const KEY_ROWS_DESKTOP = [
   ['Shift', 'Sprint (3&times;)'],
   ['G', 'Enter game mode'],
   ['V', 'Cycle camera'],
-  ['Esc', 'Release mouse'],
+  ['Tab', 'Mouse mode &mdash; use the buttons'],
+  ['Esc', 'Pause'],
 ];
 const KEY_ROWS_TOUCH = [
   ['Left half', 'Virtual joystick &mdash; move'],

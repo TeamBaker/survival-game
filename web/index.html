@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 147;
+window.GAME_VERSION = 148;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2841,11 +2841,10 @@ const TERRAIN_MATS = [
   mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
   mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
 ];
-// The same materials again, white and vertex-coloured. Every block's colour
-// — the material, the column's tint and the depth shading, all of it — is baked
-// into the mesh now that the terrain is one buffer per chunk rather than a pile
-// of instances with a colour each, so what the shader multiplies that by has to
-// be plain white.
+// The same materials again, white and vertex-coloured, for what carries its
+// colour on its own vertices — falling grains and broken-off pieces, which bake
+// in the shade the block had in the ground — so what the shader multiplies that
+// by has to be plain white.
 const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
   const f = src.clone();
   f.color.setRGB(1, 1, 1);
@@ -2854,35 +2853,124 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 });
 
 // The one material every terrain chunk is drawn with, so a chunk is one draw
-// call however many materials it holds. The colour was already per vertex; the
-// only things still telling the TERRAIN_MATS apart are roughness, metalness and
-// envMapIntensity, so each vertex carries its material id (a byte, `matId`) and
-// the vertex shader looks the three up in a table of TERRAIN_MATS' own values.
-// The lookup is in the vertex shader because a WebGL1 fragment shader may not
-// index a uniform array by a varying; all four corners of a quad share one id,
-// so the varying comes through every fragment exactly as the table has it and
-// the result is what the per-material meshes drew, bit for bit.
-const TERRAIN_PBR = TERRAIN_MATS.map((m) => new THREE.Vector3(m.roughness, m.metalness, m.envMapIntensity));
+// call however many materials it holds. Faces are greedy-merged (see
+// rebuildChunk), so one quad can cover dozens of blocks that are each a shade of
+// their own — nothing per block can ride on the vertices any more. Each vertex
+// carries only its material id and the chunk's LOD (`terrInfo`: id, merge size,
+// chunk column/row); the vertex shader looks up the material's colour, roughness,
+// metalness and envMapIntensity in tables of TERRAIN_MATS' own values, and the
+// fragment shader works out which block it is on from its own position and
+// rebuilds that block's shade the way terrainBlockColor does: the column's tint
+// and top from terrainCols, the depth band and step from those, and the
+// per-block variation from nhash3, ported bit for bit so a block that breaks off
+// still matches the hole it left. The lookup is in the vertex shader because a
+// fragment shader may not index a uniform array by a varying; all four corners
+// of a quad share one id, so the varying comes through every fragment exactly as
+// the table has it.
+const TERRAIN_PBR = TERRAIN_MATS.map((m, i) =>
+  new THREE.Vector4(m.roughness, m.metalness, m.envMapIntensity, MAT_STATS[i]?.powder ? 1 : 0));
+const TERRAIN_BASE = TERRAIN_MATS.map((m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b));
+
+// Per column, two RGBA8 texels side by side: (2i, j) is the tint as a 16-bit
+// fraction of 1/32768 then the top level above VOX_FLOOR as 16 bits; (2i+1, j)
+// is the powder speckle, one row of base-6 cell codes to a byte (see
+// setColTexel). A chunk drawn at a coarser LOD writes its merged cube's values
+// at the column each cube starts on instead. rebuildChunk keeps its own 16x16
+// patch current and uploads just that patch.
+const terrainColData = new Uint8Array(GEN_N * 2 * GEN_N * 4);
+const terrainCols = new THREE.DataTexture(terrainColData, GEN_N * 2, GEN_N);
+terrainCols.magFilter = terrainCols.minFilter = THREE.NearestFilter;
+terrainCols.generateMipmaps = false;
+terrainCols.needsUpdate = true;
+const terrainColPatch = new THREE.DataTexture(new Uint8Array(CHUNK * 2 * CHUNK * 4), CHUNK * 2, CHUNK);
+
+const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const TERRAIN_CHUNK_MAT = TERRAIN_FACE_MATS[0].clone();
+TERRAIN_CHUNK_MAT.vertexColors = false;
 TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
-  sh.uniforms.terrainPbr = { value: TERRAIN_PBR };
-  sh.vertexShader = `attribute float matId;\nattribute vec2 grainUv;\nattribute vec3 grainRow;\n`
-    + `uniform vec3 terrainPbr[${TERRAIN_PBR.length}];\nvarying vec3 vPbr;\nvarying vec2 vGrainUv;\nvarying vec3 vGrainRow;\n`
-    + sh.vertexShader.replace('#include <begin_vertex>',
-      '#include <begin_vertex>\n  vPbr = terrainPbr[int(matId + 0.5)];\n  vGrainUv = grainUv;\n  vGrainRow = grainRow;');
-  sh.fragmentShader = 'varying vec3 vPbr;\nvarying vec2 vGrainUv;\nvarying vec3 vGrainRow;\n' + sh.fragmentShader
+  sh.uniforms.terrainPbr  = { value: TERRAIN_PBR };
+  sh.uniforms.terrainBase = { value: TERRAIN_BASE };
+  sh.uniforms.terrainCols = { value: terrainCols };
+  sh.uniforms.terrainSeed = { value: SEED | 0 };
+  sh.vertexShader = `attribute vec4 terrInfo;\n`
+    + `uniform vec4 terrainPbr[${TERRAIN_PBR.length}];\nuniform vec3 terrainBase[${TERRAIN_BASE.length}];\n`
+    + `varying vec4 vPbr;\nvarying vec3 vBase;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\nvarying vec3 vLod;\n`
+    + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+  int tm = int(terrInfo.x + 0.5);
+  vPbr = terrainPbr[tm];
+  vBase = terrainBase[tm];
+  vTerrPos = transformed;     // terrain meshes sit at the origin: object space is world space
+  vTerrN = objectNormal;
+  vLod = terrInfo.yzw;`);
+  sh.fragmentShader = `uniform highp sampler2D terrainCols;\nuniform int terrainSeed;\n`
+    + `varying vec4 vPbr;\nvarying vec3 vBase;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\nvarying vec3 vLod;\n`
+    + `// nhash3, in the same 32-bit wrapping arithmetic.
+float terrainHash(int ix, int iy, int iz) {
+  uint n = uint(ix) * 1619u + uint(iy) * 31337u + uint(iz) * 6971u + uint(terrainSeed) * 1013u;
+  n = (n << 13u) ^ n;
+  n = (n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu;
+  return float(n) / 2147483647.0;
+}
+vec4 terrainTexel(ivec2 c, int k) {
+  return floor(texelFetch(terrainCols, ivec2(c.x * 2 + k, c.y), 0) * 255.0 + 0.5);
+}
+` + sh.fragmentShader
     .replace('#include <color_fragment>', `#include <color_fragment>
-  // Powder speckle (see pushFace): pick the grain cell this pixel is in and
-  // decode that cell's palette index from its row's base-6 code.
-  if (vGrainUv.x < 100.0) {
-    vec2 cell = min(floor(vGrainUv), vec2(${GRAIN_GRID - 1}.0));
-    float code = floor((cell.y < 0.5 ? vGrainRow.x : cell.y < 1.5 ? vGrainRow.y : vGrainRow.z) + 0.5);
-    float den = cell.x < 0.5 ? 1.0 : cell.x < 1.5 ? 6.0 : 36.0;
-    float q = floor((code + 0.5) / den);
-    float d = q - 6.0 * floor((q + 0.5) / 6.0);
-    // GRAIN_TINTS[d]: 0.86 up in steps of 0.05, except that 1.0 sits where 1.01 would.
-    float s = 0.86 + 0.05 * d - (d > 2.5 ? 0.01 : 0.0);
-    diffuseColor.rgb = clamp(diffuseColor.rgb * s, 0.0, 1.0);
+  {
+    // The block this pixel is on: half a block in from the face, so the level
+    // and column are never in doubt whatever the face's orientation.
+    vec3 q = vTerrPos - vTerrN * ${glf(HALF_BLOCK)};
+    ivec3 blk = ivec3(floor(vec3((q.x + ${glf(GEN_R)}) / ${glf(BLOCK)}, q.y / ${glf(BLOCK)}, (q.z + ${glf(GEN_R)}) / ${glf(BLOCK)})));
+    int S = int(vLod.x + 0.5);
+    ivec2 col = clamp(blk.xz, ivec2(0), ivec2(${GEN_N - 1}));
+    if (S > 1) {
+      // A merged LOD cube keeps its values at the column it starts on, which is
+      // always inside the chunk even where the cube itself hangs over the edge.
+      ivec2 c0 = ivec2(vLod.yz + 0.5) * ${CHUNK};
+      col = c0 + (max(col - c0, ivec2(0)) / S) * S;
+    }
+    vec4 ta = terrainTexel(col, 0);
+    float tint = (ta.r * 256.0 + ta.g) / 32768.0;
+    int top = int(ta.b * 256.0 + ta.a) + (${VOX_FLOOR});
+    float s;
+    vec3 bmin;
+    float bsz;
+    if (S == 1) {
+      // terrainBlockColor: the soil band, the depth step and the block's own variation.
+      int d = top - blk.y;
+      float stp = d <= 0 ? 0.0 : min(${glf(SHADE_STEPS)}, floor(float(d) / ${glf(SHADE_SPAN)}));
+      s = tint * (d <= ${SOIL_DEPTH} ? 0.94 : 0.86)
+        * (1.0 - ${glf(1 - SHADE_FLOOR)} * (stp / ${glf(SHADE_STEPS)}))
+        * (0.85 + terrainHash(blk.x, blk.z, blk.y) * 0.30);
+      bmin = vec3(float(blk.x) * ${glf(BLOCK)} - ${glf(GEN_R)}, float(blk.y) * ${glf(BLOCK)}, float(blk.z) * ${glf(BLOCK)} - ${glf(GEN_R)});
+      bsz = ${glf(BLOCK)};
+    } else {
+      // collectColumn's LOD cube: S blocks a side, centred on its band.
+      s = tint * 0.94;
+      float bb = float(max(${VOX_FLOOR}, top - S + 1));
+      bmin = vec3(float(col.x) * ${glf(BLOCK)} - ${glf(GEN_R)}, (bb + float(top) + 1.0 - float(S)) * ${glf(HALF_BLOCK)}, float(col.y) * ${glf(BLOCK)} - ${glf(GEN_R)});
+      bsz = ${glf(BLOCK)} * float(S);
+    }
+    diffuseColor.rgb = vBase * s;
+    if (vPbr.w > 0.5) {
+      // Powder speckle: which of the GRAIN_GRID x GRAIN_GRID cells of its block's
+      // (or cube's) face this pixel is in — u along FACES[f] corner 0 to 1, w along
+      // 0 to 3 — and that cell's palette index out of its row's base-6 code.
+      vec3 l = clamp((vTerrPos - bmin) / bsz, 0.0, 1.0);
+      vec3 fn = vTerrN;
+      vec2 uw = fn.x > 0.5 ? vec2(1.0 - l.z, l.y) : fn.x < -0.5 ? vec2(l.z, l.y)
+              : fn.y > 0.5 ? vec2(l.x, 1.0 - l.z) : fn.y < -0.5 ? vec2(l.x, l.z)
+              : fn.z > 0.5 ? l.xy : vec2(1.0 - l.x, l.y);
+      vec2 cell = min(floor(uw * ${glf(GRAIN_GRID)}), vec2(${GRAIN_GRID - 1}.0));
+      vec4 tb = terrainTexel(col, 1);
+      float code = cell.y < 0.5 ? tb.r : cell.y < 1.5 ? tb.g : tb.b;
+      float den = cell.x < 0.5 ? 1.0 : cell.x < 1.5 ? 6.0 : 36.0;
+      float qd = floor((code + 0.5) / den);
+      float dd = qd - 6.0 * floor((qd + 0.5) / 6.0);
+      // GRAIN_TINTS[d]: 0.86 up in steps of 0.05, except that 1.0 sits where 1.01 would.
+      float ps = 0.86 + 0.05 * dd - (dd > 2.5 ? 0.01 : 0.0);
+      diffuseColor.rgb = clamp(diffuseColor.rgb * ps, 0.0, 1.0);
+    }
   }`)
     .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vPbr.x;')
     .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vPbr.y;')
@@ -2895,7 +2983,7 @@ TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
 // A falling powder grain's own box, vertex-coloured like a tiny slice of
 // terrain instead of one flat material colour: each of the cube's 6 faces is
 // diced into a GRAIN_GRID x GRAIN_GRID grid, same as the terrain powder path
-// (pushFace) below, and each cell gets its own hashed shade — wide enough to
+// (setColTexel) below, and each cell gets its own hashed shade — wide enough to
 // read as speckle on a face this small, where a per-face-only shade would be
 // nearly invisible. Built fresh every call; in practice once per material,
 // through fallingGrainGeo, which falling grains and debris grain layers share.
@@ -3014,13 +3102,23 @@ const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
 
 const mergeMatCounts = new Uint32Array(N_MATS);
 
-// Scratch, reused by every rebuild: the loose vertices of one chunk's exposed
-// faces — position, normal, colour and material id, four vertices a quad and
-// nothing shared between quads. Two faces meeting at an edge disagree about both
-// the normal and the colour there, so a shared corner would round the block off.
-// Every material goes in the one buffer: TERRAIN_CHUNK_MAT reads the id.
-// grainUv and grainRow carry the powder speckle (see pushFace).
-const faceBuf = { pos: [], nor: [], col: [], mat: [], guv: [], grow: [] };
+// Scratch, reused by every rebuild. The first pass records each exposed face of
+// the chunk as a single number (see addFace): its direction, the plane it lies
+// in, where in that plane, and its material. Sorted, a plane's faces come out
+// together and row by row, and mergeFaces covers each plane with as few
+// rectangles as it can. Nothing else about a face matters to the merge — every
+// block's own shade is worked out per pixel by TERRAIN_CHUNK_MAT — so a hillside
+// of one material is a handful of quads rather than one for every block in it.
+let faceKeys = new Float64Array(16384);
+let faceN = 0;
+let mergeMask = new Uint8Array(4096);
+// What the merge comes out as: four loose corners a quad — position, normal and
+// terrInfo — and nothing shared between quads, since two faces meeting at an
+// edge disagree about the normal there. Every material goes in the one buffer.
+const quadBuf = { pos: [], nor: [], info: [] };
+// The chunk being rebuilt: its first column and row, its place in the chunk
+// grid, and the merge size of the LOD it is drawn at.
+let rbI0 = 0, rbJ0 = 0, rbCI = 0, rbCJ = 0, rbS = 1;
 
 // The six faces of a block: the neighbour that has to be air for the face to be
 // worth drawing at all, the direction the face looks in, and its four corners as
@@ -3040,87 +3138,180 @@ const FACES = [
 // A powder face is speckled in a grid this many cells each way. The shader
 // decodes each row as three base-6 digits, so it assumes 3 here.
 const GRAIN_GRID = 3;
-const GRAIN_PIXEL = 0.06;
 // The shades a powder cell may take, as a factor on the block's own colour —
 // same range as the per-column tint, but per cell. TERRAIN_CHUNK_MAT's shader
 // has these written out as a formula; keep the two in step.
 const GRAIN_TINTS = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
-// grainUv on a face that is not powder: off the grid, so the shader leaves it be.
-const GRAIN_NONE = 255;
 const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
 
-// One face of the block centred on (cx, cy, cz), in the one colour that block
-// is — except powder, which is speckled into flat-shaded pixels.
+// Column (i, j)'s two texels in this chunk's patch of terrainCols: its tint, the
+// top level the depth shading counts down from, and its powder speckle.
 //
-// Powder is loose grain, so it is not painted flat: the face is a grid of
+// Powder is loose grain, so it is not painted flat: each face is a grid of
 // cells, each one shade across its whole area so it reads as a pixel rather
-// than a gradient. The shade is hashed from where the block stands in the
-// world, so the same block always speckles the same way however often the mesh
-// is rebuilt. The face is still one quad: each corner carries where it is on the
-// grid (grainUv, 0 or GRAIN_GRID each way, so u runs v0→v1 and w runs v0→v3) and
-// every cell's palette index, a row of three base-6 digits to a byte (grainRow),
-// and the fragment shader picks the cell out per pixel.
-function pushFace(m, f, cx, cy, cz, r, g, b, S = 1) {
-  const B = faceBuf, v = f.v, n = f.n;
-  const powder = !!MAT_STATS[m]?.powder;
-  let r0 = 0, r1 = 0, r2 = 0;
-  if (powder) {
-    for (let row = 0; row < GRAIN_GRID; row++) {
-      let code = 0;
-      for (let col = 0, p = 1; col < GRAIN_GRID; col++, p *= GRAIN_TINTS.length) {
-        const ti = (Math.sin(cx * 99.1 + cz * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
-        code += (Math.abs(ti) % GRAIN_TINTS.length) * p;
-      }
-      if (row === 0) r0 = code; else if (row === 1) r1 = code; else r2 = code;
+// than a gradient. The shade is hashed from where the column stands in the
+// world, (cx, cz), so the same block always speckles the same way however often
+// the mesh is rebuilt; each row of cells is three base-6 palette indices to a
+// byte, and the fragment shader picks the cell out per pixel. A LOD cube passes
+// its own tint, top and centre and is written at the column it starts on.
+const colPatch = terrainColPatch.image.data;
+const colPatchAt = new THREE.Vector2();
+function setColTexel(i, j, t, top, cx, cz) {
+  const p = ((j - rbJ0) * CHUNK + (i - rbI0)) * 8;
+  const tq = Math.round(t * 32768), lq = top - VOX_FLOOR;
+  colPatch[p]     = tq >> 8; colPatch[p + 1] = tq & 255;
+  colPatch[p + 2] = lq >> 8; colPatch[p + 3] = lq & 255;
+  for (let row = 0; row < GRAIN_GRID; row++) {
+    let code = 0;
+    for (let col = 0, q = 1; col < GRAIN_GRID; col++, q *= GRAIN_TINTS.length) {
+      const ti = (Math.sin(cx * 99.1 + cz * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
+      code += (Math.abs(ti) % GRAIN_TINTS.length) * q;
     }
+    colPatch[p + 4 + row] = code;
   }
+}
 
+// One face, as a key that sorts by direction, then plane, then row (v), then
+// along the row (u). Columns and rows count from the chunk's first (a LOD cube
+// may run a few past its last), levels up from VOX_FLOOR; 13 bits apiece, which
+// with the direction and the material is a 46-bit integer — exact in a double,
+// and every field a power of two apart, so it comes back apart exactly too.
+const FK = 8192;
+function addFace(f, plane, u, v, m) {
+  if (faceN === faceKeys.length) {
+    const grown = new Float64Array(faceN * 2);
+    grown.set(faceKeys);
+    faceKeys = grown;
+  }
+  faceKeys[faceN++] = (((f * FK + plane) * FK + v) * FK + u) * N_MATS + m;
+}
+
+// Face f of the box S blocks a side whose low corner is chunk-local column li,
+// row lj, level lv above VOX_FLOOR, as the S x S unit faces it covers. The plane
+// is the grid line the face lies on; u and v are the other two axes — x or z
+// along the row, and the level or z across them.
+function addBoxFace(f, li, lj, lv, S, m) {
+  const F = FACES[f];
+  let plane, u0, v0;
+  if (F.di)      { plane = li + (F.di > 0 ? S : 0); u0 = lj; v0 = lv; }
+  else if (F.dl) { plane = lv + (F.dl > 0 ? S : 0); u0 = li; v0 = lj; }
+  else           { plane = lj + (F.dj > 0 ? S : 0); u0 = li; v0 = lv; }
+  for (let v = v0; v < v0 + S; v++) for (let u = u0; u < u0 + S; u++) addFace(f, plane, u, v, m);
+}
+
+// Four corners of a quad on face f into quadBuf, the corner pattern of FACES[f]
+// laid over the box lo..hi.
+const qLo = [0, 0, 0], qHi = [0, 0, 0];
+function pushQuad(f, m) {
+  const Q = quadBuf, F = FACES[f], v = F.v, n = F.n;
   for (let q = 0; q < 4; q++) {
     const o = q * 3;
-    B.pos.push(cx + v[o] * HALF_BLOCK * S, cy + v[o + 1] * HALF_BLOCK * S, cz + v[o + 2] * HALF_BLOCK * S);
-    B.nor.push(n[0], n[1], n[2]);
-    B.col.push(r, g, b);
-    B.mat.push(m);
-    if (powder) B.guv.push(q === 0 || q === 3 ? 0 : GRAIN_GRID, q < 2 ? 0 : GRAIN_GRID);
-    else B.guv.push(GRAIN_NONE, GRAIN_NONE);
-    B.grow.push(r0, r1, r2);
+    Q.pos.push(v[o] < 0 ? qLo[0] : qHi[0], v[o + 1] < 0 ? qLo[1] : qHi[1], v[o + 2] < 0 ? qLo[2] : qHi[2]);
+    Q.nor.push(n[0] * 127, n[1] * 127, n[2] * 127);
+    Q.info.push(m, rbS, rbCI, rbCJ);
+  }
+}
+
+// Chunk-local grid lines back into world space.
+const gridX = (li) => -GEN_R + (rbI0 + li) * BLOCK;
+const gridZ = (lj) => -GEN_R + (rbJ0 + lj) * BLOCK;
+const gridY = (lv) => (lv + VOX_FLOOR) * BLOCK;
+
+// The w x h rectangle at (u, v) on plane `plane` of face f.
+function emitRect(f, plane, u, v, w, h, m) {
+  const F = FACES[f];
+  if (F.di) {
+    qLo[0] = qHi[0] = gridX(plane);
+    qLo[2] = gridZ(u); qHi[2] = gridZ(u + w);
+    qLo[1] = gridY(v); qHi[1] = gridY(v + h);
+  } else if (F.dl) {
+    qLo[1] = qHi[1] = gridY(plane);
+    qLo[0] = gridX(u); qHi[0] = gridX(u + w);
+    qLo[2] = gridZ(v); qHi[2] = gridZ(v + h);
+  } else {
+    qLo[2] = qHi[2] = gridZ(plane);
+    qLo[0] = gridX(u); qHi[0] = gridX(u + w);
+    qLo[1] = gridY(v); qHi[1] = gridY(v + h);
+  }
+  pushQuad(f, m);
+}
+
+// Greedy merge: sort the keys so each plane's faces sit together, paint the
+// plane's faces into a mask of material ids, then sweep it row by row — at each
+// face not yet covered, run right as far as the material holds, then down for as
+// many rows as hold it all the way across, and emit that as one quad.
+function mergeFaces() {
+  const keys = faceKeys.subarray(0, faceN).sort();
+  const ROW = FK * N_MATS, PLANE = FK * ROW;
+  for (let g0 = 0; g0 < faceN; ) {
+    const fp = Math.floor(keys[g0] / PLANE);
+    let g1 = g0 + 1;
+    while (g1 < faceN && Math.floor(keys[g1] / PLANE) === fp) g1++;
+    const f = Math.floor(fp / FK), plane = fp % FK;
+    const vMin = Math.floor(keys[g0] / ROW) % FK, vMax = Math.floor(keys[g1 - 1] / ROW) % FK;
+    let uMin = FK, uMax = 0;
+    for (let g = g0; g < g1; g++) {
+      const u = Math.floor(keys[g] / N_MATS) % FK;
+      if (u < uMin) uMin = u;
+      if (u > uMax) uMax = u;
+    }
+    const W = uMax - uMin + 1, H = vMax - vMin + 1;
+    if (mergeMask.length < W * H) mergeMask = new Uint8Array(W * H * 2);
+    const M = mergeMask;
+    M.fill(0, 0, W * H);
+    for (let g = g0; g < g1; g++) {
+      const k = keys[g];
+      M[(Math.floor(k / ROW) % FK - vMin) * W + Math.floor(k / N_MATS) % FK - uMin] = k % N_MATS + 1;
+    }
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const mm = M[y * W + x];
+        if (!mm) continue;
+        let w = 1;
+        while (x + w < W && M[y * W + x + w] === mm) w++;
+        let h = 1;
+        grow: while (y + h < H) {
+          const r = (y + h) * W + x;
+          for (let k = 0; k < w; k++) if (M[r + k] !== mm) break grow;
+          h++;
+        }
+        for (let yy = y; yy < y + h; yy++) M.fill(0, yy * W + x, yy * W + x + w);
+        emitRect(f, plane, uMin + x, vMin + y, w, h, mm - 1);
+        x += w - 1;
+      }
+    }
+    g0 = g1;
   }
 }
 
 
-// Every exposed face of every visible block in column (i, j), pushed into the
-// scratch buffers. A block is visible when visBits says it has at least one
-// face touching air — the array is the sole authority on visibility, so digging
-// never leaves a pillar and placing never leaves a ghost — and of a visible
-// block only the faces that touch air themselves are drawn, so the six-sided box
-// that used to stand in for every block is down to the one or two sides of it
-// anything could ever see. Returns the blocks it drew something for.
+// Every exposed face of every visible block in column (i, j), recorded for the
+// merge. A block is visible when visBits says it has at least one face touching
+// air — the array is the sole authority on visibility, so digging never leaves
+// a pillar and placing never leaves a ghost — and of a visible block only the
+// faces that touch air themselves are drawn, so the six-sided box that used to
+// stand in for every block is down to the one or two sides of it anything could
+// ever see. Returns the blocks it drew something for.
 function collectColumn(i, j, step = 1) {
   if (step === 1) {
     const k = j * GEN_N + i;
     const top = sTop[k];
     if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return 0;
-    const t = tint[k], o = voxOff[k] - VOX_FLOOR;
-    const cx = colX(i), cz = colZ(j);
+    const o = voxOff[k] - VOX_FLOOR;
+    // Everything the shader needs to shade any block in the column the way
+    // terrainBlockColor does — its material, the column's tint, whether it is
+    // still in the soil band, how far below the top it sits — is the material id
+    // on the face and these two texels.
+    setColTexel(i, j, tint[k], top, colX(i), colZ(j));
+    const li = i - rbI0, lj = j - rbJ0;
     let drawn = 0;
     for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
       const m = voxMat[o + lvl];
       if (m === AIR || !isVisible(o + lvl)) continue;
-      // The one colour the whole block is drawn in — its material, the column's
-      // own tint, whether it is still in the soil band, and how far below the top
-      // of the column it sits — baked in here because the mesh carries a colour
-      // per vertex and the material itself is plain white.
-      const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
-      const h = nhash3(i, j, lvl);
-      const variation = 0.85 + h * 0.30;
-      const s = t * (band ? 0.94 : 0.86) * shadeOf(shadeStep(top - lvl)) * variation;
-      const c = TERRAIN_MATS[m].color;
-      const r = c.r * s, g = c.g * s, b = c.b * s;
-      const cy = (lvl + 0.5) * BLOCK;
       for (let f = 0; f < 6; f++) {
         const F = FACES[f];
         if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
-        pushFace(m, F, cx, cy, cz, r, g, b);
+        addBoxFace(f, li, lj, lvl - VOX_FLOOR, 1, m);
       }
       drawn++;
     }
@@ -3161,11 +3352,13 @@ function collectColumn(i, j, step = 1) {
   }
   if (m < 0) return 0;
 
-  const s = tint[bestK] * 0.94;
-  const c = TERRAIN_MATS[m].color;
-  const r = c.r * s, g = c.g * s, b = c.b * s;
+  // The cube is S blocks a side and centred on its band, so it sits on the grid
+  // unless bedrock cut the band short; such a cube is drawn as it stands, face
+  // by face, and the shader still finds it by the same arithmetic.
   const cx = colX(i) + (S - 1) * HALF_BLOCK, cz = colZ(j) + (S - 1) * HALF_BLOCK;
   const cy = ((bandBottom + top) / 2 + 0.5) * BLOCK;
+  setColTexel(i, j, tint[bestK], top, cx, cz);
+  const onGrid = bandBottom === top - S + 1;
   for (let f = 0; f < 6; f++) {
     const F = FACES[f];
     let nb;
@@ -3173,7 +3366,15 @@ function collectColumn(i, j, step = 1) {
     else if (F.dl < 0) nb = voxelAt(bestI, bestJ, bandBottom - 1);
     else nb = voxelAt(i + F.di * S, j + F.dj * S, top);
     if (nb !== AIR) continue;
-    pushFace(m, F, cx, cy, cz, r, g, b, S);
+    if (onGrid) { addBoxFace(f, i - rbI0, j - rbJ0, bandBottom - VOX_FLOOR, S, m); continue; }
+    const hs = HALF_BLOCK * S;
+    for (let a = 0; a < 3; a++) {
+      const c = a === 0 ? cx : a === 1 ? cy : cz;
+      qLo[a] = c - hs; qHi[a] = c + hs;
+      if (F.n[a] > 0) qLo[a] = qHi[a];
+      else if (F.n[a] < 0) qHi[a] = qLo[a];
+    }
+    pushQuad(f, m);
   }
   return 1;
 }
@@ -3209,7 +3410,8 @@ const gridStep = new Int8Array(GRID_N * GRID_N).fill(1);
 let lodOverride = null;
 
 // (Re)build one chunk's mesh from the store. Cheap enough to call from a tap:
-// the whole cost is one pass over the chunk's columns plus one buffer upload.
+// the whole cost is one pass over the chunk's columns, a sort and merge of the
+// faces it found, and two small uploads — the mesh and the chunk's column patch.
 function rebuildChunk(c) {
   const old = chunkMesh[c];
   if (old) {
@@ -3218,15 +3420,28 @@ function rebuildChunk(c) {
       me.geometry.dispose();     // frees the vertex buffers, not the shared material
     }
   }
-  const B = faceBuf;
-  B.pos.length = 0; B.nor.length = 0; B.col.length = 0; B.mat.length = 0; B.guv.length = 0; B.grow.length = 0;
+  const B = quadBuf;
+  B.pos.length = 0; B.nor.length = 0; B.info.length = 0;
+  faceN = 0;
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   let blocks = 0;
   const step = gridStep[chunkGridIdx[c]];
   const stride = mergeSizeFor(step);
+  rbI0 = i0; rbJ0 = j0; rbCI = c % CHUNK_N; rbCJ = (c / CHUNK_N) | 0; rbS = stride;
   for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
+  mergeFaces();
+
+  // The chunk's patch of terrainCols, into the full copy and up to the GPU on
+  // its own. A chunk cut short by the edge of the field cannot be sent as a
+  // whole patch, so it sends the whole texture instead.
+  for (let j = j0; j < j1; j++) {
+    const r = (j - j0) * CHUNK * 8;
+    terrainColData.set(colPatch.subarray(r, r + (i1 - i0) * 8), (j * GEN_N + i0) * 8);
+  }
+  if (i1 - i0 === CHUNK && j1 - j0 === CHUNK) renderer.copyTextureToTexture(colPatchAt.set(i0 * 2, j0), terrainColPatch, terrainCols);
+  else terrainCols.needsUpdate = true;
 
   const meshes = [];
   const nv = B.pos.length / 3, nq = nv / 4;
@@ -3239,11 +3454,8 @@ function rebuildChunk(c) {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(B.pos), 3));
-    geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(B.nor), 3));
-    geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(B.col), 3));
-    geo.setAttribute('matId',    new THREE.BufferAttribute(new Uint8Array(B.mat), 1));
-    geo.setAttribute('grainUv',  new THREE.BufferAttribute(new Uint8Array(B.guv), 2));
-    geo.setAttribute('grainRow', new THREE.BufferAttribute(new Uint8Array(B.grow), 3));
+    geo.setAttribute('normal',   new THREE.BufferAttribute(new Int8Array(B.nor), 3, true));
+    geo.setAttribute('terrInfo', new THREE.BufferAttribute(new Uint8Array(B.info), 4));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     // The per-chunk bound is the whole reason for the split — without it three
     // quarters of the island would be drawn from behind the camera.
@@ -4696,7 +4908,7 @@ function dropChunk(f) {
 const chunkOfMesh = (mesh) => fallingChunks.find((e) => e.mesh === mesh)
                           || restedChunks.find((e) => e.mesh === mesh);
 
-// The exact colour collectColumn bakes into this block in the terrain, so a
+// The exact colour TERRAIN_CHUNK_MAT shades this block in the terrain, so a
 // block that breaks off carries the shade it already had rather than a fresh one.
 function terrainBlockColor(i, j, lvl, m) {
   const k = j * GEN_N + i;

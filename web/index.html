@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 144;
+window.GAME_VERSION = 145;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1415,7 +1415,7 @@ window.GAME_VERSION = 144;
       <span>2D Tension Sandbox</span>
       <button id="f2d-close" aria-label="Close">&times;</button>
     </div>
-    <iframe id="f2d-frame" src="tension-test.html" loading="lazy"></iframe>
+    <iframe id="f2d-frame" data-src="tension-test.html"></iframe>
   </div>
 </div>
 
@@ -6189,8 +6189,11 @@ document.getElementById('chart-overlay').addEventListener('pointerdown', (e) => 
 // 2-D tension sandbox (iframe overlay)
 // ---------------------------------------------------------------------------
 let f2dOpen = false;
+const f2dFrame = document.getElementById('f2d-frame');
 function setF2DUI(on) {
   f2dOpen = on;
+  // The sandbox is only fetched the first time it is opened, not at startup.
+  if (on && !f2dFrame.getAttribute('src')) f2dFrame.src = f2dFrame.dataset.src;
   document.body.classList.toggle('f2d-open', on);
 }
 function toggleF2D() { setF2DUI(!f2dOpen); }
@@ -8210,8 +8213,11 @@ window.hermes = {
   }),
 };
 
+// Compile every shader behind the loading screen, before the first real frame,
+// so gameplay doesn't open on a hitch. compileAsync uses parallel compilation
+// where the driver supports it; any failure falls back to the first render.
+try { await renderer.compileAsync(scene, camera); } catch (e) { console.warn('shader precompile failed', e); }
 renderer.setAnimationLoop(tick);
-renderer.compile(scene, camera);
 document.getElementById('loading').classList.add('hidden');
 document.body.classList.remove('gen-preview');
 </script>

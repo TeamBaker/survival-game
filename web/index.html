@@ -8,7 +8,7 @@
 <script>
 // Cache-bust: if Safari serves a stale HTML, this forces a hard reload
 (function(){
-  var v = 140;
+  var v = 141;
   var key = '__sv_game_v';
   try {
     var prev = parseInt(localStorage.getItem(key));
@@ -2614,13 +2614,51 @@ function refreshVisible(i, j, lvl) {
   setVisible(p, voxMat[p] !== AIR && countExposedFaces(i, j, lvl) > 0);
 }
 
+// Mark store entries [p0, p1) visible: bits at the ragged ends, whole bytes
+// between.
+function setVisibleRun(p0, p1) {
+  while (p0 < p1 && (p0 & 7)) setVisible(p0++, true);
+  while (p0 < p1 && (p1 & 7)) setVisible(--p1, true);
+  if (p0 < p1) visBits.fill(0xff, p0 >> 3, p1 >> 3);
+}
+
 // The generated world, answered once. After this only editBlock() moves it, and
 // only for the seven blocks an edit can change.
+//
+// Straight out of the fill above, every column is solid from VOX_FLOOR to its
+// topLvl and air from there to its cap — provided no column's top sits under the
+// floor and no bed sits so far under it that the water fill starts before the
+// column's own slot. Given that, a block's sides are open exactly where it stands
+// above the lowest of its four neighbours' tops (a missing neighbour is air all
+// the way down), its top is open only at the column's top, and its bottom only at
+// the floor, so each column is two runs of bits and nothing need be asked per
+// block. Anything else falls back to asking every block, which is the same
+// answer the long way round.
+let visLayoutPlain = true;
+for (let k = 0; k < GEN_N * GEN_N; k++) {
+  if (topLvl[k] === NO_COLUMN) continue;
+  if (topLvl[k] < VOX_FLOOR || bedLvl[k] < VOX_FLOOR - 1) { visLayoutPlain = false; break; }
+}
 for (let j = 0; j < GEN_N; j++) {
   for (let i = 0; i < GEN_N; i++) {
     const k = j * GEN_N + i;
-    if (topLvl[k] === NO_COLUMN) continue;
-    const o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
+    const top = topLvl[k];
+    if (top === NO_COLUMN) continue;
+    const o = voxOff[k] - VOX_FLOOR;
+    if (visLayoutPlain) {
+      const ta = i > 0 ? topLvl[k - 1] : NO_COLUMN;
+      const tb = i < GEN_N - 1 ? topLvl[k + 1] : NO_COLUMN;
+      const tc = j > 0 ? topLvl[k - GEN_N] : NO_COLUMN;
+      const td = j < GEN_N - 1 ? topLvl[k + GEN_N] : NO_COLUMN;
+      // NO_COLUMN is the most negative Int16, so a missing neighbour wins here.
+      // The run always reaches down to at least the top block, which is open
+      // above whatever its neighbours do; the floor block is set on its own.
+      const lo = Math.max(VOX_FLOOR + 1, Math.min(top, Math.min(ta, tb, tc, td) + 1));
+      setVisible(o + VOX_FLOOR, true);
+      if (lo <= top) setVisibleRun(o + lo, o + top + 1);
+      continue;
+    }
+    const cap = voxCap(k);
     for (let lvl = VOX_FLOOR; lvl <= cap; lvl++) {
       if (voxMat[o + lvl] === AIR) continue;
       if (countExposedFaces(i, j, lvl) > 0) setVisible(o + lvl, true);

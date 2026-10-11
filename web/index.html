@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 146;
+window.GAME_VERSION = 147;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2866,10 +2866,24 @@ const TERRAIN_PBR = TERRAIN_MATS.map((m) => new THREE.Vector3(m.roughness, m.met
 const TERRAIN_CHUNK_MAT = TERRAIN_FACE_MATS[0].clone();
 TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
   sh.uniforms.terrainPbr = { value: TERRAIN_PBR };
-  sh.vertexShader = `attribute float matId;\nuniform vec3 terrainPbr[${TERRAIN_PBR.length}];\nvarying vec3 vPbr;\n`
+  sh.vertexShader = `attribute float matId;\nattribute vec2 grainUv;\nattribute vec3 grainRow;\n`
+    + `uniform vec3 terrainPbr[${TERRAIN_PBR.length}];\nvarying vec3 vPbr;\nvarying vec2 vGrainUv;\nvarying vec3 vGrainRow;\n`
     + sh.vertexShader.replace('#include <begin_vertex>',
-      '#include <begin_vertex>\n  vPbr = terrainPbr[int(matId + 0.5)];');
-  sh.fragmentShader = 'varying vec3 vPbr;\n' + sh.fragmentShader
+      '#include <begin_vertex>\n  vPbr = terrainPbr[int(matId + 0.5)];\n  vGrainUv = grainUv;\n  vGrainRow = grainRow;');
+  sh.fragmentShader = 'varying vec3 vPbr;\nvarying vec2 vGrainUv;\nvarying vec3 vGrainRow;\n' + sh.fragmentShader
+    .replace('#include <color_fragment>', `#include <color_fragment>
+  // Powder speckle (see pushFace): pick the grain cell this pixel is in and
+  // decode that cell's palette index from its row's base-6 code.
+  if (vGrainUv.x < 100.0) {
+    vec2 cell = min(floor(vGrainUv), vec2(${GRAIN_GRID - 1}.0));
+    float code = floor((cell.y < 0.5 ? vGrainRow.x : cell.y < 1.5 ? vGrainRow.y : vGrainRow.z) + 0.5);
+    float den = cell.x < 0.5 ? 1.0 : cell.x < 1.5 ? 6.0 : 36.0;
+    float q = floor((code + 0.5) / den);
+    float d = q - 6.0 * floor((q + 0.5) / 6.0);
+    // GRAIN_TINTS[d]: 0.86 up in steps of 0.05, except that 1.0 sits where 1.01 would.
+    float s = 0.86 + 0.05 * d - (d > 2.5 ? 0.01 : 0.0);
+    diffuseColor.rgb = clamp(diffuseColor.rgb * s, 0.0, 1.0);
+  }`)
     .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vPbr.x;')
     .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vPbr.y;')
     // The IBL helpers read the envMapIntensity uniform by name; after its
@@ -3005,7 +3019,8 @@ const mergeMatCounts = new Uint32Array(N_MATS);
 // nothing shared between quads. Two faces meeting at an edge disagree about both
 // the normal and the colour there, so a shared corner would round the block off.
 // Every material goes in the one buffer: TERRAIN_CHUNK_MAT reads the id.
-const faceBuf = { pos: [], nor: [], col: [], mat: [] };
+// grainUv and grainRow carry the powder speckle (see pushFace).
+const faceBuf = { pos: [], nor: [], col: [], mat: [], guv: [], grow: [] };
 
 // The six faces of a block: the neighbour that has to be air for the face to be
 // worth drawing at all, the direction the face looks in, and its four corners as
@@ -3022,64 +3037,53 @@ const FACES = [
   { di:  0, dj: -1, dl:  0, n: [ 0,  0, -1], v: [ 1, -1, -1,  -1, -1, -1,  -1,  1, -1,   1,  1, -1] },
 ];
 
-// A powder face is diced this many cells each way, and each cell's shade may
-// stray this far from the block's own colour, either way.
+// A powder face is speckled in a grid this many cells each way. The shader
+// decodes each row as three base-6 digits, so it assumes 3 here.
 const GRAIN_GRID = 3;
 const GRAIN_PIXEL = 0.06;
+// The shades a powder cell may take, as a factor on the block's own colour —
+// same range as the per-column tint, but per cell. TERRAIN_CHUNK_MAT's shader
+// has these written out as a formula; keep the two in step.
+const GRAIN_TINTS = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
+// grainUv on a face that is not powder: off the grid, so the shader leaves it be.
+const GRAIN_NONE = 255;
 const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
 
 // One face of the block centred on (cx, cy, cz), in the one colour that block
-// is — except powder, which is diced into flat-shaded pixels.
+// is — except powder, which is speckled into flat-shaded pixels.
+//
+// Powder is loose grain, so it is not painted flat: the face is a grid of
+// cells, each one shade across its whole area so it reads as a pixel rather
+// than a gradient. The shade is hashed from where the block stands in the
+// world, so the same block always speckles the same way however often the mesh
+// is rebuilt. The face is still one quad: each corner carries where it is on the
+// grid (grainUv, 0 or GRAIN_GRID each way, so u runs v0→v1 and w runs v0→v3) and
+// every cell's palette index, a row of three base-6 digits to a byte (grainRow),
+// and the fragment shader picks the cell out per pixel.
 function pushFace(m, f, cx, cy, cz, r, g, b, S = 1) {
   const B = faceBuf, v = f.v, n = f.n;
-
-  if (!MAT_STATS[m]?.powder) {
-    for (let q = 0; q < 4; q++) {
-      const o = q * 3;
-      B.pos.push(cx + v[o] * HALF_BLOCK * S, cy + v[o + 1] * HALF_BLOCK * S, cz + v[o + 2] * HALF_BLOCK * S);
-      B.nor.push(n[0], n[1], n[2]);
-      B.col.push(r, g, b);
-      B.mat.push(m);
+  const powder = !!MAT_STATS[m]?.powder;
+  let r0 = 0, r1 = 0, r2 = 0;
+  if (powder) {
+    for (let row = 0; row < GRAIN_GRID; row++) {
+      let code = 0;
+      for (let col = 0, p = 1; col < GRAIN_GRID; col++, p *= GRAIN_TINTS.length) {
+        const ti = (Math.sin(cx * 99.1 + cz * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
+        code += (Math.abs(ti) % GRAIN_TINTS.length) * p;
+      }
+      if (row === 0) r0 = code; else if (row === 1) r1 = code; else r2 = code;
     }
-    return;
   }
 
-  // Powder is loose grain, so it is not painted flat: the face is cut into a
-  // grid of little quads, each carrying one colour across all four of its
-  // corners so it reads as a pixel rather than a gradient. The offset is hashed
-  // from where the cell's centre stands in the world, so the same block always
-  // speckles the same way however often the mesh is rebuilt.
-  //
-  // The quad runs v0, v1, v2, v3, so du walks it one way and dv the other, and
-  // a cell is v0 + u * du + w * dv. Its corners are pushed in that same order —
-  // (u0,w0), (u1,w0), (u1,w1), (u0,w1) — to keep the winding the face had.
-  const dux = v[3] - v[0], duy = v[4] - v[1], duz = v[5] - v[2];
-  const dvx = v[9] - v[0], dvy = v[10] - v[1], dvz = v[11] - v[2];
-
-  for (let row = 0; row < GRAIN_GRID; row++) {
-    const w0 = row / GRAIN_GRID, w1 = (row + 1) / GRAIN_GRID;
-    for (let col = 0; col < GRAIN_GRID; col++) {
-      const u0 = col / GRAIN_GRID, u1 = (col + 1) / GRAIN_GRID;
-      const um = (u0 + u1) / 2, wm = (w0 + w1) / 2;
-
-      // Random tint pick from a discrete palette — same range as per-column
-      // tint (0.86–1.14) but applied per-pixel for a speckled grain look.
-      const tintPalette = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
-      const ti = (Math.sin(cx * 99.1 + cz * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
-      const s = tintPalette[Math.abs(ti) % tintPalette.length];
-      const cr = clamp01(r * s), cg = clamp01(g * s), cb = clamp01(b * s);
-
-      for (let q = 0; q < 4; q++) {
-        const u = q === 0 || q === 3 ? u0 : u1;
-        const w = q < 2 ? w0 : w1;
-        B.pos.push(cx + (v[0] + u * dux + w * dvx) * HALF_BLOCK * S,
-                   cy + (v[1] + u * duy + w * dvy) * HALF_BLOCK * S,
-                   cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK * S);
-        B.nor.push(n[0], n[1], n[2]);
-        B.col.push(cr, cg, cb);
-        B.mat.push(m);
-      }
-    }
+  for (let q = 0; q < 4; q++) {
+    const o = q * 3;
+    B.pos.push(cx + v[o] * HALF_BLOCK * S, cy + v[o + 1] * HALF_BLOCK * S, cz + v[o + 2] * HALF_BLOCK * S);
+    B.nor.push(n[0], n[1], n[2]);
+    B.col.push(r, g, b);
+    B.mat.push(m);
+    if (powder) B.guv.push(q === 0 || q === 3 ? 0 : GRAIN_GRID, q < 2 ? 0 : GRAIN_GRID);
+    else B.guv.push(GRAIN_NONE, GRAIN_NONE);
+    B.grow.push(r0, r1, r2);
   }
 }
 
@@ -3215,7 +3219,7 @@ function rebuildChunk(c) {
     }
   }
   const B = faceBuf;
-  B.pos.length = 0; B.nor.length = 0; B.col.length = 0; B.mat.length = 0;
+  B.pos.length = 0; B.nor.length = 0; B.col.length = 0; B.mat.length = 0; B.guv.length = 0; B.grow.length = 0;
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
@@ -3238,6 +3242,8 @@ function rebuildChunk(c) {
     geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(B.nor), 3));
     geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(B.col), 3));
     geo.setAttribute('matId',    new THREE.BufferAttribute(new Uint8Array(B.mat), 1));
+    geo.setAttribute('grainUv',  new THREE.BufferAttribute(new Uint8Array(B.guv), 2));
+    geo.setAttribute('grainRow', new THREE.BufferAttribute(new Uint8Array(B.grow), 3));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     // The per-chunk bound is the whole reason for the split — without it three
     // quarters of the island would be drawn from behind the camera.

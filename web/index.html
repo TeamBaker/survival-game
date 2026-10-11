@@ -2,24 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
 <script>
-// Cache-bust: if Safari serves a stale HTML, this forces a hard reload
-(function(){
-  var v = 142;
-  var key = '__sv_game_v';
-  try {
-    var prev = parseInt(localStorage.getItem(key));
-    if (prev && prev < v) {
-      localStorage.setItem(key, v);
-      location.replace(location.href.split('?')[0] + '?_=' + Date.now());
-      return;
-    }
-    localStorage.setItem(key, v);
-  } catch(e) {}
-})();
+// Build version — bump after every change. The server sends index.html with
+// Cache-Control: no-cache + ETag, so the browser revalidates on every load and
+// any edit to this file (this bump included) is picked up on the next visit.
+window.GAME_VERSION = 143;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1591,8 +1578,16 @@
 // plain minified files. If a host already set Content-Encoding: gzip, fetch
 // hands us inflated text — detected by the missing gzip magic bytes.
 window.__libsReady = (function () {
+  // ?v= is a content hash of the library (its .js and .js.gz together). The
+  // server caches a URL for a year (immutable) only when v matches the files on
+  // disk, so a stale hash just means revalidating — never a stale library.
+  // After replacing a library, refresh its hash with:
+  //   cat lib/X.min.js lib/X.min.js.gz | sha256sum | cut -c1-12
   var LIBS = ['lib/three.min.js', 'lib/cannon-global.min.js'];
-  var Q = '?v=3';
+  var HASH = {
+    'lib/three.min.js': '933ccee9e022',
+    'lib/cannon-global.min.js': 'f2934074213f'
+  };
   function run(code, name) {
     var s = document.createElement('script');
     s.textContent = code + '\n//# sourceURL=' + name;
@@ -1603,7 +1598,7 @@ window.__libsReady = (function () {
       return p.then(function () {
         return new Promise(function (res, rej) {
           var s = document.createElement('script');
-          s.src = src + Q;
+          s.src = src + '?v=' + HASH[src];
           s.onload = res;
           s.onerror = function () { rej(new Error('Failed to load ' + src)); };
           document.head.appendChild(s);
@@ -1612,7 +1607,7 @@ window.__libsReady = (function () {
     }, Promise.resolve());
   }
   function gz(src) {
-    return fetch(src + '.gz' + Q).then(function (r) {
+    return fetch(src + '.gz?v=' + HASH[src]).then(function (r) {
       if (!r.ok) throw new Error(r.status);
       return r.arrayBuffer();
     }).then(function (buf) {

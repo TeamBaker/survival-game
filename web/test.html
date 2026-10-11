@@ -48,21 +48,20 @@ try {
   addResult('WebGL', false, e.message);
 }
 
-// Test 2: Fetch local Three.js
-fetch('./lib/three.module.js', {cache: 'no-store'})
-  .then(r => { addResult('Fetch Three.js', r.ok, r.status + ' — ' + r.headers.get('content-length') + ' bytes'); return r.text(); })
-  .then(t => addInfo('Three.js size', (t.length / 1024).toFixed(0) + ' KB'))
+// Test 2: Fetch local Three.js (pre-gzipped build the game loads)
+fetch('./lib/three.min.js.gz', {cache: 'no-store'})
+  .then(r => { addResult('Fetch Three.js', r.ok, r.status + ' — ' + r.headers.get('content-length') + ' bytes'); return r.arrayBuffer(); })
+  .then(b => addInfo('Three.js download size', (b.byteLength / 1024).toFixed(0) + ' KB'))
   .catch(e => addResult('Fetch Three.js', false, e.message));
 
 // Test 3: Fetch local Cannon.js
-fetch('./lib/cannon-es.js', {cache: 'no-store'})
+fetch('./lib/cannon-global.min.js.gz', {cache: 'no-store'})
   .then(r => addResult('Fetch Cannon.js', r.ok, r.status + ' — ' + r.headers.get('content-length') + ' bytes'))
   .catch(e => addResult('Fetch Cannon.js', false, e.message));
 
-// Test 4: ES Module import
-import('./lib/three.module.js').then(m => {
-  addResult('ES Module Import', true, 'Three.js r' + m.REVISION + ' loaded');
-}).catch(e => addResult('ES Module Import', false, e.message));
+// Test 4: gzip decompression (otherwise the game falls back to the larger .min.js files)
+addResult('DecompressionStream', typeof DecompressionStream !== 'undefined',
+  typeof DecompressionStream !== 'undefined' ? 'Available' : 'Not available — larger fallback libs will be used');
 
 // Test 5: Check page load timing
 addInfo('Page loaded at', new Date().toLocaleTimeString());

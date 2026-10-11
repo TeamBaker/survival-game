@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 145;
+window.GAME_VERSION = 146;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2853,6 +2853,31 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
   return f;
 });
 
+// The one material every terrain chunk is drawn with, so a chunk is one draw
+// call however many materials it holds. The colour was already per vertex; the
+// only things still telling the TERRAIN_MATS apart are roughness, metalness and
+// envMapIntensity, so each vertex carries its material id (a byte, `matId`) and
+// the vertex shader looks the three up in a table of TERRAIN_MATS' own values.
+// The lookup is in the vertex shader because a WebGL1 fragment shader may not
+// index a uniform array by a varying; all four corners of a quad share one id,
+// so the varying comes through every fragment exactly as the table has it and
+// the result is what the per-material meshes drew, bit for bit.
+const TERRAIN_PBR = TERRAIN_MATS.map((m) => new THREE.Vector3(m.roughness, m.metalness, m.envMapIntensity));
+const TERRAIN_CHUNK_MAT = TERRAIN_FACE_MATS[0].clone();
+TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
+  sh.uniforms.terrainPbr = { value: TERRAIN_PBR };
+  sh.vertexShader = `attribute float matId;\nuniform vec3 terrainPbr[${TERRAIN_PBR.length}];\nvarying vec3 vPbr;\n`
+    + sh.vertexShader.replace('#include <begin_vertex>',
+      '#include <begin_vertex>\n  vPbr = terrainPbr[int(matId + 0.5)];');
+  sh.fragmentShader = 'varying vec3 vPbr;\n' + sh.fragmentShader
+    .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vPbr.x;')
+    .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vPbr.y;')
+    // The IBL helpers read the envMapIntensity uniform by name; after its
+    // declaration, every later use of the name means this vertex's own value.
+    .replace('#include <envmap_common_pars_fragment>',
+      '#include <envmap_common_pars_fragment>\n#define envMapIntensity vPbr.z');
+};
+
 // A falling powder grain's own box, vertex-coloured like a tiny slice of
 // terrain instead of one flat material colour: each of the cube's 6 faces is
 // diced into a GRAIN_GRID x GRAIN_GRID grid, same as the terrain powder path
@@ -2922,8 +2947,9 @@ function fallingGrainGeo(m) {
 const terrain = new THREE.Group();
 scene.add(terrain);
 
-// Per chunk: one mesh per material (null where the chunk has no block of that
-// material), and what it contributes to the two HUD totals.
+// Per chunk: its mesh — an array of at most one, empty where the chunk has
+// nothing to draw (still truthy, so "has this chunk been built" stays a plain
+// test) — and what it contributes to the two HUD totals.
 const chunkMesh   = new Array(CHUNK_N * CHUNK_N).fill(null);
 const chunkBlocks = new Int32Array(CHUNK_N * CHUNK_N);
 const chunkFaces  = new Int32Array(CHUNK_N * CHUNK_N);
@@ -2933,7 +2959,7 @@ let blockCount = 0, faceCount = 0;
 // has just rebuilt. Cubes are the only terrain surface, so they always show.
 function applyChunkView(c) {
   const ms = chunkMesh[c];
-  if (ms) for (const im of ms) if (im) im.visible = true;
+  if (ms) for (const im of ms) im.visible = true;
 }
 
 // How much darker a block is for sitting below the top of its own column. The
@@ -2974,11 +3000,12 @@ const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
 
 const mergeMatCounts = new Uint32Array(N_MATS);
 
-// Scratch, reused by every rebuild: per material, the loose vertices of one
-// chunk's exposed faces — position, normal and colour, four vertices a quad and
+// Scratch, reused by every rebuild: the loose vertices of one chunk's exposed
+// faces — position, normal, colour and material id, four vertices a quad and
 // nothing shared between quads. Two faces meeting at an edge disagree about both
 // the normal and the colour there, so a shared corner would round the block off.
-const faceBuf = Array.from({ length: N_MATS }, () => ({ pos: [], nor: [], col: [] }));
+// Every material goes in the one buffer: TERRAIN_CHUNK_MAT reads the id.
+const faceBuf = { pos: [], nor: [], col: [], mat: [] };
 
 // The six faces of a block: the neighbour that has to be air for the face to be
 // worth drawing at all, the direction the face looks in, and its four corners as
@@ -3004,7 +3031,7 @@ const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
 // One face of the block centred on (cx, cy, cz), in the one colour that block
 // is — except powder, which is diced into flat-shaded pixels.
 function pushFace(m, f, cx, cy, cz, r, g, b, S = 1) {
-  const B = faceBuf[m], v = f.v, n = f.n;
+  const B = faceBuf, v = f.v, n = f.n;
 
   if (!MAT_STATS[m]?.powder) {
     for (let q = 0; q < 4; q++) {
@@ -3012,6 +3039,7 @@ function pushFace(m, f, cx, cy, cz, r, g, b, S = 1) {
       B.pos.push(cx + v[o] * HALF_BLOCK * S, cy + v[o + 1] * HALF_BLOCK * S, cz + v[o + 2] * HALF_BLOCK * S);
       B.nor.push(n[0], n[1], n[2]);
       B.col.push(r, g, b);
+      B.mat.push(m);
     }
     return;
   }
@@ -3049,6 +3077,7 @@ function pushFace(m, f, cx, cy, cz, r, g, b, S = 1) {
                    cz + (v[2] + u * duz + w * dvz) * HALF_BLOCK * S);
         B.nor.push(n[0], n[1], n[2]);
         B.col.push(cr, cg, cb);
+        B.mat.push(m);
       }
     }
   }
@@ -3175,22 +3204,18 @@ for (let gj = 0; gj < GRID_N; gj++) {
 const gridStep = new Int8Array(GRID_N * GRID_N).fill(1);
 let lodOverride = null;
 
-// (Re)build one chunk's meshes from the store. Cheap enough to call from a tap:
-// the whole cost is one pass over the chunk's columns plus a buffer upload per
-// material.
+// (Re)build one chunk's mesh from the store. Cheap enough to call from a tap:
+// the whole cost is one pass over the chunk's columns plus one buffer upload.
 function rebuildChunk(c) {
   const old = chunkMesh[c];
   if (old) {
     for (const me of old) {
-      if (!me) continue;
       terrain.remove(me);
       me.geometry.dispose();     // frees the vertex buffers, not the shared material
     }
   }
-  for (let m = 0; m < N_MATS; m++) {
-    const B = faceBuf[m];
-    B.pos.length = 0; B.nor.length = 0; B.col.length = 0;
-  }
+  const B = faceBuf;
+  B.pos.length = 0; B.nor.length = 0; B.col.length = 0; B.mat.length = 0;
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
@@ -3199,12 +3224,9 @@ function rebuildChunk(c) {
   const stride = mergeSizeFor(step);
   for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
 
-  const meshes = new Array(N_MATS).fill(null);
-  let faces = 0;
-  for (let m = 0; m < N_MATS; m++) {
-    const B = faceBuf[m];
-    const nv = B.pos.length / 3, nq = nv / 4;
-    if (nq === 0) continue;                      // plenty of chunks are all sand
+  const meshes = [];
+  const nv = B.pos.length / 3, nq = nv / 4;
+  if (nq > 0) {                                  // plenty of chunks are all air
     // Two triangles a quad, over the four corners the quad already pushed.
     const idx = nv > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
     for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
@@ -3215,20 +3237,21 @@ function rebuildChunk(c) {
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(B.pos), 3));
     geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(B.nor), 3));
     geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(B.col), 3));
+    geo.setAttribute('matId',    new THREE.BufferAttribute(new Uint8Array(B.mat), 1));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     // The per-chunk bound is the whole reason for the split — without it three
     // quarters of the island would be drawn from behind the camera.
     geo.computeBoundingSphere();
 
-    const me = new THREE.Mesh(geo, TERRAIN_FACE_MATS[m]);
+    const me = new THREE.Mesh(geo, TERRAIN_CHUNK_MAT);
     me.receiveShadow = true;
     // Casting is a second full pass over every face. A phone gets the sun's
     // shading and the player's shadow, but not the island shadowing itself.
     me.castShadow = !isTouchDevice;
     terrain.add(me);
-    meshes[m] = me;
-    faces += nq;
+    meshes.push(me);
   }
+  const faces = nq;
 
   chunkMesh[c] = meshes;
   applyChunkView(c);

@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 155;
+window.GAME_VERSION = 156;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3138,11 +3138,34 @@ const chunkBlocks = new Int32Array(CHUNK_N * CHUNK_N);
 const chunkFaces  = new Int32Array(CHUNK_N * CHUNK_N);
 let blockCount = 0, faceCount = 0;
 
+// Render distance, in metres across the ground from the camera, from the
+// settings slider; Infinity (the default) draws the whole island. A chunk or
+// merged group wholly past it is hidden, and the fog thickens to close over it
+// before the cut, so it fades out rather than popping.
+const RENDER_DIST_M = [28, 44, Infinity, Infinity, Infinity];   // slider 1..5
+let renderRadius = Infinity;
+let rdCamX = 0, rdCamZ = 0;
+const chunkCX = new Float32Array(CHUNK_N * CHUNK_N);
+const chunkCZ = new Float32Array(CHUNK_N * CHUNK_N);
+for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  chunkCX[c] = (colX(i0) + colX(i0 + CHUNK - 1)) / 2;
+  chunkCZ[c] = (colZ(j0) + colZ(j0 + CHUNK - 1)) / 2;
+}
+const inRenderDist = (x, z, reach) => {
+  const dx = camera.position.x - x, dz = camera.position.z - z, r = renderRadius + reach;
+  return dx * dx + dz * dz < r * r;
+};
+const chunkInView = (c) => inRenderDist(chunkCX[c], chunkCZ[c], CHUNK * BLOCK * Math.SQRT1_2);
+
 // Declared up here because rebuildChunk() calls applyChunkView() on a chunk it
-// has just rebuilt. Cubes are the only terrain surface, so they always show.
+// has just rebuilt. Cubes are the only terrain surface, so they show unless
+// they are past the render distance.
 function applyChunkView(c) {
   const ms = chunkMesh[c];
-  if (ms) for (const im of ms) im.visible = true;
+  if (!ms) return;
+  const show = chunkInView(c);
+  for (const im of ms) im.visible = show;
 }
 
 // How much darker a block is for sitting below the top of its own column. The
@@ -3633,8 +3656,30 @@ function mergeBatch(b) {
   bm.scale.setScalar(HALF_BLOCK);
   bm.receiveShadow = true;
   bm.castShadow = !isTouchDevice;
+  bm.visible = batchInView(b);
   terrain.add(bm);
   batchMesh[b] = bm;
+}
+
+// A merged group's centre is the middle of its corner chunks' centres.
+function batchInView(b) {
+  const ci0 = (b % BATCH_N) * BATCH, cj0 = ((b / BATCH_N) | 0) * BATCH;
+  const ci1 = Math.min(ci0 + BATCH, CHUNK_N) - 1, cj1 = Math.min(cj0 + BATCH, CHUNK_N) - 1;
+  return inRenderDist((chunkCX[ci0] + chunkCX[ci1]) / 2, (chunkCZ[cj0 * CHUNK_N] + chunkCZ[cj1 * CHUNK_N]) / 2,
+    BATCH * CHUNK * BLOCK * Math.SQRT1_2);
+}
+
+// Shows or hides every chunk and merged group for the current render distance:
+// on a slider change, and from updateLOD once the camera has moved a metre.
+function applyRenderDist() {
+  rdCamX = camera.position.x; rdCamZ = camera.position.z;
+  for (let b = 0; b < BATCH_N * BATCH_N; b++) {
+    if (batchMesh[b]) { batchMesh[b].visible = batchInView(b); continue; }
+    const bi = b % BATCH_N, bj = (b / BATCH_N) | 0;
+    for (let cj = bj * BATCH; cj < Math.min(bj * BATCH + BATCH, CHUNK_N); cj++) {
+      for (let ci = bi * BATCH; ci < Math.min(bi * BATCH + BATCH, CHUNK_N); ci++) applyChunkView(cj * CHUNK_N + ci);
+    }
+  }
 }
 
 // (Re)build one chunk's mesh from the store. Cheap enough to call from a tap:
@@ -3795,16 +3840,18 @@ let lodHead = 0, lodTail = 0;
 let lodCamX = NaN, lodCamZ = NaN, lodLastOverride = null;
 function updateLOD() {
   const cam = camera.position;
+  if (renderRadius !== Infinity && (Math.abs(cam.x - rdCamX) > 1 || Math.abs(cam.z - rdCamZ) > 1)) applyRenderDist();
   if (cam.x !== lodCamX || cam.z !== lodCamZ || lodOverride !== lodLastOverride) {
     lodCamX = cam.x; lodCamZ = cam.z; lodLastOverride = lodOverride;
     let changed = false;
     for (let g = 0; g < GRID_N * GRID_N; g++) {
-      let s;
-      if (lodOverride !== null) s = lodOverride;
-      else {
-        const dx = cam.x - gridCenterX[g], dz = cam.z - gridCenterZ[g];
-        s = lodStepFor(Math.sqrt(dx * dx + dz * dz));
-      }
+      const dx = cam.x - gridCenterX[g], dz = cam.z - gridCenterZ[g];
+      const d = Math.sqrt(dx * dx + dz * dz);
+      // Past the render distance nothing is drawn, so nothing is rebuilt: the
+      // cell keeps its step and catches up once it comes back into range. The
+      // slack covers a grid cell's reach past its chunks' and the cull's lag.
+      if (d > renderRadius + 8) continue;
+      const s = lodOverride !== null ? lodOverride : lodStepFor(d);
       if (gridStep[g] !== s) { gridStep[g] = s; changed = true; }
     }
     // A step changed somewhere: queue afresh every chunk now out of date, so a
@@ -6800,7 +6847,11 @@ const rdVal = document.getElementById('set-rd-val');
 if (rdSlider) {
   rdSlider.addEventListener('input', () => {
     rdVal.textContent = rdSlider.value;
-    if (typeof RENDER_DIST !== 'undefined') window.RENDER_DIST = parseInt(rdSlider.value);
+    renderRadius = RENDER_DIST_M[parseInt(rdSlider.value) - 1] ?? Infinity;
+    // ~96% fog at the cut; never thinner than the default.
+    scene.fog.density = Math.max(FOG_DENSITY, 1.8 / renderRadius);
+    applyRenderDist();
+    lodCamX = NaN;   // cells that just came into range catch up on their step
   });
 }
 const shSlider = document.getElementById('set-shadows');

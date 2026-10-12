@@ -50,7 +50,7 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 35. [ ] Collider radius 5 chunks = 121 compound bodies — player only needs 1-2 chunk radius, debris loads own colliders. MEDIUM-HIGH.
 36. [ ] Player-vs-compound-chunk collision slow — every box vs 3 spheres every substep. Custom AABB voxel sweep. MEDIUM.
 37. [ ] buildChunkColliderBoxes redundant — floor scan walks to bedrock, then 200-level fill(). Untouched columns = solid from bedrock to surface without scan. MEDIUM.
-38. [ ] Colliders rebuild repeatedly per edit — editBlock + flushDirtyChunks + breakOffAdrift per-column. Dirty-collider set flushed once/frame. HIGH (hitches when digging).
+38. [x] DONE (v168) — dirty-collider set flushed at 3 points in tick + before sync physics queries; removed redundant rebuild in flushDirtyChunks. HIGH.
 39. [ ] Sand cascades unbatched — every grain triggers editBlock → collider rebuild + 6 flood fills. Batch voxel writes, rebuild once. HIGH.
 40. [ ] adriftGroup flood fill very expensive — 100+ block flood fill × 6 per edit, string keys, allocates Color per visited block even when thrown away. Stop at untouched column (colDug==0), integer keys, compute colors once confirmed loose. HIGH.
 41. [ ] breakOffAdrift recurses through every neighbour — stack overflow risk on big cascades. Iterative worklist. MEDIUM.

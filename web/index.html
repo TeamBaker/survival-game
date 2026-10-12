@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 168;
+window.GAME_VERSION = 169;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -4219,9 +4219,12 @@ function buildChunkColliderBoxes(c) {
       const k = j * GEN_N + i;
       const t = sTop[k];
       if (t === NO_COLUMN) continue;
+      // The lowest solid block, or the top if there is none under it. Looked for
+      // from bedrock up: a column nobody has dug under is solid at the floor and
+      // answers on the first read.
       let floorLvl = t;
-      for (let lvl = t; lvl >= VOX_FLOOR; lvl--) {
-        if (solidVisible(k, lvl)) floorLvl = lvl;
+      for (let lvl = VOX_FLOOR; lvl < t; lvl++) {
+        if (solidVisible(k, lvl)) { floorLvl = lvl; break; }
       }
       const idx = jj * w + ii;
       top[idx] = t;
@@ -4250,13 +4253,23 @@ function buildChunkColliderBoxes(c) {
   const boxes = [];
   const solid = new Uint8Array(w * h);
   const visited = new Uint8Array(w * h);
-  for (let lvl = hi; lvl >= lo; lvl--) {
+  // Levels are visited top down, but only those where some column could still
+  // need covering: at or under its top, at or over its floor, and under where
+  // the boxes above already reach. Anything between is a level that would have
+  // found nothing to do. consumedTo only ever drops, so the next such level as
+  // seen before this level's boxes are placed is never below the real one.
+  let lvl = hi;
+  while (lvl >= lo) {
     solid.fill(0);
-    let any = false;
+    let any = false, next = lo - 1;
     for (let jj = 0; jj < h; jj++) {
       for (let ii = 0; ii < w; ii++) {
         const idx = jj * w + ii;
-        if (top[idx] === NO_COLUMN || lvl > top[idx] || lvl < floor[idx]) continue;
+        const t = top[idx];
+        if (t === NO_COLUMN) continue;
+        const nc = Math.min(t, consumedTo[idx] - 1, lvl - 1);
+        if (nc >= floor[idx] && nc > next) next = nc;
+        if (lvl > t || lvl < floor[idx]) continue;
         const k = (j0 + jj) * GEN_N + (i0 + ii);
         if (!solidVisible(k, lvl)) continue;
         // 2 = still needs covering at this level; 1 = solid here but already
@@ -4267,7 +4280,7 @@ function buildChunkColliderBoxes(c) {
         if (solid[idx] === 2) any = true;
       }
     }
-    if (!any) continue;
+    if (!any) { lvl = next; continue; }
 
     visited.fill(0);
     for (let jj = 0; jj < h; jj++) {
@@ -4287,8 +4300,20 @@ function buildChunkColliderBoxes(c) {
         while (jj1 < h && rowFull(jj1)) jj1++;
         for (let y = jj0; y < jj1; y++) for (let x = ii0; x < ii1; x++) visited[y * w + x] = 1;
 
+        // Under every column's airLo is solid all the way to bedrock, so once the
+        // walk down gets there it can stop asking. (A column solid at the floor
+        // has its floor there, which puts lo there too.)
+        let runLo = Infinity;
+        for (let y = jj0; y < jj1; y++) for (let x = ii0; x < ii1; x++) {
+          const a = airLo[(j0 + y) * GEN_N + (i0 + x)];
+          if (a < runLo) runLo = a;
+        }
         let botLvl = lvl;
-        while (botLvl - 1 >= lo && footprintSolidAt(ii0, ii1, jj0, jj1, botLvl - 1)) botLvl--;
+        while (botLvl - 1 >= lo) {
+          if (botLvl - 1 < runLo) { botLvl = VOX_FLOOR; break; }
+          if (!footprintSolidAt(ii0, ii1, jj0, jj1, botLvl - 1)) break;
+          botLvl--;
+        }
         if (botLvl < lvl) {
           for (let y = jj0; y < jj1; y++) for (let x = ii0; x < ii1; x++) {
             const ci = y * w + x;
@@ -4303,6 +4328,7 @@ function buildChunkColliderBoxes(c) {
         });
       }
     }
+    lvl = next;
   }
   return boxes;
 }

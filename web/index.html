@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 157;
+window.GAME_VERSION = 158;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1723,13 +1723,18 @@ const isTouchDevice = window.matchMedia
 // Renderer / scene / camera
 // ---------------------------------------------------------------------------
 const canvas = document.getElementById('view');
+// Phones: cap render resolution at 1.5x (DPR 2-3 screens otherwise shade 4-9x
+// the pixels) and skip MSAA on high-DPI phones, where the density already hides
+// edge aliasing. Desktop keeps 2x + MSAA.
+const MAX_PIXEL_RATIO = isTouchDevice ? 1.5 : 2;
+const renderPixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
 const renderer = new THREE.WebGLRenderer({
   canvas,
-  antialias: true,
+  antialias: !(isTouchDevice && (window.devicePixelRatio || 1) >= 2),
   powerPreference: 'high-performance',
   stencil: false,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isTouchDevice ? 2 : 2));
+renderer.setPixelRatio(renderPixelRatio());
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -8058,7 +8063,7 @@ function resize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
   const aspect = w / Math.max(h, 1);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(renderPixelRatio());
   renderer.setSize(w, h, false);
   camera.aspect = aspect;
   // Original used a 90-degree vertical FOV at 16:9. Here the horizontal FOV is

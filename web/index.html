@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 154;
+window.GAME_VERSION = 155;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3047,6 +3047,19 @@ vec4 terrainTexel(ivec2 c, int k) {
     .replace('#include <envmap_common_pars_fragment>',
       '#include <envmap_common_pars_fragment>\n#define envMapIntensity vPbr.z');
 };
+// A merged far group (see mergeBatch) is one mesh over many chunks, so its
+// instance matrix is the identity and each corner carries its own chunk's origin
+// beside it instead: added on in the same whole half-blocks, the sum is exactly
+// what the chunk's own mesh would have drawn.
+function terrainBatchVertex(sh) {
+  sh.vertexShader = 'attribute vec3 terrainOff;\n' + sh.vertexShader
+    .replace('float((tw.x >> 6) & 63));', 'float((tw.x >> 6) & 63)) + terrainOff;')
+    .replace('ivec2(instanceMatrix[3].xz)', 'ivec2(instanceMatrix[3].xz + terrainOff.xz)');
+}
+const TERRAIN_BATCH_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+TERRAIN_BATCH_DEPTH.onBeforeCompile = (sh) => { terrainVertex(sh); terrainBatchVertex(sh); };
+const TERRAIN_BATCH_MAT = TERRAIN_CHUNK_MAT.clone();
+TERRAIN_BATCH_MAT.onBeforeCompile = (sh) => { TERRAIN_CHUNK_MAT.onBeforeCompile(sh); terrainBatchVertex(sh); };
 
 // A falling powder grain's own box, vertex-coloured like a tiny slice of
 // terrain instead of one flat material colour: each of the cube's 6 faces is
@@ -3545,6 +3558,85 @@ function dropChunkMesh(me) {
   me.dispose();
 }
 
+// Far chunks only change when the camera crosses a band, so once every chunk in
+// a BATCH x BATCH group is drawn at BATCH_STEP or coarser the group is drawn as
+// one merged mesh: one draw call (and one shadow pass) instead of up to sixteen.
+// The chunks keep their own meshes, hidden, so a rebuild of any one of them —
+// a step change, a dig, a load — just drops the merged copy and shows them all
+// again; updateLOD merges the group afresh once its rebuild queue has drained.
+const BATCH = 4, BATCH_N = Math.ceil(CHUNK_N / BATCH);
+const BATCH_STEP = 2;                 // everything outside LOD_SPHERES[0]
+const batchMesh  = new Array(BATCH_N * BATCH_N).fill(null);
+const batchDirty = new Uint8Array(BATCH_N * BATCH_N);
+let batchDirtyN = 0;
+const batchOf = (c) => ((((c / CHUNK_N) | 0) / BATCH) | 0) * BATCH_N + (((c % CHUNK_N) / BATCH) | 0);
+
+// Called on every rebuild of chunk c: its group needs merging again, and any
+// merged copy of it is out of date as of now.
+function unbatchChunk(c) {
+  const b = batchOf(c);
+  if (!batchDirty[b]) { batchDirty[b] = 1; batchDirtyN++; }
+  const bm = batchMesh[b];
+  if (!bm) return;
+  batchMesh[b] = null;
+  terrain.remove(bm);
+  if (bm.geometry.index === QUAD_INDEX) bm.geometry.index = null;
+  bm.geometry.dispose();
+  bm.dispose();
+  const bi = b % BATCH_N, bj = (b / BATCH_N) | 0;
+  for (let cj = bj * BATCH; cj < Math.min(bj * BATCH + BATCH, CHUNK_N); cj++) {
+    for (let ci = bi * BATCH; ci < Math.min(bi * BATCH + BATCH, CHUNK_N); ci++) applyChunkView(cj * CHUNK_N + ci);
+  }
+}
+
+// Merges group b if every chunk in it is built at BATCH_STEP or coarser: their
+// corners copied as they are, each with its chunk's origin (the chunk mesh's
+// instance matrix) alongside, and the chunks' own meshes hidden.
+function mergeBatch(b) {
+  const bi = b % BATCH_N, bj = (b / BATCH_N) | 0;
+  const ci0 = bi * BATCH, cj0 = bj * BATCH;
+  const ci1 = Math.min(ci0 + BATCH, CHUNK_N), cj1 = Math.min(cj0 + BATCH, CHUNK_N);
+  let nv = 0, n = 0;
+  for (let cj = cj0; cj < cj1; cj++) for (let ci = ci0; ci < ci1; ci++) {
+    const c = cj * CHUNK_N + ci, ms = chunkMesh[c];
+    if (!ms || chunkStep[c] < BATCH_STEP) return;
+    if (ms.length) { nv += (ms[0].geometry.drawRange.count / 6) * 4; n++; }
+  }
+  // Nothing to gain from fewer than two, and past QUAD_INDEX's reach the chunks
+  // just stay as they are.
+  if (n < 2 || nv > 65536) return;
+  const pos = new Uint16Array(nv * 2), off = new Uint16Array(nv * 3);
+  const sphere = new THREE.Sphere();
+  let v = 0;
+  for (let cj = cj0; cj < cj1; cj++) for (let ci = ci0; ci < ci1; ci++) {
+    const ms = chunkMesh[cj * CHUNK_N + ci];
+    if (!ms.length) continue;
+    const me = ms[0], cnt = (me.geometry.drawRange.count / 6) * 4, e = me.instanceMatrix.array;
+    pos.set(me.geometry.attributes.position.array.subarray(0, cnt * 2), v * 2);
+    for (let k = v * 3, k1 = (v + cnt) * 3; k < k1; k += 3) {
+      off[k] = e[12]; off[k + 1] = e[13]; off[k + 2] = e[14];
+    }
+    v += cnt;
+    sphere.union(me.boundingSphere);
+    me.visible = false;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 2));
+  geo.setAttribute('terrainOff', new THREE.BufferAttribute(off, 3));
+  geo.setIndex(QUAD_INDEX);
+  geo.setDrawRange(0, (nv / 4) * 6);
+  const bm = new THREE.InstancedMesh(geo, TERRAIN_BATCH_MAT, 1);
+  bm.setMatrixAt(0, chunkOrigin.identity());
+  bm.boundingSphere = sphere;
+  bm.customDepthMaterial = TERRAIN_BATCH_DEPTH;
+  bm.position.copy(TERRAIN_ORIGIN);
+  bm.scale.setScalar(HALF_BLOCK);
+  bm.receiveShadow = true;
+  bm.castShadow = !isTouchDevice;
+  terrain.add(bm);
+  batchMesh[b] = bm;
+}
+
 // (Re)build one chunk's mesh from the store. Cheap enough to call from a tap:
 // the whole cost is one pass over the chunk's columns, a sort and merge of the
 // faces it found, and two small uploads — the mesh and the chunk's column patch.
@@ -3553,6 +3645,7 @@ function dropChunkMesh(me) {
 // and only the part in use goes up to the GPU. A mesh is made fresh only when
 // its buffer has run out of room or the chunk has run past the shared index.
 function rebuildChunk(c) {
+  unbatchChunk(c);
   qN = 0;
   faceN = 0;
 
@@ -3728,7 +3821,8 @@ function updateLOD() {
       if (lodTail > 1) lodQueue.subarray(0, lodTail).sort(lodByDist);
     }
   }
-  if (lodHead === lodTail) return;
+  // With nothing left to rebuild, the far groups whose chunks changed merge again.
+  if (lodHead === lodTail) { if (batchDirtyN) updateBatches(); return; }
   const t0 = performance.now();
   while (lodHead < lodTail) {
     const c = lodQueue[lodHead++];
@@ -3738,6 +3832,16 @@ function updateLOD() {
     if (performance.now() - t0 >= LOD_BUDGET_MS) break;
   }
   if (lodHead === lodTail) lodHead = lodTail = 0;
+}
+function updateBatches() {
+  const t0 = performance.now();
+  for (let b = 0; b < BATCH_N * BATCH_N && batchDirtyN; b++) {
+    if (!batchDirty[b]) continue;
+    batchDirty[b] = 0;
+    batchDirtyN--;
+    mergeBatch(b);
+    if (performance.now() - t0 >= LOD_BUDGET_MS) break;
+  }
 }
 
 // ----- pass 4b: the collider -----

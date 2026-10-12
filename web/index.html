@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 165;
+window.GAME_VERSION = 166;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -7238,6 +7238,17 @@ function toggleDebugCollision() {
   if (debugColOn) rebuildDebugCollision();
 }
 
+// All boxes go into one LineSegments with one shared material. _debugColSeen holds
+// the collider body each chunk had at the last rebuild; every collider load, unload
+// or rebuild swaps colliderBody[c] for a new body (or null), so the periodic redraw
+// only needs to rebuild when one of those references has changed.
+const _debugColMat = new THREE.LineBasicMaterial({ color: 0xff8800, opacity: 0.5, transparent: true, depthTest: true });
+const _debugColSeen = new Array(CHUNK_N * CHUNK_N).fill(null);
+function debugCollisionStale() {
+  for (let c = 0; c < colliderBody.length; c++) if (colliderBody[c] !== _debugColSeen[c]) return true;
+  return false;
+}
+
 function rebuildDebugCollision() {
   while (debugCollision.children.length) {
     const c = debugCollision.children[0];
@@ -7246,13 +7257,12 @@ function rebuildDebugCollision() {
   }
   if (!debugColOn) return;
 
-  const mat = new THREE.LineBasicMaterial({ color: 0xff8800, opacity: 0.5, transparent: true, depthTest: true });
-
+  const verts = [];
   for (let c = 0; c < colliderBody.length; c++) {
+    _debugColSeen[c] = colliderBody[c];
     if (!colliderBody[c]) continue;
     const boxes = buildChunkColliderBoxes(c);
     for (const b of boxes) {
-      const verts = [];
       const hx = b.hx, hy = b.hy, hz = b.hz;
       const cx = b.x, cy = b.y, cz = b.z;
       const corners = [
@@ -7266,11 +7276,12 @@ function rebuildDebugCollision() {
         verts.push(corners[a][0], corners[a][1], corners[a][2]);
         verts.push(corners[b2][0], corners[b2][1], corners[b2][2]);
       }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-      debugCollision.add(new THREE.LineSegments(geo, mat));
     }
   }
+  if (verts.length === 0) return;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  debugCollision.add(new THREE.LineSegments(geo, _debugColMat));
 }
 
 // Physics object (debris) colliders move every frame, so they get their own group that
@@ -8276,7 +8287,7 @@ function tick() {
   }
 
   // Redraw the collider wireframe now and then to pick up newly loaded chunks.
-  if (debugColOn && !colTestOn && frameCount % 60 === 0) {
+  if (debugColOn && !colTestOn && frameCount % 60 === 0 && debugCollisionStale()) {
     rebuildDebugCollision();
   }
   updateDebugDebris();

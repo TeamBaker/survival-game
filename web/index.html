@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 151;
+window.GAME_VERSION = 152;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2580,6 +2580,21 @@ const colDug = new Uint8Array(GEN_N * GEN_N);
 // This is how much further than the budget the ground beside a dig has to reach.
 const NO_DIG = 32767;
 const colDugLo = new Int16Array(GEN_N * GEN_N).fill(NO_DIG);
+// The lowest level in each column that holds air — or anything under it: the
+// one promise is that every level from VOX_FLOOR up to airLo - 1 is solid. It
+// never sits above voxCap + 1, since everything over the cap reads as air, and
+// a missing column counts as air from the floor up. setVoxel keeps it; anything
+// that writes voxMat behind its back calls rescanAirLo. The mesher uses it to
+// skip the solid core of a column that nothing can see into.
+const airLo = new Int16Array(GEN_N * GEN_N).fill(VOX_FLOOR);
+function rescanAirLo(k) {
+  if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) { airLo[k] = VOX_FLOOR; return; }
+  const o = voxOff[k], end = o + voxLen(k);
+  const p = voxMat.indexOf(AIR, o);
+  airLo[k] = (p < 0 || p >= end ? end : p) - o + VOX_FLOOR;
+}
+const rescanAllAirLo = () => { for (let k = 0; k < GEN_N * GEN_N; k++) rescanAirLo(k); };
+rescanAllAirLo();
 
 // ----- reading and writing the store -----
 // Levels are the ones topLvl is in: level k is the block filling y from k*BLOCK
@@ -2764,6 +2779,17 @@ function setVoxel(i, j, lvl, m) {
     let t = NO_COLUMN;
     for (let l = lvl - 1; l >= VOX_FLOOR; l--) if (voxMat[o + l] !== AIR) { t = l; break; }
     sTop[k] = t;
+  }
+  // And the lowest air: a hole under it lowers it, and filling the hole it
+  // points at — the lowest air there was, so everything under it is solid —
+  // moves it up to the next air above.
+  if (m === AIR) {
+    if (lvl < airLo[k]) airLo[k] = lvl;
+  } else if (was === AIR && lvl === airLo[k]) {
+    const o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
+    let l = lvl + 1;
+    while (l <= cap && voxMat[o + l] !== AIR) l++;
+    airLo[k] = l;
   }
   return was;
 }
@@ -3361,8 +3387,18 @@ function collectColumn(i, j, step = 1) {
     // on the face and these two texels.
     setColTexel(i, j, tint[k], top, colX(i), colZ(j));
     const li = i - rbI0, lj = j - rbJ0;
+    // Under the lowest air beside it and one under its own, a block has solid
+    // on all six sides and nothing to draw, so the walk jumps from just above
+    // that core straight to the floor — whose underside is open to the void.
+    // A neighbour off the field or missing is air from the floor up, which
+    // leaves no core to skip.
+    const side = i > 0 && i < GEN_N - 1 && j > 0 && j < GEN_N - 1
+      ? Math.min(airLo[k - 1], airLo[k + 1], airLo[k - GEN_N], airLo[k + GEN_N])
+      : VOX_FLOOR;
+    const coreTop = Math.min(side - 1, airLo[k] - 2);
     let drawn = 0;
     for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
+      if (lvl <= coreTop && lvl > VOX_FLOOR) lvl = VOX_FLOOR;
       const m = voxMat[o + lvl];
       if (m === AIR || !isVisible(o + lvl)) continue;
       for (let f = 0; f < 6; f++) {
@@ -6856,6 +6892,7 @@ function createColumn(k, lvl) {
   voxMat.fill(AIR, o, o + len);
   for (let p = o; p < o + len; p++) setVisible(p, false);
   sTop[k] = NO_COLUMN;
+  airLo[k] = VOX_FLOOR;
   worldBlocks++;
 }
 
@@ -6871,6 +6908,7 @@ function toggleSandbox() {
     colDugLo.fill(0);
     sTop.fill(NO_COLUMN);
     visBits.fill(0);
+    airLo.fill(VOX_FLOOR);
     powderDirty.clear();
     for (let c = 0; c < chunkMesh.length; c++) {
       if (chunkMesh[c]) rebuildChunk(c);
@@ -8266,6 +8304,7 @@ function applyWorldState(s) {
   colDug.set(vs.colDug);
   colDugLo.set(vs.colDugLo);
   restoreVoxStore(vs, laid);
+  rescanAllAirLo();
   worldBlocks = vs.worldBlocks;
   tint.set(vs.tint);
   if (vs.hRaw) hRaw.set(vs.hRaw);

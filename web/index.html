@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 159;
+window.GAME_VERSION = 160;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1737,6 +1737,10 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setPixelRatio(renderPixelRatio());
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// The sun never moves, so the shadow map is only redrawn on a frame where some
+// caster has changed (see shadowCastersChanged) rather than every frame.
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -1811,6 +1815,7 @@ function genPause(phase, frac) {
         }
         if (now >= previewAt) {
           previewT0 = now;
+          renderer.shadowMap.needsUpdate = true;
           renderer.render(scene, camera);
         }
       }
@@ -7199,6 +7204,7 @@ if (shSlider) {
     shVal.textContent = shLabels[v];
     renderer.shadowMap.enabled = v > 0;
     renderer.shadowMap.type = v >= 2 ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    renderer.shadowMap.needsUpdate = true;
     scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
   });
 }
@@ -8193,6 +8199,44 @@ function updateFreeCam(dt) {
   }
 }
 
+// Everything the shadow pass reads from a caster, flattened into one list and
+// compared against last frame's: its transform and every ancestor's (nothing
+// here sets a matrix by hand), its geometry and the version of each attribute
+// (the depth shaders read position, faceHide and terrainOff), its instance
+// count and matrices, and its materials. Visibility comes in through which
+// objects get walked at all. Any difference and the map is redrawn this frame.
+const shadowSig = [];
+let shadowSigN = 0, shadowSigDirty = false;
+function shadowSigPut(v) {
+  if (shadowSig[shadowSigN] !== v) { shadowSig[shadowSigN] = v; shadowSigDirty = true; }
+  shadowSigN++;
+}
+function shadowSigVisit(o) {
+  if (!o.castShadow || !o.geometry) return;
+  shadowSigPut(o);
+  for (let p = o; p; p = p.parent) {
+    shadowSigPut(p.position.x); shadowSigPut(p.position.y); shadowSigPut(p.position.z);
+    shadowSigPut(p.quaternion.x); shadowSigPut(p.quaternion.y); shadowSigPut(p.quaternion.z); shadowSigPut(p.quaternion.w);
+    shadowSigPut(p.scale.x); shadowSigPut(p.scale.y); shadowSigPut(p.scale.z);
+  }
+  const g = o.geometry;
+  shadowSigPut(g);
+  shadowSigPut(g.drawRange.start); shadowSigPut(g.drawRange.count);
+  if (g.index) { shadowSigPut(g.index); shadowSigPut(g.index.version); }
+  for (const k in g.attributes) { const a = g.attributes[k]; shadowSigPut(a); shadowSigPut(a.version); }
+  if (o.isInstancedMesh) { shadowSigPut(o.count); shadowSigPut(o.instanceMatrix.version); }
+  shadowSigPut(o.material);
+  shadowSigPut(o.customDepthMaterial);
+}
+function shadowCastersChanged() {
+  const n0 = shadowSigN;
+  shadowSigN = 0;
+  shadowSigDirty = false;
+  scene.traverseVisible(shadowSigVisit);
+  if (shadowSigN < n0) shadowSig.length = shadowSigN;
+  return shadowSigDirty || shadowSigN !== n0;
+}
+
 let frameCount = 0;
 function tick() {
   buildPendingColliders();
@@ -8287,6 +8331,7 @@ function tick() {
   }
 
   updateLOD();
+  if (shadowCastersChanged()) renderer.shadowMap.needsUpdate = true;
   renderer.render(scene, camera);
 }
 

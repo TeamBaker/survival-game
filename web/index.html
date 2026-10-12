@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 164;
+window.GAME_VERSION = 165;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -7599,21 +7599,22 @@ let volumeC2 = null;    // {i, j} far corner of the plane
 let volumeTop = 0;      // level of the opposite face of the box
 let volumeLive = null;  // what the aim currently points at, in the current step's terms
 let volumeGhostKey = '';
+let volumeGhostCells = 0;   // cells the ghost box covers, for the debug API
 
-const volumeGhost = new THREE.InstancedMesh(
-  new THREE.BoxGeometry(BLOCK * 0.92, BLOCK * 0.92, BLOCK * 0.92),
-  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false }),
-  VOLUME_MAX_BLOCKS
+// One translucent box scaled to the whole selection (not a cube per cell — that
+// was up to VOLUME_MAX_BLOCKS layers of transparent overdraw). DoubleSide so it
+// still reads with the eye inside a big box.
+const volumeGhost = new THREE.Mesh(
+  new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide })
 );
 const volumeOutline = new THREE.LineSegments(
   new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
   new THREE.LineBasicMaterial({ color: 0xffc04a, transparent: true, opacity: 0.95, depthWrite: false })
 );
-volumeGhost.count = 0;
 volumeGhost.visible = volumeOutline.visible = false;
 volumeGhost.frustumCulled = volumeOutline.frustumCulled = false;
 scene.add(volumeGhost, volumeOutline);
-const _volM = new THREE.Matrix4();
 
 const volMatName = () => MAT_STATS[placerMat]?.name || titleCase(MAT_NAMES[placerMat]);
 const clampSpan = (from, to) => from + THREE.MathUtils.clamp(to - from, -(VOLUME_MAX_SPAN - 1), VOLUME_MAX_SPAN - 1);
@@ -7774,26 +7775,24 @@ function updateVolumeGhosts() {
 
   volumeGhost.material.color.copy(TERRAIN_MATS[placerMat].color);
   volumeOutline.quaternion.identity();
-  let n = 0;
-  outer:
-  for (let lvl = box.l1; lvl <= box.l2; lvl++) {
-    for (let j = box.j1; j <= box.j2; j++) {
-      for (let i = box.i1; i <= box.i2; i++) {
-        if (n >= VOLUME_MAX_BLOCKS) break outer;
-        _volM.makeTranslation(colX(i), (lvl + 0.5) * BLOCK, colZ(j));
-        volumeGhost.setMatrixAt(n++, _volM);
-      }
-    }
-  }
-  volumeGhost.count = n;
-  volumeGhost.instanceMatrix.needsUpdate = true;
 
-  // Outline around the whole box, so its extent reads even through the ghosts.
+  // Outline around the whole box, so its extent reads even through the ghost.
   const sx = (box.i2 - box.i1 + 1) * BLOCK, sy = (box.l2 - box.l1 + 1) * BLOCK, sz = (box.j2 - box.j1 + 1) * BLOCK;
   volumeOutline.scale.set(sx * 1.01, sy * 1.01, sz * 1.01);
   volumeOutline.position.set((colX(box.i1) + colX(box.i2)) / 2,
                              ((box.l1 + box.l2 + 1) / 2) * BLOCK,
                              (colZ(box.j1) + colZ(box.j2)) / 2);
+  volumeGhostBox(sx, sy, sz);
+}
+
+// The translucent fill: inset like the old per-cell cubes (0.04 of a block per
+// side), sharing the outline's centre and tilt.
+function volumeGhostBox(sx, sy, sz) {
+  const inset = BLOCK * 0.08;
+  volumeGhost.scale.set(sx - inset, sy - inset, sz - inset);
+  volumeGhost.position.copy(volumeOutline.position);
+  volumeGhost.quaternion.copy(volumeOutline.quaternion);
+  volumeGhostCells = Math.min(VOLUME_MAX_BLOCKS, Math.round((sx / BLOCK) * (sy / BLOCK) * (sz / BLOCK)));
 }
 
 // The ghost for a box anchored on a piece: the box is already in the piece's
@@ -7802,25 +7801,13 @@ function volumeGhostDebris(box, mesh) {
   mesh.updateWorldMatrix(true, false);
   const { x: kx, y: ky, z: kz } = volumeLattice(mesh);
   volumeGhost.material.color.copy(TERRAIN_MATS[placerMat].color);
-  let n = 0;
-  outer:
-  for (let gl = box.l1; gl <= box.l2; gl++) {
-    for (let gj = box.j1; gj <= box.j2; gj++) {
-      for (let gi = box.i1; gi <= box.i2; gi++) {
-        if (n >= VOLUME_MAX_BLOCKS) break outer;
-        _volM.makeTranslation(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK).premultiply(mesh.matrixWorld);
-        volumeGhost.setMatrixAt(n++, _volM);
-      }
-    }
-  }
-  volumeGhost.count = n;
-  volumeGhost.instanceMatrix.needsUpdate = true;
 
   // Outline around the box, in the piece's frame.
   volumeOutline.scale.set((box.i2 - box.i1 + 1) * BLOCK * 1.01, (box.l2 - box.l1 + 1) * BLOCK * 1.01, (box.j2 - box.j1 + 1) * BLOCK * 1.01);
   volumeOutline.position.set(kx + (box.i1 + box.i2) / 2 * BLOCK, ky + ((box.l1 + box.l2 + 1) / 2) * BLOCK, kz + (box.j1 + box.j2) / 2 * BLOCK)
     .applyMatrix4(mesh.matrixWorld);
   mesh.getWorldQuaternion(volumeOutline.quaternion);
+  volumeGhostBox((box.i2 - box.i1 + 1) * BLOCK, (box.l2 - box.l1 + 1) * BLOCK, (box.j2 - box.j1 + 1) * BLOCK);
 }
 
 function resetVolume() {
@@ -9183,7 +9170,7 @@ window.hermes = {
   // The Volume tool — step 0..3 and the corners committed so far.
   setVolume, volumePlace,
   volume: () => ({ on: volumeOn, step: volumeStep, c1: volumeC1, c2: volumeC2, top: volumeTop,
-                   live: volumeLive, ghosts: volumeGhost.visible ? volumeGhost.count : 0 }),
+                   live: volumeLive, ghosts: volumeGhost.visible ? volumeGhostCells : 0 }),
   // The voxel store — the material of every block in the volume, not just the
   // surface, which is what a digging system would work against. voxelAtWorld
   // takes metres; the rest take column indices and levels. The MAT_STATS ids and

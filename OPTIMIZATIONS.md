@@ -46,7 +46,7 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 33. [x] DONE (v166) — one LineSegments + shared material; rebuild gated on colliderBody ref changes; identical visuals. LOW (debug only).
 
 ## Physics
-34. [ ] Physics runs 120Hz, 8 substeps, 10 iterations — 30fps phone = 4 full steps/frame. Use 60Hz/adaptive, 5-7 iterations, maxSubSteps 3-4. HIGH (CPU).
+34. [x] DONE (v167) — adaptive: 120Hz, drops to 60Hz when frame time averages >1/45s; substeps 8→4. HIGH (CPU).
 35. [ ] Collider radius 5 chunks = 121 compound bodies — player only needs 1-2 chunk radius, debris loads own colliders. MEDIUM-HIGH.
 36. [ ] Player-vs-compound-chunk collision slow — every box vs 3 spheres every substep. Custom AABB voxel sweep. MEDIUM.
 37. [ ] buildChunkColliderBoxes redundant — floor scan walks to bedrock, then 200-level fill(). Untouched columns = solid from bedrock to surface without scan. MEDIUM.

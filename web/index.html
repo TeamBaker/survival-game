@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 167;
+window.GAME_VERSION = 168;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3997,7 +3997,7 @@ function updateBatches() {
 // (their source, by toString) over a snapshot of the columns a job can read: the
 // chunk's own and, for a mesh, MESH_MARGIN either side of it, which is as far as
 // a LOD cube looks. So what comes back is exactly what the main thread would
-// have built. Digs still rebuild here and now, mesh and collider together. If
+// have built. Digs still rebuild on the main thread, within the frame. If
 // the worker cannot be made or fails, everything goes back to the main thread.
 const MESH_MARGIN = MERGE_SIZE[MERGE_SIZE.length - 1];
 const MESH_INFLIGHT_MAX = 4;
@@ -4341,7 +4341,7 @@ function buildPendingColliders() {
     if (colJob[c] !== r.id) continue;
     colJob[c] = 0;
     if (colliderBody[c]) continue;
-    if (r.rev !== chunkRev[c] || dirtyChunks.has(c)) { loadChunkCollider(c); continue; }
+    if (r.rev !== chunkRev[c] || dirtyChunks.has(c) || dirtyColliders.has(c)) { loadChunkCollider(c); continue; }
     const body = new CANNON.Body({ mass: 0, material: physWorld });
     for (const b of r.boxes) {
       body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
@@ -4411,7 +4411,7 @@ function rebuildChunkCollider(c) {
   // Remove from pending queue if queued.
   const pi = _pendingColliders.indexOf(c);
   if (pi >= 0) _pendingColliders.splice(pi, 1);
-  // Build immediately — terrain changes need instant collision.
+  // Build here and now: the flush calls this before the physics step sees the chunk.
   const body = new CANNON.Body({ mass: 0, material: physWorld });
   for (const b of buildChunkColliderBoxes(c)) {
     body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
@@ -4438,6 +4438,26 @@ function rebuildChunkCollider(c) {
       }
     }
   }
+}
+
+// Edits only mark a chunk here; its collider is rebuilt once, by
+// flushDirtyColliders, however many blocks in it changed. A collider reads only
+// its own chunk's columns, so the neighbours an edit dirties for the mesh are
+// left alone. The flush runs at the top of tick (catching edits made from input
+// handlers between frames), just before the physics step, at the end of tick,
+// and ahead of anything that queries the physics world synchronously — so the
+// step never sees a stale box and the frame never ends with one.
+const dirtyColliders = new Set();
+function markColliderDirty(c) { dirtyColliders.add(c); }
+function flushDirtyColliders() {
+  if (!dirtyColliders.size) return;
+  for (const c of dirtyColliders) {
+    if (colliderBody[c]) rebuildChunkCollider(c);
+    // No body yet, but the worker is building one from the store as it was:
+    // drop that job and queue a fresh one.
+    else if (colJob[c]) { colJob[c] = 0; loadChunkCollider(c); }
+  }
+  dirtyColliders.clear();
 }
 
 // Where the ground is, for anything that needs to ask — the top of the block you
@@ -4919,6 +4939,7 @@ const centerOffset = () => (crouched ? PLAYER.crouchCenter : PLAYER.standCenter)
 
 // Is there room to stand back up, or are we under the crouch tunnel?
 function hasHeadroom() {
+  flushDirtyColliders();
   const p = playerBody.position;
   const from = new CANNON.Vec3(p.x, p.y, p.z);
   const to   = new CANNON.Vec3(p.x, p.y + 1.35, p.z);
@@ -4928,6 +4949,7 @@ function hasHeadroom() {
 }
 
 function respawn() {
+  flushDirtyColliders();
   // Try the predefined SPAWN position first.
   let spawnY = SPAWN.y;
   // Raycast downward from well above to find the actual ground, in case the
@@ -6550,7 +6572,7 @@ function breakOffAdrift(i, j, lvl) {
   }
   for (const k of cols) {
     const ci = k % GEN_N, cj = (k - ci) / GEN_N;
-    rebuildChunkCollider(chunkOf(ci, cj));
+    markColliderDirty(chunkOf(ci, cj));
     for (let dj = -1; dj <= 1; dj++) {
       for (let di = -1; di <= 1; di++) {
         const ii = ci + di, jj = cj + dj;
@@ -6581,7 +6603,7 @@ function editBlock(i, j, lvl, m) {
   colDug[k] = 1;
   if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
   powderDirty.add(k);   // anything loose in this column falls this frame, not on the next sweep
-  rebuildChunkCollider(chunkOf(i, j));
+  markColliderDirty(chunkOf(i, j));
   // Refresh visibility of the edited block and all six neighbours.
   refreshVisible(i, j, lvl);
   refreshVisible(i - 1, j, lvl);
@@ -6668,7 +6690,7 @@ function hammerStrike() {
   colDug[k] = 1;
   if (lvl < colDugLo[k]) colDugLo[k] = lvl;
   powderDirty.add(k);
-  rebuildChunkCollider(chunkOf(i, j));
+  markColliderDirty(chunkOf(i, j));
   refreshVisible(i, j, lvl);
   refreshVisible(i - 1, j, lvl);
   refreshVisible(i + 1, j, lvl);
@@ -6694,7 +6716,7 @@ function hammerStrike() {
 
 function flushDirtyChunks() {
   if (!dirtyChunks.size) return;
-  for (const c of dirtyChunks) { rebuildChunk(c); rebuildChunkCollider(c); }
+  for (const c of dirtyChunks) rebuildChunk(c);
   dirtyChunks.clear();
   blocksHudEl.textContent = worldBlocks.toLocaleString();
 }
@@ -7465,7 +7487,7 @@ function toggleSandbox() {
         voxMat[off] = ROCK;
         sTop[k] = platLvl;
         refreshVisible(ii, jj, platLvl);
-        rebuildChunkCollider(chunkOf(ii, jj));
+        markColliderDirty(chunkOf(ii, jj));
       }
     }
     for (let dj = -4; dj <= 4; dj++) {
@@ -7883,8 +7905,7 @@ function volumeCancel() {
 }
 
 // Fill every empty cell in the box. The same bookkeeping as editBlock(), but done
-// once for the whole box — per block, editBlock would rebuild a chunk collider for
-// every single cell.
+// once for the whole box rather than per cell.
 function volumeFill(box, m) {
   const f = volumeC1 && volumeC1.mesh && volumeC1.mesh.parent && chunkOfMesh(volumeC1.mesh);
   if (f) return volumeFillDebris(f, box, m);
@@ -7922,7 +7943,7 @@ function volumeFill(box, m) {
       dirtyChunks.add(chunkOf(i, j));
     }
   }
-  for (const c of chunks) rebuildChunkCollider(c);
+  for (const c of chunks) markColliderDirty(c);
   return placed;
 }
 
@@ -8229,6 +8250,7 @@ function tick() {
     const now = performance.now();
     if (now < pausedFrameAt) return;
     pausedFrameAt = now + PAUSED_FRAME_MS;
+    flushDirtyColliders();
     flushDirtyChunks();
     updateLOD();
     sky.position.copy(camera.position);
@@ -8236,6 +8258,7 @@ function tick() {
     return;
   }
   pausedFrameAt = 0;
+  flushDirtyColliders();
   buildPendingColliders();
   const dt = Math.min(clock.getDelta(), 0.1);
   elapsed += dt;
@@ -8262,6 +8285,7 @@ function tick() {
   physFrameAvg += (dt - physFrameAvg) * 0.05;
   const physWant = physFrameAvg > (physStep === PHYS_STEP ? 1 / 45 : 1 / 55) ? PHYS_STEP_SLOW : PHYS_STEP;
   if (physWant !== physStep) { physStep = physWant; world.accumulator = physStep * 0.5; }
+  flushDirtyColliders();
   ensurePhysicsObjectColliders(dt);
   world.step(physStep, dt, physStep === PHYS_STEP ? 8 : 4);
   for (let i = 0; i < syncList.length; i++) {
@@ -8310,6 +8334,7 @@ function tick() {
   if (hammer.on) updateHammer();
   if (placerOn) updatePlacer();
   if (volumeOn) updateVolume();
+  flushDirtyColliders();
   flushDirtyChunks();
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
@@ -9012,6 +9037,7 @@ function applyWorldState(s) {
   for (let c = 0; c < colliderBody.length; c++) {
     if (colliderBody[c]) rebuildChunkCollider(c);
   }
+  dirtyColliders.clear();
 
   // Update UI
   refreshShovelUI();

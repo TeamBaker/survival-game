@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 160;
+window.GAME_VERSION = 161;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1925,8 +1925,8 @@ pmrem.dispose();
 // ---------------------------------------------------------------------------
 // Lighting
 // ---------------------------------------------------------------------------
-// The island is centred on the origin, so the shadow frustum is too — it is
-// sized to swallow the land and a margin of the water around it. Tight, because
+// The shadow frustum starts centred on the origin and follows the player (see
+// updateShadowFrustum) rather than covering the whole island. Tight, because
 // the terrain is made of half-metre blocks and every metre of slack in here is
 // shadow resolution the blocks do not get.
 const SHADOW_CENTER = new THREE.Vector3(0, 2, 0);
@@ -1958,6 +1958,32 @@ sun.shadow.radius = 2;
 sun.target.position.copy(SHADOW_CENTER);
 scene.add(sun);
 scene.add(sun.target);
+
+// The box is far smaller than the island, so it follows the player. It slides
+// only across the light's view plane (depth along the light stays put, so
+// near/far still fit), and only in whole steps that are an exact number of
+// shadow texels: the texel grid then lands on the same world positions after a
+// move and edges do not crawl, and the map is redrawn once per step instead of
+// every frame the player walks.
+const SHADOW_TEXEL = (2 * SHADOW_HALF) / sun.shadow.mapSize.x;
+const SHADOW_STEP  = SHADOW_TEXEL * Math.round(4 / SHADOW_TEXEL);
+const shadowRight = new THREE.Vector3(), shadowUp = new THREE.Vector3();
+new THREE.Matrix4().lookAt(sun.position, SHADOW_CENTER, sun.shadow.camera.up)
+  .extractBasis(shadowRight, shadowUp, new THREE.Vector3());
+const shadowFocus = new THREE.Vector3();
+let shadowStepR = 0, shadowStepU = 0;
+function updateShadowFrustum(x, y, z) {
+  shadowFocus.set(x, y, z).sub(SHADOW_CENTER);
+  const r = Math.round(shadowFocus.dot(shadowRight) / SHADOW_STEP);
+  const u = Math.round(shadowFocus.dot(shadowUp) / SHADOW_STEP);
+  if (r === shadowStepR && u === shadowStepU) return;
+  shadowStepR = r; shadowStepU = u;
+  sun.target.position.copy(SHADOW_CENTER)
+    .addScaledVector(shadowRight, r * SHADOW_STEP)
+    .addScaledVector(shadowUp, u * SHADOW_STEP);
+  sun.position.copy(SUN).multiplyScalar(SUN_DIST).add(sun.target.position);
+  renderer.shadowMap.needsUpdate = true;
+}
 
 // Named so the three stay together and a change to the key light is obvious
 // against the fill it is meant to sit above.
@@ -8331,6 +8357,8 @@ function tick() {
   }
 
   updateLOD();
+  if (camMode === CAM.FREE) updateShadowFrustum(state.pos.x, state.pos.y, state.pos.z);
+  else updateShadowFrustum(playerBody.position.x, playerBody.position.y, playerBody.position.z);
   if (shadowCastersChanged()) renderer.shadowMap.needsUpdate = true;
   renderer.render(scene, camera);
 }

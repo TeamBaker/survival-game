@@ -49,7 +49,7 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 34. [x] DONE (v167) — adaptive: 120Hz, drops to 60Hz when frame time averages >1/45s; substeps 8→4. HIGH (CPU).
 35. [ ] Collider radius 5 chunks = 121 compound bodies — player only needs 1-2 chunk radius, debris loads own colliders. MEDIUM-HIGH.
 36. [ ] Player-vs-compound-chunk collision slow — every box vs 3 spheres every substep. Custom AABB voxel sweep. MEDIUM.
-37. [ ] buildChunkColliderBoxes redundant — floor scan walks to bedrock, then 200-level fill(). Untouched columns = solid from bedrock to surface without scan. MEDIUM.
+37. [x] DONE (v169) — level loop skips levels with no possible box; box extension jumps straight to bedrock below airLo. Byte-identical over 300 worlds, ~2x faster. MEDIUM.
 38. [x] DONE (v168) — dirty-collider set flushed at 3 points in tick + before sync physics queries; removed redundant rebuild in flushDirtyChunks. HIGH.
 39. [ ] Sand cascades unbatched — every grain triggers editBlock → collider rebuild + 6 flood fills. Batch voxel writes, rebuild once. HIGH.
 40. [ ] adriftGroup flood fill very expensive — 100+ block flood fill × 6 per edit, string keys, allocates Color per visited block even when thrown away. Stop at untouched column (colDug==0), integer keys, compute colors once confirmed loose. HIGH.

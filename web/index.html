@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 169;
+window.GAME_VERSION = 170;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1597,6 +1597,7 @@ const SPAWN_YAW  = 0;             // degrees
 const PHYS_STEP  = 1 / 120;       // fixed physics timestep
 const PHYS_STEP_SLOW = 1 / 60;    // ... while frames run slower than ~45 fps
 let physStep = PHYS_STEP, physFrameAvg = 1 / 60;
+const physMaxSubsteps = () => (physStep === PHYS_STEP ? 8 : 4);   // 66 ms of catch-up either way
 const PLAYER = {
   radius:       0.4,
   standCenter:  0.8,              // body origin above the feet, standing
@@ -4333,9 +4334,21 @@ function buildChunkColliderBoxes(c) {
   return boxes;
 }
 
-// One collision body per chunk, live only while within COLLIDER_RADIUS.
+// One collision body per chunk. The player's own chunk and the ring around it
+// are streamed in ahead of it (COLLIDER_RADIUS, through the worker); whatever
+// the player or a piece of debris can reach this frame is guaranteed separately,
+// built synchronously by ensurePhysicsObjectColliders before the step. So the
+// radius is only prefetch — it keeps that synchronous build from firing in the
+// normal course of walking — and 1 is enough: crossing into a chunk leaves at
+// least a full chunk (3.2 m, minus the 0.4 m body radius) before the next
+// unloaded one, which is 0.3 s at a sprint, many frames for 3-5 queued builds.
+// A collider goes once the player is more than COLLIDER_UNLOAD_SLACK metres
+// past the load square, so stepping back and forth over a chunk edge does not
+// rebuild the ring behind you each time.
 const colliderBody = new Array(CHUNK_N * CHUNK_N).fill(null);
-const COLLIDER_RADIUS = 5;
+const COLLIDER_RADIUS = 1;
+const COLLIDER_UNLOAD_SLACK = 1.0;
+let colTestChunk = -1;                // the collision tester's chunk, kept while it is on
 const _pendingColliders = [];
 
 function loadChunkCollider(c) {
@@ -4399,28 +4412,43 @@ function buildPendingColliders() {
 // alone. Checking only the body's centre, or only skipping the unload, is not
 // enough: a body straddling a chunk edge rests on the neighbour's collider, and
 // one that rolls into a chunk the player never visited has no collider at all.
+//
+// The player is not in syncList but gets the same guarantee, which is what lets
+// COLLIDER_RADIUS be small. The distance is the worst case, not this frame's dt:
+// cannon carries up to one step of leftover time into the next frame, so a frame
+// simulates up to dt + one step, never more than the substep cap (8 x 1/120 or
+// 4 x 1/60 — 1/15 s either way). The player's speed is taken as at least a
+// sprint, since it can be set to that just before the step, and the travel is
+// doubled for what contacts and slopes can add within the frame — 1.2 m at a
+// sprint, against a 3.2 m chunk.
 const _physKeep = new Uint8Array(CHUNK_N * CHUNK_N);
+function keepChunkColliders(lo, hi, pad) {
+  const ci0 = Math.max(0, Math.floor(colI(lo.x - pad) / CHUNK));
+  const ci1 = Math.min(CHUNK_N - 1, Math.floor(colI(hi.x + pad) / CHUNK));
+  const cj0 = Math.max(0, Math.floor(colJ(lo.z - pad) / CHUNK));
+  const cj1 = Math.min(CHUNK_N - 1, Math.floor(colJ(hi.z + pad) / CHUNK));
+  for (let cj = cj0; cj <= cj1; cj++) {
+    for (let ci = ci0; ci <= ci1; ci++) {
+      const c = cj * CHUNK_N + ci;
+      if (_physKeep[c]) continue;
+      _physKeep[c] = 1;
+      if (!colliderBody[c]) buildChunkColliderSync(c);
+    }
+  }
+}
 function ensurePhysicsObjectColliders(dt) {
   _physKeep.fill(0);
+  const simT = Math.min(dt + physStep, physStep * physMaxSubsteps());
   for (let n = 0; n < syncList.length; n++) {
     const b = syncList[n].body;
     const v = b.velocity;
     if (b.aabbNeedsUpdate) b.updateAABB();
-    const lo = b.aabb.lowerBound, hi = b.aabb.upperBound;
-    const pad = BLOCK + Math.hypot(v.x, v.z) * dt;
-    const ci0 = Math.max(0, Math.floor(colI(lo.x - pad) / CHUNK));
-    const ci1 = Math.min(CHUNK_N - 1, Math.floor(colI(hi.x + pad) / CHUNK));
-    const cj0 = Math.max(0, Math.floor(colJ(lo.z - pad) / CHUNK));
-    const cj1 = Math.min(CHUNK_N - 1, Math.floor(colJ(hi.z + pad) / CHUNK));
-    for (let cj = cj0; cj <= cj1; cj++) {
-      for (let ci = ci0; ci <= ci1; ci++) {
-        const c = cj * CHUNK_N + ci;
-        if (_physKeep[c]) continue;
-        _physKeep[c] = 1;
-        if (!colliderBody[c]) buildChunkColliderSync(c);
-      }
-    }
+    keepChunkColliders(b.aabb.lowerBound, b.aabb.upperBound, BLOCK + Math.hypot(v.x, v.z) * simT);
   }
+  const pv = playerBody.velocity;
+  const pSpeed = Math.max(Math.hypot(pv.x, pv.z), PLAYER.walk * PLAYER.sprintMult);
+  playerBody.updateAABB();
+  keepChunkColliders(playerBody.aabb.lowerBound, playerBody.aabb.upperBound, BLOCK + 2 * pSpeed * simT);
 }
 
 function unloadChunkCollider(c) {
@@ -4976,6 +5004,12 @@ function hasHeadroom() {
 
 function respawn() {
   flushDirtyColliders();
+  // The spawn point can be well outside the streamed ring by now; the ray needs
+  // its chunk's collider to land on.
+  {
+    const sci = Math.floor(colI(SPAWN.x) / CHUNK), scj = Math.floor(colJ(SPAWN.z) / CHUNK);
+    if (sci >= 0 && scj >= 0 && sci < CHUNK_N && scj < CHUNK_N) buildChunkColliderSync(scj * CHUNK_N + sci);
+  }
   // Try the predefined SPAWN position first.
   let spawnY = SPAWN.y;
   // Raycast downward from well above to find the actual ground, in case the
@@ -7433,6 +7467,7 @@ function updateColTest() {
   const cj = (colJ(colTestSphere.position.z) / CHUNK) | 0;
   if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
     const idx = cj * CHUNK_N + ci;
+    colTestChunk = idx;
     if (!colliderBody[idx]) {
       const body = new CANNON.Body({ mass: 0, material: physWorld });
       for (const b of buildChunkColliderBoxes(idx)) {
@@ -8313,7 +8348,7 @@ function tick() {
   if (physWant !== physStep) { physStep = physWant; world.accumulator = physStep * 0.5; }
   flushDirtyColliders();
   ensurePhysicsObjectColliders(dt);
-  world.step(physStep, dt, physStep === PHYS_STEP ? 8 : 4);
+  world.step(physStep, dt, physMaxSubsteps());
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);
@@ -8323,26 +8358,41 @@ function tick() {
   updatePowderBlocks(dt);
   checkTerrainPowder();
 
-  // Bring in nearby chunk colliders and let distant ones go, a few dozen at a
-  // time so the sweep costs nothing next to the physics step itself.
-  if (true) {
-    const pci = (colI(playerBody.position.x) / CHUNK) | 0, pcj = (colJ(playerBody.position.z) / CHUNK) | 0;
-    // Load chunks around the player
+  // Queue the chunks around the player for the worker and let distant ones go.
+  // The load area is a square of chunks, so the unload test is square too — a
+  // circle would cut the corners off and those chunks would be loaded and
+  // dropped again every frame. A chunk goes when the player is more than a chunk
+  // plus COLLIDER_UNLOAD_SLACK from its edge, measured per axis: a chunk inside
+  // the load square is never more than one chunk away, so nothing the load wants
+  // is ever dropped, and one only just outside it waits for the player to be
+  // properly on its way. Chunks a body or the player needs this frame are in
+  // _physKeep and stay regardless.
+  {
+    const px = playerBody.position.x, pz = playerBody.position.z;
+    const pci = Math.floor(colI(px) / CHUNK), pcj = Math.floor(colJ(pz) / CHUNK);
     for (let cj = pcj - COLLIDER_RADIUS; cj <= pcj + COLLIDER_RADIUS; cj++) {
       for (let ci = pci - COLLIDER_RADIUS; ci <= pci + COLLIDER_RADIUS; ci++) {
         if (ci < 0 || cj < 0 || ci >= CHUNK_N || cj >= CHUNK_N) continue;
         loadChunkCollider(cj * CHUNK_N + ci);
       }
     }
-    // Unload distant chunk colliders (but keep chunks that have debris)
-    for (let c = 0; c < colliderBody.length; c++) {
-      if (!colliderBody[c] || _physKeep[c]) continue;
+    const CM = CHUNK * BLOCK;
+    const keepD = COLLIDER_RADIUS * CM + COLLIDER_UNLOAD_SLACK;
+    const farFrom = (c) => {
       const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
-      const cx = (ci + 0.5) * CHUNK * BLOCK - GEN_R, cz = (cj + 0.5) * CHUNK * BLOCK - GEN_R;
-      const dx = cx - playerBody.position.x, dz = cz - playerBody.position.z;
-      if (dx * dx + dz * dz > (COLLIDER_RADIUS * CHUNK * BLOCK) * (COLLIDER_RADIUS * CHUNK * BLOCK) * 1.2) {
-        unloadChunkCollider(c);
-      }
+      const x0 = ci * CM - GEN_R, z0 = cj * CM - GEN_R;
+      const dx = Math.max(x0 - px, 0, px - (x0 + CM));
+      const dz = Math.max(z0 - pz, 0, pz - (z0 + CM));
+      return Math.max(dx, dz) > keepD;
+    };
+    for (let c = 0; c < colliderBody.length; c++) {
+      if (!colliderBody[c] || _physKeep[c] || (colTestOn && c === colTestChunk)) continue;
+      if (farFrom(c)) unloadChunkCollider(c);
+    }
+    // A queued build the player has since walked away from (or teleported away
+    // from) would only be dropped by the pass above once it arrived.
+    for (let k = _pendingColliders.length - 1; k >= 0; k--) {
+      if (farFrom(_pendingColliders[k])) _pendingColliders.splice(k, 1);
     }
   }
 

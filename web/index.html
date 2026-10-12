@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 166;
+window.GAME_VERSION = 167;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1595,6 +1595,8 @@ const START_PITCH       = -14;    // degrees
 const SPAWN      = new THREE.Vector3(0, 12, 0);
 const SPAWN_YAW  = 0;             // degrees
 const PHYS_STEP  = 1 / 120;       // fixed physics timestep
+const PHYS_STEP_SLOW = 1 / 60;    // ... while frames run slower than ~45 fps
+let physStep = PHYS_STEP, physFrameAvg = 1 / 60;
 const PLAYER = {
   radius:       0.4,
   standCenter:  0.8,              // body origin above the feet, standing
@@ -8248,12 +8250,20 @@ function tick() {
     updatePlayer(dt);
   }
 
-  // --- physics: fixed 120 Hz steps, sub-stepped to catch up with the frame ---
+  // --- physics: fixed 120 Hz steps (60 Hz when slow), sub-stepped to catch up ---
   // Twice the old rate: a shorter step resolves the block-edge contacts before
   // they build into a shove, which is the one thing here that helps the walk.
   // Nothing touches the body afterwards — the solver's answer is the answer.
+  // A device that cannot hold ~45 fps steps at 60 Hz instead: half the steps
+  // per frame, and cannon's per-frame budget (one step's worth of real time)
+  // doubles, so a slow phone stops shedding sim time. Same 66 ms catch-up cap
+  // either way. On a switch the remainder is parked mid-step, so frame-time
+  // jitter does not flip the step count between frames.
+  physFrameAvg += (dt - physFrameAvg) * 0.05;
+  const physWant = physFrameAvg > (physStep === PHYS_STEP ? 1 / 45 : 1 / 55) ? PHYS_STEP_SLOW : PHYS_STEP;
+  if (physWant !== physStep) { physStep = physWant; world.accumulator = physStep * 0.5; }
   ensurePhysicsObjectColliders(dt);
-  world.step(PHYS_STEP, dt, 8);
+  world.step(physStep, dt, physStep === PHYS_STEP ? 8 : 4);
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
     s.mesh.position.copy(s.body.position);

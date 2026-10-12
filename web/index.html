@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 162;
+window.GAME_VERSION = 163;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1802,6 +1802,9 @@ const skyMat = new THREE.ShaderMaterial({
     void main() {
       vDir = position;
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      // Pinned to the far plane: drawn after the opaque world, the depth test then
+      // leaves it only the pixels nothing else has covered.
+      gl_Position.z = gl_Position.w;
     }
   `,
   fragmentShader: /* glsl */`
@@ -1825,7 +1828,7 @@ const skyMat = new THREE.ShaderMaterial({
 });
 const sky = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 32), skyMat);
 sky.scale.setScalar(600);
-sky.renderOrder = -1000;
+sky.renderOrder = 1000;   // last of the opaque pass, before anything transparent
 sky.frustumCulled = false;
 scene.add(sky);
 

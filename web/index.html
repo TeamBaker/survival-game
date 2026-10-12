@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 153;
+window.GAME_VERSION = 154;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3526,6 +3526,9 @@ for (let gj = 0; gj < GRID_N; gj++) {
 // every cell to one step regardless of camera distance.
 const gridStep = new Int8Array(GRID_N * GRID_N).fill(1);
 let lodOverride = null;
+// The step each chunk's mesh was last built at — set by rebuildChunk, so any
+// rebuild (a dig, a load) counts, and updateLOD only queues the ones that lag.
+const chunkStep = new Int8Array(CHUNK_N * CHUNK_N);
 
 // A chunk mesh's vertex buffer has room for this many more corners than it was
 // first built with, rounded up to a whole VB_ROUND, so digging a few blocks out
@@ -3557,6 +3560,7 @@ function rebuildChunk(c) {
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   let blocks = 0;
   const step = gridStep[chunkGridIdx[c]];
+  chunkStep[c] = step;
   const stride = mergeSizeFor(step);
   rbI0 = i0; rbJ0 = j0; rbStep = step;
   for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
@@ -3683,23 +3687,57 @@ camera.rotation.set(0, 0, 0);
 genProgress('chunks', 1);
 loadLabel.textContent = 'Starting…';
 
-// Re-derives every grid chunk's step from the camera each frame, then rebuilds
-// whichever mesh chunks fall in a grid cell that came out different from last
-// frame — that is the only time detail level changes, and only the affected
-// chunks pay the rebuild cost.
+// Re-derives every grid chunk's step from the camera — only when the camera has
+// moved across the ground or the debug override changed, since the step is a
+// function of nothing else. Chunks whose mesh lags their cell's step go on a
+// queue, nearest first, and each frame rebuilds from it only as many as fit in
+// LOD_BUDGET_MS (always at least one), so crossing a band edge spreads its
+// dozens of rebuilds over a few frames instead of stalling one. Once the queue
+// drains every chunk is at exactly the step it would have had all at once.
+const LOD_BUDGET_MS = 3;
+const lodQueue = new Int32Array(CHUNK_N * CHUNK_N);
+const lodDist = new Float32Array(CHUNK_N * CHUNK_N);
+const lodByDist = (a, b) => lodDist[a] - lodDist[b];
+let lodHead = 0, lodTail = 0;
+let lodCamX = NaN, lodCamZ = NaN, lodLastOverride = null;
 function updateLOD() {
   const cam = camera.position;
-  const prevStep = gridStep.slice();
-  for (let g = 0; g < GRID_N * GRID_N; g++) {
-    if (lodOverride !== null) { gridStep[g] = lodOverride; continue; }
-    const dx = cam.x - gridCenterX[g], dz = cam.z - gridCenterZ[g];
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    gridStep[g] = lodStepFor(dist);
+  if (cam.x !== lodCamX || cam.z !== lodCamZ || lodOverride !== lodLastOverride) {
+    lodCamX = cam.x; lodCamZ = cam.z; lodLastOverride = lodOverride;
+    let changed = false;
+    for (let g = 0; g < GRID_N * GRID_N; g++) {
+      let s;
+      if (lodOverride !== null) s = lodOverride;
+      else {
+        const dx = cam.x - gridCenterX[g], dz = cam.z - gridCenterZ[g];
+        s = lodStepFor(Math.sqrt(dx * dx + dz * dz));
+      }
+      if (gridStep[g] !== s) { gridStep[g] = s; changed = true; }
+    }
+    // A step changed somewhere: queue afresh every chunk now out of date, so a
+    // cell that flipped back before its chunks got their turn drops out again.
+    if (changed) {
+      lodHead = lodTail = 0;
+      for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+        const g = chunkGridIdx[c];
+        if (!chunkMesh[c] || chunkStep[c] === gridStep[g]) continue;
+        const dx = cam.x - gridCenterX[g], dz = cam.z - gridCenterZ[g];
+        lodDist[c] = dx * dx + dz * dz;
+        lodQueue[lodTail++] = c;
+      }
+      if (lodTail > 1) lodQueue.subarray(0, lodTail).sort(lodByDist);
+    }
   }
-  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
-    const g = chunkGridIdx[c];
-    if (chunkMesh[c] && gridStep[g] !== prevStep[g]) rebuildChunk(c);
+  if (lodHead === lodTail) return;
+  const t0 = performance.now();
+  while (lodHead < lodTail) {
+    const c = lodQueue[lodHead++];
+    // Something else (a dig, say) may have rebuilt it at the new step already.
+    if (chunkStep[c] === gridStep[chunkGridIdx[c]]) continue;
+    rebuildChunk(c);
+    if (performance.now() - t0 >= LOD_BUDGET_MS) break;
   }
+  if (lodHead === lodTail) lodHead = lodTail = 0;
 }
 
 // ----- pass 4b: the collider -----

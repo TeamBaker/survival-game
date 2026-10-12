@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 158;
+window.GAME_VERSION = 159;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2950,9 +2950,45 @@ function terrainVertex(sh) {
 // material, which would take the packed words for a position.
 const TERRAIN_CHUNK_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
 TERRAIN_CHUNK_DEPTH.onBeforeCompile = terrainVertex;
-const TERRAIN_CHUNK_MAT = TERRAIN_FACE_MATS[0].clone();
-TERRAIN_CHUNK_MAT.vertexColors = false;
+// Terrain is lit as Lambert, which is the cheap part of what MeshStandardMaterial
+// did (sun, hemisphere and ambient into the diffuse colour, sun shadowed), with
+// the rest of the standard shader's output added back on top by hand: the sun's
+// GGX lobe and the environment's split-sum terms, ported from three's physical
+// chunks term for term. The environment lookups were what cost: a face's normal
+// is the same at every corner, so its irradiance from scene.environment is
+// sampled per vertex, which comes out the same as it did per pixel; so are the
+// rough materials' blurred reflection and their DFG and GGX factors, which barely
+// move across a face. Water is glossy enough that its sky reflection and sun
+// glint have to be worked out per pixel, and still are.
+const terrainSpecGlsl = (env) => `
+#define ENVMAP_TYPE_CUBE_UV
+#define CUBEUV_TEXEL_WIDTH ${glf(1 / (3 * Math.max(2 ** (Math.log2(env.image.height) - 2), 112)))}
+#define CUBEUV_TEXEL_HEIGHT ${glf(1 / env.image.height)}
+#define CUBEUV_MAX_MIP ${glf(Math.log2(env.image.height) - 2)}
+#include <cube_uv_reflection_fragment>
+uniform highp sampler2D terrainEnv;
+uniform vec3 terrainSunDir;
+// In world space, for normal n, view direction v and roughness r: the sun's GGX
+// lobe times its dotNL, as the parts that F0 and F90 scale (sun.xy); DFGApprox
+// (dfg.zw); and getIBLRadiance's sample before envMapIntensity (rad).
+void terrainSpec(vec3 n, vec3 v, float r, out vec4 spec, out vec3 rad) {
+  float a2 = pow2(r * r);
+  vec3 h = normalize(terrainSunDir + v);
+  float nl = saturate(dot(n, terrainSunDir)), nv = saturate(dot(n, v));
+  float nh = saturate(dot(n, h)), vh = saturate(dot(v, h));
+  float fr = exp2((-5.55473 * vh - 6.98316) * vh);
+  float vis = 0.5 / max(nl * sqrt(a2 + (1.0 - a2) * pow2(nv)) + nv * sqrt(a2 + (1.0 - a2) * pow2(nl)), EPSILON);
+  float d = RECIPROCAL_PI * a2 / pow2(pow2(nh) * (a2 - 1.0) + 1.0);
+  vec4 c = r * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
+  spec = vec4(nl * vis * d * vec2(1.0 - fr, fr),
+              vec2(-1.04, 1.04) * (min(c.x * c.x, exp2(-9.28 * nv)) * c.x + c.y) + c.zw);
+  rad = textureCubeUV(terrainEnv, normalize(mix(reflect(-v, n), n, r * r)), r).rgb;
+}
+`;
+const TERRAIN_CHUNK_MAT = new THREE.MeshLambertMaterial({ shadowSide: THREE.BackSide });
 TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
+  sh.uniforms.terrainEnv    = { value: scene.environment };
+  sh.uniforms.terrainSunDir = { value: SUN };
   sh.uniforms.terrainPbr  = { value: TERRAIN_PBR };
   sh.uniforms.terrainBase = { value: TERRAIN_BASE };
   sh.uniforms.terrainCols = { value: terrainCols };
@@ -2960,7 +2996,9 @@ TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
   terrainVertex(sh);
   sh.vertexShader = `uniform vec4 terrainPbr[${TERRAIN_PBR.length}];\nuniform vec3 terrainBase[${TERRAIN_BASE.length}];\n`
     + `varying vec4 vPbr;\nvarying vec3 vBase;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\nvarying vec3 vLod;\n`
-    + sh.vertexShader.replace('#include <beginnormal_vertex>', `
+    + `varying vec4 vTerrSpec;\nvarying vec3 vTerrRad;\nvarying vec3 vTerrIrr;\n`
+    + sh.vertexShader.replace('#include <common>', '#include <common>\n' + terrainSpecGlsl(scene.environment))
+    .replace('#include <beginnormal_vertex>', `
   int tf = (terrainWords().y >> 11) & 7;     // FACES[tf]: +x -x +y -y +z -z
   float tsg = (tf & 1) == 0 ? 1.0 : -1.0;
   vec3 objectNormal = vec3(tf < 2 ? tsg : 0.0, tf / 2 == 1 ? tsg : 0.0, tf >= 4 ? tsg : 0.0);`)
@@ -2972,9 +3010,16 @@ TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
   vTerrN = objectNormal;
   int tsi = tw.y >> 14, tS = tsi + 1 + (tsi >> 1);     // MERGE_SIZE[tsi]
   ivec2 tc0 = (ivec2(instanceMatrix[3].xz) / 2) % tS;
-  vLod = vec3(float(tS), float(tc0.x), float(tc0.y));`);
+  vLod = vec3(float(tS), float(tc0.x), float(tc0.y));
+  vec4 tSpec;
+  vec3 tRad;
+  terrainSpec(objectNormal, normalize(cameraPosition - vTerrPos), vPbr.x, tSpec, tRad);
+  vTerrSpec = tSpec;
+  vTerrRad = tRad;
+  vTerrIrr = textureCubeUV(terrainEnv, objectNormal, 1.0).rgb;   // getIBLIrradiance / PI, before envMapIntensity`);
   sh.fragmentShader = `uniform highp sampler2D terrainCols;\nuniform int terrainSeed;\n`
     + `varying vec4 vPbr;\nvarying vec3 vBase;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\nvarying vec3 vLod;\n`
+    + `varying vec4 vTerrSpec;\nvarying vec3 vTerrRad;\nvarying vec3 vTerrIrr;\n`
     + `// nhash3, in the same 32-bit wrapping arithmetic.
 float terrainHash(int ix, int iy, int iz) {
   uint n = uint(ix) * 1619u + uint(iy) * 31337u + uint(iz) * 6971u + uint(terrainSeed) * 1013u;
@@ -3044,13 +3089,38 @@ vec4 terrainTexel(ivec2 c, int k) {
       float ps = 0.86 + 0.05 * dd - (dd > 2.5 ? 0.01 : 0.0);
       diffuseColor.rgb = clamp(diffuseColor.rgb * ps, 0.0, 1.0);
     }
+    // lights_physical_fragment: F0 from the full colour, diffuse less the metal.
+    tF0 = mix(vec3(0.04), diffuseColor.rgb, vPbr.y);
+    diffuseColor.rgb *= 1.0 - vPbr.y;
+    tSpec = vTerrSpec;
+    tRad = vTerrRad;
+    if (vPbr.x < 0.5) terrainSpec(normalize(vTerrN), normalize(cameraPosition - vTerrPos), vPbr.x, tSpec, tRad);
   }`)
-    .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vPbr.x;')
-    .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vPbr.y;')
-    // The IBL helpers read the envMapIntensity uniform by name; after its
-    // declaration, every later use of the name means this vertex's own value.
-    .replace('#include <envmap_common_pars_fragment>',
-      '#include <envmap_common_pars_fragment>\n#define envMapIntensity vPbr.z');
+    .replace('#include <lights_lambert_pars_fragment>', `#include <lights_lambert_pars_fragment>
+${terrainSpecGlsl(scene.environment)}
+vec4 tSpec;
+vec3 tRad, tF0;
+// RE_Direct_Physical: Lambert's diffuse plus the sun's lobe, shadow and all.
+void RE_Direct_Terrain(const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in LambertMaterial material, inout ReflectedLight reflectedLight) {
+  RE_Direct_Lambert(directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
+  reflectedLight.directSpecular += directLight.color * (tF0 * tSpec.x + tSpec.y);
+}
+#undef RE_Direct
+#define RE_Direct RE_Direct_Terrain`)
+    .replace('#include <aomap_fragment>', `{
+    // RE_IndirectSpecular_Physical and computeMultiscattering.
+    vec3 E = vTerrIrr * vPbr.z;
+    vec3 fss = tF0 * tSpec.z + tSpec.w;
+    float ems = 1.0 - tSpec.z - tSpec.w;
+    vec3 favg = tF0 + (1.0 - tF0) * 0.047619;
+    vec3 ms = fss * favg / (1.0 - ems * favg) * ems;
+    vec3 tot = fss + ms;
+    reflectedLight.indirectSpecular += tRad * vPbr.z * fss + ms * E;
+    reflectedLight.indirectDiffuse += material.diffuseColor * (1.0 - max(max(tot.r, tot.g), tot.b)) * E;
+  }
+  #include <aomap_fragment>`)
+    .replace('vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
+      'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + reflectedLight.directSpecular + reflectedLight.indirectSpecular + totalEmissiveRadiance;');
 };
 // A merged far group (see mergeBatch) is one mesh over many chunks, so its
 // instance matrix is the identity and each corner carries its own chunk's origin

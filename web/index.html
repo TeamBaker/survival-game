@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 152;
+window.GAME_VERSION = 153;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3216,6 +3216,16 @@ const GRAIN_GRID = 3;
 // has these written out as a formula; keep the two in step.
 const GRAIN_TINTS = [0.86, 0.91, 0.96, 1.0, 1.05, 1.10];
 const clamp01 = (x) => x < 0 ? 0 : x > 1 ? 1 : x;
+// A cell's shade hashes sin(a + b), a from where the column stands and b from
+// the cell's row and col. Split as sin a cos b + cos a sin b, the b half is
+// these constants, and a column costs one sin and one cos instead of one a cell.
+const GRAIN_SIN_B = new Float64Array(GRAIN_GRID * GRAIN_GRID);
+const GRAIN_COS_B = new Float64Array(GRAIN_GRID * GRAIN_GRID);
+for (let row = 0; row < GRAIN_GRID; row++) for (let col = 0; col < GRAIN_GRID; col++) {
+  const b = row * 17.1 + col * 31.7;
+  GRAIN_SIN_B[row * GRAIN_GRID + col] = Math.sin(b);
+  GRAIN_COS_B[row * GRAIN_GRID + col] = Math.cos(b);
+}
 
 // Column (i, j)'s two texels in this chunk's patch of terrainCols: its tint, the
 // top level the depth shading counts down from, and its powder speckle.
@@ -3234,10 +3244,11 @@ function setColTexel(i, j, t, top, cx, cz) {
   const tq = Math.round(t * 32768), lq = top - VOX_FLOOR;
   colPatch[p]     = tq >> 8; colPatch[p + 1] = tq & 255;
   colPatch[p + 2] = lq >> 8; colPatch[p + 3] = lq & 255;
-  for (let row = 0; row < GRAIN_GRID; row++) {
+  const a = cx * 99.1 + cz * 73.3, sa = Math.sin(a), ca = Math.cos(a);
+  for (let row = 0, n = 0; row < GRAIN_GRID; row++) {
     let code = 0;
-    for (let col = 0, q = 1; col < GRAIN_GRID; col++, q *= GRAIN_TINTS.length) {
-      const ti = (Math.sin(cx * 99.1 + cz * 73.3 + row * 17.1 + col * 31.7) * 43758.5453) | 0;
+    for (let col = 0, q = 1; col < GRAIN_GRID; col++, n++, q *= GRAIN_TINTS.length) {
+      const ti = ((sa * GRAIN_COS_B[n] + ca * GRAIN_SIN_B[n]) * 43758.5453) | 0;
       code += (Math.abs(ti) % GRAIN_TINTS.length) * q;
     }
     colPatch[p + 4 + row] = code;

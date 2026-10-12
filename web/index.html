@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 150;
+window.GAME_VERSION = 151;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3158,8 +3158,11 @@ let mergeMask = new Uint8Array(4096);
 // half-blocks and m | f << 4 | (step - 1) << 7, which rebuildChunk packs into
 // the chunk's vertices (see TERRAIN_CHUNK_MAT) — and nothing shared
 // between quads, since two faces meeting at an edge disagree about the normal
-// there. Every material goes in the one buffer.
-const quadBuf = { pos: [], info: [] };
+// there. Every material goes in the one buffer: typed scratch that only ever
+// grows, qN corners of it in use, so a rebuild pushes into memory the last one
+// already had.
+let qPos = new Int32Array(16384 * 3), qInfo = new Uint16Array(16384);
+let qN = 0;
 // The chunk being rebuilt: its first column and row and the LOD step it is drawn
 // at (MERGE_SIZE's index plus one).
 let rbI0 = 0, rbJ0 = 0, rbStep = 1;
@@ -3243,16 +3246,23 @@ function addBoxFace(f, li, lj, lv, S, m) {
   for (let v = v0; v < v0 + S; v++) for (let u = u0; u < u0 + S; u++) addFace(f, plane, u, v, m);
 }
 
-// Four corners of a quad on face f into quadBuf, the corner pattern of FACES[f]
+// Four corners of a quad on face f into qPos and qInfo, the corner pattern of FACES[f]
 // laid over the box lo..hi, in half-blocks from the field's low corner.
 const qLo = [0, 0, 0], qHi = [0, 0, 0];
 function pushQuad(f, m) {
-  const Q = quadBuf, v = FACES[f].v;
+  if (qN + 4 > qInfo.length) {
+    const pos = new Int32Array(qPos.length * 2), inf = new Uint16Array(qInfo.length * 2);
+    pos.set(qPos); inf.set(qInfo);
+    qPos = pos; qInfo = inf;
+  }
+  const v = FACES[f].v;
   const info = m | f << 4 | (rbStep - 1) << 7;
-  for (let q = 0; q < 4; q++) {
-    const o = q * 3;
-    Q.pos.push(v[o] < 0 ? qLo[0] : qHi[0], v[o + 1] < 0 ? qLo[1] : qHi[1], v[o + 2] < 0 ? qLo[2] : qHi[2]);
-    Q.info.push(info);
+  for (let q = 0; q < 4; q++, qN++) {
+    const o = q * 3, p = qN * 3;
+    qPos[p]     = v[o]     < 0 ? qLo[0] : qHi[0];
+    qPos[p + 1] = v[o + 1] < 0 ? qLo[1] : qHi[1];
+    qPos[p + 2] = v[o + 2] < 0 ? qLo[2] : qHi[2];
+    qInfo[qN] = info;
   }
 }
 
@@ -3338,6 +3348,7 @@ function mergeFaces() {
 // faces that touch air themselves are drawn, so the six-sided box that used to
 // stand in for every block is down to the one or two sides of it anything could
 // ever see. Returns the blocks it drew something for.
+const lodCentre = [0, 0, 0];
 function collectColumn(i, j, step = 1) {
   if (step === 1) {
     const k = j * GEN_N + i;
@@ -3403,7 +3414,8 @@ function collectColumn(i, j, step = 1) {
   // by face, and the shader still finds it by the same arithmetic. Its centre
   // is a whole number of half-blocks either way (hc), as pushQuad wants it.
   const cx = colX(i) + (S - 1) * HALF_BLOCK, cz = colZ(j) + (S - 1) * HALF_BLOCK;
-  const hc = [2 * i + S, bandBottom + top + 1 - 2 * VOX_FLOOR, 2 * j + S];
+  const hc = lodCentre;
+  hc[0] = 2 * i + S; hc[1] = bandBottom + top + 1 - 2 * VOX_FLOOR; hc[2] = 2 * j + S;
   setColTexel(i, j, tint[bestK], top, cx, cz);
   const onGrid = bandBottom === top - S + 1;
   for (let f = 0; f < 6; f++) {
@@ -3468,23 +3480,30 @@ for (let gj = 0; gj < GRID_N; gj++) {
 const gridStep = new Int8Array(GRID_N * GRID_N).fill(1);
 let lodOverride = null;
 
+// A chunk mesh's vertex buffer has room for this many more corners than it was
+// first built with, rounded up to a whole VB_ROUND, so digging a few blocks out
+// of it — a few more quads — writes into the buffer it already has.
+const VB_SLACK = 1.25, VB_ROUND = 1024;
+
+// Takes a chunk mesh out of the scene and frees what is its own: the vertex
+// buffer and instance matrix, not the shared material — nor QUAD_INDEX, which
+// disposing would take off the GPU along with it.
+function dropChunkMesh(me) {
+  terrain.remove(me);
+  if (me.geometry.index === QUAD_INDEX) me.geometry.index = null;
+  me.geometry.dispose();
+  me.dispose();
+}
+
 // (Re)build one chunk's mesh from the store. Cheap enough to call from a tap:
 // the whole cost is one pass over the chunk's columns, a sort and merge of the
 // faces it found, and two small uploads — the mesh and the chunk's column patch.
+// Nothing is allocated for it in the usual case: the chunk keeps its mesh across
+// rebuilds and the new corners are written over the old in its vertex buffer,
+// and only the part in use goes up to the GPU. A mesh is made fresh only when
+// its buffer has run out of room or the chunk has run past the shared index.
 function rebuildChunk(c) {
-  const old = chunkMesh[c];
-  if (old) {
-    for (const me of old) {
-      terrain.remove(me);
-      // Frees the vertex buffer, not the shared material — nor QUAD_INDEX,
-      // which disposing would take off the GPU along with it.
-      if (me.geometry.index === QUAD_INDEX) me.geometry.index = null;
-      me.geometry.dispose();
-      me.dispose();              // and its instance matrix
-    }
-  }
-  const B = quadBuf;
-  B.pos.length = 0; B.info.length = 0;
+  qN = 0;
   faceN = 0;
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
@@ -3499,71 +3518,94 @@ function rebuildChunk(c) {
   // The chunk's patch of terrainCols, into the full copy and up to the GPU on
   // its own. A chunk cut short by the edge of the field cannot be sent as a
   // whole patch, so it sends the whole texture instead.
+  const rowBytes = (i1 - i0) * 8;
   for (let j = j0; j < j1; j++) {
-    const r = (j - j0) * CHUNK * 8;
-    terrainColData.set(colPatch.subarray(r, r + (i1 - i0) * 8), (j * GEN_N + i0) * 8);
+    const r = (j - j0) * CHUNK * 8, d = (j * GEN_N + i0) * 8;
+    for (let b = 0; b < rowBytes; b++) terrainColData[d + b] = colPatch[r + b];
   }
   if (i1 - i0 === CHUNK && j1 - j0 === CHUNK) renderer.copyTextureToTexture(colPatchAt.set(i0 * 2, j0), terrainColPatch, terrainCols);
   else terrainCols.needsUpdate = true;
 
-  const meshes = [];
-  const nv = B.pos.length / 3, nq = nv / 4;
-  if (nq > 0) {                                  // plenty of chunks are all air
+  const meshes = chunkMesh[c] || (chunkMesh[c] = []);
+  let me = meshes[0] || null;
+  const nv = qN, nq = nv >> 2;
+  if (nq === 0) {                                // plenty of chunks are all air
+    if (me) dropChunkMesh(me);
+    meshes.length = 0;
+  } else {
     // The chunk's origin, in half-blocks from the field's low corner: its first
     // column and row, and the lowest corner it has. Every corner is packed
     // relative to it (see TERRAIN_CHUNK_MAT), and it is the instance matrix.
     const ox = 2 * i0, oz = 2 * j0;
     let oy = Infinity, yMax = -Infinity, xMax = 0, zMax = 0;
     for (let p = 1; p < nv * 3; p += 3) {
-      const y = B.pos[p];
+      const y = qPos[p];
       if (y < oy) oy = y;
       if (y > yMax) yMax = y;
     }
-    const vb = new Uint16Array(nv * 2);
+    // Two triangles a quad, over the four corners the quad already pushed: the
+    // shared pattern up to as many quads as a Uint16 index can reach, which is
+    // every chunk in practice, and a chunk's own past that — made to measure,
+    // and never reused, since the next rebuild may well fit the shared one.
+    const shared = nv <= 65536;
+    const fits = me && shared && me.geometry.index === QUAD_INDEX
+      && me.geometry.attributes.position.array.length >= nv * 2;
+    if (me && !fits) { dropChunkMesh(me); me = null; }
+    const fresh = !me;
+    if (fresh) {
+      const cap = shared ? Math.min(65536, Math.ceil(nv * VB_SLACK / VB_ROUND) * VB_ROUND) : nv;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Uint16Array(cap * 2), 2));
+      if (shared) geo.setIndex(QUAD_INDEX);
+      else {
+        const idx = new Uint32Array(nq * 6);
+        for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
+          idx[p]     = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
+          idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
+        }
+        geo.setIndex(new THREE.BufferAttribute(idx, 1));
+      }
+      me = new THREE.InstancedMesh(geo, TERRAIN_CHUNK_MAT, 1);
+      me.boundingSphere = new THREE.Sphere();
+      me.customDepthMaterial = TERRAIN_CHUNK_DEPTH;
+      me.position.copy(TERRAIN_ORIGIN);
+      me.scale.setScalar(HALF_BLOCK);
+      me.receiveShadow = true;
+      // Casting is a second full pass over every face. A phone gets the sun's
+      // shading and the player's shadow, but not the island shadowing itself.
+      me.castShadow = !isTouchDevice;
+      terrain.add(me);
+      meshes.length = 0;
+      meshes.push(me);
+    }
+    const attr = me.geometry.attributes.position, vb = attr.array;
     for (let v = 0, p = 0; v < nv; v++, p += 2) {
-      const x = B.pos[v * 3] - ox, y = B.pos[v * 3 + 1] - oy, z = B.pos[v * 3 + 2] - oz;
-      const info = B.info[v];
+      const x = qPos[v * 3] - ox, y = qPos[v * 3 + 1] - oy, z = qPos[v * 3 + 2] - oz;
+      const info = qInfo[v];
       if (x > xMax) xMax = x;
       if (z > zMax) zMax = z;
       vb[p]     = x | z << 6 | (info & 15) << 12;
       vb[p + 1] = y | (info >> 4) << 11;
     }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(vb, 2));
-    // Two triangles a quad, over the four corners the quad already pushed: the
-    // shared pattern up to as many quads as a Uint16 index can reach, which is
-    // every chunk in practice, and a chunk's own past that.
-    if (nv <= 65536) {
-      geo.setIndex(QUAD_INDEX);
-      geo.setDrawRange(0, nq * 6);
-    } else {
-      const idx = new Uint32Array(nq * 6);
-      for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
-        idx[p]     = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
-        idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
-      }
-      geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    // A fresh buffer goes up whole on its first draw; a reused one sends only
+    // the corners this rebuild wrote — whatever lies past them is never drawn.
+    if (!fresh) {
+      attr.clearUpdateRanges();
+      attr.addUpdateRange(0, nv * 2);
+      attr.needsUpdate = true;
     }
-    const me = new THREE.InstancedMesh(geo, TERRAIN_CHUNK_MAT, 1);
+    me.geometry.setDrawRange(0, nq * 6);
     me.setMatrixAt(0, chunkOrigin.makeTranslation(ox, oy, oz));
+    me.instanceMatrix.needsUpdate = true;
     // The per-chunk bound is the whole reason for the split — without it three
     // quarters of the island would be drawn from behind the camera. The packed
     // words are no position to compute it from, so it is the chunk's box's.
     const hy = (yMax - oy) / 2;
-    me.boundingSphere = new THREE.Sphere(new THREE.Vector3(ox + xMax / 2, oy + hy, oz + zMax / 2), Math.hypot(xMax / 2, hy, zMax / 2));
-    me.customDepthMaterial = TERRAIN_CHUNK_DEPTH;
-    me.position.copy(TERRAIN_ORIGIN);
-    me.scale.setScalar(HALF_BLOCK);
-    me.receiveShadow = true;
-    // Casting is a second full pass over every face. A phone gets the sun's
-    // shading and the player's shadow, but not the island shadowing itself.
-    me.castShadow = !isTouchDevice;
-    terrain.add(me);
-    meshes.push(me);
+    me.boundingSphere.center.set(ox + xMax / 2, oy + hy, oz + zMax / 2);
+    me.boundingSphere.radius = Math.hypot(xMax / 2, hy, zMax / 2);
   }
   const faces = nq;
 
-  chunkMesh[c] = meshes;
   applyChunkView(c);
   blockCount    += blocks - chunkBlocks[c];
   faceCount     += faces  - chunkFaces[c];

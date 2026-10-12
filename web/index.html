@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 148;
+window.GAME_VERSION = 150;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2856,8 +2856,8 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 // call however many materials it holds. Faces are greedy-merged (see
 // rebuildChunk), so one quad can cover dozens of blocks that are each a shade of
 // their own — nothing per block can ride on the vertices any more. Each vertex
-// carries only its material id and the chunk's LOD (`terrInfo`: id, merge size,
-// chunk column/row); the vertex shader looks up the material's colour, roughness,
+// carries only its corner, material id, face direction and the chunk's LOD
+// (packed as below); the vertex shader looks up the material's colour, roughness,
 // metalness and envMapIntensity in tables of TERRAIN_MATS' own values, and the
 // fragment shader works out which block it is on from its own position and
 // rebuilds that block's shade the way terrainBlockColor does: the column's tint
@@ -2867,6 +2867,26 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 // fragment shader may not index a uniform array by a varying; all four corners
 // of a quad share one id, so the varying comes through every fragment exactly as
 // the table has it.
+//
+// A vertex is two Uint16s, 4 bytes, read as the `position` attribute and
+// unpacked in the shader (terrainVertex):
+//   word 0: x (6 bits) | z (6) << 6 | material id (4) << 12
+//   word 1: y (11) | face direction (3) << 11 | merge size index (2) << 14
+// x, y and z are the corner in half-blocks from the chunk's origin: its first
+// column and row, and the lowest level any of its corners reach. A chunk spans
+// at most 40 half-blocks across (a LOD cube may hang 4 columns over its edge)
+// and 2047 up. The normal is rebuilt from the face direction, so there is no
+// normal attribute; the merge size is MERGE_SIZE's index, and the chunk's first
+// column and row modulo it, all a LOD cube needs to find the column it starts
+// on, come from the origin.
+//
+// The origin rides in the chunk mesh's one instance matrix, a translation by
+// whole half-blocks, which three's instancing applies before anything else: the
+// sum is exact, so every corner is back in half-blocks from the field's low
+// corner at VOX_FLOOR — every corner the merge emits lies on that lattice —
+// before the one transform every chunk mesh shares (TERRAIN_ORIGIN, HALF_BLOCK)
+// takes it on to metres. A corner two chunks share still comes out
+// bit-identical in both.
 const TERRAIN_PBR = TERRAIN_MATS.map((m, i) =>
   new THREE.Vector4(m.roughness, m.metalness, m.envMapIntensity, MAT_STATS[i]?.powder ? 1 : 0));
 const TERRAIN_BASE = TERRAIN_MATS.map((m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b));
@@ -2885,6 +2905,20 @@ terrainCols.needsUpdate = true;
 const terrainColPatch = new THREE.DataTexture(new Uint8Array(CHUNK * 2 * CHUNK * 4), CHUNK * 2, CHUNK);
 
 const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+// The unpacking both terrain shaders share (see the vertex layout above):
+// `transformed` is the corner in half-blocks from the chunk's origin, which the
+// instancing chunks of three's own shader then add on.
+function terrainVertex(sh) {
+  sh.vertexShader = `ivec2 terrainWords() { return ivec2(position.xy + 0.5); }\n`
+    + sh.vertexShader.replace('#include <begin_vertex>', `
+  ivec2 tw = terrainWords();
+  vec3 transformed = vec3(float(tw.x & 63), float(tw.y & 2047), float((tw.x >> 6) & 63));
+  // terrain vertex unpacked`);
+}
+// The sun's shadow pass draws chunks with this rather than its own depth
+// material, which would take the packed words for a position.
+const TERRAIN_CHUNK_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+TERRAIN_CHUNK_DEPTH.onBeforeCompile = terrainVertex;
 const TERRAIN_CHUNK_MAT = TERRAIN_FACE_MATS[0].clone();
 TERRAIN_CHUNK_MAT.vertexColors = false;
 TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
@@ -2892,16 +2926,22 @@ TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
   sh.uniforms.terrainBase = { value: TERRAIN_BASE };
   sh.uniforms.terrainCols = { value: terrainCols };
   sh.uniforms.terrainSeed = { value: SEED | 0 };
-  sh.vertexShader = `attribute vec4 terrInfo;\n`
-    + `uniform vec4 terrainPbr[${TERRAIN_PBR.length}];\nuniform vec3 terrainBase[${TERRAIN_BASE.length}];\n`
+  terrainVertex(sh);
+  sh.vertexShader = `uniform vec4 terrainPbr[${TERRAIN_PBR.length}];\nuniform vec3 terrainBase[${TERRAIN_BASE.length}];\n`
     + `varying vec4 vPbr;\nvarying vec3 vBase;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\nvarying vec3 vLod;\n`
-    + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
-  int tm = int(terrInfo.x + 0.5);
+    + sh.vertexShader.replace('#include <beginnormal_vertex>', `
+  int tf = (terrainWords().y >> 11) & 7;     // FACES[tf]: +x -x +y -y +z -z
+  float tsg = (tf & 1) == 0 ? 1.0 : -1.0;
+  vec3 objectNormal = vec3(tf < 2 ? tsg : 0.0, tf / 2 == 1 ? tsg : 0.0, tf >= 4 ? tsg : 0.0);`)
+    .replace('// terrain vertex unpacked', `
+  int tm = tw.x >> 12;
   vPbr = terrainPbr[tm];
   vBase = terrainBase[tm];
-  vTerrPos = transformed;     // terrain meshes sit at the origin: object space is world space
+  vTerrPos = (modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz;
   vTerrN = objectNormal;
-  vLod = terrInfo.yzw;`);
+  int tsi = tw.y >> 14, tS = tsi + 1 + (tsi >> 1);     // MERGE_SIZE[tsi]
+  ivec2 tc0 = (ivec2(instanceMatrix[3].xz) / 2) % tS;
+  vLod = vec3(float(tS), float(tc0.x), float(tc0.y));`);
   sh.fragmentShader = `uniform highp sampler2D terrainCols;\nuniform int terrainSeed;\n`
     + `varying vec4 vPbr;\nvarying vec3 vBase;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\nvarying vec3 vLod;\n`
     + `// nhash3, in the same 32-bit wrapping arithmetic.
@@ -2926,7 +2966,9 @@ vec4 terrainTexel(ivec2 c, int k) {
     if (S > 1) {
       // A merged LOD cube keeps its values at the column it starts on, which is
       // always inside the chunk even where the cube itself hangs over the edge.
-      ivec2 c0 = ivec2(vLod.yz + 0.5) * ${CHUNK};
+      // Cubes start every S columns from the chunk's first, which is all the
+      // chunk's first column modulo S pins down; no pixel is left of that column.
+      ivec2 c0 = ivec2(vLod.yz + 0.5);
       col = c0 + (max(col - c0, ivec2(0)) / S) * S;
     }
     vec4 ta = terrainTexel(col, 0);
@@ -3112,13 +3154,15 @@ const mergeMatCounts = new Uint32Array(N_MATS);
 let faceKeys = new Float64Array(16384);
 let faceN = 0;
 let mergeMask = new Uint8Array(4096);
-// What the merge comes out as: four loose corners a quad — position, normal and
-// terrInfo — and nothing shared between quads, since two faces meeting at an
-// edge disagree about the normal there. Every material goes in the one buffer.
-const quadBuf = { pos: [], nor: [], info: [] };
-// The chunk being rebuilt: its first column and row, its place in the chunk
-// grid, and the merge size of the LOD it is drawn at.
-let rbI0 = 0, rbJ0 = 0, rbCI = 0, rbCJ = 0, rbS = 1;
+// What the merge comes out as: four loose corners a quad — position in
+// half-blocks and m | f << 4 | (step - 1) << 7, which rebuildChunk packs into
+// the chunk's vertices (see TERRAIN_CHUNK_MAT) — and nothing shared
+// between quads, since two faces meeting at an edge disagree about the normal
+// there. Every material goes in the one buffer.
+const quadBuf = { pos: [], info: [] };
+// The chunk being rebuilt: its first column and row and the LOD step it is drawn
+// at (MERGE_SIZE's index plus one).
+let rbI0 = 0, rbJ0 = 0, rbStep = 1;
 
 // The six faces of a block: the neighbour that has to be air for the face to be
 // worth drawing at all, the direction the face looks in, and its four corners as
@@ -3200,22 +3244,24 @@ function addBoxFace(f, li, lj, lv, S, m) {
 }
 
 // Four corners of a quad on face f into quadBuf, the corner pattern of FACES[f]
-// laid over the box lo..hi.
+// laid over the box lo..hi, in half-blocks from the field's low corner.
 const qLo = [0, 0, 0], qHi = [0, 0, 0];
 function pushQuad(f, m) {
-  const Q = quadBuf, F = FACES[f], v = F.v, n = F.n;
+  const Q = quadBuf, v = FACES[f].v;
+  const info = m | f << 4 | (rbStep - 1) << 7;
   for (let q = 0; q < 4; q++) {
     const o = q * 3;
     Q.pos.push(v[o] < 0 ? qLo[0] : qHi[0], v[o + 1] < 0 ? qLo[1] : qHi[1], v[o + 2] < 0 ? qLo[2] : qHi[2]);
-    Q.nor.push(n[0] * 127, n[1] * 127, n[2] * 127);
-    Q.info.push(m, rbS, rbCI, rbCJ);
+    Q.info.push(info);
   }
 }
 
-// Chunk-local grid lines back into world space.
-const gridX = (li) => -GEN_R + (rbI0 + li) * BLOCK;
-const gridZ = (lj) => -GEN_R + (rbJ0 + lj) * BLOCK;
-const gridY = (lv) => (lv + VOX_FLOOR) * BLOCK;
+// Chunk-local grid lines into half-blocks from the field's low corner; the
+// chunk mesh's transform (TERRAIN_ORIGIN, HALF_BLOCK) takes them on to metres.
+const gridX = (li) => 2 * (rbI0 + li);
+const gridZ = (lj) => 2 * (rbJ0 + lj);
+const gridY = (lv) => 2 * lv;
+const TERRAIN_ORIGIN = new THREE.Vector3(-GEN_R, VOX_FLOOR * BLOCK, -GEN_R);
 
 // The w x h rectangle at (u, v) on plane `plane` of face f.
 function emitRect(f, plane, u, v, w, h, m) {
@@ -3354,9 +3400,10 @@ function collectColumn(i, j, step = 1) {
 
   // The cube is S blocks a side and centred on its band, so it sits on the grid
   // unless bedrock cut the band short; such a cube is drawn as it stands, face
-  // by face, and the shader still finds it by the same arithmetic.
+  // by face, and the shader still finds it by the same arithmetic. Its centre
+  // is a whole number of half-blocks either way (hc), as pushQuad wants it.
   const cx = colX(i) + (S - 1) * HALF_BLOCK, cz = colZ(j) + (S - 1) * HALF_BLOCK;
-  const cy = ((bandBottom + top) / 2 + 0.5) * BLOCK;
+  const hc = [2 * i + S, bandBottom + top + 1 - 2 * VOX_FLOOR, 2 * j + S];
   setColTexel(i, j, tint[bestK], top, cx, cz);
   const onGrid = bandBottom === top - S + 1;
   for (let f = 0; f < 6; f++) {
@@ -3367,10 +3414,8 @@ function collectColumn(i, j, step = 1) {
     else nb = voxelAt(i + F.di * S, j + F.dj * S, top);
     if (nb !== AIR) continue;
     if (onGrid) { addBoxFace(f, i - rbI0, j - rbJ0, bandBottom - VOX_FLOOR, S, m); continue; }
-    const hs = HALF_BLOCK * S;
     for (let a = 0; a < 3; a++) {
-      const c = a === 0 ? cx : a === 1 ? cy : cz;
-      qLo[a] = c - hs; qHi[a] = c + hs;
+      qLo[a] = hc[a] - S; qHi[a] = hc[a] + S;
       if (F.n[a] > 0) qLo[a] = qHi[a];
       else if (F.n[a] < 0) qHi[a] = qLo[a];
     }
@@ -3378,6 +3423,20 @@ function collectColumn(i, j, step = 1) {
   }
   return 1;
 }
+
+// The index every chunk mesh with up to 16384 quads draws with: two triangles
+// over each run of four corners. One copy on the GPU for all of them, each
+// drawing as much of it as it has quads.
+const QUAD_INDEX = (() => {
+  const idx = new Uint16Array(16384 * 6);
+  for (let q = 0, p = 0, v = 0; q < 16384; q++, p += 6, v += 4) {
+    idx[p]     = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
+    idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
+  }
+  return new THREE.BufferAttribute(idx, 1);
+})();
+
+const chunkOrigin = new THREE.Matrix4();
 
 // LOD grid: maps each mesh chunk to the coarser CHUNK_GRID cell it falls in,
 // and gives each of those cells a world-space centre to measure camera
@@ -3417,11 +3476,15 @@ function rebuildChunk(c) {
   if (old) {
     for (const me of old) {
       terrain.remove(me);
-      me.geometry.dispose();     // frees the vertex buffers, not the shared material
+      // Frees the vertex buffer, not the shared material — nor QUAD_INDEX,
+      // which disposing would take off the GPU along with it.
+      if (me.geometry.index === QUAD_INDEX) me.geometry.index = null;
+      me.geometry.dispose();
+      me.dispose();              // and its instance matrix
     }
   }
   const B = quadBuf;
-  B.pos.length = 0; B.nor.length = 0; B.info.length = 0;
+  B.pos.length = 0; B.info.length = 0;
   faceN = 0;
 
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
@@ -3429,7 +3492,7 @@ function rebuildChunk(c) {
   let blocks = 0;
   const step = gridStep[chunkGridIdx[c]];
   const stride = mergeSizeFor(step);
-  rbI0 = i0; rbJ0 = j0; rbCI = c % CHUNK_N; rbCJ = (c / CHUNK_N) | 0; rbS = stride;
+  rbI0 = i0; rbJ0 = j0; rbStep = step;
   for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
   mergeFaces();
 
@@ -3446,22 +3509,51 @@ function rebuildChunk(c) {
   const meshes = [];
   const nv = B.pos.length / 3, nq = nv / 4;
   if (nq > 0) {                                  // plenty of chunks are all air
-    // Two triangles a quad, over the four corners the quad already pushed.
-    const idx = nv > 65535 ? new Uint32Array(nq * 6) : new Uint16Array(nq * 6);
-    for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
-      idx[p]     = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
-      idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
+    // The chunk's origin, in half-blocks from the field's low corner: its first
+    // column and row, and the lowest corner it has. Every corner is packed
+    // relative to it (see TERRAIN_CHUNK_MAT), and it is the instance matrix.
+    const ox = 2 * i0, oz = 2 * j0;
+    let oy = Infinity, yMax = -Infinity, xMax = 0, zMax = 0;
+    for (let p = 1; p < nv * 3; p += 3) {
+      const y = B.pos[p];
+      if (y < oy) oy = y;
+      if (y > yMax) yMax = y;
+    }
+    const vb = new Uint16Array(nv * 2);
+    for (let v = 0, p = 0; v < nv; v++, p += 2) {
+      const x = B.pos[v * 3] - ox, y = B.pos[v * 3 + 1] - oy, z = B.pos[v * 3 + 2] - oz;
+      const info = B.info[v];
+      if (x > xMax) xMax = x;
+      if (z > zMax) zMax = z;
+      vb[p]     = x | z << 6 | (info & 15) << 12;
+      vb[p + 1] = y | (info >> 4) << 11;
     }
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(B.pos), 3));
-    geo.setAttribute('normal',   new THREE.BufferAttribute(new Int8Array(B.nor), 3, true));
-    geo.setAttribute('terrInfo', new THREE.BufferAttribute(new Uint8Array(B.info), 4));
-    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.setAttribute('position', new THREE.BufferAttribute(vb, 2));
+    // Two triangles a quad, over the four corners the quad already pushed: the
+    // shared pattern up to as many quads as a Uint16 index can reach, which is
+    // every chunk in practice, and a chunk's own past that.
+    if (nv <= 65536) {
+      geo.setIndex(QUAD_INDEX);
+      geo.setDrawRange(0, nq * 6);
+    } else {
+      const idx = new Uint32Array(nq * 6);
+      for (let q = 0, p = 0, v = 0; q < nq; q++, p += 6, v += 4) {
+        idx[p]     = v; idx[p + 1] = v + 1; idx[p + 2] = v + 2;
+        idx[p + 3] = v; idx[p + 4] = v + 2; idx[p + 5] = v + 3;
+      }
+      geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    }
+    const me = new THREE.InstancedMesh(geo, TERRAIN_CHUNK_MAT, 1);
+    me.setMatrixAt(0, chunkOrigin.makeTranslation(ox, oy, oz));
     // The per-chunk bound is the whole reason for the split — without it three
-    // quarters of the island would be drawn from behind the camera.
-    geo.computeBoundingSphere();
-
-    const me = new THREE.Mesh(geo, TERRAIN_CHUNK_MAT);
+    // quarters of the island would be drawn from behind the camera. The packed
+    // words are no position to compute it from, so it is the chunk's box's.
+    const hy = (yMax - oy) / 2;
+    me.boundingSphere = new THREE.Sphere(new THREE.Vector3(ox + xMax / 2, oy + hy, oz + zMax / 2), Math.hypot(xMax / 2, hy, zMax / 2));
+    me.customDepthMaterial = TERRAIN_CHUNK_DEPTH;
+    me.position.copy(TERRAIN_ORIGIN);
+    me.scale.setScalar(HALF_BLOCK);
     me.receiveShadow = true;
     // Casting is a second full pass over every face. A phone gets the sun's
     // shading and the player's shadow, but not the island shadowing itself.

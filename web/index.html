@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 163;
+window.GAME_VERSION = 164;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -8215,7 +8215,27 @@ function shadowCastersChanged() {
 }
 
 let frameCount = 0;
+// While the pause overlay or the menu is up, nothing runs: no physics, no sim,
+// no shadow-map work. The clock is still read every frame and the reading thrown
+// away, so the first frame back gets one frame's dt — no time jump, no burst of
+// catch-up physics steps. A few times a second the world's visual state (chunk
+// rebuilds, LOD / render distance) is flushed and the scene drawn, so a load or a
+// settings change made from the menu still shows behind it.
+const PAUSED_FRAME_MS = 250;
+let pausedFrameAt = 0;
 function tick() {
+  if (menuOpen || !overlay.classList.contains('hidden')) {
+    clock.getDelta();
+    const now = performance.now();
+    if (now < pausedFrameAt) return;
+    pausedFrameAt = now + PAUSED_FRAME_MS;
+    flushDirtyChunks();
+    updateLOD();
+    sky.position.copy(camera.position);
+    renderer.render(scene, camera);
+    return;
+  }
+  pausedFrameAt = 0;
   buildPendingColliders();
   const dt = Math.min(clock.getDelta(), 0.1);
   elapsed += dt;

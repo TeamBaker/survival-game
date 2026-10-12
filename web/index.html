@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 156;
+window.GAME_VERSION = 157;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3565,6 +3565,12 @@ let lodOverride = null;
 // The step each chunk's mesh was last built at — set by rebuildChunk, so any
 // rebuild (a dig, a load) counts, and updateLOD only queues the ones that lag.
 const chunkStep = new Int8Array(CHUNK_N * CHUNK_N);
+// Bumped for a chunk and its neighbours by every rebuild from the store (and by
+// remeshAllChunks), so a mesh worker result built from an older snapshot of the
+// store is known to be stale. meshJob is the id of the worker job a chunk's mesh
+// is waiting on, 0 for none; see the mesh worker below updateLOD.
+const chunkRev = new Uint32Array(CHUNK_N * CHUNK_N);
+const meshJob = new Uint32Array(CHUNK_N * CHUNK_N);
 
 // A chunk mesh's vertex buffer has room for this many more corners than it was
 // first built with, rounded up to a whole VB_ROUND, so digging a few blocks out
@@ -3689,7 +3695,7 @@ function applyRenderDist() {
 // rebuilds and the new corners are written over the old in its vertex buffer,
 // and only the part in use goes up to the GPU. A mesh is made fresh only when
 // its buffer has run out of room or the chunk has run past the shared index.
-function rebuildChunk(c) {
+function rebuildChunk(c, r) {
   unbatchChunk(c);
   qN = 0;
   faceN = 0;
@@ -3697,12 +3703,30 @@ function rebuildChunk(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   let blocks = 0;
-  const step = gridStep[chunkGridIdx[c]];
+  const step = r ? r.step : gridStep[chunkGridIdx[c]];
   chunkStep[c] = step;
   const stride = mergeSizeFor(step);
   rbI0 = i0; rbJ0 = j0; rbStep = step;
-  for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
-  mergeFaces();
+  if (r) {
+    // The mesh worker already ran the passes below: its corners, and the texels
+    // it wrote (a slot it left alone still has the 255 it was primed with).
+    blocks = r.blocks;
+    qN = r.nv;
+    if (qInfo.length < qN) { qPos = new Int32Array(qN * 3); qInfo = new Uint16Array(qN); }
+    qPos.set(r.pos);
+    qInfo.set(r.info);
+    for (let p = 0; p < r.patch.length; p += 8) {
+      if (r.patch[p + 4] !== 255) for (let b = 0; b < 7; b++) colPatch[p + b] = r.patch[p + b];
+    }
+  } else {
+    meshJob[c] = 0;
+    const ci = c % CHUNK_N, cj = (c / CHUNK_N) | 0;
+    for (let b = Math.max(0, cj - 1); b <= Math.min(CHUNK_N - 1, cj + 1); b++) {
+      for (let a = Math.max(0, ci - 1); a <= Math.min(CHUNK_N - 1, ci + 1); a++) chunkRev[b * CHUNK_N + a]++;
+    }
+    for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
+    mergeFaces();
+  }
 
   // The chunk's patch of terrainCols, into the full copy and up to the GPU on
   // its own. A chunk cut short by the edge of the field cannot be sent as a
@@ -3838,10 +3862,22 @@ const lodDist = new Float32Array(CHUNK_N * CHUNK_N);
 const lodByDist = (a, b) => lodDist[a] - lodDist[b];
 let lodHead = 0, lodTail = 0;
 let lodCamX = NaN, lodCamZ = NaN, lodLastOverride = null;
+let lodRequeue = false;
 function updateLOD() {
+  // Meshes the worker has finished go in first — unless the chunk was rebuilt
+  // or asked for again since, or the store under it changed, when it is sent off
+  // afresh if it still lags its step.
+  for (const r of meshDone) {
+    const c = r.c;
+    if (meshJob[c] !== r.id) continue;
+    meshJob[c] = 0;
+    if (r.rev === chunkRev[c]) rebuildChunk(c, r);
+    else if (chunkStep[c] !== gridStep[chunkGridIdx[c]]) meshDispatch(c);
+  }
+  meshDone.length = 0;
   const cam = camera.position;
   if (renderRadius !== Infinity && (Math.abs(cam.x - rdCamX) > 1 || Math.abs(cam.z - rdCamZ) > 1)) applyRenderDist();
-  if (cam.x !== lodCamX || cam.z !== lodCamZ || lodOverride !== lodLastOverride) {
+  if (cam.x !== lodCamX || cam.z !== lodCamZ || lodOverride !== lodLastOverride || lodRequeue) {
     lodCamX = cam.x; lodCamZ = cam.z; lodLastOverride = lodOverride;
     let changed = false;
     for (let g = 0; g < GRID_N * GRID_N; g++) {
@@ -3856,7 +3892,8 @@ function updateLOD() {
     }
     // A step changed somewhere: queue afresh every chunk now out of date, so a
     // cell that flipped back before its chunks got their turn drops out again.
-    if (changed) {
+    if (changed || lodRequeue) {
+      lodRequeue = false;
       lodHead = lodTail = 0;
       for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
         const g = chunkGridIdx[c];
@@ -3869,13 +3906,16 @@ function updateLOD() {
     }
   }
   // With nothing left to rebuild, the far groups whose chunks changed merge again.
-  if (lodHead === lodTail) { if (batchDirtyN) updateBatches(); return; }
+  if (lodHead === lodTail) { if (batchDirtyN && !meshInflight) updateBatches(); return; }
   const t0 = performance.now();
   while (lodHead < lodTail) {
+    // With the worker, only so many jobs out at once, so the nearest go first.
+    if (meshWorker && meshInflight >= MESH_INFLIGHT_MAX) break;
     const c = lodQueue[lodHead++];
     // Something else (a dig, say) may have rebuilt it at the new step already.
     if (chunkStep[c] === gridStep[chunkGridIdx[c]]) continue;
-    rebuildChunk(c);
+    if (!meshWorker) rebuildChunk(c);
+    else if (!meshJob[c] || meshJobStep[c] !== gridStep[chunkGridIdx[c]]) meshDispatch(c);
     if (performance.now() - t0 >= LOD_BUDGET_MS) break;
   }
   if (lodHead === lodTail) lodHead = lodTail = 0;
@@ -3889,6 +3929,208 @@ function updateBatches() {
     mergeBatch(b);
     if (performance.now() - t0 >= LOD_BUDGET_MS) break;
   }
+}
+
+// ----- the mesh worker -----
+// The LOD queue's rebuilds, a load's remesh and the colliders that come into
+// range are built off the main thread, by a plain Worker made from a Blob — no
+// SharedArrayBuffer, so no special headers. It runs the very functions above
+// (their source, by toString) over a snapshot of the columns a job can read: the
+// chunk's own and, for a mesh, MESH_MARGIN either side of it, which is as far as
+// a LOD cube looks. So what comes back is exactly what the main thread would
+// have built. Digs still rebuild here and now, mesh and collider together. If
+// the worker cannot be made or fails, everything goes back to the main thread.
+const MESH_MARGIN = MERGE_SIZE[MERGE_SIZE.length - 1];
+const MESH_INFLIGHT_MAX = 4;
+const meshJobStep = new Int8Array(CHUNK_N * CHUNK_N);
+const colJob = new Uint32Array(CHUNK_N * CHUNK_N);   // collider job in flight, by id
+const meshDone = [], colDone = [];
+let meshWorker = null, meshInflight = 0, meshJobSeq = 0;
+
+function meshWorkerSource() {
+  return `'use strict';
+const GEN_N = ${GEN_N}, GEN_R = ${GEN_R}, BLOCK = ${BLOCK}, CHUNK = ${CHUNK}, CHUNK_N = ${CHUNK_N};
+const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, FK = ${FK};
+const GRAIN_GRID = ${GRAIN_GRID}, HALF_BLOCK = ${HALF_BLOCK};
+const FACES = ${JSON.stringify(FACES)}, MERGE_SIZE = ${JSON.stringify(MERGE_SIZE)};
+const GRAIN_TINTS = ${JSON.stringify(GRAIN_TINTS)};
+const GRAIN_SIN_B = new Float64Array(${JSON.stringify(Array.from(GRAIN_SIN_B))});
+const GRAIN_COS_B = new Float64Array(${JSON.stringify(Array.from(GRAIN_COS_B))});
+const sTop = new Int16Array(GEN_N * GEN_N), topLvl = new Int16Array(GEN_N * GEN_N), airLo = new Int16Array(GEN_N * GEN_N);
+const tint = new Float32Array(GEN_N * GEN_N), colMaxCap = new Int32Array(GEN_N * GEN_N), voxOff = new Int32Array(GEN_N * GEN_N);
+let voxMat = new Uint8Array(0), visBits = new Uint8Array(0);
+const mergeMatCounts = new Uint32Array(N_MATS);
+let faceKeys = new Float64Array(16384), faceN = 0, mergeMask = new Uint8Array(4096);
+let qPos = new Int32Array(16384 * 3), qInfo = new Uint16Array(16384), qN = 0;
+let rbI0 = 0, rbJ0 = 0, rbStep = 1;
+const colPatch = new Uint8Array(CHUNK * CHUNK * 8);
+const lodCentre = [0, 0, 0], qLo = [0, 0, 0], qHi = [0, 0, 0];
+const colX = ${colX}, colZ = ${colZ};
+const voxCap = ${voxCap}, isVisible = ${isVisible}, mergeSizeFor = ${mergeSizeFor};
+const gridX = ${gridX}, gridZ = ${gridZ}, gridY = ${gridY};
+${voxelAt}
+${setColTexel}
+${addFace}
+${addBoxFace}
+${pushQuad}
+${emitRect}
+${mergeFaces}
+${collectColumn}
+${buildChunkColliderBoxes}
+onmessage = (e) => {
+  const d = e.data;
+  try {
+    // The snapshot's columns over the mirrors; nothing outside it is ever read.
+    voxMat = d.vox; visBits = d.bits;
+    for (let jj = 0, n = 0; jj < d.rh; jj++) for (let ii = 0; ii < d.rw; ii++, n++) {
+      const k = (d.rj0 + jj) * GEN_N + d.ri0 + ii;
+      sTop[k] = d.sTop[n]; topLvl[k] = d.topLvl[n]; airLo[k] = d.airLo[n];
+      tint[k] = d.tint[n]; colMaxCap[k] = d.cap[n]; voxOff[k] = d.off[n];
+    }
+    const c = d.c;
+    if (d.kind === 'collider') {
+      postMessage({ kind: 'collider', id: d.id, c, rev: d.rev, boxes: buildChunkColliderBoxes(c) });
+      return;
+    }
+    const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+    const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+    const step = d.step, stride = mergeSizeFor(step);
+    qN = 0; faceN = 0;
+    rbI0 = i0; rbJ0 = j0; rbStep = step;
+    for (let p = 4; p < colPatch.length; p += 8) colPatch[p] = 255;
+    let blocks = 0;
+    for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
+    mergeFaces();
+    const pos = qPos.slice(0, qN * 3), info = qInfo.slice(0, qN), patch = colPatch.slice();
+    postMessage({ kind: 'mesh', id: d.id, c, rev: d.rev, step, blocks, nv: qN, pos, info, patch },
+      [pos.buffer, info.buffer, patch.buffer]);
+  } catch (err) {
+    postMessage({ kind: 'error', msg: String(err && err.stack || err) });
+  }
+};
+`;
+}
+
+// The columns of chunk c and `margin` either side, packed: per-column state,
+// and each column's run of voxMat and visBits copied end to end (a run starts on
+// a multiple of eight, so its bits start on a byte), with offsets into the copy.
+function meshSnapshot(c, margin) {
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  const ri0 = Math.max(0, i0 - margin), rj0 = Math.max(0, j0 - margin);
+  const rw = Math.min(GEN_N, i0 + CHUNK + margin) - ri0, rh = Math.min(GEN_N, j0 + CHUNK + margin) - rj0;
+  const n = rw * rh;
+  const s = {
+    c, ri0, rj0, rw, rh,
+    sTop: new Int16Array(n), topLvl: new Int16Array(n), airLo: new Int16Array(n),
+    tint: new Float32Array(n), cap: new Int32Array(n), off: new Int32Array(n), vox: null, bits: null,
+  };
+  let total = 0;
+  for (let jj = 0; jj < rh; jj++) for (let ii = 0; ii < rw; ii++) {
+    const k = (rj0 + jj) * GEN_N + ri0 + ii;
+    if (voxOff[k] >= 0) total += voxSpan(voxLen(k));
+  }
+  const vox = new Uint8Array(total), bits = new Uint8Array(total >> 3);
+  let at = 0;
+  for (let jj = 0, q = 0; jj < rh; jj++) for (let ii = 0; ii < rw; ii++, q++) {
+    const k = (rj0 + jj) * GEN_N + ri0 + ii;
+    s.sTop[q] = sTop[k]; s.topLvl[q] = topLvl[k]; s.airLo[q] = airLo[k];
+    s.tint[q] = tint[k]; s.cap[q] = colMaxCap[k];
+    const o = voxOff[k];
+    if (o < 0) { s.off[q] = -1; continue; }
+    const span = voxSpan(voxLen(k));
+    vox.set(voxMat.subarray(o, o + span), at);
+    bits.set(visBits.subarray(o >> 3, (o + span) >> 3), at >> 3);
+    s.off[q] = at;
+    at += span;
+  }
+  s.vox = vox; s.bits = bits;
+  return s;
+}
+
+// A job that cannot even be posted takes the worker down with it, and
+// meshWorkerFail builds what the job was for.
+function meshPost(s) {
+  try {
+    meshWorker.postMessage(s, [s.sTop.buffer, s.topLvl.buffer, s.airLo.buffer, s.tint.buffer,
+      s.cap.buffer, s.off.buffer, s.vox.buffer, s.bits.buffer]);
+  } catch (err) {
+    meshWorkerFail(err);
+  }
+}
+
+// Chunk c's mesh, at its cell's current step, sent off to the worker.
+function meshDispatch(c) {
+  const s = meshSnapshot(c, MESH_MARGIN);
+  s.kind = 'mesh';
+  s.id = ++meshJobSeq;
+  s.rev = chunkRev[c];
+  s.step = gridStep[chunkGridIdx[c]];
+  meshJob[c] = s.id;
+  meshJobStep[c] = s.step;
+  meshInflight++;
+  meshPost(s);
+}
+
+// Chunk c's collider boxes, sent off to the worker; buildPendingColliders makes
+// the body when they come back.
+function colDispatch(c) {
+  const s = meshSnapshot(c, 0);
+  s.kind = 'collider';
+  s.id = ++meshJobSeq;
+  s.rev = chunkRev[c];
+  colJob[c] = s.id;
+  meshPost(s);
+}
+
+// The worker is gone: whatever it still owed is built here and now, and from
+// here on everything is, as it was before there was a worker.
+function meshWorkerFail(err) {
+  if (!meshWorker) return;
+  console.warn('mesh worker failed; meshing on the main thread', err);
+  try { meshWorker.terminate(); } catch (e) {}
+  meshWorker = null;
+  meshInflight = 0;
+  meshDone.length = 0;
+  colDone.length = 0;
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+    if (meshJob[c]) { meshJob[c] = 0; if (chunkMesh[c]) rebuildChunk(c); }
+    if (colJob[c]) { colJob[c] = 0; loadChunkCollider(c); }
+  }
+}
+
+try {
+  if (typeof Worker === 'function' && typeof Blob === 'function' && typeof URL !== 'undefined' && URL.createObjectURL) {
+    const url = URL.createObjectURL(new Blob([meshWorkerSource()], { type: 'text/javascript' }));
+    meshWorker = new Worker(url);
+    meshWorker.onmessage = (e) => {
+      const r = e.data;
+      if (r.kind === 'error') { meshWorkerFail(r.msg); return; }
+      if (r.kind === 'mesh') { meshInflight--; meshDone.push(r); }
+      else colDone.push(r);
+    };
+    meshWorker.onerror = (e) => { e.preventDefault(); meshWorkerFail(e.message); };
+  }
+} catch (err) {
+  console.warn('no mesh worker; meshing on the main thread', err);
+  meshWorker = null;
+}
+
+// Every chunk's mesh, again from the store — a load swaps the whole store out.
+// With the worker the LOD queue does it, nearest first, over the next frames;
+// without one it is done here and now, as it always was.
+function remeshAllChunks() {
+  if (!meshWorker) {
+    for (let c = 0; c < chunkMesh.length; c++) {
+      if (chunkMesh[c]) rebuildChunk(c);
+    }
+    return;
+  }
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
+    chunkRev[c]++;
+    meshJob[c] = 0;
+    if (chunkMesh[c]) chunkStep[c] = 0;
+  }
+  lodRequeue = true;
 }
 
 // ----- pass 4b: the collider -----
@@ -4012,7 +4254,7 @@ const COLLIDER_RADIUS = 5;
 const _pendingColliders = [];
 
 function loadChunkCollider(c) {
-  if (colliderBody[c]) return;
+  if (colliderBody[c] || colJob[c]) return;
   if (_pendingColliders.indexOf(c) >= 0) return;
   _pendingColliders.push(c);
 }
@@ -4020,6 +4262,7 @@ function loadChunkCollider(c) {
 // Build a chunk collider immediately (synchronously), used for spawn area.
 function buildChunkColliderSync(c) {
   if (colliderBody[c]) return;
+  colJob[c] = 0;
   const pi = _pendingColliders.indexOf(c);
   if (pi >= 0) _pendingColliders.splice(pi, 1);
   const body = new CANNON.Body({ mass: 0, material: physWorld });
@@ -4032,10 +4275,28 @@ function buildChunkColliderSync(c) {
 }
 
 function buildPendingColliders() {
+  // Boxes back from the mesh worker become bodies — unless the chunk got one
+  // meanwhile, or the store under it has changed since, when it goes back in line.
+  for (const r of colDone) {
+    const c = r.c;
+    if (colJob[c] !== r.id) continue;
+    colJob[c] = 0;
+    if (colliderBody[c]) continue;
+    if (r.rev !== chunkRev[c] || dirtyChunks.has(c)) { loadChunkCollider(c); continue; }
+    const body = new CANNON.Body({ mass: 0, material: physWorld });
+    for (const b of r.boxes) {
+      body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+    }
+    body.updateAABB();
+    world.addBody(body);
+    colliderBody[c] = body;
+  }
+  colDone.length = 0;
   let built = 0;
   while (_pendingColliders.length > 0 && built < 2) {
     const c = _pendingColliders.shift();
     if (colliderBody[c]) continue;
+    if (meshWorker) { colDispatch(c); built++; continue; }
     const body = new CANNON.Body({ mass: 0, material: physWorld });
     for (const b of buildChunkColliderBoxes(c)) {
       body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
@@ -8620,9 +8881,7 @@ function applyWorldState(s) {
   updateColTestUI();
 
   // Rebuild all meshes and colliders from voxel store
-  for (let c = 0; c < chunkMesh.length; c++) {
-    if (chunkMesh[c]) rebuildChunk(c);
-  }
+  remeshAllChunks();
   for (let c = 0; c < colliderBody.length; c++) {
     if (colliderBody[c]) rebuildChunkCollider(c);
   }

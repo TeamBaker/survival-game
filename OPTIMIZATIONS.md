@@ -62,9 +62,9 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 47. [x] DONE (v179) — kept blocks re-homed in place (each piece owns storage); cached-index users cut from the back. LOW-MEDIUM.
 48. [x] DONE (v175) — skip sleeping bodies in syncList; force-sleep settled jitterers after 120 frames if resting only on terrain/sleepers; wake-on-dig scans full bounds. MEDIUM.
 49. [x] DONE (v176) — hooked the 7 sphere collision fns (player is spheres only); only new contacts checked, 6 hooks/step vs 344-contact scan. 3000-step sim exact match. LOW-MEDIUM.
-50. [ ] Per-frame allocations — hammerAim new Vector3, shovelAim objects, creativeAim double raycast, debrisAim recursive intersectObjects. LOW-MEDIUM.
-51. [ ] Collider streaming bookkeeping — 121 loadChunkCollider calls/frame with O(n) indexOf, scans 900 chunks for unload, uses shift(). Flag array recomputed on chunk change. LOW.
-52. [ ] hasHeadroom allocates 2 Vec3s + raycastAll per call while crouch under ceiling. LOW.
+50. [x] DONE (v181) — reused scratch objects everywhere; creativeAim reuses shovelDHit ray; debrisAim closest-hit + far pull-in + range-check pruning. Highlight+STRIKE verified in browser. LOW-MEDIUM.
+51. [x] DONE (v182) — per-frame keep flags cleared via tracked list; player 3x3 square requested on chunk change; queue compacted in place; shared colliderFarFrom unload test. Walked across chunk border, no fall-through. LOW.
+52. [x] DONE (v183) — module-level scratch Vec3s + reused opts/callback; 12 crouch cycles clean. LOW.
 
 ## Bugs found (fix before/during optimization work)
 - [ ] Firefox (possibly others): distant terrain draws black + far water shows sky reflection — terrainCols GPU texture goes stale; per-chunk copyTextureToTexture in rebuildChunk suspected. Pre-existing, seen headless; check in real browsers.

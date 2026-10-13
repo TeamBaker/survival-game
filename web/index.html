@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 174;
+window.GAME_VERSION = 175;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -4436,6 +4436,8 @@ function keepChunkColliders(lo, hi, pad) {
     }
   }
 }
+// Sleeping and frozen pieces stay in this loop: the ground under them is kept
+// loaded, so one woken later never finds itself over a missing collider.
 function ensurePhysicsObjectColliders(dt) {
   _physKeep.fill(0);
   const simT = Math.min(dt + physStep, physStep * physMaxSubsteps());
@@ -4476,20 +4478,21 @@ function rebuildChunkCollider(c) {
   // v124 — wake sleeping debris whose friction surfaces vanished.
   // When terrain is dug away, cannon.js does not notify sleeping bodies
   // that their contacts are gone; they stay frozen until something bumps
-  // them.  Iterate nearby sleeping debris and wake any inside the chunk's
-  // column range.
+  // them.  Wake every sleeping body whose bounds reach into the chunk's
+  // column range (its bounds, not its centre: a piece centred in the next
+  // chunk can still be lying on this one). The mesh sync picks it up again
+  // as soon as it is awake.
   {
     const ci0 = (c % CHUNK_N) * CHUNK, cj0 = ((c / CHUNK_N) | 0) * CHUNK;
     const ci1 = Math.min(ci0 + CHUNK, GEN_N), cj1 = Math.min(cj0 + CHUNK, GEN_N);
     const cx0 = colX(ci0) - BLOCK, cx1 = colX(ci1 - 1) + BLOCK;
     const cz0 = colZ(cj0) - BLOCK, cz1 = colZ(cj1 - 1) + BLOCK;
-    for (const _wl of [fallingChunks, restedChunks]) {
-      for (const _wd of _wl) {
-        if (_wd.body.sleepState !== CANNON.Body.SLEEPING) continue;
-        const wp = _wd.body.position;
-        if (wp.x >= cx0 && wp.x <= cx1 && wp.z >= cz0 && wp.z <= cz1)
-          _wd.body.wakeUp();
-      }
+    for (let n = 0; n < syncList.length; n++) {
+      const wb = syncList[n].body;
+      if (wb.sleepState !== CANNON.Body.SLEEPING) continue;
+      if (wb.aabbNeedsUpdate) wb.updateAABB();
+      const lo = wb.aabb.lowerBound, hi = wb.aabb.upperBound;
+      if (hi.x >= cx0 && lo.x <= cx1 && hi.z >= cz0 && lo.z <= cz1) wb.wakeUp();
     }
   }
 }
@@ -5457,6 +5460,8 @@ const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled 
 const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
+const FALL_FREEZE_TICKS = 120; // frames a settled piece cannon will not put to sleep may fidget before it is put to sleep by hand
+const FALL_FREEZE_D  = 0.02;  // m it may have wandered over those frames and still count as fidgeting, not sliding
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
 const DEBRIS_GROUP   = 1;     // the default group — pieces collide with each other and with everything else
 const fallGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
@@ -5977,10 +5982,45 @@ function updateFallingChunks() {
     f.still = slow ? f.still + 1 : 0;
     if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) restFallingChunk(n);
   }
+  // A settled piece cannon keeps awake — jittering against the terrain or a
+  // neighbour, never quiet for the full sleepTimeLimit — is put to sleep by
+  // hand once it has gone FALL_FREEZE_TICKS without getting anywhere. Slowness
+  // alone is not enough (a slow slide is still a slide), so the test is how far
+  // it has moved and turned over the window. It sleeps like any other body: a
+  // contact, a dig in its chunk or a tool on it wakes it.
   for (let n = restedChunks.length - 1; n >= 0; n--) {
-    const f = restedChunks[n];
-    if (f.body.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); }
+    const f = restedChunks[n], b = f.body;
+    if (b.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); continue; }
+    if (b.sleepState === CANNON.Body.SLEEPING) { f.calm = 0; continue; }
+    if (b.velocity.lengthSquared() >= FALL_REST_V * FALL_REST_V
+     || b.angularVelocity.lengthSquared() >= FALL_REST_V * FALL_REST_V) { f.calm = 0; continue; }
+    if (!f.calm) {
+      (f.calmPos ||= new CANNON.Vec3()).copy(b.position);
+      (f.calmQuat ||= new CANNON.Quaternion()).copy(b.quaternion);
+      f.calm = 1;
+      continue;
+    }
+    if (++f.calm < FALL_FREEZE_TICKS) continue;
+    f.calm = 0;
+    const p = b.position, a = f.calmPos, q = b.quaternion, aq = f.calmQuat;
+    const dx = p.x - a.x, dy = p.y - a.y, dz = p.z - a.z;
+    const dot = Math.abs(q.x * aq.x + q.y * aq.y + q.z * aq.z + q.w * aq.w);
+    if (dx * dx + dy * dy + dz * dz < FALL_FREEZE_D * FALL_FREEZE_D && dot > 1 - 1e-5 && restsOnStill(b)) b.sleep();
   }
+}
+
+// Whether everything `body` touched in the last step is static or asleep. Two
+// sleeping bodies never wake each other, so a piece put to sleep on top of one
+// that is still awake would hang in the air once that one slid away; the
+// player (never asleep) standing on it keeps it awake too.
+function restsOnStill(body) {
+  const cs = world.contacts;
+  for (let k = 0; k < cs.length; k++) {
+    const c = cs[k];
+    const o = c.bi === body ? c.bj : c.bj === body ? c.bi : null;
+    if (o && o.type !== CANNON.Body.STATIC && o.sleepState !== CANNON.Body.SLEEPING) return false;
+  }
+  return true;
 }
 
 // ----- powder on loose pieces -----
@@ -8615,8 +8655,15 @@ function tick() {
   flushDirtyColliders();
   ensurePhysicsObjectColliders(dt);
   world.step(physStep, dt, physMaxSubsteps());
+  // A sleeping body does not integrate, so its pose only changes through code
+  // that wakes it (rebuildDebrisBody, the collider rebuild, a contact) — one
+  // copy after it falls asleep is the last it needs until it wakes again.
   for (let i = 0; i < syncList.length; i++) {
     const s = syncList[i];
+    if (s.body.sleepState === CANNON.Body.SLEEPING) {
+      if (s.asleep) continue;
+      s.asleep = true;
+    } else s.asleep = false;
     s.mesh.position.copy(s.body.position);
     s.mesh.quaternion.copy(s.body.quaternion);
   }

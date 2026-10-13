@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 184;
+window.GAME_VERSION = 185;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -8523,6 +8523,7 @@ function restorePlaced(ss) {
       (placedByChunk[c] || (placedByChunk[c] = new Set())).add(key);
     }
   }
+  stKeyMap.clear();   // nothing solved for the last world carries into this one
   stressRev++;
 }
 
@@ -8561,7 +8562,8 @@ const stKey    = new Float64Array(ST_CAP);
 const stMat    = new Uint8Array(ST_CAP);
 const stFixed  = new Uint8Array(ST_CAP);     // 0 free, 1 support, 2 unsupported (nothing to hang off)
 const stStress = new Float64Array(ST_CAP);
-const stLut    = new Int16Array(ST_CAP);
+const stLut    = new Int16Array(ST_CAP);   // ramp index on show; -1 not solved yet
+const stHeld   = new Int16Array(ST_CAP);   // what each node showed before the rebuild
 const stU = new Float64Array(ST_CAP * 6), stUPrev = new Float64Array(ST_CAP * 6);
 const stF = new Float64Array(ST_CAP * 6), stDiag = new Float64Array(ST_CAP * 6);
 const stR = new Float64Array(ST_CAP * 6), stZ = new Float64Array(ST_CAP * 6);
@@ -8572,6 +8574,7 @@ const stAdjStart = new Int32Array(ST_CAP + 1), stAdj = new Int32Array(ST_ECAP * 
 let stN = 0, stNE = 0, stNTerr = 0;
 let stKeyMap = new Map(), stKeyMapPrev = new Map();
 let stRz = 0, stF2 = 0, stIter = 0, stConverged = true;
+let stRelaid = false;   // instances moved since colours were last written
 // Built-block candidates inside the radius, before the cap.
 let stCandKey = new Float64Array(4096), stCandDist = new Uint16Array(4096);
 const stDistHist = new Int32Array(STRESS_RADIUS + 2);
@@ -8637,14 +8640,34 @@ function stressElem(x, e) {
   _stN = EA * dA;   // + tension, - compression
   _stM = Math.sqrt(Math.max(b1 * b1 + _stBm1 * _stBm1, b2 * b2 + _stBm2 * _stBm2) + T * T);
 }
-// y = K x, beam by beam; supports' rows stay zero.
+// y = K x, beam by beam; supports' rows stay zero. stressElem() written out
+// inline: this is nearly all of a CG iteration, and it runs every one.
 function stressKmul(x, y) {
   y.fill(0, 0, stN * 6);
   for (let e = 0; e < stNE; e++) {
-    stressElem(x, e);
-    const a = stEA[e], b = stEB[e];
-    if (a >= 0) for (let d = 0; d < 6; d++) y[a * 6 + d] += _stFe[d];
-    if (b >= 0) for (let d = 0; d < 6; d++) y[b * 6 + d] += _stFe[6 + d];
+    const a = stEA[e], b = stEB[e], ax = stEAx[e], EA = stEK[e], k = EA / 12;
+    const t1 = STRESS_PERP1[ax], t2 = STRESS_PERP2[ax];
+    const oa = a * 6, ob = b * 6;
+    let uA = 0, v1A = 0, v2A = 0, wA = 0, r1A = 0, r2A = 0;
+    let uB = 0, v1B = 0, v2B = 0, wB = 0, r1B = 0, r2B = 0;
+    if (a >= 0) { uA = x[oa + ax]; v1A = x[oa + t1]; v2A = x[oa + t2]; wA = x[oa + 3 + ax]; r1A = x[oa + 3 + t1]; r2A = x[oa + 3 + t2]; }
+    if (b >= 0) { uB = x[ob + ax]; v1B = x[ob + t1]; v2B = x[ob + t2]; wB = x[ob + 3 + ax]; r1B = x[ob + 3 + t1]; r2B = x[ob + 3 + t2]; }
+    const N = EA * (uB - uA), T = k * (wB - wA);
+    // Bending in the t1 plane about t2 (slope +r2), and in the t2 plane about t1 (slope -r1).
+    const d1 = v1A - v1B, f1 = k * (12 * d1 + 6 * (r2A + r2B));
+    const m1a = k * (6 * d1 + 4 * r2A + 2 * r2B), m1b = k * (6 * d1 + 2 * r2A + 4 * r2B);
+    const d2 = v2A - v2B, f2 = k * (12 * d2 - 6 * (r1A + r1B));
+    const m2a = k * (6 * d2 - 4 * r1A - 2 * r1B), m2b = k * (6 * d2 - 2 * r1A - 4 * r1B);
+    if (a >= 0) {
+      y[oa + ax] -= N; y[oa + 3 + ax] -= T;
+      y[oa + t1] += f1; y[oa + 3 + t2] += m1a;
+      y[oa + t2] += f2; y[oa + 3 + t1] -= m2a;
+    }
+    if (b >= 0) {
+      y[ob + ax] += N; y[ob + 3 + ax] += T;
+      y[ob + t1] -= f1; y[ob + 3 + t2] += m1b;
+      y[ob + t2] -= f2; y[ob + 3 + t1] -= m2b;
+    }
   }
   for (let n = 0; n < stN; n++) if (stFixed[n]) y.fill(0, n * 6, n * 6 + 6);
 }
@@ -8781,6 +8804,7 @@ function stressRebuild(cx, cy, cz) {
     const old = stKeyMapPrev.get(stKey[n]);
     if (old !== undefined) stU.set(stUPrev.subarray(old * 6, old * 6 + 6), n * 6);
     else stU.fill(0, n * 6, n * 6 + 6);
+    stHeld[n] = old !== undefined ? stLut[old] : -1;
   }
   for (let n = 0; n < stNTerr; n++) {
     const key = stKey[n], m = stMat[n];
@@ -8839,7 +8863,10 @@ function stressRebuild(cx, cy, cz) {
   for (let n = 0; n < stN; n++) {
     if (stFixed[n]) { stU.fill(0, n * 6, n * 6 + 6); stF.fill(0, n * 6, n * 6 + 6); stDiag.fill(1, n * 6, n * 6 + 6); }
   }
-  stLut.fill(-1, 0, stN);   // every colour is written fresh
+  // Until this solve converges, every block keeps the colour it had and a new
+  // one shows as not solved yet: a CG iterate part way there is not a stress
+  // field, and drawn block by block it reads as noise.
+  stLut.set(stHeld.subarray(0, stN));
 
   // --- conjugate gradients, from the warm start ---
   stressKmul(stU, stQ);
@@ -8854,6 +8881,7 @@ function stressRebuild(cx, cy, cz) {
   stConverged = stF2 === 0 || stressDot(stR, stR) < STRESS_TOL2 * stF2;
 
   stressLayout();
+  stRelaid = true;
 }
 
 // Overlay instances: built blocks with an open face, and every block of each piece.
@@ -8917,36 +8945,50 @@ function stressIterate() {
 }
 
 // Each block's worst beam, |N| + M/L, against its own strength, into the overlays.
+// Only from a converged solve; before that only what can't wait — a block
+// hanging off nothing — changes, and a re-laid overlay is redrawn as held.
 function stressRecolor() {
-  stStress.fill(0, 0, stN);
-  for (let e = 0; e < stNE; e++) {
-    stressElem(stU, e);
-    const s = Math.abs(_stN) + _stM;
-    const a = stEA[e], b = stEB[e];
-    if (a >= 0 && s > stStress[a]) stStress[a] = s;
-    if (b >= 0 && s > stStress[b]) stStress[b] = s;
+  if (stConverged) {
+    stStress.fill(0, 0, stN);
+    for (let e = 0; e < stNE; e++) {
+      stressElem(stU, e);
+      const s = Math.abs(_stN) + _stM;
+      const a = stEA[e], b = stEB[e];
+      if (a >= 0 && s > stStress[a]) stStress[a] = s;
+      if (b >= 0 && s > stStress[b]) stStress[b] = s;
+    }
   }
-  let terrDirty = false;
+  let terrDirty = stRelaid, piecesDirty = stRelaid;
+  stRelaid = false;
   for (let n = 0; n < stN; n++) {
-    const str = MAT_STATS[stMat[n]]?.strength ?? 0;
     // Hanging off nothing at all reads as the worst there is.
-    const idx = stFixed[n] === 2 ? STRESS_LUT_N - 1 : stressLutIndex(stStress[n], str);
+    let idx;
+    if (stFixed[n] === 2) idx = STRESS_LUT_N - 1;
+    else if (stConverged) idx = stressLutIndex(stStress[n], MAT_STATS[stMat[n]]?.strength ?? 0);
+    else continue;
     if (idx === stLut[n]) continue;
     stLut[n] = idx;
     if (n < stNTerr) terrDirty = true;
+    else piecesDirty = true;
   }
   if (terrDirty) {
     for (let t = 0; t < stressTerr.count; t++) stressWriteColor(stressTerr, t, stTerrInst[t]);
     stressTerr.instanceColor.needsUpdate = true;
   }
-  for (let p = 0; p < stPieces.length; p++) {
-    const pc = stPieces[p];
-    for (let q = 0; q < pc.count; q++) stressWriteColor(pc.overlay, q, pc.start + q);
-    pc.overlay.instanceColor.needsUpdate = true;
+  if (piecesDirty) {
+    for (let p = 0; p < stPieces.length; p++) {
+      const pc = stPieces[p];
+      for (let q = 0; q < pc.count; q++) stressWriteColor(pc.overlay, q, pc.start + q);
+      pc.overlay.instanceColor.needsUpdate = true;
+    }
   }
 }
+// Not solved yet (stLut -1): a neutral grey, not a reading on the ramp.
+const STRESS_PENDING = 0.35;
 function stressWriteColor(im, inst, n) {
-  const o = stLut[n] * 3, a = im.instanceColor.array;
+  const a = im.instanceColor.array, l = stLut[n];
+  if (l < 0) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
+  const o = l * 3;
   a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];
 }
 

@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 171;
+window.GAME_VERSION = 172;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -6592,30 +6592,58 @@ const GRAV_MAX  = 1024;   // blocks one fill walks before it gives the group up 
 // the group's blocks, or null if it is anchored, or too big to be worth walking.
 // `topOf`, if given, says what each column's surface was when the group came
 // loose, for a group taken later than that (flushGravity).
+//
+// A block is known to reach bedrock without walking there when it sits under
+// its column's airLo — nothing but solid from it to the floor — and no higher
+// than the bed, under which the generator never laid water and nothing since
+// can place any. An untouched column is all that from its bed down, so a fill
+// that steps into the hillside stops at the first block of it. Finding one only
+// ends the walk sooner: the group was anchored, and the full fill would have
+// said null too, at the floor or at GRAV_MAX.
+const adriftSeen = new Set();   // gravCell keys the current fill has reached
+const adriftCells = [];         // i, j, lvl, m, ... — the same, in the order reached
+const adriftStack = [];         // i, j, lvl, ... — still to walk out from
+function adriftAnchored(i, j, lvl) {
+  const k = j * GEN_N + i;
+  return lvl <= VOX_FLOOR || (lvl < airLo[k] && lvl <= bedLvl[k]);
+}
 function adriftGroup(i, j, lvl, topOf) {
   if (!gravSolid(i, j, lvl)) return null;
-  const first = { i, j, lvl, m: voxelAt(i, j, lvl), color: terrainBlockColor(i, j, lvl, voxelAt(i, j, lvl), topOf?.(j * GEN_N + i)) };
-  const unit = new Map([[gravKey(i, j, lvl), first]]);
-  const stack = [first];
-  while (stack.length) {
-    const b = stack.pop();
-    if (b.lvl <= VOX_FLOOR) return null;    // sitting on bedrock: the whole group is held up
+  if (adriftAnchored(i, j, lvl)) return null;
+  adriftSeen.clear();
+  adriftCells.length = 0;
+  adriftStack.length = 0;
+  adriftSeen.add(gravCell(i, j, lvl));
+  adriftCells.push(i, j, lvl, voxelAt(i, j, lvl));
+  adriftStack.push(i, j, lvl);
+  while (adriftStack.length) {
+    const bl = adriftStack.pop(), bj = adriftStack.pop(), bi = adriftStack.pop();
     for (const [di, dj, dl] of GRAV_DIRS) {
-      const ii = b.i + di, jj = b.j + dj, ll = b.lvl + dl;
-      const key = gravKey(ii, jj, ll);
-      if (unit.has(key) || !gravSolid(ii, jj, ll)) continue;
-      if (unit.size >= GRAV_MAX) return null;
-      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll), color: terrainBlockColor(ii, jj, ll, voxelAt(ii, jj, ll), topOf?.(jj * GEN_N + ii)) };
-      unit.set(key, nb);
-      stack.push(nb);
+      const ii = bi + di, jj = bj + dj, ll = bl + dl;
+      // Off the field is air, and has no key of its own.
+      if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+      const key = gravCell(ii, jj, ll);
+      if (adriftSeen.has(key) || !gravSolid(ii, jj, ll)) continue;
+      if (adriftSeen.size >= GRAV_MAX) return null;
+      if (adriftAnchored(ii, jj, ll)) return null;   // sitting on bedrock: the whole group is held up
+      adriftSeen.add(key);
+      adriftCells.push(ii, jj, ll, voxelAt(ii, jj, ll));
+      adriftStack.push(ii, jj, ll);
     }
   }
   // A group of nothing but loose grain does not come down as one piece: it is
   // left to the cascade, which sheds it a grain at a time from the bottom. Any
   // solid in the mix holds the rest together, and the powder rides along.
   let allPowder = true;
-  for (const b of unit.values()) if (!MAT_STATS[b.m]?.powder) { allPowder = false; break; }
+  for (let q = 3; q < adriftCells.length; q += 4) if (!MAT_STATS[adriftCells[q]]?.powder) { allPowder = false; break; }
   if (allPowder) return null;
+  // Loose, so now it is worth shading: in the order the fill reached them, which
+  // is the order the piece is built in.
+  const unit = new Map();
+  for (let q = 0; q < adriftCells.length; q += 4) {
+    const bi = adriftCells[q], bj = adriftCells[q + 1], bl = adriftCells[q + 2], m = adriftCells[q + 3];
+    unit.set(gravCell(bi, bj, bl), { i: bi, j: bj, lvl: bl, m, color: terrainBlockColor(bi, bj, bl, m, topOf?.(bj * GEN_N + bi)) });
+  }
   return unit;
 }
 
@@ -6628,10 +6656,36 @@ function applyGravity(i, j, lvl) {
   for (const [di, dj, dl] of GRAV_DIRS) breakOffAdrift(i + di, j + dj, lvl + dl);
 }
 
+// Takes the group at (i, j, lvl) out if it is adrift, then every group that
+// its going left adrift in turn. Depth first, as a recursion through the
+// neighbours would go — each piece's neighbours are looked at in lattice and
+// GRAV_DIRS order, and a piece that comes away has all of its own followed up
+// before its parent's next neighbour — but on a worklist, so a cascade of any
+// size cannot run out of stack. Only the first group is shaded against `topOf`.
 function breakOffAdrift(i, j, lvl, topOf) {
   const unit = adriftGroup(i, j, lvl, topOf);
   if (!unit) return;
+  const work = [adriftFrame(unit)];
+  while (work.length) {
+    const f = work[work.length - 1];
+    if (f.q >= f.blocks.length * GRAV_DIRS.length) { work.pop(); continue; }
+    const b = f.blocks[(f.q / GRAV_DIRS.length) | 0], [di, dj, dl] = GRAV_DIRS[f.q % GRAV_DIRS.length];
+    f.q++;
+    const ni = b.i + di, nj = b.j + dj, nl = b.lvl + dl;
+    // Off the field is air; it would be checked and passed over all the same.
+    if (ni < 0 || nj < 0 || ni >= GEN_N || nj >= GEN_N) continue;
+    const nk = gravCell(ni, nj, nl);
+    if (f.checked.has(nk)) continue;
+    f.checked.add(nk);
+    if (!gravSolid(ni, nj, nl)) continue;
+    const next = adriftGroup(ni, nj, nl);
+    if (next) work.push(adriftFrame(next));
+  }
+}
 
+// Cuts one loose group out of the grid and sets it falling, and hands back
+// where breakOffAdrift is in following up its neighbours.
+function adriftFrame(unit) {
   // The loose blocks leave the grid. Nothing is written back lower down — the
   // piece itself takes over from here.
   for (const b of unit.values()) setVoxel(b.i, b.j, b.lvl, AIR);
@@ -6666,16 +6720,7 @@ function breakOffAdrift(i, j, lvl, topOf) {
   spawnFallingChunk(unit);
 
   // Propagate: blocks next to the ones that fell might now be adrift too.
-  const checked = new Set();
-  for (const b of unit.values()) {
-    for (const [di, dj, dl] of GRAV_DIRS) {
-      const ni = b.i + di, nj = b.j + dj, nl = b.lvl + dl;
-      const nk = ni + ',' + nj + ',' + nl;
-      if (checked.has(nk)) continue;
-      checked.add(nk);
-      if (gravSolid(ni, nj, nl)) breakOffAdrift(ni, nj, nl);
-    }
-  }
+  return { blocks: [...unit.values()], q: 0, checked: new Set() };
 }
 
 // ----- gravity owed by the powder pass -----

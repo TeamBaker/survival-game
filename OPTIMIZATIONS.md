@@ -56,7 +56,7 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 41. [x] DONE (v172) — iterative worklist, same visit order as recursion. MEDIUM.
 42. [x] DONE (v173) — sweep removed; adriftFrame gap marked, budget overflow carries via powderCarry, save-load one-off check. pt5 proves carry works. MEDIUM.
 43. [x] DONE (v174) — per-frame piece cache w/ AABB reject (1+1e-6 margin), piece list built once; mutation-tested via pt6 (10 breaks caught). MEDIUM-HIGH.
-44. [ ] Falling grains = separate meshes, one draw call each, LOD scale recomputed per grain. One InstancedMesh per material. MEDIUM.
+44. [x] DONE (v180) — one InstancedMesh per material, plain grain records, per-frame repack after terrain powder pass; LOD kept per grain w/ sqrt removed. + save crash fix (from.toArray). MEDIUM.
 45. [x] DONE (v177) — one debrisColliderBoxes function, integer keys, reused buffers; box-identical over 50k random pieces. MEDIUM.
 46. [x] DONE (v178) — indexed loops, typed scratch buffers, numeric shedKey; 20k-piece differential 0 mismatches. LOW-MEDIUM.
 47. [x] DONE (v179) — kept blocks re-homed in place (each piece owns storage); cached-index users cut from the back. LOW-MEDIUM.

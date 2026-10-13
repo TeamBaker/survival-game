@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 180;
+window.GAME_VERSION = 181;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5373,28 +5373,74 @@ function spotBlocked(i, j, lvl) {
 
 const aimDir = new THREE.Vector3();
 
-// The cell a world point falls in. Rubble lies wherever the physics dropped it,
-// off the grid and at any angle, so a place against it has to be snapped back.
-const cellOf = (x, y, z) => ({ i: colI(x), j: colJ(z), lvl: Math.floor(y / BLOCK) });
+// What a debrisAim hit means to the shovel and the placer, written into `sel`:
+// the piece, the block of it under the crosshair (lattice index and its position
+// in the piece's frame), where a block placed against it would go, and the world
+// cell the hit point falls in. Rubble lies wherever the physics dropped it, off
+// the grid and at any angle, so a place against it has to be snapped back.
+function setDebrisSel(sel, dHit) {
+  const p = dHit.point;
+  const dm = dHit.piece;
+  const q = debrisHitBlock(dHit);
+  sel.mesh = dm;
+  sel.q = q;
+  sel.blockLocal = q >= 0 ? dm.userData.blocks[q].pos : null;
+  sel.local = debrisSpot(dm, p, aimDir);
+  sel.i = colI(p.x); sel.j = colJ(p.z); sel.lvl = Math.floor(p.y / BLOCK);
+  return sel;
+}
 
 // Fallen pieces are meshes, not store entries, so the DDA cannot see them at
 // all — they get their own raycast.
 const debrisRay = new THREE.Raycaster();
 const debrisOrigin = new THREE.Vector3();
+const debrisHits = [];
+let debrisBest = null, debrisBestPiece = null;
+// The same walk intersectObjects(debris.children, true) does — each object, then
+// its children, depth first, layers checked — but keeping only the nearest hit
+// as it goes and pulling the ray's far in to it, so every block after that
+// which can only be further away is thrown out by three's own sphere test
+// instead of going through its triangles. Strict < keeps the first of equal
+// hits, which is what the stable sort over the whole list used to pick.
+function debrisCast(o, piece) {
+  if (o.layers.test(debrisRay.layers)) {
+    debrisHits.length = 0;
+    o.raycast(debrisRay, debrisHits);
+    for (let k = 0; k < debrisHits.length; k++) {
+      const h = debrisHits[k];
+      if (debrisBest === null || h.distance < debrisBest.distance) { debrisBest = h; debrisBestPiece = piece; }
+    }
+    if (debrisBest !== null) debrisRay.far = debrisBest.distance;
+  }
+  const kids = o.children;
+  for (let c = 0; c < kids.length; c++) debrisCast(kids[c], piece);
+}
 function debrisAim(ox, oy, oz, reach = SHOVEL_REACH) {
   if (debris.children.length === 0) return null;
   debrisRay.set(debrisOrigin.set(ox, oy, oz), aimDir);
   debrisRay.far = reach;
   // Recursive: a piece's powder is drawn by grain layers that hang off its mesh
   // as children, and a hit on one of those is a hit on the piece.
-  const hits = debrisRay.intersectObjects(debris.children, true);
-  if (!hits.length) return null;
-  const hit = hits[0];
-  let o = hit.object;
-  while (o.parent && o.parent !== debris) o = o.parent;
-  hit.piece = o;
+  debrisBest = null; debrisBestPiece = null;
+  const pieces = debris.children;
+  for (let c = 0; c < pieces.length; c++) debrisCast(pieces[c], pieces[c]);
+  debrisHits.length = 0;
+  const hit = debrisBest;
+  if (hit === null) return null;
+  hit.piece = debrisBestPiece;
+  debrisBest = null; debrisBestPiece = null;
   return hit;
 }
+
+// What shovel.hit / .spot / .debris point at when they are set: filled in place
+// each frame rather than made new. Everything that reads them takes the fields
+// out straight away, and creativeAim copies them into its own.
+const shovelHitCell = { i: 0, j: 0, lvl: 0 };
+const shovelSpotCell = { i: 0, j: 0, lvl: 0 };
+const shovelDebrisSel = { mesh: null, local: null, q: -1, blockLocal: null, i: 0, j: 0, lvl: 0 };
+// This frame's debris hit, kept for creativeAim so it need not cast the same ray again.
+let shovelDHit = null;
+function setCell(c, i, j, lvl) { c.i = i; c.j = j; c.lvl = lvl; return c; }
 
 // Refresh what the tool is pointing at. Runs every frame while the shovel is out
 // so the highlight boxes and the two buttons are always telling the truth.
@@ -5402,6 +5448,7 @@ function shovelAim() {
   shovel.hit = null;
   shovel.spot = null;
   shovel.debris = null;
+  shovelDHit = null;
   if (!shovel.on) return;
 
   camera.getWorldDirection(aimDir);
@@ -5418,21 +5465,17 @@ function shovelAim() {
   // Whichever surface is nearer wins: the voxel ray is only let through as far
   // as the piece of rubble in front of it.
   const dHit = debrisAim(ox, oy, oz);
+  shovelDHit = dHit;
   if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
-    shovel.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
-    shovel.spot = { i: ddaHit.i + ddaFace.di, j: ddaHit.j + ddaFace.dj, lvl: ddaHit.lvl + ddaFace.dl };
+    shovel.hit = setCell(shovelHitCell, ddaHit.i, ddaHit.j, ddaHit.lvl);
+    shovel.spot = setCell(shovelSpotCell, ddaHit.i + ddaFace.di, ddaHit.j + ddaFace.dj, ddaHit.lvl + ddaFace.dl);
   } else if (dHit) {
     // Looking at a fallen piece. Digging takes off the one block under the
     // crosshair; a place joins the piece's own lattice, against the face you can
     // see, and from then on rides with it — the world grid does not come into it.
-    const p = dHit.point;
-    const dm = dHit.piece;
     // Which block that is, as an index into the piece's lattice. Its position is
     // in the piece's frame, which is what the highlight and the dig both want.
-    const q = debrisHitBlock(dHit);
-    const blockLocal = q >= 0 ? dm.userData.blocks[q].pos : null;
-    shovel.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), q, blockLocal },
-                                  cellOf(p.x, p.y, p.z));
+    shovel.debris = setDebrisSel(shovelDebrisSel, dHit);
   } else if (camMode !== CAM.FREE) {
     // Nothing under the crosshair. Fall back to what you are standing on, and to
     // the ground a stride ahead of you for the other half — looking at the sky
@@ -5440,11 +5483,11 @@ function shovelAim() {
     const p = playerBody.position;
     const i = colI(p.x), j = colJ(p.z);
     const top = solidTopAt(i, j);
-    if (top !== NO_COLUMN) shovel.hit = { i, j, lvl: top };
+    if (top !== NO_COLUMN) shovel.hit = setCell(shovelHitCell, i, j, top);
     const ai = colI(p.x - Math.sin(state.yaw) * 1.5);
     const aj = colJ(p.z - Math.cos(state.yaw) * 1.5);
     const atop = solidTopAt(ai, aj);
-    if (atop !== NO_COLUMN) shovel.spot = { i: ai, j: aj, lvl: atop + 1 };
+    if (atop !== NO_COLUMN) shovel.spot = setCell(shovelSpotCell, ai, aj, atop + 1);
   }
 
   // A place has to land in a cell the store can actually hold a block in, that
@@ -7220,6 +7263,9 @@ refreshShovelUI();
 // Same ray as the shovel's, but it only wants the solid cell: there is no spot
 // to fill and rubble is already loose, so a piece of it in the way just shortens
 // the reach rather than becoming a target.
+const hammerHitCell = { i: 0, j: 0, lvl: 0 };
+const hammerDebrisSel = { mesh: null, idx: -1 };
+const hammerWp = new THREE.Vector3();
 function hammerAim() {
   hammer.hit = null;
   hammer.debris = null;
@@ -7238,7 +7284,7 @@ function hammerAim() {
   if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
     const m = voxelAt(ddaHit.i, ddaHit.j, ddaHit.lvl);
     if (m !== AIR && m !== WATER) {
-      hammer.hit = { i: ddaHit.i, j: ddaHit.j, lvl: ddaHit.lvl };
+      hammer.hit = setCell(hammerHitCell, ddaHit.i, ddaHit.j, ddaHit.lvl);
       return;
     }
   }
@@ -7248,9 +7294,10 @@ function hammerAim() {
     const lat = dm.userData.blocks;
     const idx = debrisHitBlock(dHit);
     if (idx >= 0) {
-      hammer.debris = { mesh: dm, idx };
+      hammerDebrisSel.mesh = dm; hammerDebrisSel.idx = idx;
+      hammer.debris = hammerDebrisSel;
       // Store the actual world position for the highlight.
-      hammer.debrisWp = new THREE.Vector3().copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);
+      hammer.debrisWp = hammerWp.copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);
       hammer.hit = true;  // truthy so the highlight shows
     }
   }
@@ -7869,6 +7916,9 @@ const creative = {
 
 // Same ray as the shovel's — reuse its aim wholesale rather than duplicating
 // the DDA, debris, and face-adjacency logic a second time.
+const creativeHitCell = { i: 0, j: 0, lvl: 0 };
+const creativeSpotCell = { i: 0, j: 0, lvl: 0 };
+const creativeDebrisSel = { mesh: null, local: null, q: -1, blockLocal: null, i: 0, j: 0, lvl: 0 };
 function creativeAim() {
   creative.hit = null;
   creative.spot = null;
@@ -7878,35 +7928,26 @@ function creativeAim() {
   shovel.on = true;
   shovelAim();
   shovel.on = wasOn;
-  creative.hit = shovel.hit;
-  creative.spot = shovel.spot;
-  creative.debris = shovel.debris;
+  // Copied, not shared: the shovel's own aim fills the same cells in place.
+  const sh = shovel.hit, ss = shovel.spot, sd = shovel.debris;
+  creative.hit = sh ? setCell(creativeHitCell, sh.i, sh.j, sh.lvl) : null;
+  creative.spot = ss ? setCell(creativeSpotCell, ss.i, ss.j, ss.lvl) : null;
+  creative.debris = sd ? Object.assign(creativeDebrisSel, sd) : null;
 
   // shovelAim() only falls back to debris when the terrain ray misses
   // outright, so a piece resting on the ground it came from — same cell,
-  // same distance — never wins there. Re-run the debris ray here and let it
-  // take over whenever it is at least as close as whatever terrain the DDA
-  // found, so the placer can still target rubble sitting on solid ground.
-  camera.getWorldDirection(aimDir);
-  let ox, oy, oz;
-  if (camMode === CAM.FREE) {
-    ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
-  } else {
-    const p = playerBody.position;
-    ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
-  }
-  const dHit = debrisAim(ox, oy, oz);
-  if (dHit) {
+  // same distance — never wins there. Let the debris hit take over whenever it
+  // is at least as close as whatever terrain the DDA found, so the placer can
+  // still target rubble sitting on solid ground. It is the hit shovelAim just
+  // took down the same ray, so there is no need to cast it again; and if the
+  // shovel already settled on it, creative.debris is already exactly that.
+  const dHit = shovelDHit;
+  if (dHit && !creative.debris) {
     // ddaT.v only reflects this call's DDA when it actually hit something —
     // it's stale otherwise, so treat a miss as no terrain to compete with.
     const terrainFaceDist = creative.hit ? ddaT.v * BLOCK : Infinity;
     if (dHit.distance <= terrainFaceDist) {
-      const p = dHit.point;
-      const dm = dHit.piece;
-      const q = debrisHitBlock(dHit);
-      const blockLocal = q >= 0 ? dm.userData.blocks[q].pos : null;
-      creative.debris = Object.assign({ mesh: dm, local: debrisSpot(dm, p, aimDir), q, blockLocal },
-                                      cellOf(p.x, p.y, p.z));
+      creative.debris = setDebrisSel(creativeDebrisSel, dHit);
       creative.hit = null;
       creative.spot = null;
     }

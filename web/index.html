@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 173;
+window.GAME_VERSION = 174;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -6048,7 +6048,40 @@ function shedPowder() {
 
 // Where the loose grains end up: the ground if there is ground under them, the
 // rubble if there is rubble, and nowhere at all if they have left the field.
+//
+// Each piece's blocks are put into the world once per frame, with a box round
+// them; a grain outside a piece's box (grown by a block) cannot be within a
+// block of any of its blocks, nor above one it is not above, so the per-block
+// walk only runs for pieces the grain is actually near. Anything that lands —
+// on the ground or on a piece — can spawn, grow or move pieces, so it starts
+// the boxes and the piece list over.
+const powderCatchCache = new WeakMap();   // mesh -> { stamp, n, w, minX..maxZ }
+let powderCatchStamp = 0;
+function powderCatchBox(mesh) {
+  let c = powderCatchCache.get(mesh);
+  if (c && c.stamp === powderCatchStamp) return c;
+  if (!c) { c = { stamp: 0, n: 0, w: new Float64Array(0), minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0 }; powderCatchCache.set(mesh, c); }
+  c.stamp = powderCatchStamp;
+  mesh.updateWorldMatrix(true, false);
+  const lat = mesh.userData.blocks, n = lat.length;
+  if (c.w.length < n * 3) c.w = new Float64Array(n * 3);
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let q = 0; q < n; q++) {
+    const w = powderProbe.copy(lat[q].pos).applyMatrix4(mesh.matrixWorld);
+    c.w[q * 3] = w.x; c.w[q * 3 + 1] = w.y; c.w[q * 3 + 2] = w.z;
+    if (w.x < minX) minX = w.x; if (w.x > maxX) maxX = w.x;
+    if (w.y < minY) minY = w.y; if (w.y > maxY) maxY = w.y;
+    if (w.z < minZ) minZ = w.z; if (w.z > maxZ) maxZ = w.z;
+  }
+  c.n = n;
+  c.minX = minX; c.minY = minY; c.minZ = minZ; c.maxX = maxX; c.maxY = maxY; c.maxZ = maxZ;
+  return c;
+}
+
 function catchPowder(dt) {
+  powderCatchStamp++;
+  let pieces = null;   // restedChunks then fallingChunks, built on first need
+  const reach = BLOCK * (1 + 1e-6);   // a hair over a block, so rounding never rejects a catch
   for (let n = powderFalling.length - 1; n >= 0; n--) {
     const p = powderFalling[n];
     p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
@@ -6076,25 +6109,32 @@ function catchPowder(dt) {
       }
       if (p.mesh) scene.remove(p.mesh);
       powderFalling.splice(n, 1);
+      powderCatchStamp++; pieces = null;   // the edit may have brought pieces down
       continue;
     }
     // Rubble lies at whatever angle the physics left it, so the grain is snapped
     // to the piece's own lattice. Never back onto the piece it fell off: that one
     // had no room for it, and it would only shed again next frame.
-    for (const f of restedChunks.concat(fallingChunks)) {
+    if (!pieces) pieces = restedChunks.concat(fallingChunks);
+    const px = p.pos.x, py = p.pos.y, pz = p.pos.z;
+    for (const f of pieces) {
       const mesh = f.mesh;
       if (mesh === p.from) continue;
-      mesh.updateWorldMatrix(true, false);
-      let local = null;
-      for (const b of mesh.userData.blocks) {
-        const w = powderProbe.copy(b.pos).applyMatrix4(mesh.matrixWorld);
-        if (w.y < p.pos.y && w.distanceTo(p.pos) <= BLOCK) { local = debrisSpot(mesh, p.pos, powderZero); }
-        if (local) break;
+      const c = powderCatchBox(mesh);
+      if (py <= c.minY || px < c.minX - reach || px > c.maxX + reach || py > c.maxY + reach
+          || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
+      let near = false;
+      for (let q = 0, w = c.w; q < c.n; q++) {
+        if (w[q * 3 + 1] < py && powderProbe.set(w[q * 3], w[q * 3 + 1], w[q * 3 + 2]).distanceTo(p.pos) <= BLOCK) { near = true; break; }
       }
+      if (!near) continue;
+      // The spot depends only on the piece and the grain, not on which block was near.
+      const local = debrisSpot(mesh, p.pos, powderZero);
       if (!local) continue;
       placeOnDebris(mesh, local, p.mat);
       if (p.mesh) scene.remove(p.mesh);
       powderFalling.splice(n, 1);
+      powderCatchStamp++; pieces = null;   // the piece grew and was rebuilt
       break;
     }
   }

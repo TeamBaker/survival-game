@@ -54,7 +54,7 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 39. [x] DONE (v171) — powder pass owes gravity + face/chunk refresh, pays once at pass end; per-grain guard (integer keys, anchored-route memo) pays early only if the grain's group is already loose. Same groups/order/colours as grain-at-a-time: 0 diffs over 3,000 random worlds (guard off → 922 diffs). HIGH.
 40. [x] DONE (v172) — adriftAnchored() early stop (airLo+bed), integer keys, shared arrays, colors only after loose. 3000-world differential 0 mismatches. HIGH.
 41. [x] DONE (v172) — iterative worklist, same visit order as recursion. MEDIUM.
-42. [ ] Terrain powder sweep scans 120,000 columns every 10th frame — overhangs only from edits, powderDirty already tracks. Remove or spread. MEDIUM.
+42. [x] DONE (v173) — sweep removed; adriftFrame gap marked, budget overflow carries via powderCarry, save-load one-off check. pt5 proves carry works. MEDIUM.
 43. [ ] catchPowder scales badly — concat() + applyMatrix4 + distanceTo per block of every piece per grain per frame. Bounding-sphere reject first. MEDIUM-HIGH (collapses).
 44. [ ] Falling grains = separate meshes, one draw call each, LOD scale recomputed per grain. One InstancedMesh per material. MEDIUM.
 45. [ ] Debris greedy-collider code copied 3× (lines 5147, 5733, 5520) — string keys + split(',').map(Number) in loops = GC garbage. One shared function, integer keys. MEDIUM.

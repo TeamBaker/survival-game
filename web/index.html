@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 178;
+window.GAME_VERSION = 179;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -6046,7 +6046,7 @@ function shedPowder() {
       f.shedKey = shedKey;
       if (!lat.some((b) => MAT_STATS[b.mat]?.powder)) continue;
       // Cells are taken once, up front: the walk runs from the back, so a cut
-      // never shifts the index of a block still to come.
+      // never moves a block still to come.
       const { grid, cell, w, wd } = debrisCells(lat, debrisCellsShed);
       const step = Math.sign(dx) + Math.sign(dy) * wd + Math.sign(dz) * w;
       mesh.updateWorldMatrix(true, false);   // it was moved by the body this frame
@@ -6341,26 +6341,35 @@ function rebuildDebrisBody(mesh, body) {
   }
 }
 
-// Take block `q` off a piece. Powder is an instance in its grain layer, which
-// closes its own gap; one of the piece's own cubes sits at the front of the
-// lattice in step with the instance buffer, so the gap behind it has to be
-// closed and one fewer drawn.
+// Take block `q` off a piece. Nothing behind it shifts: every hole is filled
+// from the back. Powder is an instance in its grain layer, which fills its own
+// gap, and its lattice slot takes the lattice's last entry (powder is found
+// through its `k`, so where it sits among the powder does not matter). One of
+// the piece's own cubes sits at the front of the lattice in step with the
+// instance buffer: the last cube moves into its slot, entry and instance both,
+// one fewer is drawn, and the slot that cube leaves — now the first of the
+// powder — takes the lattice's last entry. Only slots at or past q change, so a
+// walk from the back still never sees a block it has yet to reach move.
 function cutDebrisLat(mesh, q) {
   const lat = mesh.userData.blocks;
+  let hole = q;
   if (q >= mesh.count) {
     removeGrain(mesh, lat[q]);
   } else {
-    const m4 = new THREE.Matrix4(), col = new THREE.Color();
-    for (let k = q + 1; k < mesh.count; k++) {
-      mesh.getMatrixAt(k, m4); mesh.setMatrixAt(k - 1, m4);
-      mesh.getColorAt(k, col); mesh.setColorAt(k - 1, col);
+    const last = mesh.count - 1;
+    if (q !== last) {
+      mesh.getMatrixAt(last, debrisM4); mesh.setMatrixAt(q, debrisM4);
+      mesh.getColorAt(last, debrisCol); mesh.setColorAt(q, debrisCol);
+      lat[q] = lat[last];
+      hole = last;
     }
-    mesh.count -= 1;
+    mesh.count = last;
     mesh.instanceMatrix.needsUpdate = true;
     mesh.instanceColor.needsUpdate = true;
     mesh.boundingSphere = null;
   }
-  lat.splice(q, 1);
+  lat[hole] = lat[lat.length - 1];
+  lat.pop();
   debrisFaceMask(mesh);
 }
 
@@ -6410,7 +6419,7 @@ function splitDebrisIfNeeded(mesh) {
     for (let o = o0; o < o1; o++) blocks[o - o0] = lat[order[o]];
     parts.push(blocks);
   }
-  // From the back, so a cut never shifts a block still to be cut.
+  // From the back, so a cut never moves a block still to be cut.
   for (let k = n - 1; k >= 0; k--) if (group[k] !== keep) cutDebrisLat(mesh, k);
   for (const blocks of parts) spawnDebrisPart(mesh, blocks, f && f.body);
 }

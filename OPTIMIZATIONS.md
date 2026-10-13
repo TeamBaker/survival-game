@@ -57,8 +57,8 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 42. [x] DONE (v173) — sweep removed; adriftFrame gap marked, budget overflow carries via powderCarry, save-load one-off check. pt5 proves carry works. MEDIUM.
 43. [x] DONE (v174) — per-frame piece cache w/ AABB reject (1+1e-6 margin), piece list built once; mutation-tested via pt6 (10 breaks caught). MEDIUM-HIGH.
 44. [ ] Falling grains = separate meshes, one draw call each, LOD scale recomputed per grain. One InstancedMesh per material. MEDIUM.
-45. [ ] Debris greedy-collider code copied 3× (lines 5147, 5733, 5520) — string keys + split(',').map(Number) in loops = GC garbage. One shared function, integer keys. MEDIUM.
-46. [ ] String-key churn in debrisFaceMask, splitDebrisIfNeeded, shedPowder — GC pressure on phones. LOW-MEDIUM.
+45. [x] DONE (v177) — one debrisColliderBoxes function, integer keys, reused buffers; box-identical over 50k random pieces. MEDIUM.
+46. [x] DONE (v178) — indexed loops, typed scratch buffers, numeric shedKey; 20k-piece differential 0 mismatches. LOW-MEDIUM.
 47. [ ] cutDebrisLat shifts every later instance — O(n²) when splitting. Swap with last = O(1). LOW-MEDIUM.
 48. [x] DONE (v175) — skip sleeping bodies in syncList; force-sleep settled jitterers after 120 frames if resting only on terrain/sleepers; wake-on-dig scans full bounds. MEDIUM.
 49. [x] DONE (v176) — hooked the 7 sphere collision fns (player is spheres only); only new contacts checked, 6 hooks/step vs 344-contact scan. 3000-step sim exact match. LOW-MEDIUM.

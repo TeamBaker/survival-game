@@ -52,8 +52,8 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 37. [x] DONE (v169) — level loop skips levels with no possible box; box extension jumps straight to bedrock below airLo. Byte-identical over 300 worlds, ~2x faster. MEDIUM.
 38. [x] DONE (v168) — dirty-collider set flushed at 3 points in tick + before sync physics queries; removed redundant rebuild in flushDirtyChunks. HIGH.
 39. [x] DONE (v171) — powder pass owes gravity + face/chunk refresh, pays once at pass end; per-grain guard (integer keys, anchored-route memo) pays early only if the grain's group is already loose. Same groups/order/colours as grain-at-a-time: 0 diffs over 3,000 random worlds (guard off → 922 diffs). HIGH.
-40. [ ] adriftGroup flood fill very expensive — 100+ block flood fill × 6 per edit, string keys, allocates Color per visited block even when thrown away. Stop at untouched column (colDug==0), integer keys, compute colors once confirmed loose. HIGH.
-41. [ ] breakOffAdrift recurses through every neighbour — stack overflow risk on big cascades. Iterative worklist. MEDIUM.
+40. [x] DONE (v172) — adriftAnchored() early stop (airLo+bed), integer keys, shared arrays, colors only after loose. 3000-world differential 0 mismatches. HIGH.
+41. [x] DONE (v172) — iterative worklist, same visit order as recursion. MEDIUM.
 42. [ ] Terrain powder sweep scans 120,000 columns every 10th frame — overhangs only from edits, powderDirty already tracks. Remove or spread. MEDIUM.
 43. [ ] catchPowder scales badly — concat() + applyMatrix4 + distanceTo per block of every piece per grain per frame. Bounding-sphere reject first. MEDIUM-HIGH (collapses).
 44. [ ] Falling grains = separate meshes, one draw call each, LOD scale recomputed per grain. One InstancedMesh per material. MEDIUM.

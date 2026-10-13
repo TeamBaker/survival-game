@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 172;
+window.GAME_VERSION = 173;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5845,17 +5845,17 @@ function spawnFallingChunk(unit) {
 }
 
 // ----- powder in the ground -----
-// Sand and fine dirt (MAT_STATS[].powder) will not hang over a hole. The field
-// is far too big to walk every frame, so it is swept a slice at a time, and only
-// a few blocks come away in one pass — the collapse carries itself from there,
-// since every removal drops whatever was resting on top.
-const POWDER_SCAN_COLS = 120000;  // columns looked at per pass
+// Sand and fine dirt (MAT_STATS[].powder) will not hang over a hole. Generated
+// ground is solid from the floor up, so powder can only come to hang over air
+// in a column something has emptied a cell of — and every path that empties
+// one (editBlock, the hammer, adriftFrame) or fills one (the placer) marks the
+// column in powderDirty. Only those columns are looked at; nothing sweeps the
+// field. A few blocks come away in one pass — the collapse carries itself from
+// there, since every removal drops whatever was resting on top.
 const POWDER_SCAN_CAP  = 32;      // blocks taken per pass, so a sand cliff costs a few frames rather than one long one
-let powderTick = 0, powderCursor = 0;
-// Columns something has just edited. The rolling scan reaches any one column
-// only every few seconds, which is a long time to watch sand hang in the air
-// over the hole you dug, so a touched column is answered on the spot instead.
+// Columns something has just edited, answered on the spot.
 const powderDirty = new Set();
+const powderCarry = [];   // columns owed a look next pass: out of budget, or left by a loose group
 // Shed whatever powder in column c has nothing under it, up to `budget` blocks.
 // Returns what is left of the budget.
 function shedColumn(c, budget) {
@@ -5913,6 +5913,13 @@ function checkTerrainPowder() {
   }
 }
 function shedTerrainPowder() {
+  // What the last pass left owed, in column order so it does not matter which
+  // way round it was owed.
+  if (powderCarry.length) {
+    powderCarry.sort((a, b) => a - b);
+    for (const c of powderCarry) powderDirty.add(c);
+    powderCarry.length = 0;
+  }
   // Queued cascade first, and off the budget the sweep works to: these are
   // blocks already known to be hanging, so they come away this frame and each
   // one hands the next level up to the frame after.
@@ -5944,18 +5951,14 @@ function shedTerrainPowder() {
     for (let safety = 0; safety < 16; safety++) {
       const touched = [...powderDirty];
       powderDirty.clear();
-      let b = POWDER_SCAN_CAP;
-      for (const c of touched) b = shedColumn(c, b);
+      let b = POWDER_SCAN_CAP, n = 0;
+      for (; n < touched.length && b > 0; n++) b = shedColumn(touched[n], b);
+      // Columns the budget ran out before are still owed a look. They wait for
+      // next frame rather than restarting this loop on a fresh budget.
+      for (; n < touched.length; n++) powderCarry.push(touched[n]);
       if (!powderDirty.size) break;
     }
   }
-  if (++powderTick % 10) return;
-  const cols = GEN_N * GEN_N;
-  let budget = POWDER_SCAN_CAP, k = powderCursor;
-  for (const end = k + POWDER_SCAN_COLS; k < end && budget > 0; k++) {
-    budget = shedColumn(k % cols, budget);
-  }
-  powderCursor = k % cols;
 }
 
 // Called once a frame after the step: retire whatever has stopped moving, and
@@ -6696,6 +6699,12 @@ function adriftFrame(unit) {
     const k = b.j * GEN_N + b.i;
     colDug[k] = 1;
     if (b.lvl < colDugLo[k]) colDugLo[k] = b.lvl;
+    // Powder left behind over the gap — held to the ground by something other
+    // than this group — now hangs, and nothing else would come back for it.
+    // Next pass, not this one: inside the powder pass this group may be owed
+    // (see flushGravity), and the batched pass has to take what the
+    // grain-at-a-time one would.
+    powderCarry.push(k);
     refreshVisible(b.i, b.j, b.lvl);
     refreshVisible(b.i - 1, b.j, b.lvl);
     refreshVisible(b.i + 1, b.j, b.lvl);
@@ -7745,6 +7754,7 @@ function toggleSandbox() {
     visBits.fill(0);
     airLo.fill(VOX_FLOOR);
     powderDirty.clear();
+    powderCarry.length = 0;
     for (let c = 0; c < chunkMesh.length; c++) {
       if (chunkMesh[c]) rebuildChunk(c);
     }
@@ -8877,7 +8887,7 @@ function collectWorldMeta() {
       from: g.from ? g.from.toArray() : null,
     })),
     powderQueue: [...powderQueue],
-    powderDirty: [...powderDirty],
+    powderDirty: [...powderDirty, ...powderCarry],
   };
 
   // World generation
@@ -9265,6 +9275,7 @@ function applyWorldState(s) {
   powderFalling.length = 0;
   powderQueue.length = 0;
   powderDirty.clear();
+  powderCarry.length = 0;
 
   // Restore falling chunks
   for (const fc of ds.fallingChunks) {
@@ -9312,6 +9323,10 @@ function applyWorldState(s) {
   }
   powderQueue.push(...ds.powderQueue);
   for (const c of ds.powderDirty) powderDirty.add(c);
+  // A save from before every emptying path marked its column may have left
+  // powder hanging that only the old field sweep would have found. Only a dug
+  // column can have air under anything, so one look at each of those settles it.
+  for (let c = 0; c < GEN_N * GEN_N; c++) if (colDug[c]) powderDirty.add(c);
 
   // Restore settings
   const ss = s.settingsState;

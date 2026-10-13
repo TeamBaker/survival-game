@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 182;
+window.GAME_VERSION = 183;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5047,14 +5047,19 @@ const wishDir = new THREE.Vector3();
 const centerOffset = () => (crouched ? PLAYER.crouchCenter : PLAYER.standCenter);
 
 // Is there room to stand back up, or are we under the crouch tunnel?
+// Scratch objects so polling this every crouched frame allocates nothing.
+// raycastAll overwrites mode/from/to/callback on the options object each call.
+const _headFrom = new CANNON.Vec3(), _headTo = new CANNON.Vec3(), _headOpts = {};
+let _headBlocked = false;
+const _headHit = (res) => { if (res.body !== playerBody) _headBlocked = true; };
 function hasHeadroom() {
   flushDirtyColliders();
   const p = playerBody.position;
-  const from = new CANNON.Vec3(p.x, p.y, p.z);
-  const to   = new CANNON.Vec3(p.x, p.y + 1.35, p.z);
-  let blocked = false;
-  world.raycastAll(from, to, {}, (res) => { if (res.body !== playerBody) blocked = true; });
-  return !blocked;
+  _headFrom.set(p.x, p.y, p.z);
+  _headTo.set(p.x, p.y + 1.35, p.z);
+  _headBlocked = false;
+  world.raycastAll(_headFrom, _headTo, _headOpts, _headHit);
+  return !_headBlocked;
 }
 
 function respawn() {

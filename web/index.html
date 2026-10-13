@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 170;
+window.GAME_VERSION = 171;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5682,9 +5682,10 @@ const chunkOfMesh = (mesh) => fallingChunks.find((e) => e.mesh === mesh)
 
 // The exact colour TERRAIN_CHUNK_MAT shades this block in the terrain, so a
 // block that breaks off carries the shade it already had rather than a fresh one.
-function terrainBlockColor(i, j, lvl, m) {
+// `top` is the column's surface to shade against, if not the one it has now.
+function terrainBlockColor(i, j, lvl, m, top = sTop[j * GEN_N + i]) {
   const k = j * GEN_N + i;
-  const t = tint[k], top = sTop[k];
+  const t = tint[k];
   const band = top - lvl <= SOIL_DEPTH ? 1 : 0;
   const h = nhash3(i, j, lvl);
   const variation = 0.85 + h * 0.30;
@@ -5860,6 +5861,10 @@ const powderDirty = new Set();
 function shedColumn(c, budget) {
   const top = topLvl[c];
   if (top === NO_COLUMN) return budget;
+  // A loose group the pass still owes for would have marked this column dug
+  // down to it by now. That only matters if there is air below where the scan
+  // starts, which ground left as the rule below says never has.
+  if (gravPending.length && airLo[c] < (colDug[c] ? Math.max(VOX_FLOOR, Math.min(top, colDugLo[c])) : top) - 1) flushGravity();
   // Ground nobody has touched is solid all the way down, so only a dug column
   // can have air under anything but its own surface.
   const dug = colDug[c] !== 0;
@@ -5875,7 +5880,9 @@ function shedColumn(c, budget) {
     if (lvl + 1 <= voxCap(c) && voxMat[o + lvl + 1] !== AIR
         && !MAT_STATS[voxMat[o + lvl + 1]]?.powder) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
-    editBlock(i, j, lvl, AIR);   // refreshes the faces, and brings down what was above
+    // Its group may have come loose already; if that was paid for, look again.
+    if (gravGuard(i, j, lvl)) { o = voxOff[c] - VOX_FLOOR; lvl++; continue; }
+    editBlock(i, j, lvl, AIR);   // brings down what was above, once the pass is done
     o = voxOff[c] - VOX_FLOOR;   // and whatever that placed may have moved the store
     // Mark neighboring columns dirty so blocks that lost their sand bridge
     // get rechecked for adrift status by the next cascade pass.
@@ -5895,6 +5902,17 @@ function shedColumn(c, budget) {
   return budget;
 }
 function checkTerrainPowder() {
+  // Every grain the pass takes out owes its gravity and face refresh until the
+  // end of it (see flushGravity).
+  gravDefer = true;
+  try { shedTerrainPowder(); } finally {
+    gravDefer = false;
+    flushGravity();
+    flushGravTouched();
+    gravAnchored.clear();
+  }
+}
+function shedTerrainPowder() {
   // Queued cascade first, and off the budget the sweep works to: these are
   // blocks already known to be hanging, so they come away this frame and each
   // one hands the next level up to the frame after.
@@ -5903,6 +5921,7 @@ function checkTerrainPowder() {
     const mat = voxelAt(i, j, qLvl);
     if (mat === AIR || !MAT_STATS[mat]?.powder) continue;
     if (qLvl - 1 >= VOX_FLOOR && voxelAt(i, j, qLvl - 1) !== AIR) continue;
+    if (gravGuard(i, j, qLvl) && voxelAt(i, j, qLvl) === AIR) continue;
     editBlock(i, j, qLvl, AIR);
     const grain = new THREE.Mesh(fallingGrainGeo(mat), TERRAIN_FACE_MATS[mat]);   // a speckled unit cube: scale it to block size
     grain.scale.setScalar(BLOCK);
@@ -6571,9 +6590,11 @@ const GRAV_MAX  = 1024;   // blocks one fill walks before it gives the group up 
 // directions walked, a block standing on anything solid is standing on another
 // member, so the floor is the one thing left that can anchor the lot. Returns
 // the group's blocks, or null if it is anchored, or too big to be worth walking.
-function adriftGroup(i, j, lvl) {
+// `topOf`, if given, says what each column's surface was when the group came
+// loose, for a group taken later than that (flushGravity).
+function adriftGroup(i, j, lvl, topOf) {
   if (!gravSolid(i, j, lvl)) return null;
-  const first = { i, j, lvl, m: voxelAt(i, j, lvl), color: terrainBlockColor(i, j, lvl, voxelAt(i, j, lvl)) };
+  const first = { i, j, lvl, m: voxelAt(i, j, lvl), color: terrainBlockColor(i, j, lvl, voxelAt(i, j, lvl), topOf?.(j * GEN_N + i)) };
   const unit = new Map([[gravKey(i, j, lvl), first]]);
   const stack = [first];
   while (stack.length) {
@@ -6584,7 +6605,7 @@ function adriftGroup(i, j, lvl) {
       const key = gravKey(ii, jj, ll);
       if (unit.has(key) || !gravSolid(ii, jj, ll)) continue;
       if (unit.size >= GRAV_MAX) return null;
-      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll), color: terrainBlockColor(ii, jj, ll, voxelAt(ii, jj, ll)) };
+      const nb = { i: ii, j: jj, lvl: ll, m: voxelAt(ii, jj, ll), color: terrainBlockColor(ii, jj, ll, voxelAt(ii, jj, ll), topOf?.(jj * GEN_N + ii)) };
       unit.set(key, nb);
       stack.push(nb);
     }
@@ -6607,8 +6628,8 @@ function applyGravity(i, j, lvl) {
   for (const [di, dj, dl] of GRAV_DIRS) breakOffAdrift(i + di, j + dj, lvl + dl);
 }
 
-function breakOffAdrift(i, j, lvl) {
-  const unit = adriftGroup(i, j, lvl);
+function breakOffAdrift(i, j, lvl, topOf) {
+  const unit = adriftGroup(i, j, lvl, topOf);
   if (!unit) return;
 
   // The loose blocks leave the grid. Nothing is written back lower down — the
@@ -6657,12 +6678,162 @@ function breakOffAdrift(i, j, lvl) {
   }
 }
 
+// ----- gravity owed by the powder pass -----
+// A cascade takes dozens of grains out in one frame, and every one of them used
+// to pay for applyGravity's six flood fills and its own face refresh on the
+// spot. Inside checkTerrainPowder the write still happens at once — the next
+// grain's question is asked of it — but the fills and the refresh are owed, and
+// paid once when the pass ends.
+//
+// What comes away has to be what the grain-at-a-time order took. Owing the
+// fills only changes anything if a later grain belongs to a group one of the
+// owed removals had already cut loose — that grain went down inside the piece,
+// not on its own. So before a grain is shed while anything is owed, its group is
+// asked whether it is one adriftGroup would hand back; if it is, the debt is
+// paid there and then and the grain looked at again. A shed grain never comes
+// from a loose group, so those groups are still whole when they are paid for,
+// and flushGravity takes them in the order, and from the cell, the old path
+// would have.
+let gravDefer = false;
+const gravPending = [];        // i, j, lvl, ... — removals whose applyGravity is owed, oldest first
+const gravTouched = new Set(); // cells whose faces and chunks are owed a refresh
+// Cells this pass has shown reach bedrock, each through a chain of others in the
+// set. Only removals break a chain, so the set goes whenever one takes a member.
+const gravAnchored = new Set();
+const gravCell = (i, j, lvl) => ((lvl - VOX_FLOOR) * GEN_N + j) * GEN_N + i;
+const GRAV_SAFE = 0, GRAV_DOOMED = 1;
+const gravFrom = new Map();    // the last walk: cell -> the cell it was reached from
+const gravWalk = [];
+
+// What adriftGroup would say of the group joined to (i, j, lvl), without
+// building it: GRAV_DOOMED if it would hand the group back to break off, and
+// GRAV_SAFE if it reaches bedrock, is too big to walk, or is nothing but loose
+// grain. Stops at the first cell known to be anchored — in gravAnchored, or in
+// `stop`. The cells walked are left in gravFrom. A route found to bedrock goes
+// into gravAnchored, less the starting cell unless `keepStart`: the guard walks
+// from a grain that is about to go, and a chain through it would not hold.
+function gravFate(i, j, lvl, stop, keepStart) {
+  gravFrom.clear();
+  gravWalk.length = 0;
+  const k0 = gravCell(i, j, lvl);
+  gravFrom.set(k0, -1);
+  let hit = lvl <= VOX_FLOOR || gravAnchored.has(k0) || stop?.has(k0) ? k0 : -1;
+  let solid = !MAT_STATS[voxelAt(i, j, lvl)]?.powder;
+  if (hit < 0) gravWalk.push(i, j, lvl);
+  walk: while (gravWalk.length) {
+    const bl = gravWalk.pop(), bj = gravWalk.pop(), bi = gravWalk.pop();
+    const bk = gravCell(bi, bj, bl);
+    for (const [di, dj, dl] of GRAV_DIRS) {
+      const ii = bi + di, jj = bj + dj, ll = bl + dl;
+      if (!gravSolid(ii, jj, ll)) continue;
+      const key = gravCell(ii, jj, ll);
+      if (gravFrom.has(key)) continue;
+      if (gravFrom.size >= GRAV_MAX) return GRAV_SAFE;   // adriftGroup's cap, to the block
+      gravFrom.set(key, bk);
+      if (ll <= VOX_FLOOR || gravAnchored.has(key) || stop?.has(key)) { hit = key; break walk; }
+      if (!MAT_STATS[voxelAt(ii, jj, ll)]?.powder) solid = true;
+      gravWalk.push(ii, jj, ll);
+    }
+  }
+  if (hit < 0) return solid ? GRAV_DOOMED : GRAV_SAFE;
+  // A `stop` cell need not be anchored, only safe, so its route is not one.
+  if (stop?.has(hit) && !gravAnchored.has(hit)) return GRAV_SAFE;
+  for (let c = hit; c !== -1; c = gravFrom.get(c)) if (c !== k0 || keepStart) gravAnchored.add(c);
+  return GRAV_SAFE;
+}
+
+// Called with (i, j, lvl) a grain the pass is about to shed. Pays what is owed
+// if the grain's group may already be loose, and says whether it did — in which
+// case the caller looks at the cell again.
+function gravGuard(i, j, lvl) {
+  if (!gravPending.length) return false;
+  if (gravFate(i, j, lvl, null, false) !== GRAV_DOOMED) return false;
+  flushGravity();
+  return true;
+}
+
+// applyGravity for every owed removal at once. Each group the removals left
+// loose is walked once, from the cell the grain-at-a-time path would have found
+// it from: the last removal that touched it — nothing later can touch a loose
+// group, since a grain next to it is part of it — at the first side in
+// GRAV_DIRS order. Groups then break off in the order those removals came in,
+// each shaded against the surface its columns had at the time, which grains shed
+// since may have lowered.
+function flushGravity() {
+  const n = gravPending.length / 3;
+  if (!n) return;
+  const safe = new Set(), loose = new Set(), groups = [];
+  for (let r = n - 1; r >= 0; r--) {
+    const pi = gravPending[3 * r], pj = gravPending[3 * r + 1], pl = gravPending[3 * r + 2];
+    for (let d = 0; d < GRAV_DIRS.length; d++) {
+      const [di, dj, dl] = GRAV_DIRS[d];
+      const i = pi + di, j = pj + dj, lvl = pl + dl;
+      if (!gravSolid(i, j, lvl)) continue;
+      const key = gravCell(i, j, lvl);
+      if (safe.has(key) || loose.has(key)) continue;
+      const fate = gravFate(i, j, lvl, safe, true);
+      const into = fate === GRAV_DOOMED ? loose : safe;
+      for (const c of gravFrom.keys()) into.add(c);
+      if (fate === GRAV_DOOMED) groups.push({ r, d, i, j, lvl });
+    }
+  }
+  groups.sort((a, b) => a.r - b.r || a.d - b.d);
+  for (const g of groups) {
+    const later = new Map();
+    for (let r = g.r + 1; r < n; r++) {
+      const c = gravPending[3 * r + 1] * GEN_N + gravPending[3 * r], l = gravPending[3 * r + 2];
+      if (!(later.get(c) >= l)) later.set(c, l);
+    }
+    breakOffAdrift(g.i, g.j, g.lvl, (c) => later.has(c) ? Math.max(sTop[c], later.get(c)) : sTop[c]);
+  }
+  gravPending.length = 0;
+}
+
+// The face refresh and chunk marks editBlock owed for every cell the pass wrote.
+// They read only how things stand, so once at the end gives the same answer.
+function flushGravTouched() {
+  const cols = new Set();
+  for (const key of gravTouched) {
+    const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+    refreshVisible(i, j, lvl);
+    refreshVisible(i - 1, j, lvl);
+    refreshVisible(i + 1, j, lvl);
+    refreshVisible(i, j - 1, lvl);
+    refreshVisible(i, j + 1, lvl);
+    refreshVisible(i, j, lvl - 1);
+    refreshVisible(i, j, lvl + 1);
+    cols.add(j * GEN_N + i);
+  }
+  gravTouched.clear();
+  for (const k of cols) {
+    const i = k % GEN_N, j = (k - i) / GEN_N;
+    markColliderDirty(chunkOf(i, j));
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        const ii = i + di, jj = j + dj;
+        if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+        dirtyChunks.add(chunkOf(ii, jj));
+      }
+    }
+  }
+}
+
 function editBlock(i, j, lvl, m) {
   const was = setVoxel(i, j, lvl, m);
   const k = j * GEN_N + i;
   colDug[k] = 1;
   if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
   powderDirty.add(k);   // anything loose in this column falls this frame, not on the next sweep
+  if (gravDefer) {
+    // Inside the powder pass: the rest is owed (see flushGravity).
+    const key = gravCell(i, j, lvl);
+    gravTouched.add(key);
+    if (m === AIR && was !== AIR) {
+      gravPending.push(i, j, lvl);
+      if (gravAnchored.has(key)) gravAnchored.clear();
+    }
+    return was;
+  }
   markColliderDirty(chunkOf(i, j));
   // Refresh visibility of the edited block and all six neighbours.
   refreshVisible(i, j, lvl);

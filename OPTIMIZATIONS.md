@@ -47,11 +47,11 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 
 ## Physics
 34. [x] DONE (v167) — adaptive: 120Hz, drops to 60Hz when frame time averages >1/45s; substeps 8→4. HIGH (CPU).
-35. [ ] Collider radius 5 chunks = 121 compound bodies — player only needs 1-2 chunk radius, debris loads own colliders. MEDIUM-HIGH.
+35. [x] DONE (v170) — radius 1 chunk + synchronous build guarantee for travel distance; square unload fixes corner rebuild loop. Sprint-tested 11 chunk borders. MEDIUM-HIGH.
 36. [ ] Player-vs-compound-chunk collision slow — every box vs 3 spheres every substep. Custom AABB voxel sweep. MEDIUM.
 37. [x] DONE (v169) — level loop skips levels with no possible box; box extension jumps straight to bedrock below airLo. Byte-identical over 300 worlds, ~2x faster. MEDIUM.
 38. [x] DONE (v168) — dirty-collider set flushed at 3 points in tick + before sync physics queries; removed redundant rebuild in flushDirtyChunks. HIGH.
-39. [ ] Sand cascades unbatched — every grain triggers editBlock → collider rebuild + 6 flood fills. Batch voxel writes, rebuild once. HIGH.
+39. [x] DONE (v171) — powder pass owes gravity + face/chunk refresh, pays once at pass end; per-grain guard (integer keys, anchored-route memo) pays early only if the grain's group is already loose. Same groups/order/colours as grain-at-a-time: 0 diffs over 3,000 random worlds (guard off → 922 diffs). HIGH.
 40. [ ] adriftGroup flood fill very expensive — 100+ block flood fill × 6 per edit, string keys, allocates Color per visited block even when thrown away. Stop at untouched column (colDug==0), integer keys, compute colors once confirmed loose. HIGH.
 41. [ ] breakOffAdrift recurses through every neighbour — stack overflow risk on big cascades. Iterative worklist. MEDIUM.
 42. [ ] Terrain powder sweep scans 120,000 columns every 10th frame — overhangs only from edits, powderDirty already tracks. Remove or spread. MEDIUM.

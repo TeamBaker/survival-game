@@ -61,7 +61,7 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 46. [ ] String-key churn in debrisFaceMask, splitDebrisIfNeeded, shedPowder — GC pressure on phones. LOW-MEDIUM.
 47. [ ] cutDebrisLat shifts every later instance — O(n²) when splitting. Swap with last = O(1). LOW-MEDIUM.
 48. [x] DONE (v175) — skip sleeping bodies in syncList; force-sleep settled jitterers after 120 frames if resting only on terrain/sleepers; wake-on-dig scans full bounds. MEDIUM.
-49. [ ] postStep scans every contact 120×/sec just for player ground contacts. LOW-MEDIUM.
+49. [x] DONE (v176) — hooked the 7 sphere collision fns (player is spheres only); only new contacts checked, 6 hooks/step vs 344-contact scan. 3000-step sim exact match. LOW-MEDIUM.
 50. [ ] Per-frame allocations — hammerAim new Vector3, shovelAim objects, creativeAim double raycast, debrisAim recursive intersectObjects. LOW-MEDIUM.
 51. [ ] Collider streaming bookkeeping — 121 loadChunkCollider calls/frame with O(n) indexOf, scans 900 chunks for unload, uses shift(). Flag array recomputed on chunk change. LOW.
 52. [ ] hasHeadroom allocates 2 Vec3s + raycastAll per call while crouch under ceiling. LOW.

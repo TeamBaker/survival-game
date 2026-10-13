@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 176;
+window.GAME_VERSION = 177;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5792,78 +5792,7 @@ function spawnFallingChunk(unit) {
     collisionFilterGroup: DEBRIS_GROUP,
     collisionFilterMask: -1,
   });
-  const h = HALF_BLOCK;
-  {
-    // Greedy-merged collision boxes, same algorithm as rebuildDebrisBody.
-    const lat = mesh.userData.blocks;
-    const ref = lat[0];
-    const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
-    const byLevel = new Map();
-    for (const b of lat) {
-      let cells = byLevel.get(b.lvl);
-      if (!cells) byLevel.set(b.lvl, cells = new Set());
-      cells.add(b.gi + ',' + b.gj);
-    }
-    // Every block counts, buried or not (as with the terrain collider): merging
-    // through the interior gives a few deep boxes instead of a hollow shell.
-    const exposedByLevel = byLevel;
-    function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
-      const cellsAt = exposedByLevel.get(lvl);
-      if (!cellsAt) return false;
-      for (let gj = mj0; gj <= mj1; gj++)
-        for (let gi = mi0; gi <= mi1; gi++)
-          if (!cellsAt.has(gi + ',' + gj)) return false;
-      return true;
-    }
-    const consumedTo = new Map();
-    const levels = [...exposedByLevel.keys()].sort((a, b) => b - a);
-    for (const lvl of levels) {
-      const cells = exposedByLevel.get(lvl);
-      let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity;
-      for (const key of cells) {
-        const [gi, gj] = key.split(',').map(Number);
-        if (gi < gi0) gi0 = gi; if (gi > gi1) gi1 = gi;
-        if (gj < gj0) gj0 = gj; if (gj > gj1) gj1 = gj;
-      }
-      const w = gi1 - gi0 + 1, dep = gj1 - gj0 + 1;
-      const solid = new Uint8Array(w * dep);
-      for (const key of cells) {
-        const th = consumedTo.get(key);
-        if (th !== undefined && lvl >= th) continue;
-        const [gi, gj] = key.split(',').map(Number);
-        solid[(gj - gj0) * w + (gi - gi0)] = 1;
-      }
-      const visited = new Uint8Array(w * dep);
-      for (let jj = 0; jj < dep; jj++) {
-        for (let ii = 0; ii < w; ii++) {
-          const idx = jj * w + ii;
-          if (!solid[idx] || visited[idx]) continue;
-          let ii1 = ii + 1;
-          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
-          let jj1 = jj + 1;
-          for (;;) {
-            if (jj1 >= dep) break;
-            let full = true;
-            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
-            if (!full) break;
-            jj1++;
-          }
-          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
-
-          const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
-          let botLvl = lvl;
-          while (footprintSolidAt(mi0, mi1, mj0, mj1, botLvl - 1)) botLvl--;
-          if (botLvl < lvl) {
-            for (let gj = mj0; gj <= mj1; gj++) for (let gi = mi0; gi <= mi1; gi++) consumedTo.set(gi + ',' + gj, botLvl);
-          }
-
-          body.addShape(
-            new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
-            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
-        }
-      }
-    }
-  }
+  addDebrisColliders(body, mesh.userData.blocks);
   body.position.set(cx, cy, cz);
   // A nudge of spin, so a piece topples off the face it broke from instead of
   // sitting dead flat all the way down.
@@ -6265,83 +6194,93 @@ function recentreDebris(mesh, body) {
   mesh.position.copy(body.position);
 }
 
+// Greedy-merged collision boxes for a debris piece, added to the body as
+// compound shapes. Every block counts, buried or not (as with the terrain
+// collider): merging through the interior gives a few deep boxes instead of a
+// hollow shell. Levels go top-down; on each, rows (gj) then columns (gi) are
+// swept, a run is grown along the row and then down the rows, and the
+// rectangle is pushed down through the levels below for as long as its whole
+// footprint stays solid. A cell a box has reached down through is skipped on
+// those levels. Material plays no part: the piece is one rigid body.
+// The shape order is fixed by that sweep, so callers can rely on it.
+// Cells are integer indices into scratch arrays kept between calls, so the
+// only allocations are the shapes themselves.
+let debrisOcc = new Uint8Array(512), debrisPlane = new Uint8Array(64), debrisConsumed = new Int32Array(64);
+function debrisFootprintFull(occ, base, w, ii0, ii1, jj0, jj1) {
+  for (let jj = jj0; jj < jj1; jj++)
+    for (let ii = ii0; ii < ii1; ii++)
+      if (!occ[base + jj * w + ii]) return false;
+  return true;
+}
+function addDebrisColliders(body, lat) {
+  const n = lat.length;
+  if (!n) return;
+  const h = HALF_BLOCK;
+  const ref = lat[0];
+  const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
+  let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity, l0 = Infinity, l1 = -Infinity;
+  for (let k = 0; k < n; k++) {
+    const b = lat[k];
+    if (b.gi < gi0) gi0 = b.gi; if (b.gi > gi1) gi1 = b.gi;
+    if (b.gj < gj0) gj0 = b.gj; if (b.gj > gj1) gj1 = b.gj;
+    if (b.lvl < l0) l0 = b.lvl; if (b.lvl > l1) l1 = b.lvl;
+  }
+  const w = gi1 - gi0 + 1, dep = gj1 - gj0 + 1, area = w * dep, nl = l1 - l0 + 1;
+  if (debrisOcc.length < area * nl) debrisOcc = new Uint8Array(area * nl);
+  else debrisOcc.fill(0, 0, area * nl);
+  if (debrisPlane.length < area) { debrisPlane = new Uint8Array(area); debrisConsumed = new Int32Array(area); }
+  else debrisConsumed.fill(0, 0, area);
+  // occ: every block, per level. plane: this level's cells still to cover.
+  // consumed: 1 + the lowest relative level a box has reached at a cell, 0 if none.
+  const occ = debrisOcc, plane = debrisPlane, consumed = debrisConsumed;
+  for (let k = 0; k < n; k++) {
+    const b = lat[k];
+    occ[(b.lvl - l0) * area + (b.gj - gj0) * w + (b.gi - gi0)] = 1;
+  }
+  for (let r = nl - 1; r >= 0; r--) {
+    const base = r * area;
+    let any = 0;
+    for (let c = 0; c < area; c++) {
+      const s = occ[base + c] && !(consumed[c] && r + 1 >= consumed[c]) ? 1 : 0;
+      plane[c] = s;
+      any |= s;
+    }
+    if (!any) continue;
+    for (let jj = 0; jj < dep; jj++) {
+      for (let ii = 0; ii < w; ii++) {
+        if (!plane[jj * w + ii]) continue;
+        let ii1 = ii + 1;
+        while (ii1 < w && plane[jj * w + ii1]) ii1++;
+        let jj1 = jj + 1;
+        grow: for (; jj1 < dep; jj1++)
+          for (let x = ii; x < ii1; x++) if (!plane[jj1 * w + x]) break grow;
+        for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) plane[y * w + x] = 0;
+
+        let rb = r;
+        while (rb > 0 && debrisFootprintFull(occ, (rb - 1) * area, w, ii, ii1, jj, jj1)) rb--;
+        if (rb < r) {
+          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) consumed[y * w + x] = rb + 1;
+        }
+
+        const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
+        const lvl = l0 + r, botLvl = l0 + rb;
+        body.addShape(
+          new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
+          new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
+      }
+    }
+  }
+}
+
 // Redo a piece's collider and its weight from the lattice it has left. Runs
 // after a dig: a piece is a few dozen boxes at most, so building the shapes
 // again costs less than trying to patch the ones that are there.
 function rebuildDebrisBody(mesh, body) {
-  const lat = mesh.userData.blocks, h = HALF_BLOCK;
+  const lat = mesh.userData.blocks;
   body.shapes.length = 0;
   body.shapeOffsets.length = 0;
   body.shapeOrientations.length = 0;
-  if (lat.length) {
-    const ref = lat[0];
-    const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
-    const byLevel = new Map();
-    for (const b of lat) {
-      let cells = byLevel.get(b.lvl);
-      if (!cells) byLevel.set(b.lvl, cells = new Set());
-      cells.add(b.gi + ',' + b.gj);
-    }
-    // Every block counts, buried or not (as with the terrain collider): merging
-    // through the interior gives a few deep boxes instead of a hollow shell.
-    const exposedByLevel = byLevel;
-    function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
-      const cellsAt = exposedByLevel.get(lvl);
-      if (!cellsAt) return false;
-      for (let gj = mj0; gj <= mj1; gj++)
-        for (let gi = mi0; gi <= mi1; gi++)
-          if (!cellsAt.has(gi + ',' + gj)) return false;
-      return true;
-    }
-    const consumedTo = new Map();
-    const levels = [...exposedByLevel.keys()].sort((a, b) => b - a);
-    for (const lvl of levels) {
-      const cells = exposedByLevel.get(lvl);
-      let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity;
-      for (const key of cells) {
-        const [gi, gj] = key.split(',').map(Number);
-        if (gi < gi0) gi0 = gi; if (gi > gi1) gi1 = gi;
-        if (gj < gj0) gj0 = gj; if (gj > gj1) gj1 = gj;
-      }
-      const w = gi1 - gi0 + 1, dep = gj1 - gj0 + 1;
-      const solid = new Uint8Array(w * dep);
-      for (const key of cells) {
-        const th = consumedTo.get(key);
-        if (th !== undefined && lvl >= th) continue;
-        const [gi, gj] = key.split(',').map(Number);
-        solid[(gj - gj0) * w + (gi - gi0)] = 1;
-      }
-      const visited = new Uint8Array(w * dep);
-      for (let jj = 0; jj < dep; jj++) {
-        for (let ii = 0; ii < w; ii++) {
-          const idx = jj * w + ii;
-          if (!solid[idx] || visited[idx]) continue;
-          let ii1 = ii + 1;
-          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
-          let jj1 = jj + 1;
-          for (;;) {
-            if (jj1 >= dep) break;
-            let full = true;
-            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
-            if (!full) break;
-            jj1++;
-          }
-          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
-
-          const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
-          let botLvl = lvl;
-          while (footprintSolidAt(mi0, mi1, mj0, mj1, botLvl - 1)) botLvl--;
-          if (botLvl < lvl) {
-            for (let gj = mj0; gj <= mj1; gj++) for (let gi = mi0; gi <= mi1; gi++) consumedTo.set(gi + ',' + gj, botLvl);
-          }
-
-          body.addShape(
-            new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
-            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
-        }
-      }
-    }
-  }
+  addDebrisColliders(body, lat);
   recentreDebris(mesh, body);
   { let mw = 0; for (const b of lat) mw += (MAT_STATS[b.mat]?.weight ?? 1) * 0.5; body.mass = Math.min(mw, FALL_MASS_CAP); }
   body.updateMassProperties();
@@ -6432,7 +6371,7 @@ function splitDebrisIfNeeded(mesh) {
 // drift apart instead of springing.
 const partQuat = new THREE.Quaternion();
 function spawnDebrisPart(parent, blocks, pbody) {
-  const n = blocks.length, h = HALF_BLOCK;
+  const n = blocks.length;
   parent.updateWorldMatrix(true, false);
   const c = new THREE.Vector3();
   for (const b of blocks) c.add(b.pos);
@@ -6481,77 +6420,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     collisionFilterGroup: DEBRIS_GROUP,
     collisionFilterMask: -1,
   });
-  {
-    // Greedy-merged collision boxes, same algorithm as rebuildDebrisBody.
-    const lat = mesh.userData.blocks;
-    const ref = lat[0];
-    const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
-    const byLevel = new Map();
-    for (const b of lat) {
-      let cells = byLevel.get(b.lvl);
-      if (!cells) byLevel.set(b.lvl, cells = new Set());
-      cells.add(b.gi + ',' + b.gj);
-    }
-    // Every block counts, buried or not (as with the terrain collider): merging
-    // through the interior gives a few deep boxes instead of a hollow shell.
-    const exposedByLevel = byLevel;
-    function footprintSolidAt(mi0, mi1, mj0, mj1, lvl) {
-      const cellsAt = exposedByLevel.get(lvl);
-      if (!cellsAt) return false;
-      for (let gj = mj0; gj <= mj1; gj++)
-        for (let gi = mi0; gi <= mi1; gi++)
-          if (!cellsAt.has(gi + ',' + gj)) return false;
-      return true;
-    }
-    const consumedTo = new Map();
-    const levels = [...exposedByLevel.keys()].sort((a, b) => b - a);
-    for (const lvl of levels) {
-      const cells = exposedByLevel.get(lvl);
-      let gi0 = Infinity, gi1 = -Infinity, gj0 = Infinity, gj1 = -Infinity;
-      for (const key of cells) {
-        const [gi, gj] = key.split(',').map(Number);
-        if (gi < gi0) gi0 = gi; if (gi > gi1) gi1 = gi;
-        if (gj < gj0) gj0 = gj; if (gj > gj1) gj1 = gj;
-      }
-      const w = gi1 - gi0 + 1, dep = gj1 - gj0 + 1;
-      const solid = new Uint8Array(w * dep);
-      for (const key of cells) {
-        const th = consumedTo.get(key);
-        if (th !== undefined && lvl >= th) continue;
-        const [gi, gj] = key.split(',').map(Number);
-        solid[(gj - gj0) * w + (gi - gi0)] = 1;
-      }
-      const visited = new Uint8Array(w * dep);
-      for (let jj = 0; jj < dep; jj++) {
-        for (let ii = 0; ii < w; ii++) {
-          const idx = jj * w + ii;
-          if (!solid[idx] || visited[idx]) continue;
-          let ii1 = ii + 1;
-          while (ii1 < w && solid[jj * w + ii1] && !visited[jj * w + ii1]) ii1++;
-          let jj1 = jj + 1;
-          for (;;) {
-            if (jj1 >= dep) break;
-            let full = true;
-            for (let x = ii; x < ii1; x++) if (!solid[jj1 * w + x] || visited[jj1 * w + x]) { full = false; break; }
-            if (!full) break;
-            jj1++;
-          }
-          for (let y = jj; y < jj1; y++) for (let x = ii; x < ii1; x++) visited[y * w + x] = 1;
-
-          const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
-          let botLvl = lvl;
-          while (footprintSolidAt(mi0, mi1, mj0, mj1, botLvl - 1)) botLvl--;
-          if (botLvl < lvl) {
-            for (let gj = mj0; gj <= mj1; gj++) for (let gi = mi0; gi <= mi1; gi++) consumedTo.set(gi + ',' + gj, botLvl);
-          }
-
-          body.addShape(
-            new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
-            new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
-        }
-      }
-    }
-  }
+  addDebrisColliders(body, mesh.userData.blocks);
   const w = c.applyMatrix4(parent.matrixWorld);
   body.position.set(w.x, w.y, w.z);
   parent.getWorldQuaternion(partQuat);

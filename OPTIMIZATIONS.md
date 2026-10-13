@@ -59,7 +59,7 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 44. [ ] Falling grains = separate meshes, one draw call each, LOD scale recomputed per grain. One InstancedMesh per material. MEDIUM.
 45. [x] DONE (v177) — one debrisColliderBoxes function, integer keys, reused buffers; box-identical over 50k random pieces. MEDIUM.
 46. [x] DONE (v178) — indexed loops, typed scratch buffers, numeric shedKey; 20k-piece differential 0 mismatches. LOW-MEDIUM.
-47. [ ] cutDebrisLat shifts every later instance — O(n²) when splitting. Swap with last = O(1). LOW-MEDIUM.
+47. [x] DONE (v179) — kept blocks re-homed in place (each piece owns storage); cached-index users cut from the back. LOW-MEDIUM.
 48. [x] DONE (v175) — skip sleeping bodies in syncList; force-sleep settled jitterers after 120 frames if resting only on terrain/sleepers; wake-on-dig scans full bounds. MEDIUM.
 49. [x] DONE (v176) — hooked the 7 sphere collision fns (player is spheres only); only new contacts checked, 6 hooks/step vs 344-contact scan. 3000-step sim exact match. LOW-MEDIUM.
 50. [ ] Per-frame allocations — hammerAim new Vector3, shovelAim objects, creativeAim double raycast, debrisAim recursive intersectObjects. LOW-MEDIUM.

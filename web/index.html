@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 179;
+window.GAME_VERSION = 180;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5712,6 +5712,57 @@ scene.add(debris);
 const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
 const restedChunks  = [];  // { mesh, body, still } — come to a stop, but still in the world
 const powderFalling = [];  // { pos, mat, v, from } — a grain in the air, between the piece it left and whatever catches it
+// Every grain in the air is drawn by one InstancedMesh per material, so a sand
+// collapse is a draw call per material rather than one per grain. A grain has no
+// mesh of its own: syncFallingGrains rewrites each layer from powderFalling once
+// a frame, after everything that spawns or catches grains has run, packing the
+// instances from 0 and drawing only `count` of them. A grain that landed is
+// simply not written, so nothing is left behind where it was.
+const fallingGrainLayers = new Map();   // mat -> InstancedMesh
+const fallingGrainM4 = new THREE.Matrix4();
+const LOD_RADIUS_SQ = LOD_SPHERES.map((s) => s.radius * s.radius);
+function fallingGrainLayer(m) {
+  let L = fallingGrainLayers.get(m);
+  if (L) return L;
+  L = new THREE.InstancedMesh(fallingGrainGeo(m), TERRAIN_FACE_MATS[m], 64);
+  L.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  L.count = 0;
+  // The grains are all over the place and move every frame: a bounding sphere
+  // would be stale by the next one.
+  L.frustumCulled = false;
+  scene.add(L);
+  fallingGrainLayers.set(m, L);
+  return L;
+}
+function syncFallingGrains() {
+  for (const L of fallingGrainLayers.values()) L.count = 0;
+  const cx = camera.position.x, cz = camera.position.z;
+  for (const p of powderFalling) {
+    const L = fallingGrainLayer(p.mat);
+    const cap = L.instanceMatrix.count;
+    if (L.count === cap) {
+      // Full: swap in a buffer twice the size. Everything below `count` was
+      // written this frame and is copied across; dispose() lets the renderer
+      // drop the old one and pick the new one up on its next draw.
+      const grown = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2 * 16), 16);
+      grown.setUsage(THREE.DynamicDrawUsage);
+      grown.array.set(L.instanceMatrix.array);
+      L.dispose();
+      L.instanceMatrix = grown;
+    }
+    // LOD: a grain is drawn at the merge size of the terrain around it (lodStepFor,
+    // on squared distance).
+    const dx = p.pos.x - cx, dz = p.pos.z - cz, d2 = dx * dx + dz * dz;
+    let step = 1;
+    while (step <= LOD_RADIUS_SQ.length && d2 >= LOD_RADIUS_SQ[step - 1]) step++;
+    const s = mergeSizeFor(step) * BLOCK;
+    L.setMatrixAt(L.count++, fallingGrainM4.makeScale(s, s, s).setPosition(p.pos));
+  }
+  for (const L of fallingGrainLayers.values()) {
+    L.visible = L.count > 0;
+    if (L.visible) L.instanceMatrix.needsUpdate = true;
+  }
+}
 // Terrain powder that a landing grain has just left unsupported. A column comes
 // down one block at a time, bottom to top: the block that lands queues whatever
 // is over it, and that one queues the next, so a pile pours instead of dropping
@@ -5886,12 +5937,7 @@ function shedColumn(c, budget) {
       if (ni >= 0 && nj >= 0 && ni < GEN_N && nj < GEN_N) powderDirty.add(nj * GEN_N + ni);
     }
     // It is not gone, it is falling: hand it to the same grain path the rubble uses.
-    const g = { pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null };
-    g.mesh = new THREE.Mesh(fallingGrainGeo(m), TERRAIN_FACE_MATS[m]);   // a speckled unit cube: scale it to block size
-    g.mesh.scale.setScalar(BLOCK);
-    g.mesh.position.copy(g.pos);
-    scene.add(g.mesh);
-    powderFalling.push(g);
+    powderFalling.push({ pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null });
     budget--;
   }
   return budget;
@@ -5925,11 +5971,7 @@ function shedTerrainPowder() {
     if (qLvl - 1 >= VOX_FLOOR && voxelAt(i, j, qLvl - 1) !== AIR) continue;
     if (gravGuard(i, j, qLvl) && voxelAt(i, j, qLvl) === AIR) continue;
     editBlock(i, j, qLvl, AIR);
-    const grain = new THREE.Mesh(fallingGrainGeo(mat), TERRAIN_FACE_MATS[mat]);   // a speckled unit cube: scale it to block size
-    grain.scale.setScalar(BLOCK);
-    grain.position.set(colX(i), (qLvl + 0.5) * BLOCK, colZ(j));
-    scene.add(grain);
-    powderFalling.push({ pos: grain.position.clone(), mat, v: 0, from: null, mesh: grain });
+    powderFalling.push({ pos: new THREE.Vector3(colX(i), (qLvl + 0.5) * BLOCK, colZ(j)), mat, v: 0, from: null });
     const nextAbove = qLvl + 1;
     if (inVoxelRange(i, j, nextAbove) && MAT_STATS[voxelAt(i, j, nextAbove)]?.powder
         && (nextAbove - 1 < VOX_FLOOR || voxelAt(i, j, nextAbove - 1) === AIR)) {
@@ -6055,12 +6097,7 @@ function shedPowder() {
         const b = lat[q];
         if (!MAT_STATS[b.mat]?.powder) continue;
         if (grid[cell[q] + step]) continue;
-        const g = { pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh };
-        g.mesh = new THREE.Mesh(fallingGrainGeo(b.mat), TERRAIN_FACE_MATS[b.mat]);   // a speckled unit cube: scale it to block size
-        g.mesh.scale.setScalar(BLOCK);
-        g.mesh.position.copy(g.pos);
-        scene.add(g.mesh);
-        powderFalling.push(g);
+        powderFalling.push({ pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: b.mat, v: 0, from: mesh });
         grid[cell[q]] = 0;
         cutDebrisLat(mesh, q);   // the same gap-close a dig does
         cut = true;
@@ -6116,16 +6153,7 @@ function catchPowder(dt) {
     const p = powderFalling[n];
     p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
     p.pos.y -= p.v * dt;
-    if (p.mesh) {
-      p.mesh.position.copy(p.pos);
-      // LOD: scale grain based on camera distance
-      const dx = p.pos.x - camera.position.x, dz = p.pos.z - camera.position.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      const step = lodStepFor(dist);
-      const scale = mergeSizeFor(step) * BLOCK;
-      p.mesh.scale.setScalar(scale);
-    }
-    if (p.pos.y < FALL_KILL_Y) { if (p.mesh) scene.remove(p.mesh); powderFalling.splice(n, 1); continue; }
+    if (p.pos.y < FALL_KILL_Y) { powderFalling.splice(n, 1); continue; }
     if (voxelAtWorld(p.pos.x, p.pos.y, p.pos.z) !== AIR) {
       const i = colI(p.pos.x), j = colJ(p.pos.z);
       let lvl = lvlOfY(p.pos.y);
@@ -6137,7 +6165,6 @@ function catchPowder(dt) {
           && (aboveLvl - 1 < VOX_FLOOR || voxelAt(i, j, aboveLvl - 1) === AIR)) {
         powderQueue.push({ i, j, lvl: aboveLvl });
       }
-      if (p.mesh) scene.remove(p.mesh);
       powderFalling.splice(n, 1);
       powderCatchStamp++; pieces = null;   // the edit may have brought pieces down
       continue;
@@ -6162,7 +6189,6 @@ function catchPowder(dt) {
       const local = debrisSpot(mesh, p.pos, powderZero);
       if (!local) continue;
       placeOnDebris(mesh, local, p.mat);
-      if (p.mesh) scene.remove(p.mesh);
       powderFalling.splice(n, 1);
       powderCatchStamp++; pieces = null;   // the piece grew and was rebuilt
       break;
@@ -8625,6 +8651,7 @@ function tick() {
   updateFallingChunks();
   updatePowderBlocks(dt);
   checkTerrainPowder();
+  syncFallingGrains();   // after every grain this frame has spawned, moved or landed
 
   // Queue the chunks around the player for the worker and let distant ones go.
   // The load area is a square of chunks, so the unload test is square too — a
@@ -8926,7 +8953,9 @@ function collectWorldMeta() {
       pos: g.pos.toArray(),
       mat: g.mat,
       v: g.v,
-      from: g.from ? g.from.toArray() : null,
+      // `from` is the debris mesh it fell off, which does not survive a reload:
+      // a restored grain may land on any piece.
+      from: null,
     })),
     powderQueue: [...powderQueue],
     powderDirty: [...powderDirty, ...powderCarry],
@@ -9313,7 +9342,6 @@ function applyWorldState(s) {
   fallingChunks.length = 0;
   for (const f of restedChunks) dropChunk(f);
   restedChunks.length = 0;
-  for (const g of powderFalling) scene.remove(g.mesh);
   powderFalling.length = 0;
   powderQueue.length = 0;
   powderDirty.clear();
@@ -9357,12 +9385,9 @@ function applyWorldState(s) {
 
   // Restore powder falling
   for (const g of ds.powderFalling) {
-    const grain = new THREE.Mesh(fallingGrainGeo(g.mat), TERRAIN_FACE_MATS[g.mat]);
-    grain.scale.setScalar(BLOCK);
-    grain.position.set(...g.pos);
-    scene.add(grain);
-    powderFalling.push({ pos: new THREE.Vector3(...g.pos), mat: g.mat, v: g.v, from: g.from ? new THREE.Vector3(...g.from) : null, mesh: grain });
+    powderFalling.push({ pos: new THREE.Vector3(...g.pos), mat: g.mat, v: g.v, from: g.from ? new THREE.Vector3(...g.from) : null });
   }
+  syncFallingGrains();
   powderQueue.push(...ds.powderQueue);
   for (const c of ds.powderDirty) powderDirty.add(c);
   // A save from before every emptying path marked its column may have left

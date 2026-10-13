@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 175;
+window.GAME_VERSION = 176;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -4973,17 +4973,43 @@ scene.add(playerMesh);
 
 // Steepest-upward contact normal touching the player, refreshed every substep.
 // A contact whose normal is within maxSlope of straight up is walkable ground.
+// The player is built only of spheres, so every contact it gets is made by one
+// of the narrowphase's sphere resolvers. Watching just those — instead of all
+// of world.contacts after the step, most of it debris on terrain — sees the
+// very same contact equations for a fraction of the work. The narrowphase
+// looks resolvers up through getters that return this.<name>, so instance
+// properties take over; sphereHeightfield and the like call sphereConvex
+// internally, hence the depth count so only the outermost call scans.
 let groundNy = 0;
-world.addEventListener('postStep', () => {
-  let best = 0;
-  for (const c of world.contacts) {
-    let ny;
-    if (c.bi === playerBody) ny = -c.ni.y;        // ni runs from bi to bj
-    else if (c.bj === playerBody) ny = c.ni.y;
-    else continue;
-    if (ny > best) best = ny;
+let stepGroundNy = 0, sphereDepth = 0;
+{
+  const np = world.narrowphase;
+  for (const name of ['sphereSphere', 'spherePlane', 'sphereBox', 'sphereConvex',
+                      'sphereHeightfield', 'sphereParticle', 'sphereTrimesh']) {
+    const resolve = np[name];
+    if (typeof resolve !== 'function') continue;
+    np[name] = function () {
+      const res = this.result, n0 = res.length;
+      sphereDepth++;
+      let out;
+      try { out = resolve.apply(this, arguments); } finally { sphereDepth--; }
+      if (sphereDepth === 0) {
+        for (let k = n0, n = res.length; k < n; k++) {
+          const c = res[k];
+          let ny;
+          if (c.bi === playerBody) ny = -c.ni.y;  // ni runs from bi to bj
+          else if (c.bj === playerBody) ny = c.ni.y;
+          else continue;
+          if (ny > stepGroundNy) stepGroundNy = ny;
+        }
+      }
+      return out;
+    };
   }
-  groundNy = best;
+}
+world.addEventListener('postStep', () => {
+  groundNy = stepGroundNy;
+  stepGroundNy = 0;
 });
 
 let coyote = 0;                       // grace period for late jump presses

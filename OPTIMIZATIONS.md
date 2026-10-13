@@ -55,12 +55,12 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 40. [x] DONE (v172) — adriftAnchored() early stop (airLo+bed), integer keys, shared arrays, colors only after loose. 3000-world differential 0 mismatches. HIGH.
 41. [x] DONE (v172) — iterative worklist, same visit order as recursion. MEDIUM.
 42. [x] DONE (v173) — sweep removed; adriftFrame gap marked, budget overflow carries via powderCarry, save-load one-off check. pt5 proves carry works. MEDIUM.
-43. [ ] catchPowder scales badly — concat() + applyMatrix4 + distanceTo per block of every piece per grain per frame. Bounding-sphere reject first. MEDIUM-HIGH (collapses).
+43. [x] DONE (v174) — per-frame piece cache w/ AABB reject (1+1e-6 margin), piece list built once; mutation-tested via pt6 (10 breaks caught). MEDIUM-HIGH.
 44. [ ] Falling grains = separate meshes, one draw call each, LOD scale recomputed per grain. One InstancedMesh per material. MEDIUM.
 45. [ ] Debris greedy-collider code copied 3× (lines 5147, 5733, 5520) — string keys + split(',').map(Number) in loops = GC garbage. One shared function, integer keys. MEDIUM.
 46. [ ] String-key churn in debrisFaceMask, splitDebrisIfNeeded, shedPowder — GC pressure on phones. LOW-MEDIUM.
 47. [ ] cutDebrisLat shifts every later instance — O(n²) when splitting. Swap with last = O(1). LOW-MEDIUM.
-48. [ ] Sleeping debris synced every frame — up to 60 rested pieces. Skip sleeping in syncList, freeze long-rested. MEDIUM.
+48. [x] DONE (v175) — skip sleeping bodies in syncList; force-sleep settled jitterers after 120 frames if resting only on terrain/sleepers; wake-on-dig scans full bounds. MEDIUM.
 49. [ ] postStep scans every contact 120×/sec just for player ground contacts. LOW-MEDIUM.
 50. [ ] Per-frame allocations — hammerAim new Vector3, shovelAim objects, creativeAim double raycast, debrisAim recursive intersectObjects. LOW-MEDIUM.
 51. [ ] Collider streaming bookkeeping — 121 loadChunkCollider calls/frame with O(n) indexOf, scans 900 chunks for unload, uses shift(). Flag array recomputed on chunk change. LOW.

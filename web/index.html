@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 181;
+window.GAME_VERSION = 182;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -4349,27 +4349,47 @@ const colliderBody = new Array(CHUNK_N * CHUNK_N).fill(null);
 const COLLIDER_RADIUS = 1;
 const COLLIDER_UNLOAD_SLACK = 1.0;
 let colTestChunk = -1;                // the collision tester's chunk, kept while it is on
-const _pendingColliders = [];
+
+// The chunks that have a body, as a list (so the unload sweep walks a dozen
+// entries rather than every chunk) with each one's slot in it, -1 when absent,
+// for an O(1) swap-remove. Every body goes in through setChunkColliderBody and
+// out through unloadChunkCollider, which keep the two in step.
+const _colLoaded = [];
+const _colLoadedAt = new Int32Array(CHUNK_N * CHUNK_N).fill(-1);
+function setChunkColliderBody(c, boxes) {
+  const body = new CANNON.Body({ mass: 0, material: physWorld });
+  for (const b of boxes) {
+    body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+  }
+  body.updateAABB();
+  world.addBody(body);
+  colliderBody[c] = body;
+  if (_colLoadedAt[c] < 0) { _colLoadedAt[c] = _colLoaded.length; _colLoaded.push(c); }
+}
+
+// Builds waiting for a turn, in order. A chunk is queued at most once — _colQueued
+// says whether it is — and taking one out of line just clears its flag; the entry
+// left behind is skipped when the head reaches it. Dequeuing advances _colQHead
+// instead of shifting the array, and the per-frame pass in tick compacts what is
+// left (dropping the dead entries and any duplicate a drop-and-requeue left) back
+// to the front, so the array never outgrows the live queue by more than a frame.
+const _colQueue = [];
+let _colQHead = 0;
+const _colQueued = new Uint8Array(CHUNK_N * CHUNK_N);
+function unqueueChunkCollider(c) { _colQueued[c] = 0; }
 
 function loadChunkCollider(c) {
-  if (colliderBody[c] || colJob[c]) return;
-  if (_pendingColliders.indexOf(c) >= 0) return;
-  _pendingColliders.push(c);
+  if (colliderBody[c] || colJob[c] || _colQueued[c]) return;
+  _colQueued[c] = 1;
+  _colQueue.push(c);
 }
 
 // Build a chunk collider immediately (synchronously), used for spawn area.
 function buildChunkColliderSync(c) {
   if (colliderBody[c]) return;
   colJob[c] = 0;
-  const pi = _pendingColliders.indexOf(c);
-  if (pi >= 0) _pendingColliders.splice(pi, 1);
-  const body = new CANNON.Body({ mass: 0, material: physWorld });
-  for (const b of buildChunkColliderBoxes(c)) {
-    body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-  }
-  body.updateAABB();
-  world.addBody(body);
-  colliderBody[c] = body;
+  unqueueChunkCollider(c);
+  setChunkColliderBody(c, buildChunkColliderBoxes(c));
 }
 
 function buildPendingColliders() {
@@ -4381,29 +4401,20 @@ function buildPendingColliders() {
     colJob[c] = 0;
     if (colliderBody[c]) continue;
     if (r.rev !== chunkRev[c] || dirtyChunks.has(c) || dirtyColliders.has(c)) { loadChunkCollider(c); continue; }
-    const body = new CANNON.Body({ mass: 0, material: physWorld });
-    for (const b of r.boxes) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-    }
-    body.updateAABB();
-    world.addBody(body);
-    colliderBody[c] = body;
+    setChunkColliderBody(c, r.boxes);
   }
   colDone.length = 0;
   let built = 0;
-  while (_pendingColliders.length > 0 && built < 2) {
-    const c = _pendingColliders.shift();
+  while (_colQHead < _colQueue.length && built < 2) {
+    const c = _colQueue[_colQHead++];
+    if (!_colQueued[c]) continue;    // taken out of line since
+    _colQueued[c] = 0;
     if (colliderBody[c]) continue;
     if (meshWorker) { colDispatch(c); built++; continue; }
-    const body = new CANNON.Body({ mass: 0, material: physWorld });
-    for (const b of buildChunkColliderBoxes(c)) {
-      body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-    }
-    body.updateAABB();
-    world.addBody(body);
-    colliderBody[c] = body;
+    setChunkColliderBody(c, buildChunkColliderBoxes(c));
     built++;
   }
+  if (_colQHead === _colQueue.length) { _colQueue.length = 0; _colQHead = 0; }
 }
 
 // Every chunk a dynamic body overlaps (its world AABB, padded by a block
@@ -4421,7 +4432,10 @@ function buildPendingColliders() {
 // sprint, since it can be set to that just before the step, and the travel is
 // doubled for what contacts and slopes can add within the frame — 1.2 m at a
 // sprint, against a 3.2 m chunk.
+// The flags set this frame are also listed in _physKeepList, so clearing them
+// next frame touches only those rather than every chunk.
 const _physKeep = new Uint8Array(CHUNK_N * CHUNK_N);
+const _physKeepList = [];
 function keepChunkColliders(lo, hi, pad) {
   const ci0 = Math.max(0, Math.floor(colI(lo.x - pad) / CHUNK));
   const ci1 = Math.min(CHUNK_N - 1, Math.floor(colI(hi.x + pad) / CHUNK));
@@ -4432,6 +4446,7 @@ function keepChunkColliders(lo, hi, pad) {
       const c = cj * CHUNK_N + ci;
       if (_physKeep[c]) continue;
       _physKeep[c] = 1;
+      _physKeepList.push(c);
       if (!colliderBody[c]) buildChunkColliderSync(c);
     }
   }
@@ -4439,7 +4454,8 @@ function keepChunkColliders(lo, hi, pad) {
 // Sleeping and frozen pieces stay in this loop: the ground under them is kept
 // loaded, so one woken later never finds itself over a missing collider.
 function ensurePhysicsObjectColliders(dt) {
-  _physKeep.fill(0);
+  for (let k = 0; k < _physKeepList.length; k++) _physKeep[_physKeepList[k]] = 0;
+  _physKeepList.length = 0;
   const simT = Math.min(dt + physStep, physStep * physMaxSubsteps());
   for (let n = 0; n < syncList.length; n++) {
     const b = syncList[n].body;
@@ -4458,23 +4474,33 @@ function unloadChunkCollider(c) {
   if (!body) return;
   world.removeBody(body);
   colliderBody[c] = null;
+  const k = _colLoadedAt[c], last = _colLoaded.pop();
+  if (last !== c) { _colLoaded[k] = last; _colLoadedAt[last] = k; }
+  _colLoadedAt[c] = -1;
 }
+
+// Whether the player at (px, pz) is more than a chunk plus COLLIDER_UNLOAD_SLACK
+// from chunk c's edge on either axis — the unload test, square like the load area.
+const _COL_CM = CHUNK * BLOCK;
+const _COL_KEEP_D = COLLIDER_RADIUS * _COL_CM + COLLIDER_UNLOAD_SLACK;
+function colliderFarFrom(c, px, pz) {
+  const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
+  const x0 = ci * _COL_CM - GEN_R, z0 = cj * _COL_CM - GEN_R;
+  const dx = Math.max(x0 - px, 0, px - (x0 + _COL_CM));
+  const dz = Math.max(z0 - pz, 0, pz - (z0 + _COL_CM));
+  return Math.max(dx, dz) > _COL_KEEP_D;
+}
+// The chunk the load square was last queued around (none yet: off any real
+// chunk index, including the -1 the player gets just past the field's edge).
+let _colSquareCi = -0x40000000, _colSquareCj = -0x40000000;
 
 // A chunk's collider, after the store under it changed.
 function rebuildChunkCollider(c) {
   if (!colliderBody[c]) return;
   unloadChunkCollider(c);
-  // Remove from pending queue if queued.
-  const pi = _pendingColliders.indexOf(c);
-  if (pi >= 0) _pendingColliders.splice(pi, 1);
+  unqueueChunkCollider(c);
   // Build here and now: the flush calls this before the physics step sees the chunk.
-  const body = new CANNON.Body({ mass: 0, material: physWorld });
-  for (const b of buildChunkColliderBoxes(c)) {
-    body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-  }
-  body.updateAABB();
-  world.addBody(body);
-  colliderBody[c] = body;
+  setChunkColliderBody(c, buildChunkColliderBoxes(c));
   // v124 — wake sleeping debris whose friction surfaces vanished.
   // When terrain is dug away, cannon.js does not notify sleeping bodies
   // that their contacts are gone; they stay frozen until something bumps
@@ -7801,15 +7827,7 @@ function updateColTest() {
   if (ci >= 0 && cj >= 0 && ci < CHUNK_N && cj < CHUNK_N) {
     const idx = cj * CHUNK_N + ci;
     colTestChunk = idx;
-    if (!colliderBody[idx]) {
-      const body = new CANNON.Body({ mass: 0, material: physWorld });
-      for (const b of buildChunkColliderBoxes(idx)) {
-        body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
-      }
-      body.updateAABB();
-      world.addBody(body);
-      colliderBody[idx] = body;
-    }
+    if (!colliderBody[idx]) buildChunkColliderSync(idx);
   }
 
   if (ci !== colTestPrevCiMin || cj !== colTestPrevCjMin) {
@@ -7818,9 +7836,7 @@ function updateColTest() {
     rebuildDebugCollision();
   }
 
-  let loaded = 0;
-  for (let c = 0; c < colliderBody.length; c++) if (colliderBody[c]) loaded++;
-  colTestHud.textContent = `CHUNK: ${ci}, ${cj}\nLOADED: ${loaded} chunks`;
+  colTestHud.textContent = `CHUNK: ${ci}, ${cj}\nLOADED: ${_colLoaded.length} chunks`;
 }
 
 // ---------------------------------------------------------------------------
@@ -8703,33 +8719,45 @@ function tick() {
   // is ever dropped, and one only just outside it waits for the player to be
   // properly on its way. Chunks a body or the player needs this frame are in
   // _physKeep and stay regardless.
+  //
+  // The square is only queued when the player's chunk changes: nothing inside it
+  // can be unloaded (it is never far), and every other way a chunk loses its body
+  // or its job puts it straight back in line. The distance tests have to run
+  // every frame, since the slack makes them depend on where in the chunk the
+  // player is, but they only walk the loaded list and the queue — a dozen
+  // entries, not every chunk.
   {
     const px = playerBody.position.x, pz = playerBody.position.z;
     const pci = Math.floor(colI(px) / CHUNK), pcj = Math.floor(colJ(pz) / CHUNK);
-    for (let cj = pcj - COLLIDER_RADIUS; cj <= pcj + COLLIDER_RADIUS; cj++) {
-      for (let ci = pci - COLLIDER_RADIUS; ci <= pci + COLLIDER_RADIUS; ci++) {
-        if (ci < 0 || cj < 0 || ci >= CHUNK_N || cj >= CHUNK_N) continue;
-        loadChunkCollider(cj * CHUNK_N + ci);
+    if (pci !== _colSquareCi || pcj !== _colSquareCj) {
+      _colSquareCi = pci; _colSquareCj = pcj;
+      for (let cj = pcj - COLLIDER_RADIUS; cj <= pcj + COLLIDER_RADIUS; cj++) {
+        for (let ci = pci - COLLIDER_RADIUS; ci <= pci + COLLIDER_RADIUS; ci++) {
+          if (ci < 0 || cj < 0 || ci >= CHUNK_N || cj >= CHUNK_N) continue;
+          loadChunkCollider(cj * CHUNK_N + ci);
+        }
       }
     }
-    const CM = CHUNK * BLOCK;
-    const keepD = COLLIDER_RADIUS * CM + COLLIDER_UNLOAD_SLACK;
-    const farFrom = (c) => {
-      const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
-      const x0 = ci * CM - GEN_R, z0 = cj * CM - GEN_R;
-      const dx = Math.max(x0 - px, 0, px - (x0 + CM));
-      const dz = Math.max(z0 - pz, 0, pz - (z0 + CM));
-      return Math.max(dx, dz) > keepD;
-    };
-    for (let c = 0; c < colliderBody.length; c++) {
-      if (!colliderBody[c] || _physKeep[c] || (colTestOn && c === colTestChunk)) continue;
-      if (farFrom(c)) unloadChunkCollider(c);
+    // Walked backwards: a swap-remove only moves entries already visited.
+    for (let k = _colLoaded.length - 1; k >= 0; k--) {
+      const c = _colLoaded[k];
+      if (_physKeep[c] || (colTestOn && c === colTestChunk)) continue;
+      if (colliderFarFrom(c, px, pz)) unloadChunkCollider(c);
     }
     // A queued build the player has since walked away from (or teleported away
-    // from) would only be dropped by the pass above once it arrived.
-    for (let k = _pendingColliders.length - 1; k >= 0; k--) {
-      if (farFrom(_pendingColliders[k])) _pendingColliders.splice(k, 1);
+    // from) would only be dropped by the pass above once it arrived. Compacted
+    // in the same pass: live entries move to the front, each once.
+    let w = 0;
+    for (let k = _colQHead; k < _colQueue.length; k++) {
+      const c = _colQueue[k];
+      if (_colQueued[c] !== 1) continue;    // dead, or already kept this pass
+      if (colliderFarFrom(c, px, pz)) { _colQueued[c] = 0; continue; }
+      _colQueued[c] = 2;
+      _colQueue[w++] = c;
     }
+    _colQueue.length = w;
+    _colQHead = 0;
+    for (let k = 0; k < w; k++) _colQueued[_colQueue[k]] = 1;
   }
 
   // Redraw the collider wireframe now and then to pick up newly loaded chunks.

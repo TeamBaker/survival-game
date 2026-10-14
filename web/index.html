@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 188;
+window.GAME_VERSION = 189;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2266,22 +2266,22 @@ const AIR = N_MATS;
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 22,    buoyancy: 0, strength: 25,  powder: true  },  // SAND
-  { name: 'Dirt',          weight: 20,    buoyancy: 0, strength: 50,  powder: false },  // DIRT
-  { name: 'Rock',          weight: 60,    buoyancy: 0, strength: 350, powder: false },  // ROCK
+  { name: 'Sand',          weight: 2.2,   buoyancy: 0, strength: 25,  powder: true  },  // SAND
+  { name: 'Dirt',          weight: 2,     buoyancy: 0, strength: 50,  powder: false },  // DIRT
+  { name: 'Rock',          weight: 6,     buoyancy: 0, strength: 350, powder: false },  // ROCK
   null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 20,    buoyancy: 0, strength: 25,  powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 40,    buoyancy: 0, strength: 65,  powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 20,    buoyancy: 0, strength: 100, powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 40,    buoyancy: 0, strength: 75,  powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 50,    buoyancy: 0, strength: 50,  powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 60,    buoyancy: 0, strength: 75,  powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 50,    buoyancy: 0, strength: 100, powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 24,    buoyancy: 0, strength: 60,  powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 44,    buoyancy: 0, strength: 75,  powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 24,    buoyancy: 0, strength: 125, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 42,    buoyancy: 0, strength: 40,  powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 22,    buoyancy: 0, strength: 70,  powder: false },  // HARD_SAND
+  { name: 'Fine Dirt',     weight: 2,     buoyancy: 0, strength: 25,  powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 4,     buoyancy: 0, strength: 65,  powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 2,     buoyancy: 0, strength: 100, powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 4,     buoyancy: 0, strength: 75,  powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 5,     buoyancy: 0, strength: 50,  powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 6,     buoyancy: 0, strength: 75,  powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 5,     buoyancy: 0, strength: 100, powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 2.4,   buoyancy: 0, strength: 60,  powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 4.4,   buoyancy: 0, strength: 75,  powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 2.4,   buoyancy: 0, strength: 125, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 4.2,   buoyancy: 0, strength: 40,  powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 70,  powder: false },  // HARD_SAND
 ];
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
@@ -5565,7 +5565,7 @@ const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 const FALL_BODY_CAP  = 20;    // pieces under physics at once
 const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
 const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
-const FALL_KG_PER_WEIGHT = 0.5; // kg of body mass per unit of MAT_STATS weight
+const FALL_KG_PER_WEIGHT = 5;   // kg of body mass per unit of MAT_STATS weight
 // Water has no stats and is never part of a piece; anything statless counts as dirt.
 const debrisWeight = (m) => MAT_STATS[m]?.weight ?? MAT_STATS[DIRT].weight;
 // A piece's mass from what its blocks are made of — the lattice entries' `mat`.
@@ -8690,8 +8690,9 @@ function stressDot(a, b) {
 
 function stressAddEdge(a, b, ax, ma, mb) {
   if (stNE >= ST_ECAP) return;
-  // Strength is stored at the table's scale; the solver works at 1000x it.
-  const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2 * 1000;
+  // Strength is stored at the table's scale; the solver works at 100x it, which
+  // puts it on the same footing as the weights it reads as-is for the loads.
+  const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2 * 100;
   stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA;
   if (a >= 0) stressAddDiag(a, ax, EA);
   if (b >= 0) stressAddDiag(b, ax, EA);
@@ -8976,7 +8977,7 @@ function stressRecolor() {
     // Hanging off nothing at all reads as the worst there is.
     let idx;
     if (stFixed[n] === 2) idx = STRESS_LUT_N - 1;
-    else if (stConverged) idx = stressLutIndex(stStress[n], (MAT_STATS[stMat[n]]?.strength ?? 0) * 1000);
+    else if (stConverged) idx = stressLutIndex(stStress[n], (MAT_STATS[stMat[n]]?.strength ?? 0) * 100);
     else continue;
     if (idx === stLut[n]) continue;
     stLut[n] = idx;

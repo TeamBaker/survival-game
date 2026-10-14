@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 186;
+window.GAME_VERSION = 187;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -7491,7 +7491,7 @@ document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
   const name = st ? st.name : titleCase(MAT_NAMES[i]);
   // Full width now, so the stats spell themselves out on one line.
   const stats = st
-    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: ${st.strength} &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
+    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: ${st.strength / 50} &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
     : '<span>no stats &mdash; not carryable</span>';
   return '<div class="mat-row">'
        + `<div class="mat-sw" style="background:${hex}"></div>`
@@ -8679,7 +8679,8 @@ function stressDot(a, b) {
 
 function stressAddEdge(a, b, ax, ma, mb) {
   if (stNE >= ST_ECAP) return;
-  const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2;
+  // Strength is stored at the table's scale; the solver works at 1000x it.
+  const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2 * 1000;
   stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA;
   if (a >= 0) stressAddDiag(a, ax, EA);
   if (b >= 0) stressAddDiag(b, ax, EA);
@@ -8964,7 +8965,7 @@ function stressRecolor() {
     // Hanging off nothing at all reads as the worst there is.
     let idx;
     if (stFixed[n] === 2) idx = STRESS_LUT_N - 1;
-    else if (stConverged) idx = stressLutIndex(stStress[n], MAT_STATS[stMat[n]]?.strength ?? 0);
+    else if (stConverged) idx = stressLutIndex(stStress[n], (MAT_STATS[stMat[n]]?.strength ?? 0) * 1000);
     else continue;
     if (idx === stLut[n]) continue;
     stLut[n] = idx;

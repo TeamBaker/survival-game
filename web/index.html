@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 183;
+window.GAME_VERSION = 188;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1502,6 +1502,7 @@ window.GAME_VERSION = 183;
       <button id="btn-debug-chunks" class="ui-el">Chunks: Off</button>
       <button id="btn-debug-collision" class="ui-el">Collision: Off</button>
       <button id="btn-coltest" class="ui-el">COL TEST: Off</button>
+      <button id="btn-stress" class="ui-el">Stress: On</button>
     </div>
   </div>
 </div>
@@ -2256,29 +2257,31 @@ const N_MATS = 16;
 // is not there. It sorts after the real ones so `m < AIR` means solid.
 const AIR = N_MATS;
 
-// The numbers are the material's own properties, indexed by material id and not
-// yet read by anything that simulates: weight is how much a block of it drags on
-// you, buoyancy how much the water pushes it back up, strength how much work it
+// The numbers are the material's own properties, indexed by material id: weight
+// is how much a block of it drags on you, and is read as-is by the sim — the
+// stress solver's load on the block, and (through debrisWeight) a loose piece's
+// mass and centre of mass — so the materials panel shows the real number.
+// Buoyancy is how much the water pushes it back up, strength how much work it
 // takes to break out of the ground, powder whether it is loose and crumbly.
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 25,  powder: true  },  // SAND
-  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 50,  powder: false },  // DIRT
-  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 350, powder: false },  // ROCK
+  { name: 'Sand',          weight: 22,    buoyancy: 0, strength: 25,  powder: true  },  // SAND
+  { name: 'Dirt',          weight: 20,    buoyancy: 0, strength: 50,  powder: false },  // DIRT
+  { name: 'Rock',          weight: 60,    buoyancy: 0, strength: 350, powder: false },  // ROCK
   null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 25,  powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 65,  powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 100, powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 75,  powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 50,  powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 75,  powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 100, powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 60,  powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 75,  powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 125, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 40,  powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 70,  powder: false },  // HARD_SAND
+  { name: 'Fine Dirt',     weight: 20,    buoyancy: 0, strength: 25,  powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 40,    buoyancy: 0, strength: 65,  powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 20,    buoyancy: 0, strength: 100, powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 40,    buoyancy: 0, strength: 75,  powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 50,    buoyancy: 0, strength: 50,  powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 60,    buoyancy: 0, strength: 75,  powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 50,    buoyancy: 0, strength: 100, powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 24,    buoyancy: 0, strength: 60,  powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 44,    buoyancy: 0, strength: 75,  powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 24,    buoyancy: 0, strength: 125, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 42,    buoyancy: 0, strength: 40,  powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 22,    buoyancy: 0, strength: 70,  powder: false },  // HARD_SAND
 ];
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
@@ -2745,6 +2748,9 @@ function growColumn(k, needLv) {
 // side; the meshes and the collider are baked, so a caller that changes a block
 // still has to rebuild those before it shows up — editBlock() below does both.
 // Returns what was there.
+// Bumped on every write, and on every change to a fallen piece's lattice, so the
+// stress overlay (updateStress) knows the structure it last solved is stale.
+let stressRev = 0;
 function setVoxel(i, j, lvl, m) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
   const k = j * GEN_N + i;
@@ -2757,6 +2763,7 @@ function setVoxel(i, j, lvl, m) {
   const was = voxMat[p];
   if (was === m) return was;
   voxMat[p] = m;
+  stressRev++;
   if (was === AIR) worldBlocks++;
   else if (m === AIR) worldBlocks--;
   // Keep the cached surface honest. Stacking one on top only ever raises it;
@@ -5558,6 +5565,15 @@ const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 const FALL_BODY_CAP  = 20;    // pieces under physics at once
 const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
 const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
+const FALL_KG_PER_WEIGHT = 0.5; // kg of body mass per unit of MAT_STATS weight
+// Water has no stats and is never part of a piece; anything statless counts as dirt.
+const debrisWeight = (m) => MAT_STATS[m]?.weight ?? MAT_STATS[DIRT].weight;
+// A piece's mass from what its blocks are made of — the lattice entries' `mat`.
+function debrisMass(lat) {
+  let w = 0;
+  for (const b of lat) w += debrisWeight(b.mat);
+  return Math.min(w * FALL_KG_PER_WEIGHT, FALL_MASS_CAP);
+}
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_FREEZE_TICKS = 120; // frames a settled piece cannon will not put to sleep may fidget before it is put to sleep by hand
@@ -5941,7 +5957,7 @@ function spawnFallingChunk(unit) {
   debris.add(mesh);
 
   const body = new CANNON.Body({
-    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    mass: debrisMass(mesh.userData.blocks),
     material: physDebris,
     linearDamping: 0.02,
     angularDamping: 0.15,
@@ -6298,11 +6314,12 @@ function recentreDebris(mesh, body) {
   const c = debrisCoM.set(0, 0, 0);
   let tw = 0;
   for (const b of lat) {
-    const w = MAT_STATS[b.mat]?.weight ?? 1;
+    const w = debrisWeight(b.mat);
     c.x += b.pos.x * w; c.y += b.pos.y * w; c.z += b.pos.z * w;
     tw += w;
   }
   if (tw > 0) c.multiplyScalar(1 / tw);
+  stressRev++;   // the stress overlay's cubes sit at these positions
   const m4 = new THREE.Matrix4();
   for (let q = 0; q < lat.length; q++) {
     const b = lat[q];
@@ -6417,7 +6434,7 @@ function rebuildDebrisBody(mesh, body) {
   body.shapeOrientations.length = 0;
   addDebrisColliders(body, lat);
   recentreDebris(mesh, body);
-  { let mw = 0; for (const b of lat) mw += (MAT_STATS[b.mat]?.weight ?? 1) * 0.5; body.mass = Math.min(mw, FALL_MASS_CAP); }
+  body.mass = debrisMass(lat);
   body.updateMassProperties();
   body.updateBoundingRadius();
   body.updateAABB();
@@ -6470,6 +6487,7 @@ function cutDebrisLat(mesh, q) {
   }
   lat[hole] = lat[lat.length - 1];
   lat.pop();
+  stressRev++;
   debrisFaceMask(mesh);
 }
 
@@ -6573,7 +6591,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
   debris.add(mesh);
 
   const body = new CANNON.Body({
-    mass: Math.min(n * 0.5, FALL_MASS_CAP),
+    mass: debrisMass(mesh.userData.blocks),
     material: physDebris,
     linearDamping: 0.02,
     angularDamping: 0.15,
@@ -6684,6 +6702,7 @@ function placeOnDebris(mesh, local, m, rebuild = true) {
   const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
   const gi = Math.round((local.x - kx) / BLOCK), gj = Math.round((local.z - kz) / BLOCK), lvl = Math.round((local.y - ky) / BLOCK - 0.5);
   const e = { pos: local.clone(), mat: m, color: null, gi, gj, lvl };
+  stressRev++;
   if (MAT_STATS[m]?.powder) {
     // Powder gets grainGeo's speckle, the same as the piece's own powder blocks.
     lat.push(e);
@@ -7179,6 +7198,7 @@ function shovelPlace() {
       || !h || !isFaceAdjacent(i, j, lvl, h.i, h.j, h.lvl)
       || spotBlocked(i, j, lvl)) return false;
   editBlock(i, j, lvl, shovel.held.pop());
+  markPlaced(i, j, lvl);
   refreshShovelUI();
   return true;
 }
@@ -7482,7 +7502,7 @@ document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
   const name = st ? st.name : titleCase(MAT_NAMES[i]);
   // Full width now, so the stats spell themselves out on one line.
   const stats = st
-    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: ${st.strength} &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
+    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: ${st.strength / 50} &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
     : '<span>no stats &mdash; not carryable</span>';
   return '<div class="mat-row">'
        + `<div class="mat-sw" style="background:${hex}"></div>`
@@ -8331,6 +8351,7 @@ function volumeFill(box, m) {
       for (let lvl = Math.max(VOX_FLOOR, box.l1); lvl <= box.l2; lvl++) {
         if (voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) continue;
         setVoxel(i, j, lvl, m);
+        markPlaced(i, j, lvl);
         placed++;
         any = true;
       }
@@ -8405,6 +8426,7 @@ bindTap(placerDo, () => {
     // No cap check: setVoxel grows the column to meet a place above it.
     if (topLvl[k] !== NO_COLUMN && voxelAt(i, j, lvl) === AIR) {
       editBlock(i, j, lvl, placerMat);
+      markPlaced(i, j, lvl);
     }
   } else if (creative.debris && creative.debris.local) {
     placeOnDebris(creative.debris.mesh, creative.debris.local, placerMat);
@@ -8452,6 +8474,565 @@ function updatePlacer() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Structural stress overlay — visual only
+// ---------------------------------------------------------------------------
+// The Tension Sandbox's frame analysis, on the voxel lattice: every block the
+// player built (and every block of a fallen piece) near the camera is a node
+// with six DOFs — three displacements, three rotations — and every face-sharing
+// pair is an axis-aligned Euler-Bernoulli beam with axial (EA/L), torsional and
+// two-plane bending (EI/L^3) stiffness. Generated ground a built block touches
+// is a fixed support, as is a built block just outside the window; the lowest
+// layer of a fallen piece (by the way it lies now) is what it rests on. Gravity
+// is each block's MAT_STATS weight; EA is the mean of the two blocks' strength,
+// EI = EA*L^2/12, L = 1 lattice step — all as the sandbox does it.
+//
+// The sandbox solves K*u = F by Gaussian elimination, O(n^3), which no phone can
+// do for a few thousand blocks. Here K is never assembled: conjugate gradients
+// (Jacobi-preconditioned) applies it beam by beam, warm-started from the last
+// answer, a millisecond or two of iterations at a time, ten times a second, and
+// not at all once it has converged and nothing has changed. Each beam's axial
+// force N and worst end moment M give |N| + M/L, a block keeps its worst beam,
+// and that over its own strength picks its colour from the sandbox's ramp.
+//
+// Nothing here writes the voxel store, a body or a collider: it reads the world
+// and draws translucent cubes over it.
+const STRESS_RADIUS     = 80;     // blocks (16 m) around the camera
+const STRESS_DEBRIS_R   = 16;     // m — fallen pieces nearer than this are analysed
+const STRESS_MAX_NODES  = 3000;   // blocks in one solve, built and debris together
+const STRESS_MAX_TERR   = 2400;   // of which built blocks get first call on this many
+const STRESS_TICK       = 0.1;    // s between solver slices
+const STRESS_REBUILD    = 0.5;    // s at least between rebuilding the structure
+const STRESS_SLICE_MS   = 1.5;    // CG time per slice
+const STRESS_TOL2       = 1e-8;   // converged once |r|^2 < this * |F|^2
+const STRESS_MOVE_Q     = 8;      // blocks the camera moves before the window follows
+const STRESS_LAYER      = 1;      // debris overlays: drawn, but not hit by debrisAim
+const STRESS_LUT_N      = 128;
+
+// Cells the player has built, by chunk, as gravCell keys. Pruned lazily: a key
+// whose cell is no longer solid is dropped the next time its chunk is scanned.
+const placedByChunk = new Array(CHUNK_N * CHUNK_N).fill(null);
+function markPlaced(i, j, lvl) {
+  const c = chunkOf(i, j);
+  (placedByChunk[c] || (placedByChunk[c] = new Set())).add(gravCell(i, j, lvl));
+  stressRev++;
+}
+function collectPlaced() {
+  const out = [];
+  for (const set of placedByChunk) if (set) for (const key of set) out.push(key);
+  return out;
+}
+function restorePlaced(ss) {
+  placedByChunk.fill(null);
+  if (ss && typeof ss.on === 'boolean') setStress(ss.on);
+  if (ss && Array.isArray(ss.placed)) {
+    for (const key of ss.placed) {
+      if (!Number.isInteger(key) || key < 0) continue;
+      const i = key % GEN_N, j = Math.floor(key / GEN_N) % GEN_N;
+      const c = chunkOf(i, j);
+      (placedByChunk[c] || (placedByChunk[c] = new Set())).add(key);
+    }
+  }
+  stKeyMap.clear();   // nothing solved for the last world carries into this one
+  stressRev++;
+}
+
+// The sandbox's colour ramp, sampled once over colorScale's input (ratio * 6,
+// which saturates at 3) into linear RGB for the instance colours.
+const STRESS_STOPS = [
+  [0.0, [70, 190, 80]],    // green
+  [0.3, [230, 210, 40]],   // yellow
+  [0.7, [240, 140, 30]],   // orange
+  [1.5, [220, 40, 30]],    // red
+  [3.0, [255, 70, 70]],    // bright red
+];
+const STRESS_LUT = new Float32Array(STRESS_LUT_N * 3);
+{
+  const col = new THREE.Color();
+  for (let n = 0; n < STRESS_LUT_N; n++) {
+    const v = (n / (STRESS_LUT_N - 1)) * 3;
+    let k = 0;
+    while (k < STRESS_STOPS.length - 2 && v > STRESS_STOPS[k + 1][0]) k++;
+    const [r0, c0] = STRESS_STOPS[k], [r1, c1] = STRESS_STOPS[k + 1];
+    const t = Math.min(1, Math.max(0, (v - r0) / (r1 - r0)));
+    col.setRGB((c0[0] + (c1[0] - c0[0]) * t) / 255, (c0[1] + (c1[1] - c0[1]) * t) / 255,
+               (c0[2] + (c1[2] - c0[2]) * t) / 255, THREE.SRGBColorSpace);
+    STRESS_LUT[n * 3] = col.r; STRESS_LUT[n * 3 + 1] = col.g; STRESS_LUT[n * 3 + 2] = col.b;
+  }
+}
+// stressColor(): stress over strength, clamped to [0, 1], times 6 into the ramp.
+function stressLutIndex(stress, strength) {
+  const ratio = strength > 0 ? Math.min(1, Math.max(0, stress) / strength) : 0;
+  return Math.min(STRESS_LUT_N - 1, Math.round(ratio * 2 * (STRESS_LUT_N - 1)));
+}
+
+// ----- the system, in scratch arrays sized once -----
+const ST_CAP = STRESS_MAX_NODES, ST_ECAP = ST_CAP * 9;   // three beams out of each block, six supports at most
+const stKey    = new Float64Array(ST_CAP);
+const stMat    = new Uint8Array(ST_CAP);
+const stFixed  = new Uint8Array(ST_CAP);     // 0 free, 1 support, 2 unsupported (nothing to hang off)
+const stStress = new Float64Array(ST_CAP);
+const stLut    = new Int16Array(ST_CAP);   // ramp index on show; -1 not solved yet
+const stHeld   = new Int16Array(ST_CAP);   // what each node showed before the rebuild
+const stU = new Float64Array(ST_CAP * 6), stUPrev = new Float64Array(ST_CAP * 6);
+const stF = new Float64Array(ST_CAP * 6), stDiag = new Float64Array(ST_CAP * 6);
+const stR = new Float64Array(ST_CAP * 6), stZ = new Float64Array(ST_CAP * 6);
+const stP = new Float64Array(ST_CAP * 6), stQ = new Float64Array(ST_CAP * 6);
+const stEA = new Int32Array(ST_ECAP), stEB = new Int32Array(ST_ECAP);   // -1: a fixed support
+const stEAx = new Uint8Array(ST_ECAP), stEK = new Float64Array(ST_ECAP);
+const stAdjStart = new Int32Array(ST_CAP + 1), stAdj = new Int32Array(ST_ECAP * 2), stQueue = new Int32Array(ST_CAP);
+let stN = 0, stNE = 0, stNTerr = 0;
+let stKeyMap = new Map(), stKeyMapPrev = new Map();
+let stRz = 0, stF2 = 0, stIter = 0, stConverged = true;
+let stRelaid = false;   // instances moved since colours were last written
+// Built-block candidates inside the radius, before the cap.
+let stCandKey = new Float64Array(4096), stCandDist = new Uint16Array(4096);
+const stDistHist = new Int32Array(STRESS_RADIUS + 2);
+// Which built nodes are drawn (have an open face): instance -> node.
+const stTerrInst = new Int32Array(ST_CAP);
+// Fallen pieces in this solve: the piece, its first node, its overlay.
+const stPieces = [];   // { mesh, start, count, overlay }
+const stOverlays = new Map();   // piece mesh -> InstancedMesh, kept between rebuilds
+
+const STRESS_PERP1 = [1, 2, 0], STRESS_PERP2 = [2, 0, 1];
+const stressGeo = new THREE.BoxGeometry(BLOCK * 1.01, BLOCK * 1.01, BLOCK * 1.01);
+const stressMat = new THREE.MeshBasicMaterial({
+  color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false,
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4,
+});
+function stressInstances(n) {
+  const im = new THREE.InstancedMesh(stressGeo, stressMat, n);
+  im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+  im.count = 0;
+  im.castShadow = false;
+  im.receiveShadow = false;
+  return im;
+}
+const stressTerr = stressInstances(ST_CAP);
+scene.add(stressTerr);
+camera.layers.enable(STRESS_LAYER);
+
+let stressOn = true;
+let stressTimer = 0, stressLastRebuild = -Infinity, stressSig = NaN;
+const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
+
+// One beam's twelve end forces (node A's six then B's) for displacements x, in
+// _stFe; also its axial force and worst end moment, for the stress.
+const _stXe = new Float64Array(12), _stFe = new Float64Array(12);
+let _stN = 0, _stM = 0, _stBm1 = 0, _stBm2 = 0;
+// Bending in the plane of the beam and transverse axis t, about rotation axis r.
+// s is the sign that makes s*theta_r the slope dv_t/da along the beam.
+function stressBend(t, r, s, k) {
+  const dv = _stXe[t] - _stXe[6 + t], p1 = s * _stXe[3 + r], p2 = s * _stXe[9 + r];
+  const f1 = k * (12 * dv + 6 * (p1 + p2));
+  const m1 = k * (6 * dv + 4 * p1 + 2 * p2);
+  const m2 = k * (6 * dv + 2 * p1 + 4 * p2);
+  _stFe[t] += f1; _stFe[6 + t] -= f1;
+  _stFe[3 + r] += s * m1; _stFe[9 + r] += s * m2;
+  _stBm1 = m1; _stBm2 = m2;
+}
+function stressElem(x, e) {
+  const a = stEA[e], b = stEB[e];
+  for (let d = 0; d < 6; d++) {
+    _stXe[d] = a >= 0 ? x[a * 6 + d] : 0;
+    _stXe[6 + d] = b >= 0 ? x[b * 6 + d] : 0;
+  }
+  _stFe.fill(0);
+  const ax = stEAx[e], EA = stEK[e], k = EA / 12;   // EI = EA*L^2/12, GJ taken as EI, L = 1
+  const dA = _stXe[6 + ax] - _stXe[ax];
+  _stFe[ax] -= EA * dA; _stFe[6 + ax] += EA * dA;
+  const T = k * (_stXe[9 + ax] - _stXe[3 + ax]);
+  _stFe[3 + ax] -= T; _stFe[9 + ax] += T;
+  const t1 = STRESS_PERP1[ax], t2 = STRESS_PERP2[ax];
+  stressBend(t1, t2, 1, k);
+  const b1 = _stBm1, b2 = _stBm2;
+  stressBend(t2, t1, -1, k);
+  _stN = EA * dA;   // + tension, - compression
+  _stM = Math.sqrt(Math.max(b1 * b1 + _stBm1 * _stBm1, b2 * b2 + _stBm2 * _stBm2) + T * T);
+}
+// y = K x, beam by beam; supports' rows stay zero. stressElem() written out
+// inline: this is nearly all of a CG iteration, and it runs every one.
+function stressKmul(x, y) {
+  y.fill(0, 0, stN * 6);
+  for (let e = 0; e < stNE; e++) {
+    const a = stEA[e], b = stEB[e], ax = stEAx[e], EA = stEK[e], k = EA / 12;
+    const t1 = STRESS_PERP1[ax], t2 = STRESS_PERP2[ax];
+    const oa = a * 6, ob = b * 6;
+    let uA = 0, v1A = 0, v2A = 0, wA = 0, r1A = 0, r2A = 0;
+    let uB = 0, v1B = 0, v2B = 0, wB = 0, r1B = 0, r2B = 0;
+    if (a >= 0) { uA = x[oa + ax]; v1A = x[oa + t1]; v2A = x[oa + t2]; wA = x[oa + 3 + ax]; r1A = x[oa + 3 + t1]; r2A = x[oa + 3 + t2]; }
+    if (b >= 0) { uB = x[ob + ax]; v1B = x[ob + t1]; v2B = x[ob + t2]; wB = x[ob + 3 + ax]; r1B = x[ob + 3 + t1]; r2B = x[ob + 3 + t2]; }
+    const N = EA * (uB - uA), T = k * (wB - wA);
+    // Bending in the t1 plane about t2 (slope +r2), and in the t2 plane about t1 (slope -r1).
+    const d1 = v1A - v1B, f1 = k * (12 * d1 + 6 * (r2A + r2B));
+    const m1a = k * (6 * d1 + 4 * r2A + 2 * r2B), m1b = k * (6 * d1 + 2 * r2A + 4 * r2B);
+    const d2 = v2A - v2B, f2 = k * (12 * d2 - 6 * (r1A + r1B));
+    const m2a = k * (6 * d2 - 4 * r1A - 2 * r1B), m2b = k * (6 * d2 - 2 * r1A - 4 * r1B);
+    if (a >= 0) {
+      y[oa + ax] -= N; y[oa + 3 + ax] -= T;
+      y[oa + t1] += f1; y[oa + 3 + t2] += m1a;
+      y[oa + t2] += f2; y[oa + 3 + t1] -= m2a;
+    }
+    if (b >= 0) {
+      y[ob + ax] += N; y[ob + 3 + ax] += T;
+      y[ob + t1] -= f1; y[ob + 3 + t2] += m1b;
+      y[ob + t2] -= f2; y[ob + 3 + t1] -= m2b;
+    }
+  }
+  for (let n = 0; n < stN; n++) if (stFixed[n]) y.fill(0, n * 6, n * 6 + 6);
+}
+function stressDot(a, b) {
+  let s = 0;
+  for (let k = 0, n = stN * 6; k < n; k++) s += a[k] * b[k];
+  return s;
+}
+
+function stressAddEdge(a, b, ax, ma, mb) {
+  if (stNE >= ST_ECAP) return;
+  // Strength is stored at the table's scale; the solver works at 1000x it.
+  const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2 * 1000;
+  stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA;
+  if (a >= 0) stressAddDiag(a, ax, EA);
+  if (b >= 0) stressAddDiag(b, ax, EA);
+  stNE++;
+}
+// The Jacobi preconditioner: K's diagonal, one beam end at a time.
+function stressAddDiag(n, ax, EA) {
+  const k = EA / 12, t1 = STRESS_PERP1[ax], t2 = STRESS_PERP2[ax], o = n * 6;
+  stDiag[o + ax] += EA; stDiag[o + 3 + ax] += k;
+  stDiag[o + t1] += 12 * k; stDiag[o + 3 + t2] += 4 * k;
+  stDiag[o + t2] += 12 * k; stDiag[o + 3 + t1] += 4 * k;
+}
+const solidMat = (m) => m !== AIR && m !== WATER && !!MAT_STATS[m];
+// Fallen-piece node keys: far above any gravCell, one band per piece.
+const stPieceKey = (mesh, gi, gj, lvl) => (mesh.id + 1) * 1e11 + ((lvl + 2048) * 4096 + (gj + 2048)) * 4096 + (gi + 2048);
+
+// Down in a piece's own frame, snapped to the nearest lattice axis: 0 x (gi),
+// 1 y (lvl), 2 z (gj), with the sign in the next bit.
+function stressDownCode(mesh) {
+  _stV.set(0, -1, 0).applyQuaternion(_stQuat.copy(mesh.quaternion).invert());
+  const ax = Math.abs(_stV.x), ay = Math.abs(_stV.y), az = Math.abs(_stV.z);
+  const d = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
+  return d | ((d === 0 ? _stV.x : d === 1 ? _stV.y : _stV.z) > 0 ? 4 : 0);
+}
+const stressNearPiece = (mesh, cx, cy, cz) => {
+  const dx = mesh.position.x - cx, dy = mesh.position.y - cy, dz = mesh.position.z - cz;
+  return dx * dx + dy * dy + dz * dz < STRESS_DEBRIS_R * STRESS_DEBRIS_R;
+};
+// Everything a rebuild depends on but stressRev, folded into a number.
+function stressSignature(cx, cy, cz) {
+  let h = stressRev | 0;
+  h = Math.imul(h ^ Math.floor(colI(cx) / STRESS_MOVE_Q), 0x9e3779b1);
+  h = Math.imul(h ^ Math.floor(lvlOfY(cy) / STRESS_MOVE_Q), 0x85ebca6b);
+  h = Math.imul(h ^ Math.floor(colJ(cz) / STRESS_MOVE_Q), 0xc2b2ae35);
+  const pieces = debris.children;
+  for (let p = 0; p < pieces.length; p++) {
+    const mesh = pieces[p];
+    if (!mesh.userData.blocks || !stressNearPiece(mesh, cx, cy, cz)) continue;
+    h = Math.imul(h ^ mesh.id, 0x27d4eb2f) ^ (mesh.userData.blocks.length * 8 + stressDownCode(mesh));
+  }
+  return h;
+}
+
+function stressDropOverlay(mesh) {
+  const ov = stOverlays.get(mesh);
+  if (!ov) return;
+  ov.removeFromParent();
+  ov.dispose();
+  stOverlays.delete(mesh);
+}
+
+// Gather the window, lay out nodes and beams, warm-start from the last answer.
+function stressRebuild(cx, cy, cz) {
+  // Last answer, by key, for the warm start.
+  stUPrev.set(stU.subarray(0, stN * 6));
+  const prevMap = stKeyMap; stKeyMap = stKeyMapPrev; stKeyMapPrev = prevMap;
+  stKeyMap.clear();
+  stN = 0; stNE = 0;
+
+  // --- built blocks within the radius, nearest first if over the cap ---
+  const ci = colI(cx), cj = colJ(cz), cl = lvlOfY(cy), R = STRESS_RADIUS;
+  let nc = 0;
+  stDistHist.fill(0);
+  const c0i = Math.max(0, Math.floor((ci - R) / CHUNK)), c1i = Math.min(CHUNK_N - 1, Math.floor((ci + R) / CHUNK));
+  const c0j = Math.max(0, Math.floor((cj - R) / CHUNK)), c1j = Math.min(CHUNK_N - 1, Math.floor((cj + R) / CHUNK));
+  for (let chj = c0j; chj <= c1j; chj++) {
+    for (let chi = c0i; chi <= c1i; chi++) {
+      const set = placedByChunk[chj * CHUNK_N + chi];
+      if (!set) continue;
+      for (const key of set) {
+        const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+        if (!solidMat(voxelAt(i, j, lvl))) { set.delete(key); continue; }
+        const di = i - ci, dj = j - cj, dl = lvl - cl;
+        const d = Math.sqrt(di * di + dj * dj + dl * dl);
+        if (d > R) continue;
+        if (nc === stCandKey.length) {
+          const k2 = new Float64Array(nc * 2); k2.set(stCandKey); stCandKey = k2;
+          const d2 = new Uint16Array(nc * 2); d2.set(stCandDist); stCandDist = d2;
+        }
+        stCandKey[nc] = key; stCandDist[nc] = d | 0; nc++;
+        stDistHist[d | 0]++;
+      }
+    }
+  }
+  let dMax = R + 1;
+  if (nc > STRESS_MAX_TERR) {
+    let acc = 0;
+    for (dMax = 0; dMax <= R; dMax++) { if (acc + stDistHist[dMax] > STRESS_MAX_TERR) break; acc += stDistHist[dMax]; }
+  }
+  for (let c = 0; c < nc; c++) {
+    if (stCandDist[c] >= dMax) continue;
+    const key = stCandKey[c];
+    const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+    stKey[stN] = key; stMat[stN] = voxelAt(i, j, lvl); stFixed[stN] = 0;
+    stKeyMap.set(key, stN++);
+  }
+  stNTerr = stN;
+
+  // --- fallen pieces near the camera, whole or not at all ---
+  stPieces.length = 0;
+  const pieces = debris.children;
+  for (let p = 0; p < pieces.length; p++) {
+    const mesh = pieces[p], lat = mesh.userData.blocks;
+    if (!lat || !lat.length || !stressNearPiece(mesh, cx, cy, cz) || stN + lat.length > ST_CAP) continue;
+    const down = stressDownCode(mesh), dAx = down & 3, dSign = down & 4 ? 1 : -1;
+    // Its lowest layer as it lies now is what it rests on.
+    let ext = -Infinity;
+    for (const b of lat) { const v = dSign * (dAx === 0 ? b.gi : dAx === 1 ? b.lvl : b.gj); if (v > ext) ext = v; }
+    stPieces.push({ mesh, start: stN, count: lat.length, overlay: null, dAx, dSign });
+    for (const b of lat) {
+      const key = stPieceKey(mesh, b.gi, b.gj, b.lvl);
+      stKey[stN] = key; stMat[stN] = b.mat;
+      stFixed[stN] = dSign * (dAx === 0 ? b.gi : dAx === 1 ? b.lvl : b.gj) === ext ? 1 : 0;
+      stKeyMap.set(key, stN++);
+    }
+  }
+
+  // --- loads, warm start, beams ---
+  stDiag.fill(0, 0, stN * 6);
+  stF.fill(0, 0, stN * 6);
+  for (let n = 0; n < stN; n++) {
+    const old = stKeyMapPrev.get(stKey[n]);
+    if (old !== undefined) stU.set(stUPrev.subarray(old * 6, old * 6 + 6), n * 6);
+    else stU.fill(0, n * 6, n * 6 + 6);
+    stHeld[n] = old !== undefined ? stLut[old] : -1;
+  }
+  for (let n = 0; n < stNTerr; n++) {
+    const key = stKey[n], m = stMat[n];
+    stF[n * 6 + 1] = -(MAT_STATS[m]?.weight ?? 0);
+    const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+    for (let d = 0; d < 6; d++) {
+      const ax = d >> 1, sg = d & 1 ? -1 : 1;
+      const ii = i + (ax === 0 ? sg : 0), ll = lvl + (ax === 1 ? sg : 0), jj = j + (ax === 2 ? sg : 0);
+      if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N || ll < VOX_FLOOR) continue;
+      const nb = stKeyMap.get(gravCell(ii, jj, ll));
+      if (nb !== undefined) { if (sg > 0) stressAddEdge(n, nb, ax, m, stMat[nb]); continue; }
+      // Ground, or a built block outside the window: either way it holds.
+      const m2 = voxelAt(ii, jj, ll);
+      if (solidMat(m2)) { if (sg > 0) stressAddEdge(n, -1, ax, m, m2); else stressAddEdge(-1, n, ax, m2, m); }
+    }
+  }
+  for (const pc of stPieces) {
+    const lat = pc.mesh.userData.blocks;
+    for (let q = 0; q < pc.count; q++) {
+      const n = pc.start + q, b = lat[q], m = stMat[n];
+      stF[n * 6 + pc.dAx] = pc.dSign * (MAT_STATS[m]?.weight ?? 0);
+      for (let ax = 0; ax < 3; ax++) {
+        const nb = stKeyMap.get(stPieceKey(pc.mesh, b.gi + (ax === 0), b.gj + (ax === 2), b.lvl + (ax === 1)));
+        if (nb !== undefined) stressAddEdge(n, nb, ax, m, stMat[nb]);
+      }
+    }
+  }
+
+  // --- anything with no path to a support has nothing to solve for ---
+  stAdjStart.fill(0, 0, stN + 1);
+  for (let e = 0; e < stNE; e++) {
+    if (stEA[e] >= 0 && stEB[e] >= 0) { stAdjStart[stEA[e] + 1]++; stAdjStart[stEB[e] + 1]++; }
+  }
+  for (let n = 0; n < stN; n++) stAdjStart[n + 1] += stAdjStart[n];
+  stQueue.set(stAdjStart.subarray(0, stN));   // fill cursors, borrowed
+  for (let e = 0; e < stNE; e++) {
+    const a = stEA[e], b = stEB[e];
+    if (a >= 0 && b >= 0) { stAdj[stQueue[a]++] = b; stAdj[stQueue[b]++] = a; }
+  }
+  const reached = stLut;   // borrowed as a visited flag; rewritten by the colour pass
+  reached.fill(0, 0, stN);
+  let qh = 0, qt = 0;
+  for (let n = 0; n < stN; n++) if (stFixed[n]) { reached[n] = 1; stQueue[qt++] = n; }
+  for (let e = 0; e < stNE; e++) {
+    const n = stEA[e] < 0 ? stEB[e] : stEB[e] < 0 ? stEA[e] : -1;
+    if (n >= 0 && !reached[n]) { reached[n] = 1; stQueue[qt++] = n; }
+  }
+  while (qh < qt) {
+    const n = stQueue[qh++];
+    for (let k = stAdjStart[n]; k < stAdjStart[n + 1]; k++) {
+      const m = stAdj[k];
+      if (!reached[m]) { reached[m] = 1; stQueue[qt++] = m; }
+    }
+  }
+  for (let n = 0; n < stN; n++) if (!reached[n]) stFixed[n] = 2;
+  for (let n = 0; n < stN; n++) {
+    if (stFixed[n]) { stU.fill(0, n * 6, n * 6 + 6); stF.fill(0, n * 6, n * 6 + 6); stDiag.fill(1, n * 6, n * 6 + 6); }
+  }
+  // Until this solve converges, every block keeps the colour it had and a new
+  // one shows as not solved yet: a CG iterate part way there is not a stress
+  // field, and drawn block by block it reads as noise.
+  stLut.set(stHeld.subarray(0, stN));
+
+  // --- conjugate gradients, from the warm start ---
+  stressKmul(stU, stQ);
+  for (let k = 0, nd = stN * 6; k < nd; k++) {
+    stR[k] = stF[k] - stQ[k];
+    stZ[k] = stR[k] / stDiag[k];
+    stP[k] = stZ[k];
+  }
+  stRz = stressDot(stR, stZ);
+  stF2 = stressDot(stF, stF);
+  stIter = 0;
+  stConverged = stF2 === 0 || stressDot(stR, stR) < STRESS_TOL2 * stF2;
+
+  stressLayout();
+  stRelaid = true;
+}
+
+// Overlay instances: built blocks with an open face, and every block of each piece.
+function stressLayout() {
+  let t = 0;
+  for (let n = 0; n < stNTerr; n++) {
+    const key = stKey[n];
+    const i = key % GEN_N, tt = (key - i) / GEN_N, j = tt % GEN_N, lvl = (tt - j) / GEN_N + VOX_FLOOR;
+    if (!isVisible(voxOff[j * GEN_N + i] + lvl - VOX_FLOOR)) continue;
+    stTerrInst[t] = n;
+    stressTerr.setMatrixAt(t++, _stM4.makeTranslation(colX(i), (lvl + 0.5) * BLOCK, colZ(j)));
+  }
+  stressTerr.count = t;
+  stressTerr.instanceMatrix.needsUpdate = true;
+  stressTerr.boundingSphere = null;
+
+  // Overlays of pieces that left the solve go; the rest are refitted.
+  for (const mesh of stOverlays.keys()) {
+    if (mesh.parent !== debris || !stPieces.some((pc) => pc.mesh === mesh)) stressDropOverlay(mesh);
+  }
+  for (const pc of stPieces) {
+    let ov = stOverlays.get(pc.mesh);
+    if (ov && ov.instanceMatrix.count < pc.count) { stressDropOverlay(pc.mesh); ov = null; }
+    if (!ov) {
+      ov = stressInstances(Math.max(pc.count, 8));
+      ov.layers.set(STRESS_LAYER);
+      pc.mesh.add(ov);
+      stOverlays.set(pc.mesh, ov);
+    }
+    const lat = pc.mesh.userData.blocks;
+    for (let q = 0; q < pc.count; q++) ov.setMatrixAt(q, _stM4.makeTranslation(lat[q].pos.x, lat[q].pos.y, lat[q].pos.z));
+    ov.count = pc.count;
+    ov.instanceMatrix.needsUpdate = true;
+    ov.boundingSphere = null;
+    pc.overlay = ov;
+  }
+}
+
+// A slice of CG, as many iterations as fit the budget.
+function stressIterate() {
+  const until = performance.now() + STRESS_SLICE_MS, nd = stN * 6, maxIter = Math.max(200, nd);
+  while (!stConverged) {
+    stressKmul(stP, stQ);
+    const pq = stressDot(stP, stQ);
+    if (!(pq > 0)) { stConverged = true; break; }
+    const alpha = stRz / pq;
+    let r2 = 0;
+    for (let k = 0; k < nd; k++) {
+      stU[k] += alpha * stP[k];
+      stR[k] -= alpha * stQ[k];
+      r2 += stR[k] * stR[k];
+    }
+    if (r2 < STRESS_TOL2 * stF2 || ++stIter >= maxIter) { stConverged = true; break; }
+    let rz = 0;
+    for (let k = 0; k < nd; k++) { stZ[k] = stR[k] / stDiag[k]; rz += stR[k] * stZ[k]; }
+    const beta = rz / stRz;
+    stRz = rz;
+    for (let k = 0; k < nd; k++) stP[k] = stZ[k] + beta * stP[k];
+    if (performance.now() >= until) break;
+  }
+}
+
+// Each block's worst beam, |N| + M/L, against its own strength, into the overlays.
+// Only from a converged solve; before that only what can't wait — a block
+// hanging off nothing — changes, and a re-laid overlay is redrawn as held.
+function stressRecolor() {
+  if (stConverged) {
+    stStress.fill(0, 0, stN);
+    for (let e = 0; e < stNE; e++) {
+      stressElem(stU, e);
+      const s = Math.abs(_stN) + _stM;
+      const a = stEA[e], b = stEB[e];
+      if (a >= 0 && s > stStress[a]) stStress[a] = s;
+      if (b >= 0 && s > stStress[b]) stStress[b] = s;
+    }
+  }
+  let terrDirty = stRelaid, piecesDirty = stRelaid;
+  stRelaid = false;
+  for (let n = 0; n < stN; n++) {
+    // Hanging off nothing at all reads as the worst there is.
+    let idx;
+    if (stFixed[n] === 2) idx = STRESS_LUT_N - 1;
+    else if (stConverged) idx = stressLutIndex(stStress[n], (MAT_STATS[stMat[n]]?.strength ?? 0) * 1000);
+    else continue;
+    if (idx === stLut[n]) continue;
+    stLut[n] = idx;
+    if (n < stNTerr) terrDirty = true;
+    else piecesDirty = true;
+  }
+  if (terrDirty) {
+    for (let t = 0; t < stressTerr.count; t++) stressWriteColor(stressTerr, t, stTerrInst[t]);
+    stressTerr.instanceColor.needsUpdate = true;
+  }
+  if (piecesDirty) {
+    for (let p = 0; p < stPieces.length; p++) {
+      const pc = stPieces[p];
+      for (let q = 0; q < pc.count; q++) stressWriteColor(pc.overlay, q, pc.start + q);
+      pc.overlay.instanceColor.needsUpdate = true;
+    }
+  }
+}
+// Not solved yet (stLut -1): a neutral grey, not a reading on the ramp.
+const STRESS_PENDING = 0.35;
+function stressWriteColor(im, inst, n) {
+  const a = im.instanceColor.array, l = stLut[n];
+  if (l < 0) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
+  const o = l * 3;
+  a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];
+}
+
+// Ten times a second: follow the world if it changed, then a slice of solving.
+// Once solved and still, this is a signature check and nothing more.
+function updateStress(dt) {
+  if (!stressOn) return;
+  stressTimer += dt;
+  if (stressTimer < STRESS_TICK) return;
+  stressTimer = 0;
+  const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
+  const sig = stressSignature(cx, cy, cz);
+  if (sig !== stressSig && elapsed - stressLastRebuild >= STRESS_REBUILD) {
+    stressSig = sig;
+    stressLastRebuild = elapsed;
+    stressRebuild(cx, cy, cz);
+    stressRecolor();
+  }
+  if (stConverged) return;
+  stressIterate();
+  stressRecolor();
+}
+
+function setStress(on) {
+  stressOn = on;
+  stressTerr.visible = on;
+  for (const ov of stOverlays.values()) ov.visible = on;
+  stressSig = NaN;   // rebuild on the next tick it is on
+  stressBtn.textContent = on ? 'Stress: On' : 'Stress: Off';
+}
+const stressBtn = document.getElementById('btn-stress');
+bindTap(stressBtn, () => setStress(!stressOn));
 
 // ---- Material bar (creative tool) ----
 const matBar = document.getElementById('mat-bar');
@@ -8781,6 +9362,7 @@ function tick() {
   if (volumeOn) updateVolume();
   flushDirtyColliders();
   flushDirtyChunks();
+  updateStress(dt);   // after the edits above, so a rebuild sees this frame's world
   sky.position.copy(camera.position);
   sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
 
@@ -9049,6 +9631,10 @@ function collectWorldMeta() {
     colTestOn,
   };
 
+  // Stress overlay: which cells the player built. Optional on load — a save
+  // without it just has no placed blocks to tint.
+  const stressState = { on: stressOn, placed: collectPlaced() };
+
   return {
     version: SAVE_VERSION,
     timestamp: Date.now(),
@@ -9058,6 +9644,7 @@ function collectWorldMeta() {
     debrisState,
     genState,
     settingsState,
+    stressState,
   };
 }
 
@@ -9480,6 +10067,9 @@ function applyWorldState(s) {
   colTestOn = ss.colTestOn;
   updateColTestUI();
 
+  // Stress overlay — absent from older saves, which load with nothing marked.
+  restorePlaced(s.stressState);
+
   // Rebuild all meshes and colliders from voxel store
   remeshAllChunks();
   for (let c = 0; c < colliderBody.length; c++) {
@@ -9664,6 +10254,10 @@ window.hermes = {
   hammer, setHammer, hammerStrike,
   // The Volume tool — step 0..3 and the corners committed so far.
   setVolume, volumePlace,
+  // The stress overlay — visual only. markPlaced tags a cell as player-built.
+  setStress, markPlaced,
+  stress: () => ({ on: stressOn, nodes: stN, built: stNTerr, beams: stNE, drawn: stressTerr.count,
+                   pieces: stPieces.length, iters: stIter, converged: stConverged }),
   volume: () => ({ on: volumeOn, step: volumeStep, c1: volumeC1, c2: volumeC2, top: volumeTop,
                    live: volumeLive, ghosts: volumeGhost.visible ? volumeGhostCells : 0 }),
   // The voxel store — the material of every block in the volume, not just the

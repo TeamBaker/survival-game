@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 191;
+window.GAME_VERSION = 192;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -414,6 +414,41 @@ window.GAME_VERSION = 191;
     touch-action: manipulation;
   }
   #mat-close:active { transform: translateY(1px); }
+  /* Strength is the one number tuned from here. 16px keeps iOS from zooming on
+     focus; the box is tall enough to hit with a thumb. */
+  .mat-str {
+    width: 72px;
+    height: 38px;
+    margin: 2px 0;
+    padding: 0 8px;
+    font-family: inherit;
+    font-size: 16px;
+    color: #eaf2ff;
+    background: rgba(20, 34, 54, 0.8);
+    border: 1px solid rgba(150, 195, 245, 0.45);
+    border-radius: 6px;
+    vertical-align: middle;
+  }
+  .mat-str:focus { outline: none; border-color: #9ecbff; }
+  .mat-str.bad { border-color: #e06a5a; }
+  #mat-copy {
+    display: block;
+    min-height: 44px;
+    margin-bottom: 16px;
+    padding: 0 18px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #mat-copy:active { transform: translateY(1px); }
   #mat-foot { margin-top: 14px; color: #62819f; font-size: 11px; }
   #mat-foot b { color: #9ecbff; }
   /* A phone has no number row — the MATS button is the whole interface there. */
@@ -1392,6 +1427,7 @@ window.GAME_VERSION = 191;
 <div id="materials-ui" class="ui-el">
   <button id="mat-close" aria-label="Close">&times;</button>
   <span class="title">Materials</span>
+  <button id="mat-copy">Copy stats</button>
   <div id="mat-list"></div>
   <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / buoy / str</div>
 </div>
@@ -7503,7 +7539,9 @@ document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
   const name = st ? st.name : titleCase(MAT_NAMES[i]);
   // Full width now, so the stats spell themselves out on one line.
   const stats = st
-    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: ${st.strength} &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
+    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: `
+      + `<input class="mat-str" data-mat="${i}" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
+      + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
     : '<span>no stats &mdash; not carryable</span>';
   return '<div class="mat-row">'
        + `<div class="mat-sw" style="background:${hex}"></div>`
@@ -7516,11 +7554,79 @@ function setMaterialsUI(on) {
   materialsOpen = on;
   materialsEl.classList.toggle('on', on);
   materialsBtn.classList.toggle('on', on);
+  // Closing with a strength field focused would leave the iOS keyboard up.
+  if (!on && materialsEl.contains(document.activeElement)) document.activeElement.blur();
   // Full screen now, so it wants the cursor back — with the pointer locked there
   // is nothing to click the X with, and mouse look would run on under the panel.
   if (on && isLocked()) enterMouseMode();
 }
 function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
+
+// Strength is edited in place: a number above zero goes straight into MAT_STATS
+// and the stress overlay re-solves with it; anything else is left marked until
+// the field is left, when it snaps back to the strength actually in force.
+for (const el of document.querySelectorAll('#mat-list .mat-str')) {
+  const st = MAT_STATS[+el.dataset.mat];
+  el.addEventListener('input', () => {
+    const v = parseFloat(el.value.replace(',', '.'));
+    const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && v > 0;
+    el.classList.toggle('bad', !ok);
+    if (!ok || v === st.strength) return;
+    st.strength = v;
+    stressInvalidate();
+  });
+  el.addEventListener('change', () => { el.value = String(st.strength); el.classList.remove('bad'); });
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+}
+
+// The whole table, laid out as the MAT_STATS source is, so it pastes straight back.
+function matStatsSource() {
+  const rows = MAT_STATS.map((st, i) => {
+    const tag = '  // ' + MAT_NAMES[i].toUpperCase().replace(/ /g, '_');
+    if (!st) return '  null,'.padEnd(77) + tag;
+    return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
+         + `buoyancy: ${(st.buoyancy + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(6)}`
+         + `powder: ${String(st.powder).padEnd(6)}},` + tag;
+  });
+  return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n';
+}
+// iOS only lets a page write the clipboard inside the tap itself, so this is a
+// plain click handler (bindTap fires on pointerdown, which Safari doesn't count
+// as a user gesture for touch). navigator.clipboard is missing off https — a
+// phone on the LAN dev server — so the old select-and-copy is the fallback.
+const matCopyBtn = document.getElementById('mat-copy');
+function copyFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:-9999px;font-size:16px;';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+let matCopyTimer = 0;
+function matCopyFlash(msg) {
+  matCopyBtn.textContent = msg;
+  clearTimeout(matCopyTimer);
+  matCopyTimer = setTimeout(() => { matCopyBtn.textContent = 'Copy stats'; }, 1500);
+}
+matCopyBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const text = matStatsSource();
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => matCopyFlash('Copied'),
+      () => matCopyFlash(copyFallback(text) ? 'Copied' : 'Copy failed'));
+  } else {
+    matCopyFlash(copyFallback(text) ? 'Copied' : 'Copy failed');
+  }
+});
+matCopyBtn.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+matCopyBtn.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
 bindTap(materialsBtn, toggleMaterialsUI);
 bindTap(document.getElementById('mat-close'), () => setMaterialsUI(false));
 
@@ -9030,6 +9136,12 @@ function setStress(on) {
   for (const ov of stOverlays.values()) ov.visible = on;
   stressSig = NaN;   // rebuild on the next tick it is on
   stressBtn.textContent = on ? 'Stress: On' : 'Stress: Off';
+}
+// A material's strength changed: rebuild on the next tick, past the throttle,
+// so the beams take the new stiffness and the overlay re-reads it.
+function stressInvalidate() {
+  stressSig = NaN;
+  stressLastRebuild = -Infinity;
 }
 const stressBtn = document.getElementById('btn-stress');
 bindTap(stressBtn, () => setStress(!stressOn));

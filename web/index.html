@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 195;
+window.GAME_VERSION = 196;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -7133,31 +7133,34 @@ function resolveBreakMat(m) {
 
 // Knock one block out of the world and let it fall. Nothing is kept: the block
 // leaves the grid, becomes a one-cube piece of rubble, and from then on belongs
-// to the physics. The housekeeping is editBlock's, done by hand because the
-// falling piece has to be spawned from the material before it is overwritten.
+// to the physics. The hammer does it, and so does a block the stress solver
+// finds past its strength — both through breakBlock / breakDebrisBlock.
 function hammerStrike() {
   if (!hammer.on || !hammer.hit) return false;
+  const ok = hammer.debris ? breakDebrisBlock(hammer.debris.mesh, hammer.debris.idx)
+                           : breakBlock(hammer.hit.i, hammer.hit.j, hammer.hit.lvl);
+  if (ok) { hammer.hit = null; hammer.debris = null; }
+  return ok;
+}
 
-  // Debris block — knock it off the piece as its own physics object (splits if needed).
-  if (hammer.debris) {
-    const { mesh, idx } = hammer.debris;
-    const lat = mesh.userData.blocks;
-    if (idx < 0 || idx >= lat.length) return false;
-    const dropMat = resolveBreakMat(lat[idx].mat);
-    // Get the block's world position before removing it.
-    const wp = lat[idx].pos.clone().applyMatrix4(mesh.matrixWorld);
-    const gi = colI(wp.x), gj = colJ(wp.z), gl = lvlOfY(wp.y);
-    // Spawn it as its own single-block falling piece.
-    spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat, color: lat[idx].color || terrainBlockColor(gi, gj, gl, dropMat) }]]));
-    // Remove from the original piece (may split it).
-    digDebrisBlock(mesh, idx);
-    hammer.hit = null;
-    hammer.debris = null;
-    return true;
-  }
+// Debris block — knock it off the piece as its own physics object (splits if needed).
+function breakDebrisBlock(mesh, idx) {
+  const lat = mesh.userData.blocks;
+  if (!lat || idx < 0 || idx >= lat.length) return false;
+  const dropMat = resolveBreakMat(lat[idx].mat);
+  // Get the block's world position before removing it.
+  const wp = lat[idx].pos.clone().applyMatrix4(mesh.matrixWorld);
+  const gi = colI(wp.x), gj = colJ(wp.z), gl = lvlOfY(wp.y);
+  // Spawn it as its own single-block falling piece.
+  spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat, color: lat[idx].color || terrainBlockColor(gi, gj, gl, dropMat) }]]));
+  // Remove from the original piece (may split it).
+  digDebrisBlock(mesh, idx);
+  return true;
+}
 
-  // Terrain block.
-  const { i, j, lvl } = hammer.hit;
+// Terrain block. The housekeeping is editBlock's, done by hand because the
+// falling piece has to be spawned from the material before it is overwritten.
+function breakBlock(i, j, lvl) {
   if (!inVoxelRange(i, j, lvl)) return false;
   const m = voxelAt(i, j, lvl);
   if (m === AIR || m === WATER) return false;
@@ -7188,7 +7191,6 @@ function hammerStrike() {
   spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat) }]]));
   // And whatever the hole left hanging comes down after it.
   applyGravity(i, j, lvl);
-  hammer.hit = null;
   return true;
 }
 
@@ -9474,6 +9476,42 @@ function stressApply(r) {
   stLastMs = performance.now() - stJobT0;
   stJob = null;
   stressRecolor();
+  stressBreakSaturated();
+}
+
+// Every block, anywhere in the world, whose solved stress sits at the top of
+// the ramp — as red as the overlay goes — breaks, exactly as the hammer breaks
+// it. Only answers solved for the world as it is count: a structure laid out
+// but not yet solved still shows its old colour and is left alone, and one
+// hanging off nothing (Infinity) is gravity's to bring down, not this. What
+// comes down bumps stressRev, and what is left is laid out and solved again.
+function stressBreakSaturated() {
+  if (!stressOn) return;   // nothing is drawn, so nothing reads red
+  const S = stCur, top = STRESS_LUT_N - 1, hit = [];
+  for (let n = 0; n < stN; n++) {
+    const s = S.stress[n];
+    if (s === Infinity || stressLevel(n) !== top || !stSolved.has(stCompHash[S.comp[n]])) continue;
+    hit.push(n);
+  }
+  if (!hit.length) return;
+  const brokenPieces = new Set();
+  for (const n of hit) {
+    if (n < stNTerr) {
+      const key = S.key[n];
+      const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+      if (voxelAt(i, j, lvl) !== S.mat[n]) continue;   // gone or changed since the layout
+      breakBlock(i, j, lvl);
+    } else {
+      // A fallen piece: one break per piece, since knocking a block off it can
+      // split it and renumber the rest. Whatever else is still red is caught
+      // by the solve its change sets off.
+      const pc = stPieces.find((p) => n >= p.start && n < p.start + p.count);
+      if (!pc || brokenPieces.has(pc.mesh)) continue;
+      if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
+      brokenPieces.add(pc.mesh);
+      breakDebrisBlock(pc.mesh, n - pc.start);
+    }
+  }
 }
 
 let stressWorker = null;
@@ -9591,10 +9629,15 @@ function stressRecolor() {
 }
 // Not solved yet (NaN): a neutral grey, not a reading on the ramp.
 const STRESS_PENDING = 0.35;
+// A node's place on the ramp, -1 while it is not solved yet.
+function stressLevel(n) {
+  const s = stCur.stress[n];
+  if (Number.isNaN(s)) return -1;
+  return s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(s, MAT_STATS[stCur.mat[n]]?.strength ?? 0);
+}
 function stressWriteColor(im, inst, n) {
-  const a = im.instanceColor.array, s = stCur.stress[n];
-  if (Number.isNaN(s)) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
-  const l = s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(s, MAT_STATS[stCur.mat[n]]?.strength ?? 0);
+  const a = im.instanceColor.array, l = stressLevel(n);
+  if (l < 0) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
   const o = l * 3;
   a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];
 }
@@ -9652,6 +9695,7 @@ function setStress(on) {
 // the new stiffness at the next solve, which a block added or removed starts.
 function stressInvalidate() {
   stressRecolor();
+  stressBreakSaturated();
 }
 const stressBtn = document.getElementById('btn-stress');
 bindTap(stressBtn, () => setStress(!stressOn));

@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 192;
+window.GAME_VERSION = 193;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -8586,7 +8586,7 @@ function updatePlacer() {
 // Structural stress overlay — visual only
 // ---------------------------------------------------------------------------
 // The Tension Sandbox's frame analysis, on the voxel lattice: every block the
-// player built (and every block of a fallen piece) near the camera is a node
+// player built (and every block of a fallen piece) near the player is a node
 // with six DOFs — three displacements, three rotations — and every face-sharing
 // pair is an axis-aligned Euler-Bernoulli beam with axial (EA/L), torsional and
 // two-plane bending (EI/L^3) stiffness. Generated ground a built block touches
@@ -8598,22 +8598,23 @@ function updatePlacer() {
 // The sandbox solves K*u = F by Gaussian elimination, O(n^3), which no phone can
 // do for a few thousand blocks. Here K is never assembled: conjugate gradients
 // (Jacobi-preconditioned) applies it beam by beam, warm-started from the last
-// answer, a millisecond or two of iterations at a time, ten times a second, and
+// answer, about a millisecond of iterations a frame while a solve is open, and
 // not at all once it has converged and nothing has changed. Each beam's axial
 // force N and worst end moment M give |N| + M/L, a block keeps its worst beam,
 // and that over its own strength picks its colour from the sandbox's ramp.
 //
 // Nothing here writes the voxel store, a body or a collider: it reads the world
 // and draws translucent cubes over it.
-const STRESS_RADIUS     = 80;     // blocks (16 m) around the camera
+const STRESS_RADIUS     = 80;     // blocks (16 m) around the player (the camera, flying free)
 const STRESS_DEBRIS_R   = 16;     // m — fallen pieces nearer than this are analysed
 const STRESS_MAX_NODES  = 3000;   // blocks in one solve, built and debris together
 const STRESS_MAX_TERR   = 2400;   // of which built blocks get first call on this many
-const STRESS_TICK       = 0.1;    // s between solver slices
+const STRESS_TICK       = 0.1;    // s between checks of whether the world changed
 const STRESS_REBUILD    = 0.5;    // s at least between rebuilding the structure
-const STRESS_SLICE_MS   = 1.5;    // CG time per slice
+const STRESS_SLICE_MS   = 1.5;    // CG time in any one frame, at most
+const STRESS_DUTY       = 0.06;   // share of the time an open solve may have, on average
 const STRESS_TOL2       = 1e-8;   // converged once |r|^2 < this * |F|^2
-const STRESS_MOVE_Q     = 8;      // blocks the camera moves before the window follows
+const STRESS_MOVE_Q     = 8;      // blocks the player moves before the window follows
 const STRESS_LAYER      = 1;      // debris overlays: drawn, but not hit by debrisAim
 const STRESS_LUT_N      = 128;
 
@@ -8693,6 +8694,7 @@ let stN = 0, stNE = 0, stNTerr = 0;
 let stKeyMap = new Map(), stKeyMapPrev = new Map();
 let stRz = 0, stF2 = 0, stIter = 0, stConverged = true;
 let stRelaid = false;   // instances moved since colours were last written
+let stSysHash = NaN;    // the open solve's system: nodes, supports, loads, beams
 // Built-block candidates inside the radius, before the cap.
 let stCandKey = new Float64Array(4096), stCandDist = new Uint16Array(4096);
 const stDistHist = new Int32Array(STRESS_RADIUS + 2);
@@ -8722,6 +8724,7 @@ camera.layers.enable(STRESS_LAYER);
 
 let stressOn = true;
 let stressTimer = 0, stressLastRebuild = -Infinity, stressSig = NaN;
+let stressBudget = 0;   // ms of CG owed to the open solve (negative: overspent)
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
 
 // One beam's twelve end forces (node A's six then B's) for displacements x, in
@@ -8841,6 +8844,18 @@ function stressSignature(cx, cy, cz) {
   return h;
 }
 
+// The system a rebuild laid out, folded into a number: what has to match for the
+// solve already under way to still be the right one.
+const _stHF = new Float64Array(1), _stHI = new Int32Array(_stHF.buffer);
+const stressMixF = (h, v) => { _stHF[0] = v; return Math.imul(Math.imul(h ^ _stHI[0], 0x9e3779b1) ^ _stHI[1], 0x85ebca6b); };
+function stressSystemHash() {
+  let h = Math.imul(stN, 0x27d4eb2f) ^ stNE;
+  for (let n = 0; n < stN; n++) h = Math.imul(stressMixF(h, stKey[n]) ^ (stMat[n] << 2 | stFixed[n]), 0xc2b2ae35);
+  for (let k = 0, nd = stN * 6; k < nd; k++) if (stF[k] !== 0) h = stressMixF(h ^ k, stF[k]);
+  for (let e = 0; e < stNE; e++) h = stressMixF(Math.imul(h ^ stEA[e], 0x9e3779b1) ^ stEB[e] ^ (stEAx[e] << 28), stEK[e]);
+  return h;
+}
+
 function stressDropOverlay(mesh) {
   const ov = stOverlays.get(mesh);
   if (!ov) return;
@@ -8852,6 +8867,7 @@ function stressDropOverlay(mesh) {
 // Gather the window, lay out nodes and beams, warm-start from the last answer.
 function stressRebuild(cx, cy, cz) {
   // Last answer, by key, for the warm start.
+  const nPrev = stN;
   stUPrev.set(stU.subarray(0, stN * 6));
   const prevMap = stKeyMap; stKeyMap = stKeyMapPrev; stKeyMapPrev = prevMap;
   stKeyMap.clear();
@@ -8896,7 +8912,7 @@ function stressRebuild(cx, cy, cz) {
   }
   stNTerr = stN;
 
-  // --- fallen pieces near the camera, whole or not at all ---
+  // --- fallen pieces near the window's centre, whole or not at all ---
   stPieces.length = 0;
   const pieces = debris.children;
   for (let p = 0; p < pieces.length; p++) {
@@ -8918,8 +8934,10 @@ function stressRebuild(cx, cy, cz) {
   // --- loads, warm start, beams ---
   stDiag.fill(0, 0, stN * 6);
   stF.fill(0, 0, stN * 6);
+  let sameNodes = stN === nPrev;   // every node where it was: the solve's vectors still line up
   for (let n = 0; n < stN; n++) {
     const old = stKeyMapPrev.get(stKey[n]);
+    if (old !== n) sameNodes = false;
     if (old !== undefined) stU.set(stUPrev.subarray(old * 6, old * 6 + 6), n * 6);
     else stU.fill(0, n * 6, n * 6 + 6);
     stHeld[n] = old !== undefined ? stLut[old] : -1;
@@ -8987,6 +9005,15 @@ function stressRebuild(cx, cy, cz) {
   stLut.set(stHeld.subarray(0, stN));
 
   // --- conjugate gradients, from the warm start ---
+  // Nothing the solve depends on changed (an edit somewhere else, a step that
+  // moved the window but not what is in it): the solve under way carries on.
+  // Restarting it threw its search directions away, so a run of such rebuilds
+  // could keep it from ever converging, the overlay frozen meanwhile.
+  stressLayout();
+  stRelaid = true;
+  const sys = stressSystemHash();
+  if (sameNodes && sys === stSysHash) return;
+  stSysHash = sys;
   stressKmul(stU, stQ);
   for (let k = 0, nd = stN * 6; k < nd; k++) {
     stR[k] = stF[k] - stQ[k];
@@ -8997,9 +9024,6 @@ function stressRebuild(cx, cy, cz) {
   stF2 = stressDot(stF, stF);
   stIter = 0;
   stConverged = stF2 === 0 || stressDot(stR, stR) < STRESS_TOL2 * stF2;
-
-  stressLayout();
-  stRelaid = true;
 }
 
 // Overlay instances: built blocks with an open face, and every block of each piece.
@@ -9038,9 +9062,9 @@ function stressLayout() {
   }
 }
 
-// A slice of CG, as many iterations as fit the budget.
-function stressIterate() {
-  const until = performance.now() + STRESS_SLICE_MS, nd = stN * 6, maxIter = Math.max(200, nd);
+// A slice of CG, as many iterations as fit in ms (one at the least).
+function stressIterate(ms) {
+  const until = performance.now() + ms, nd = stN * 6, maxIter = Math.max(200, nd);
   while (!stConverged) {
     stressKmul(stP, stQ);
     const pq = stressDot(stP, stQ);
@@ -9110,23 +9134,41 @@ function stressWriteColor(im, inst, n) {
   a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];
 }
 
-// Ten times a second: follow the world if it changed, then a slice of solving.
-// Once solved and still, this is a signature check and nothing more.
+// Where the window is centred: on the player, not the camera, which in top-down
+// hangs 8-90 m overhead and in third person 5 m back — far enough that blocks
+// right beside the player could fall outside it. Flying free, nobody is
+// anywhere, and the camera is all there is.
+const _stFocus = new THREE.Vector3();
+function stressFocus() {
+  if (camMode === CAM.FREE) return _stFocus.copy(camera.position);
+  const p = playerBody.position;
+  return _stFocus.set(p.x, p.y - centerOffset() + eyeH, p.z);
+}
+
+// Ten times a second: follow the world if it changed. While a solve is open,
+// a slice of it every frame, STRESS_DUTY of the time on average and never more
+// than STRESS_SLICE_MS in one frame. Once solved and still, this is a signature
+// check ten times a second and nothing more.
 function updateStress(dt) {
   if (!stressOn) return;
   stressTimer += dt;
-  if (stressTimer < STRESS_TICK) return;
-  stressTimer = 0;
-  const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
-  const sig = stressSignature(cx, cy, cz);
-  if (sig !== stressSig && elapsed - stressLastRebuild >= STRESS_REBUILD) {
-    stressSig = sig;
-    stressLastRebuild = elapsed;
-    stressRebuild(cx, cy, cz);
-    stressRecolor();
+  if (stressTimer >= STRESS_TICK) {
+    stressTimer = 0;
+    const f = stressFocus(), cx = f.x, cy = f.y, cz = f.z;
+    const sig = stressSignature(cx, cy, cz);
+    if (sig !== stressSig && elapsed - stressLastRebuild >= STRESS_REBUILD) {
+      stressSig = sig;
+      stressLastRebuild = elapsed;
+      stressRebuild(cx, cy, cz);
+      stressRecolor();
+    }
   }
-  if (stConverged) return;
-  stressIterate();
+  if (stConverged) { stressBudget = 0; return; }
+  stressBudget = Math.min(STRESS_SLICE_MS, stressBudget + dt * 1000 * STRESS_DUTY);
+  if (stressBudget <= 0) return;
+  const t0 = performance.now();
+  stressIterate(stressBudget);
+  stressBudget -= performance.now() - t0;
   stressRecolor();
 }
 

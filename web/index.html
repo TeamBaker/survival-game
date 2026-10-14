@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 193;
+window.GAME_VERSION = 194;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5916,6 +5916,7 @@ function dropChunk(f) {
   if (q >= 0) syncList.splice(q, 1);
   debris.remove(f.mesh);
   freeDebrisMesh(f.mesh);
+  stressRev++;   // its blocks are gone from the world
 }
 
 // The entry for a piece, whether it is still being watched or has settled. A
@@ -6337,6 +6338,7 @@ function removeDebrisMesh(mesh) {
   if (q >= 0) { dropChunk(restedChunks[q]); restedChunks.splice(q, 1); return; }
   debris.remove(mesh);
   freeDebrisMesh(mesh);
+  stressRev++;
 }
 
 // Cannon turns a body about its origin, so a piece's origin has to sit on its
@@ -8586,40 +8588,42 @@ function updatePlacer() {
 // Structural stress overlay — visual only
 // ---------------------------------------------------------------------------
 // The Tension Sandbox's frame analysis, on the voxel lattice: every block the
-// player built (and every block of a fallen piece) near the player is a node
-// with six DOFs — three displacements, three rotations — and every face-sharing
-// pair is an axis-aligned Euler-Bernoulli beam with axial (EA/L), torsional and
-// two-plane bending (EI/L^3) stiffness. Generated ground a built block touches
-// is a fixed support, as is a built block just outside the window; the lowest
-// layer of a fallen piece (by the way it lies now) is what it rests on. Gravity
-// is each block's MAT_STATS weight; EA is the mean of the two blocks' strength,
-// EI = EA*L^2/12, L = 1 lattice step — all as the sandbox does it.
+// player built, anywhere in the world, and every block of every fallen piece is
+// a node with six DOFs — three displacements, three rotations — and every
+// face-sharing pair is an axis-aligned Euler-Bernoulli beam with axial (EA/L),
+// torsional and two-plane bending (EI/L^3) stiffness. Generated ground a built
+// block touches is a fixed support; the lowest layer of a fallen piece (by the
+// way it lies when it is solved) is what it rests on. Gravity is each block's
+// MAT_STATS weight; EA is the mean of the two blocks' strength, EI = EA*L^2/12,
+// L = 1 lattice step — all as the sandbox does it.
 //
-// The sandbox solves K*u = F by Gaussian elimination, O(n^3), which no phone can
-// do for a few thousand blocks. Here K is never assembled: conjugate gradients
-// (Jacobi-preconditioned) applies it beam by beam, warm-started from the last
-// answer, about a millisecond of iterations a frame while a solve is open, and
-// not at all once it has converged and nothing has changed. Each beam's axial
-// force N and worst end moment M give |N| + M/L, a block keeps its worst beam,
-// and that over its own strength picks its colour from the sandbox's ramp.
+// A solve happens when a block is added or removed — stressRev moving — and at
+// no other time. The whole world is laid out then and split into structures
+// (blocks joined face to face); a structure whose system is what it was keeps
+// its answer, and one that changed is solved again whole, every block of it
+// however far from the player. The sandbox solves K*u = F by Gaussian
+// elimination, O(n^3), which no phone can do for a few thousand blocks; here K
+// is never assembled: conjugate gradients (Jacobi-preconditioned) applies it
+// beam by beam, warm-started from the last answer, run to convergence in one go
+// on a worker so the frame does not wait on it. Each beam's axial force N and
+// worst end moment M give |N| + M/L, a block keeps its worst beam, and that over
+// its own strength picks its colour from the sandbox's ramp.
 //
-// Nothing here writes the voxel store, a body or a collider: it reads the world
-// and draws translucent cubes over it.
-const STRESS_RADIUS     = 80;     // blocks (16 m) around the player (the camera, flying free)
-const STRESS_DEBRIS_R   = 16;     // m — fallen pieces nearer than this are analysed
-const STRESS_MAX_NODES  = 3000;   // blocks in one solve, built and debris together
-const STRESS_MAX_TERR   = 2400;   // of which built blocks get first call on this many
+// STRESS_RADIUS only decides which blocks are drawn. Nothing here writes the
+// voxel store, a body or a collider: it reads the world and draws translucent
+// cubes over it.
+const STRESS_RADIUS     = 80;     // blocks (16 m) around the player drawn with the overlay
+const STRESS_DEBRIS_R   = 16;     // m — fallen pieces nearer than this are drawn
+const STRESS_MAX_DRAW   = 3000;   // overlay cubes on built blocks, nearest first past this
 const STRESS_TICK       = 0.1;    // s between checks of whether the world changed
-const STRESS_REBUILD    = 0.5;    // s at least between rebuilding the structure
-const STRESS_SLICE_MS   = 1.5;    // CG time in any one frame, at most
-const STRESS_DUTY       = 0.06;   // share of the time an open solve may have, on average
-const STRESS_TOL2       = 1e-8;   // converged once |r|^2 < this * |F|^2
-const STRESS_MOVE_Q     = 8;      // blocks the player moves before the window follows
+const STRESS_REBUILD    = 0.5;    // s at least between laying the world out again
+const STRESS_TOL2       = 1e-8;   // converged once |r|^2 < this * |F|^2, per structure
+const STRESS_MOVE_Q     = 8;      // blocks the player moves before the drawn window follows
 const STRESS_LAYER      = 1;      // debris overlays: drawn, but not hit by debrisAim
 const STRESS_LUT_N      = 128;
 
 // Cells the player has built, by chunk, as gravCell keys. Pruned lazily: a key
-// whose cell is no longer solid is dropped the next time its chunk is scanned.
+// whose cell is no longer solid is dropped the next time the world is laid out.
 const placedByChunk = new Array(CHUNK_N * CHUNK_N).fill(null);
 function markPlaced(i, j, lvl) {
   const c = chunkOf(i, j);
@@ -8642,7 +8646,7 @@ function restorePlaced(ss) {
       (placedByChunk[c] || (placedByChunk[c] = new Set())).add(key);
     }
   }
-  stKeyMap.clear();   // nothing solved for the last world carries into this one
+  stressForget();   // nothing solved for the last world carries into this one
   stressRev++;
 }
 
@@ -8675,36 +8679,500 @@ function stressLutIndex(stress, strength) {
   return Math.min(STRESS_LUT_N - 1, Math.round(ratio * 2 * (STRESS_LUT_N - 1)));
 }
 
-// ----- the system, in scratch arrays sized once -----
-const ST_CAP = STRESS_MAX_NODES, ST_ECAP = ST_CAP * 9;   // three beams out of each block, six supports at most
-const stKey    = new Float64Array(ST_CAP);
-const stMat    = new Uint8Array(ST_CAP);
-const stFixed  = new Uint8Array(ST_CAP);     // 0 free, 1 support, 2 unsupported (nothing to hang off)
-const stStress = new Float64Array(ST_CAP);
-const stLut    = new Int16Array(ST_CAP);   // ramp index on show; -1 not solved yet
-const stHeld   = new Int16Array(ST_CAP);   // what each node showed before the rebuild
-const stU = new Float64Array(ST_CAP * 6), stUPrev = new Float64Array(ST_CAP * 6);
-const stF = new Float64Array(ST_CAP * 6), stDiag = new Float64Array(ST_CAP * 6);
-const stR = new Float64Array(ST_CAP * 6), stZ = new Float64Array(ST_CAP * 6);
-const stP = new Float64Array(ST_CAP * 6), stQ = new Float64Array(ST_CAP * 6);
-const stEA = new Int32Array(ST_ECAP), stEB = new Int32Array(ST_ECAP);   // -1: a fixed support
-const stEAx = new Uint8Array(ST_ECAP), stEK = new Float64Array(ST_ECAP);
-const stAdjStart = new Int32Array(ST_CAP + 1), stAdj = new Int32Array(ST_ECAP * 2), stQueue = new Int32Array(ST_CAP);
-let stN = 0, stNE = 0, stNTerr = 0;
+// ----- the solve: one job, any number of structures, nothing outside it -----
+// Self-contained so the worker can be built from its source; the main thread
+// runs the same function when there is no worker. Each structure c is nodes
+// nStart[c]..nStart[c+1] and beams eStart[c]..eStart[c+1], its beam ends
+// numbered within it (-1: a fixed support); pos is each node's lattice cell.
+// u comes in as a starting guess and goes out as the answer; stress is each
+// node's worst |N| + M.
+//
+// Conjugate gradients on K, assembled as 6x6 blocks, preconditioned by one
+// V-cycle of smoothed-aggregation multigrid. Jacobi alone needs thousands of
+// iterations on a long span — bending makes K's condition grow as the fourth
+// power of the length — and a span is exactly what a player builds. Here blocks
+// are grouped into aggregates whose six coarse unknowns move the group rigidly
+// (three translations, three rotations about its centre), the coarse K is
+// R*K*P with that prolongator smoothed once, and the same again level on level
+// down to a few dozen nodes, factored outright. Block Gauss-Seidel smooths each
+// level, forward on the way down and backward on the way up, which keeps the
+// preconditioner symmetric for CG. Tens of iterations rather than thousands.
+function stressSolveJob(job) {
+  const P1 = [1, 2, 0], P2 = [2, 0, 1];
+  const { nStart, eStart, fixed, f, u, ea, eb, eax, ek, pos, tol2 } = job;
+  const stress = new Float64Array(fixed.length);
+  let iters = 0, unconverged = 0;
+
+  // One beam: its twelve end forces y (A's six, then B's) for end displacements
+  // x, and back its stress, |N| + the worst end's moment with torsion.
+  function beam(ax, EA, x, y) {
+    const k = EA / 12, t1 = P1[ax], t2 = P2[ax];
+    const N = EA * (x[6 + ax] - x[ax]), T = k * (x[9 + ax] - x[3 + ax]);
+    // Bending in the t1 plane about t2 (slope +r2), and in the t2 plane about t1 (slope -r1).
+    const d1 = x[t1] - x[6 + t1], r2A = x[3 + t2], r2B = x[9 + t2];
+    const f1 = k * (12 * d1 + 6 * (r2A + r2B));
+    const m1a = k * (6 * d1 + 4 * r2A + 2 * r2B), m1b = k * (6 * d1 + 2 * r2A + 4 * r2B);
+    const d2 = x[t2] - x[6 + t2], r1A = x[3 + t1], r1B = x[9 + t1];
+    const f2 = k * (12 * d2 - 6 * (r1A + r1B));
+    const m2a = k * (6 * d2 - 4 * r1A - 2 * r1B), m2b = k * (6 * d2 - 2 * r1A - 4 * r1B);
+    y.fill(0);
+    y[ax] -= N; y[3 + ax] -= T; y[6 + ax] += N; y[9 + ax] += T;
+    y[t1] += f1; y[3 + t2] += m1a; y[6 + t1] -= f1; y[9 + t2] += m1b;
+    y[t2] += f2; y[3 + t1] -= m2a; y[6 + t2] -= f2; y[9 + t1] -= m2b;
+    return Math.abs(N) + Math.sqrt(Math.max(m1a * m1a + m2a * m2a, m1b * m1b + m2b * m2b) + T * T);
+  }
+  // Each axis's beam at EA = 1 as a 12x12 matrix, a column per unit end displacement.
+  const x12 = new Float64Array(12), y12 = new Float64Array(12);
+  const KU = [0, 1, 2].map((ax) => {
+    const K = new Float64Array(144);
+    for (let c = 0; c < 12; c++) {
+      x12.fill(0); x12[c] = 1;
+      beam(ax, 1, x12, y12);
+      for (let r = 0; r < 12; r++) K[r * 12 + c] = y12[r];
+    }
+    return K;
+  });
+
+  // ----- block sparse rows of 6x6 blocks: { n, m, rs, ci, v } -----
+  // C += A * B, one 6x6 block each, row-major.
+  function mm6(A, ao, B, bo, C, co) {
+    for (let r = 0; r < 6; r++) {
+      for (let k = 0; k < 6; k++) {
+        const a = A[ao + r * 6 + k];
+        if (a === 0) continue;
+        const bk = bo + k * 6, cr = co + r * 6;
+        for (let c = 0; c < 6; c++) C[cr + c] += a * B[bk + c];
+      }
+    }
+  }
+  function bsrMul(A, B) {
+    const n = A.n, mark = new Int32Array(B.m).fill(-1), rs = new Int32Array(n + 1);
+    let ci = new Int32Array(Math.max(64, A.ci.length * 2)), v = new Float64Array(ci.length * 36), nz = 0;
+    for (let i = 0; i < n; i++) {
+      const row0 = nz;
+      for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
+        const k = A.ci[p];
+        for (let q = B.rs[k]; q < B.rs[k + 1]; q++) {
+          const j = B.ci[q];
+          let at = mark[j];
+          if (at < row0) {
+            if (nz === ci.length) {
+              const c2 = new Int32Array(nz * 2); c2.set(ci); ci = c2;
+              const v2 = new Float64Array(nz * 72); v2.set(v); v = v2;
+            }
+            at = mark[j] = nz++;
+            ci[at] = j;
+            v.fill(0, at * 36, at * 36 + 36);
+          }
+          mm6(A.v, p * 36, B.v, q * 36, v, at * 36);
+        }
+      }
+      rs[i + 1] = nz;
+    }
+    return { n, m: B.m, rs, ci: ci.slice(0, nz), v: v.slice(0, nz * 36) };
+  }
+  function bsrT(A) {
+    const rs = new Int32Array(A.m + 1), nz = A.ci.length;
+    for (let p = 0; p < nz; p++) rs[A.ci[p] + 1]++;
+    for (let j = 0; j < A.m; j++) rs[j + 1] += rs[j];
+    const cur = rs.slice(0, A.m), ci = new Int32Array(nz), v = new Float64Array(nz * 36);
+    for (let i = 0; i < A.n; i++) {
+      for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
+        const at = cur[A.ci[p]]++;
+        ci[at] = i;
+        for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) v[at * 36 + c * 6 + r] = A.v[p * 36 + r * 6 + c];
+      }
+    }
+    return { n: A.m, m: A.n, rs, ci, v };
+  }
+  // y = A x
+  function bsrMv(A, x, y) {
+    const rs = A.rs, ci = A.ci, v = A.v;
+    for (let i = 0; i < A.n; i++) {
+      let y0 = 0, y1 = 0, y2 = 0, y3 = 0, y4 = 0, y5 = 0;
+      for (let p = rs[i]; p < rs[i + 1]; p++) {
+        const o = ci[p] * 6, b = p * 36;
+        const x0 = x[o], x1 = x[o + 1], x2 = x[o + 2], x3 = x[o + 3], x4 = x[o + 4], x5 = x[o + 5];
+        y0 += v[b] * x0 + v[b + 1] * x1 + v[b + 2] * x2 + v[b + 3] * x3 + v[b + 4] * x4 + v[b + 5] * x5;
+        y1 += v[b + 6] * x0 + v[b + 7] * x1 + v[b + 8] * x2 + v[b + 9] * x3 + v[b + 10] * x4 + v[b + 11] * x5;
+        y2 += v[b + 12] * x0 + v[b + 13] * x1 + v[b + 14] * x2 + v[b + 15] * x3 + v[b + 16] * x4 + v[b + 17] * x5;
+        y3 += v[b + 18] * x0 + v[b + 19] * x1 + v[b + 20] * x2 + v[b + 21] * x3 + v[b + 22] * x4 + v[b + 23] * x5;
+        y4 += v[b + 24] * x0 + v[b + 25] * x1 + v[b + 26] * x2 + v[b + 27] * x3 + v[b + 28] * x4 + v[b + 29] * x5;
+        y5 += v[b + 30] * x0 + v[b + 31] * x1 + v[b + 32] * x2 + v[b + 33] * x3 + v[b + 34] * x4 + v[b + 35] * x5;
+      }
+      const o = i * 6;
+      y[o] = y0; y[o + 1] = y1; y[o + 2] = y2; y[o + 3] = y3; y[o + 4] = y4; y[o + 5] = y5;
+    }
+  }
+  // Inverse of a symmetric positive definite 6x6 block, by Gauss-Jordan.
+  const gj = new Float64Array(72);
+  function inv6(A, ao, out, oo) {
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 6; c++) { gj[r * 12 + c] = A[ao + r * 6 + c]; gj[r * 12 + 6 + c] = r === c ? 1 : 0; }
+    }
+    for (let c = 0; c < 6; c++) {
+      let piv = c;
+      for (let r = c + 1; r < 6; r++) if (Math.abs(gj[r * 12 + c]) > Math.abs(gj[piv * 12 + c])) piv = r;
+      if (piv !== c) for (let k = 0; k < 12; k++) { const t = gj[c * 12 + k]; gj[c * 12 + k] = gj[piv * 12 + k]; gj[piv * 12 + k] = t; }
+      const d = gj[c * 12 + c];
+      if (!(Math.abs(d) > 1e-300)) { for (let k = 0; k < 36; k++) out[oo + k] = 0; return; }
+      for (let k = 0; k < 12; k++) gj[c * 12 + k] /= d;
+      for (let r = 0; r < 6; r++) {
+        if (r === c) continue;
+        const s = gj[r * 12 + c];
+        if (s !== 0) for (let k = 0; k < 12; k++) gj[r * 12 + k] -= s * gj[c * 12 + k];
+      }
+    }
+    for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) out[oo + r * 6 + c] = gj[r * 12 + 6 + c];
+  }
+  function diagInverses(A) {
+    const D = new Float64Array(A.n * 36);
+    for (let i = 0; i < A.n; i++) {
+      for (let p = A.rs[i]; p < A.rs[i + 1]; p++) if (A.ci[p] === i) { inv6(A.v, p * 36, D, i * 36); break; }
+    }
+    return D;
+  }
+
+  // ----- the hierarchy -----
+  const COARSEST = 40;   // nodes at most on the level factored outright
+  function buildLevels(A, px, excluded) {
+    const levels = [];
+    for (let depth = 0; ; depth++) {
+      const n = A.n, L = { A, Dinv: diagInverses(A), n };
+      L.r = new Float64Array(n * 6); L.t = new Float64Array(n * 6);
+      levels.push(L);
+      if (n <= COARSEST || depth >= 12) break;
+      // Aggregates: a node and all its neighbours while none are taken, then
+      // stragglers join a neighbour's, then any left over stand alone.
+      const agg = new Int32Array(n).fill(-1);
+      let na = 0;
+      for (let i = 0; i < n; i++) {
+        if (agg[i] !== -1 || (excluded && excluded[i])) continue;
+        let free = true;
+        for (let p = A.rs[i]; p < A.rs[i + 1] && free; p++) if (agg[A.ci[p]] !== -1) free = false;
+        if (!free) continue;
+        for (let p = A.rs[i]; p < A.rs[i + 1]; p++) agg[A.ci[p]] = na;
+        na++;
+      }
+      for (let i = 0; i < n; i++) {
+        if (agg[i] !== -1 || (excluded && excluded[i])) continue;
+        for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
+          const a = agg[A.ci[p]];
+          if (a >= 0 && A.ci[p] !== i) { agg[i] = -2 - a; break; }   // joins, marked so it can't be joined through
+        }
+      }
+      for (let i = 0; i < n; i++) {
+        if (excluded && excluded[i]) { agg[i] = -1; continue; }
+        if (agg[i] <= -2) agg[i] = -2 - agg[i];
+        else if (agg[i] === -1) agg[i] = na++;
+      }
+      if (na >= n * 0.9) break;   // not coarsening: this level is the bottom
+      // Coarse node positions: each aggregate's centre.
+      const cpx = new Float64Array(na * 3), cnt = new Int32Array(na);
+      for (let i = 0; i < n; i++) {
+        const a = agg[i];
+        if (a < 0) continue;
+        cnt[a]++;
+        cpx[a * 3] += px[i * 3]; cpx[a * 3 + 1] += px[i * 3 + 1]; cpx[a * 3 + 2] += px[i * 3 + 2];
+      }
+      for (let a = 0; a < na; a++) { cpx[a * 3] /= cnt[a]; cpx[a * 3 + 1] /= cnt[a]; cpx[a * 3 + 2] /= cnt[a]; }
+      // Tentative prolongator: each node moves with its aggregate rigidly,
+      // u = t + w x r, theta = w, r from the aggregate's centre to the node.
+      const T = { n, m: na, rs: new Int32Array(n + 1), ci: new Int32Array(n), v: new Float64Array(n * 36) };
+      let nz = 0;
+      for (let i = 0; i < n; i++) {
+        const a = agg[i];
+        if (a >= 0) {
+          const r0 = px[i * 3] - cpx[a * 3], r1 = px[i * 3 + 1] - cpx[a * 3 + 1], r2 = px[i * 3 + 2] - cpx[a * 3 + 2];
+          const b = nz * 36, v = T.v;
+          for (let d = 0; d < 6; d++) v[b + d * 7] = 1;
+          v[b + 4] = r2;  v[b + 5] = -r1;
+          v[b + 9] = -r2; v[b + 11] = r0;
+          v[b + 15] = r1; v[b + 16] = -r0;
+          T.ci[nz++] = a;
+        }
+        T.rs[i + 1] = nz;
+      }
+      // Smoothed once: P = (I - w Dinv A) T, w = 4 / (3 rho(Dinv A)).
+      const AT = bsrMul(A, T);
+      const rho = spectralRadius(L);
+      const w = 4 / (3 * rho), blk = new Float64Array(36);
+      const P = { n, m: na, rs: AT.rs, ci: AT.ci, v: new Float64Array(AT.v.length) };
+      for (let i = 0; i < n; i++) {
+        const tq = T.rs[i] < T.rs[i + 1] ? T.rs[i] : -1;
+        for (let p = AT.rs[i]; p < AT.rs[i + 1]; p++) {
+          blk.fill(0);
+          mm6(L.Dinv, i * 36, AT.v, p * 36, blk, 0);
+          for (let k = 0; k < 36; k++) P.v[p * 36 + k] = -w * blk[k];
+          if (tq >= 0 && AT.ci[p] === T.ci[tq]) for (let k = 0; k < 36; k++) P.v[p * 36 + k] += T.v[tq * 36 + k];
+        }
+      }
+      L.P = P;
+      L.R = bsrT(P);
+      A = bsrMul(L.R, bsrMul(A, P));
+      px = cpx;
+      excluded = null;
+    }
+    // The bottom level, factored outright (Cholesky on the dense matrix), unless
+    // it would not shrink that far — then smoothing sweeps stand in for it.
+    const B = levels[levels.length - 1];
+    if (B.n <= 400) B.chol = denseCholesky(B.A);
+    return levels;
+  }
+  function spectralRadius(L) {
+    const A = L.A, n = A.n * 6, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+    for (let k = 0; k < n; k++) x[k] = 1 + ((k * 7919) % 13) / 13;
+    let rho = 1;
+    for (let it = 0; it < 15; it++) {
+      bsrMv(A, x, y);
+      for (let i = 0; i < A.n; i++) {
+        for (let r = 0; r < 6; r++) {
+          let s = 0;
+          for (let c = 0; c < 6; c++) s += L.Dinv[i * 36 + r * 6 + c] * y[i * 6 + c];
+          z[i * 6 + r] = s;
+        }
+      }
+      let nz = 0, nx = 0;
+      for (let k = 0; k < n; k++) { nz += z[k] * z[k]; nx += x[k] * x[k]; }
+      rho = Math.sqrt(nz / nx);
+      const s = 1 / Math.sqrt(nz || 1);
+      for (let k = 0; k < n; k++) x[k] = z[k] * s;
+    }
+    return Math.max(rho, 1e-12);
+  }
+  function denseCholesky(A) {
+    const N = A.n * 6, M = new Float64Array(N * N);
+    for (let i = 0; i < A.n; i++) {
+      for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
+        const j = A.ci[p];
+        for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) M[(i * 6 + r) * N + j * 6 + c] = A.v[p * 36 + r * 6 + c];
+      }
+    }
+    for (let j = 0; j < N; j++) {
+      let d = M[j * N + j];
+      for (let k = 0; k < j; k++) d -= M[j * N + k] * M[j * N + k];
+      d = Math.sqrt(Math.max(d, 1e-30 * Math.abs(M[j * N + j]) + 1e-300));
+      M[j * N + j] = d;
+      for (let i = j + 1; i < N; i++) {
+        let s = M[i * N + j];
+        for (let k = 0; k < j; k++) s -= M[i * N + k] * M[j * N + k];
+        M[i * N + j] = s / d;
+      }
+    }
+    return { N, M };
+  }
+  function cholSolve(ch, b, x) {
+    const { N, M } = ch;
+    for (let i = 0; i < N; i++) {
+      let s = b[i];
+      for (let k = 0; k < i; k++) s -= M[i * N + k] * x[k];
+      x[i] = s / M[i * N + i];
+    }
+    for (let i = N - 1; i >= 0; i--) {
+      let s = x[i];
+      for (let k = i + 1; k < N; k++) s -= M[k * N + i] * x[k];
+      x[i] = s / M[i * N + i];
+    }
+  }
+  // One block Gauss-Seidel sweep over the level, forward or backward.
+  function smooth(L, b, x, fwd) {
+    const A = L.A, n = A.n, rs = A.rs, ci = A.ci, v = A.v, D = L.Dinv;
+    for (let s = 0; s < n; s++) {
+      const i = fwd ? s : n - 1 - s, o = i * 6;
+      let g0 = b[o], g1 = b[o + 1], g2 = b[o + 2], g3 = b[o + 3], g4 = b[o + 4], g5 = b[o + 5];
+      for (let p = rs[i]; p < rs[i + 1]; p++) {
+        const j = ci[p];
+        if (j === i) continue;
+        const oj = j * 6, q = p * 36;
+        const x0 = x[oj], x1 = x[oj + 1], x2 = x[oj + 2], x3 = x[oj + 3], x4 = x[oj + 4], x5 = x[oj + 5];
+        g0 -= v[q] * x0 + v[q + 1] * x1 + v[q + 2] * x2 + v[q + 3] * x3 + v[q + 4] * x4 + v[q + 5] * x5;
+        g1 -= v[q + 6] * x0 + v[q + 7] * x1 + v[q + 8] * x2 + v[q + 9] * x3 + v[q + 10] * x4 + v[q + 11] * x5;
+        g2 -= v[q + 12] * x0 + v[q + 13] * x1 + v[q + 14] * x2 + v[q + 15] * x3 + v[q + 16] * x4 + v[q + 17] * x5;
+        g3 -= v[q + 18] * x0 + v[q + 19] * x1 + v[q + 20] * x2 + v[q + 21] * x3 + v[q + 22] * x4 + v[q + 23] * x5;
+        g4 -= v[q + 24] * x0 + v[q + 25] * x1 + v[q + 26] * x2 + v[q + 27] * x3 + v[q + 28] * x4 + v[q + 29] * x5;
+        g5 -= v[q + 30] * x0 + v[q + 31] * x1 + v[q + 32] * x2 + v[q + 33] * x3 + v[q + 34] * x4 + v[q + 35] * x5;
+      }
+      for (let r = 0, d = i * 36; r < 6; r++, d += 6) {
+        x[o + r] = D[d] * g0 + D[d + 1] * g1 + D[d + 2] * g2 + D[d + 3] * g3 + D[d + 4] * g4 + D[d + 5] * g5;
+      }
+    }
+  }
+  // x = V-cycle applied to b, from x = 0.
+  function vcycle(levels, l, b, x) {
+    const L = levels[l];
+    x.fill(0);
+    if (L.chol) { cholSolve(L.chol, b, x); return; }
+    if (!L.P) { for (let s = 0; s < 4; s++) { smooth(L, b, x, true); smooth(L, b, x, false); } return; }
+    smooth(L, b, x, true);
+    bsrMv(L.A, x, L.r);
+    for (let k = 0; k < L.r.length; k++) L.r[k] = b[k] - L.r[k];
+    const C = levels[l + 1];
+    if (!C.bc) { C.bc = new Float64Array(C.n * 6); C.xc = new Float64Array(C.n * 6); }
+    bsrMv(L.R, L.r, C.bc);
+    vcycle(levels, l + 1, C.bc, C.xc);
+    bsrMv(L.P, C.xc, L.t);
+    for (let k = 0; k < L.t.length; k++) x[k] += L.t[k];
+    smooth(L, b, x, false);
+  }
+
+  for (let c = 0; c + 1 < nStart.length; c++) {
+    const n0 = nStart[c], n = nStart[c + 1] - n0, e0 = eStart[c], e1 = eStart[c + 1], nd = n * 6;
+    const U = u.subarray(n0 * 6, n0 * 6 + nd), F = f.subarray(n0 * 6, n0 * 6 + nd);
+    const fx = fixed.subarray(n0, n0 + n);
+    // K in blocks: a node's own block first, then one per beam to a free node.
+    // A support's row and column are dropped (its displacement is zero), and
+    // its own block is the identity.
+    const rs = new Int32Array(n + 1);
+    for (let m = 0; m < n; m++) rs[m + 1] = 1;
+    for (let e = e0; e < e1; e++) {
+      const a = ea[e], b = eb[e];
+      if (a >= 0 && b >= 0 && !fx[a] && !fx[b]) { rs[a + 1]++; rs[b + 1]++; }
+    }
+    for (let m = 0; m < n; m++) rs[m + 1] += rs[m];
+    const A = { n, m: n, rs, ci: new Int32Array(rs[n]), v: new Float64Array(rs[n] * 36) };
+    const cur = new Int32Array(n);
+    for (let m = 0; m < n; m++) { A.ci[rs[m]] = m; cur[m] = rs[m] + 1; }
+    const addBlock = (at, K, ro, co, EA) => {
+      for (let r = 0; r < 6; r++) for (let q = 0; q < 6; q++) A.v[at * 36 + r * 6 + q] += EA * K[(ro + r) * 12 + co + q];
+    };
+    for (let e = e0; e < e1; e++) {
+      const a = ea[e], b = eb[e], K = KU[eax[e]], EA = ek[e];
+      const fa = a >= 0 && !fx[a], fb = b >= 0 && !fx[b];
+      if (fa) addBlock(rs[a], K, 0, 0, EA);
+      if (fb) addBlock(rs[b], K, 6, 6, EA);
+      if (fa && fb) {
+        const pab = cur[a]++, pba = cur[b]++;
+        A.ci[pab] = b; A.ci[pba] = a;
+        addBlock(pab, K, 0, 6, EA);
+        addBlock(pba, K, 6, 0, EA);
+      }
+    }
+    for (let m = 0; m < n; m++) {
+      if (!fx[m]) continue;
+      const b = rs[m] * 36;
+      for (let d = 0; d < 6; d++) A.v[b + d * 7] = 1;
+      U.fill(0, m * 6, m * 6 + 6); F.fill(0, m * 6, m * 6 + 6);
+    }
+    // A free node with no stiffness in some direction (nothing joined to it
+    // that way) would make its block singular: a unit there keeps it solvable.
+    for (let m = 0; m < n; m++) {
+      const b = rs[m] * 36;
+      for (let d = 0; d < 6; d++) if (!(A.v[b + d * 7] > 0)) A.v[b + d * 7] = 1;
+    }
+    const px = new Float64Array(n * 3);
+    for (let k = 0; k < n * 3; k++) px[k] = pos[n0 * 3 + k];
+    const levels = buildLevels(A, px, fx);
+
+    const R = new Float64Array(nd), Z = new Float64Array(nd), P = new Float64Array(nd), Q = new Float64Array(nd);
+    const dot = (x, y) => { let s = 0; for (let k = 0; k < nd; k++) s += x[k] * y[k]; return s; };
+    bsrMv(A, U, Q);
+    for (let k = 0; k < nd; k++) R[k] = F[k] - Q[k];
+    const f2 = dot(F, F), maxIter = 500;
+    let done = f2 === 0 || dot(R, R) < tol2 * f2, it = 0;
+    if (!done) {
+      vcycle(levels, 0, R, Z);
+      P.set(Z);
+    }
+    let rz = dot(R, Z);
+    while (!done) {
+      bsrMv(A, P, Q);
+      const pq = dot(P, Q);
+      if (!(pq > 0)) break;
+      const alpha = rz / pq;
+      let r2 = 0;
+      for (let k = 0; k < nd; k++) {
+        U[k] += alpha * P[k];
+        R[k] -= alpha * Q[k];
+        r2 += R[k] * R[k];
+      }
+      it++;
+      if (r2 < tol2 * f2) { done = true; break; }
+      if (it >= maxIter) break;
+      vcycle(levels, 0, R, Z);
+      const rz2 = dot(R, Z), beta = rz2 / rz;
+      rz = rz2;
+      for (let k = 0; k < nd; k++) P[k] = Z[k] + beta * P[k];
+    }
+    if (!done) unconverged++;
+    iters += it;
+    // Each node's worst beam.
+    for (let e = e0; e < e1; e++) {
+      const a = ea[e], b = eb[e];
+      for (let d = 0; d < 6; d++) {
+        x12[d] = a >= 0 ? U[a * 6 + d] : 0;
+        x12[6 + d] = b >= 0 ? U[b * 6 + d] : 0;
+      }
+      const s = beam(eax[e], ek[e], x12, y12);
+      if (a >= 0 && s > stress[n0 + a]) stress[n0 + a] = s;
+      if (b >= 0 && s > stress[n0 + b]) stress[n0 + b] = s;
+    }
+  }
+  return { u, stress, iters, unconverged };
+}
+
+function stressWorkerSource() {
+  return `'use strict';
+${stressSolveJob}
+onmessage = (e) => {
+  try {
+    const r = stressSolveJob(e.data);
+    r.seq = e.data.seq;
+    postMessage(r, [r.u.buffer, r.stress.buffer]);
+  } catch (err) {
+    postMessage({ seq: e.data.seq, error: String(err && err.message || err) });
+  }
+};`;
+}
+
+// ----- the world's system, in arrays grown as it does -----
+// Two sets of node arrays, this layout's and the last one's, swapped each time:
+// the last answer is read out of the old set by key for the warm start.
+function stressNodeArrays(cap) {
+  return {
+    cap,
+    key: new Float64Array(cap), mat: new Uint8Array(cap),
+    fixed: new Uint8Array(cap),       // 1: a support (a fallen piece's bottom layer)
+    pos: new Int32Array(cap * 3),     // lattice cell: i (or gi), lvl, j (or gj)
+    comp: new Int32Array(cap),        // which structure
+    stress: new Float64Array(cap),    // what shows: NaN not solved yet, Infinity hanging off nothing
+    u: new Float64Array(cap * 6), f: new Float64Array(cap * 6),
+  };
+}
+let stCur = stressNodeArrays(1024), stOld = stressNodeArrays(1024);
+let stN = 0, stNE = 0, stNTerr = 0, stNComp = 0, stOldN = 0;
 let stKeyMap = new Map(), stKeyMapPrev = new Map();
-let stRz = 0, stF2 = 0, stIter = 0, stConverged = true;
-let stRelaid = false;   // instances moved since colours were last written
-let stSysHash = NaN;    // the open solve's system: nodes, supports, loads, beams
-// Built-block candidates inside the radius, before the cap.
-let stCandKey = new Float64Array(4096), stCandDist = new Uint16Array(4096);
+let stECap = 0, stEA, stEB, stEAx, stEK;
+let stAdjStart, stAdj, stQueue, stLocal;
+let stCompStart = new Int32Array(64), stCompHash = new Int32Array(64), stCompHeld = new Uint8Array(64);
+let stSolved = new Set();   // hashes of structures whose answer is in hand
+let stBuiltRev = -1;        // stressRev the layout was made from
+let stBuildSeq = 0;
+let stJob = null;           // the solve out on the worker: { seq, nodes, hashes }
+let stJobSeq = 0, stLastIters = 0, stLastUnconverged = 0, stLastMs = 0, stJobT0 = 0;
+// Fallen pieces in the world: the piece, its first node, how it lay when laid out.
+const stPieces = [];   // { mesh, start, count, dAx, dSign }
+const stOverlays = new Map();   // piece mesh -> InstancedMesh, kept between layouts
+const stDrawnPieces = [];       // { overlay, start, count } of the ones drawn
+// Built-block candidates inside the draw radius, before the cap.
+let stCandNode = new Int32Array(4096), stCandDist = new Uint16Array(4096);
 const stDistHist = new Int32Array(STRESS_RADIUS + 2);
 // Which built nodes are drawn (have an open face): instance -> node.
-const stTerrInst = new Int32Array(ST_CAP);
-// Fallen pieces in this solve: the piece, its first node, its overlay.
-const stPieces = [];   // { mesh, start, count, overlay }
-const stOverlays = new Map();   // piece mesh -> InstancedMesh, kept between rebuilds
+const stTerrInst = new Int32Array(STRESS_MAX_DRAW);
 
-const STRESS_PERP1 = [1, 2, 0], STRESS_PERP2 = [2, 0, 1];
+function stressEnsure(nodes) {
+  if (stCur.cap < nodes) stCur = stressNodeArrays(Math.max(nodes, stCur.cap * 2));
+  const cap = stCur.cap, ecap = cap * 9;   // three beams out of each block, six supports at most
+  if (stECap < ecap) {
+    stECap = ecap;
+    stEA = new Int32Array(ecap); stEB = new Int32Array(ecap);   // -1: a fixed support
+    stEAx = new Uint8Array(ecap); stEK = new Float64Array(ecap);
+    stAdj = new Int32Array(ecap * 2);
+  }
+  if (!stQueue || stQueue.length < cap) {
+    stAdjStart = new Int32Array(cap + 1); stQueue = new Int32Array(cap); stLocal = new Int32Array(cap);
+  }
+}
+
 const stressGeo = new THREE.BoxGeometry(BLOCK * 1.01, BLOCK * 1.01, BLOCK * 1.01);
 const stressMat = new THREE.MeshBasicMaterial({
   color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false,
@@ -8718,101 +9186,14 @@ function stressInstances(n) {
   im.receiveShadow = false;
   return im;
 }
-const stressTerr = stressInstances(ST_CAP);
+const stressTerr = stressInstances(STRESS_MAX_DRAW);
 scene.add(stressTerr);
 camera.layers.enable(STRESS_LAYER);
 
 let stressOn = true;
-let stressTimer = 0, stressLastRebuild = -Infinity, stressSig = NaN;
-let stressBudget = 0;   // ms of CG owed to the open solve (negative: overspent)
+let stressTimer = 0, stressLastRebuild = -Infinity, stressDrawSig = NaN;
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
 
-// One beam's twelve end forces (node A's six then B's) for displacements x, in
-// _stFe; also its axial force and worst end moment, for the stress.
-const _stXe = new Float64Array(12), _stFe = new Float64Array(12);
-let _stN = 0, _stM = 0, _stBm1 = 0, _stBm2 = 0;
-// Bending in the plane of the beam and transverse axis t, about rotation axis r.
-// s is the sign that makes s*theta_r the slope dv_t/da along the beam.
-function stressBend(t, r, s, k) {
-  const dv = _stXe[t] - _stXe[6 + t], p1 = s * _stXe[3 + r], p2 = s * _stXe[9 + r];
-  const f1 = k * (12 * dv + 6 * (p1 + p2));
-  const m1 = k * (6 * dv + 4 * p1 + 2 * p2);
-  const m2 = k * (6 * dv + 2 * p1 + 4 * p2);
-  _stFe[t] += f1; _stFe[6 + t] -= f1;
-  _stFe[3 + r] += s * m1; _stFe[9 + r] += s * m2;
-  _stBm1 = m1; _stBm2 = m2;
-}
-function stressElem(x, e) {
-  const a = stEA[e], b = stEB[e];
-  for (let d = 0; d < 6; d++) {
-    _stXe[d] = a >= 0 ? x[a * 6 + d] : 0;
-    _stXe[6 + d] = b >= 0 ? x[b * 6 + d] : 0;
-  }
-  _stFe.fill(0);
-  const ax = stEAx[e], EA = stEK[e], k = EA / 12;   // EI = EA*L^2/12, GJ taken as EI, L = 1
-  const dA = _stXe[6 + ax] - _stXe[ax];
-  _stFe[ax] -= EA * dA; _stFe[6 + ax] += EA * dA;
-  const T = k * (_stXe[9 + ax] - _stXe[3 + ax]);
-  _stFe[3 + ax] -= T; _stFe[9 + ax] += T;
-  const t1 = STRESS_PERP1[ax], t2 = STRESS_PERP2[ax];
-  stressBend(t1, t2, 1, k);
-  const b1 = _stBm1, b2 = _stBm2;
-  stressBend(t2, t1, -1, k);
-  _stN = EA * dA;   // + tension, - compression
-  _stM = Math.sqrt(Math.max(b1 * b1 + _stBm1 * _stBm1, b2 * b2 + _stBm2 * _stBm2) + T * T);
-}
-// y = K x, beam by beam; supports' rows stay zero. stressElem() written out
-// inline: this is nearly all of a CG iteration, and it runs every one.
-function stressKmul(x, y) {
-  y.fill(0, 0, stN * 6);
-  for (let e = 0; e < stNE; e++) {
-    const a = stEA[e], b = stEB[e], ax = stEAx[e], EA = stEK[e], k = EA / 12;
-    const t1 = STRESS_PERP1[ax], t2 = STRESS_PERP2[ax];
-    const oa = a * 6, ob = b * 6;
-    let uA = 0, v1A = 0, v2A = 0, wA = 0, r1A = 0, r2A = 0;
-    let uB = 0, v1B = 0, v2B = 0, wB = 0, r1B = 0, r2B = 0;
-    if (a >= 0) { uA = x[oa + ax]; v1A = x[oa + t1]; v2A = x[oa + t2]; wA = x[oa + 3 + ax]; r1A = x[oa + 3 + t1]; r2A = x[oa + 3 + t2]; }
-    if (b >= 0) { uB = x[ob + ax]; v1B = x[ob + t1]; v2B = x[ob + t2]; wB = x[ob + 3 + ax]; r1B = x[ob + 3 + t1]; r2B = x[ob + 3 + t2]; }
-    const N = EA * (uB - uA), T = k * (wB - wA);
-    // Bending in the t1 plane about t2 (slope +r2), and in the t2 plane about t1 (slope -r1).
-    const d1 = v1A - v1B, f1 = k * (12 * d1 + 6 * (r2A + r2B));
-    const m1a = k * (6 * d1 + 4 * r2A + 2 * r2B), m1b = k * (6 * d1 + 2 * r2A + 4 * r2B);
-    const d2 = v2A - v2B, f2 = k * (12 * d2 - 6 * (r1A + r1B));
-    const m2a = k * (6 * d2 - 4 * r1A - 2 * r1B), m2b = k * (6 * d2 - 2 * r1A - 4 * r1B);
-    if (a >= 0) {
-      y[oa + ax] -= N; y[oa + 3 + ax] -= T;
-      y[oa + t1] += f1; y[oa + 3 + t2] += m1a;
-      y[oa + t2] += f2; y[oa + 3 + t1] -= m2a;
-    }
-    if (b >= 0) {
-      y[ob + ax] += N; y[ob + 3 + ax] += T;
-      y[ob + t1] -= f1; y[ob + 3 + t2] += m1b;
-      y[ob + t2] -= f2; y[ob + 3 + t1] -= m2b;
-    }
-  }
-  for (let n = 0; n < stN; n++) if (stFixed[n]) y.fill(0, n * 6, n * 6 + 6);
-}
-function stressDot(a, b) {
-  let s = 0;
-  for (let k = 0, n = stN * 6; k < n; k++) s += a[k] * b[k];
-  return s;
-}
-
-function stressAddEdge(a, b, ax, ma, mb) {
-  if (stNE >= ST_ECAP) return;
-  const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2;
-  stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA;
-  if (a >= 0) stressAddDiag(a, ax, EA);
-  if (b >= 0) stressAddDiag(b, ax, EA);
-  stNE++;
-}
-// The Jacobi preconditioner: K's diagonal, one beam end at a time.
-function stressAddDiag(n, ax, EA) {
-  const k = EA / 12, t1 = STRESS_PERP1[ax], t2 = STRESS_PERP2[ax], o = n * 6;
-  stDiag[o + ax] += EA; stDiag[o + 3 + ax] += k;
-  stDiag[o + t1] += 12 * k; stDiag[o + 3 + t2] += 4 * k;
-  stDiag[o + t2] += 12 * k; stDiag[o + 3 + t1] += 4 * k;
-}
 const solidMat = (m) => m !== AIR && m !== WATER && !!MAT_STATS[m];
 // Fallen-piece node keys: far above any gravCell, one band per piece.
 const stPieceKey = (mesh, gi, gj, lvl) => (mesh.id + 1) * 1e11 + ((lvl + 2048) * 4096 + (gj + 2048)) * 4096 + (gi + 2048);
@@ -8829,31 +9210,21 @@ const stressNearPiece = (mesh, cx, cy, cz) => {
   const dx = mesh.position.x - cx, dy = mesh.position.y - cy, dz = mesh.position.z - cz;
   return dx * dx + dy * dy + dz * dz < STRESS_DEBRIS_R * STRESS_DEBRIS_R;
 };
-// Everything a rebuild depends on but stressRev, folded into a number.
-function stressSignature(cx, cy, cz) {
-  let h = stressRev | 0;
-  h = Math.imul(h ^ Math.floor(colI(cx) / STRESS_MOVE_Q), 0x9e3779b1);
-  h = Math.imul(h ^ Math.floor(lvlOfY(cy) / STRESS_MOVE_Q), 0x85ebca6b);
-  h = Math.imul(h ^ Math.floor(colJ(cz) / STRESS_MOVE_Q), 0xc2b2ae35);
-  const pieces = debris.children;
-  for (let p = 0; p < pieces.length; p++) {
-    const mesh = pieces[p];
-    if (!mesh.userData.blocks || !stressNearPiece(mesh, cx, cy, cz)) continue;
-    h = Math.imul(h ^ mesh.id, 0x27d4eb2f) ^ (mesh.userData.blocks.length * 8 + stressDownCode(mesh));
-  }
-  return h;
+
+// A structure's system folded into a number: its nodes, supports, loads and
+// beams, summed item by item so the order they were laid out in does not count.
+const _stHF = new Float64Array(1), _stHI = new Int32Array(_stHF.buffer);
+function stressMix(h, v) {
+  _stHF[0] = v;
+  h = Math.imul(h ^ _stHI[0], 0x9e3779b1);
+  h = Math.imul(h ^ _stHI[1], 0x85ebca6b);
+  return h ^ (h >>> 15);
 }
 
-// The system a rebuild laid out, folded into a number: what has to match for the
-// solve already under way to still be the right one.
-const _stHF = new Float64Array(1), _stHI = new Int32Array(_stHF.buffer);
-const stressMixF = (h, v) => { _stHF[0] = v; return Math.imul(Math.imul(h ^ _stHI[0], 0x9e3779b1) ^ _stHI[1], 0x85ebca6b); };
-function stressSystemHash() {
-  let h = Math.imul(stN, 0x27d4eb2f) ^ stNE;
-  for (let n = 0; n < stN; n++) h = Math.imul(stressMixF(h, stKey[n]) ^ (stMat[n] << 2 | stFixed[n]), 0xc2b2ae35);
-  for (let k = 0, nd = stN * 6; k < nd; k++) if (stF[k] !== 0) h = stressMixF(h ^ k, stF[k]);
-  for (let e = 0; e < stNE; e++) h = stressMixF(Math.imul(h ^ stEA[e], 0x9e3779b1) ^ stEB[e] ^ (stEAx[e] << 28), stEK[e]);
-  return h;
+function stressAddEdge(a, b, ax, ma, mb) {
+  const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2;
+  stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA;
+  stNE++;
 }
 
 function stressDropOverlay(mesh) {
@@ -8864,95 +9235,80 @@ function stressDropOverlay(mesh) {
   stOverlays.delete(mesh);
 }
 
-// Gather the window, lay out nodes and beams, warm-start from the last answer.
-function stressRebuild(cx, cy, cz) {
-  // Last answer, by key, for the warm start.
-  const nPrev = stN;
-  stUPrev.set(stU.subarray(0, stN * 6));
+// Everything solved is forgotten: a new world is loading.
+function stressForget() {
+  stKeyMap.clear(); stKeyMapPrev.clear();
+  stSolved.clear();
+  stN = 0; stNE = 0; stNTerr = 0; stNComp = 0;
+  stPieces.length = 0;
+  stJob = null;   // whatever the worker sends back for it is dropped
+  stBuiltRev = -1;
+  stressDrawSig = NaN;
+}
+
+// Lay the whole world out: every built block and every fallen piece, the beams
+// between them, the structures they make. Structures whose system is unchanged
+// keep their answer; the rest go off to be solved.
+function stressRebuild() {
+  stBuildSeq++;
+  const old = stCur; stCur = stOld; stOld = old; stOldN = stN;
   const prevMap = stKeyMap; stKeyMap = stKeyMapPrev; stKeyMapPrev = prevMap;
   stKeyMap.clear();
   stN = 0; stNE = 0;
 
-  // --- built blocks within the radius, nearest first if over the cap ---
-  const ci = colI(cx), cj = colJ(cz), cl = lvlOfY(cy), R = STRESS_RADIUS;
-  let nc = 0;
-  stDistHist.fill(0);
-  const c0i = Math.max(0, Math.floor((ci - R) / CHUNK)), c1i = Math.min(CHUNK_N - 1, Math.floor((ci + R) / CHUNK));
-  const c0j = Math.max(0, Math.floor((cj - R) / CHUNK)), c1j = Math.min(CHUNK_N - 1, Math.floor((cj + R) / CHUNK));
-  for (let chj = c0j; chj <= c1j; chj++) {
-    for (let chi = c0i; chi <= c1i; chi++) {
-      const set = placedByChunk[chj * CHUNK_N + chi];
-      if (!set) continue;
-      for (const key of set) {
-        const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
-        if (!solidMat(voxelAt(i, j, lvl))) { set.delete(key); continue; }
-        const di = i - ci, dj = j - cj, dl = lvl - cl;
-        const d = Math.sqrt(di * di + dj * dj + dl * dl);
-        if (d > R) continue;
-        if (nc === stCandKey.length) {
-          const k2 = new Float64Array(nc * 2); k2.set(stCandKey); stCandKey = k2;
-          const d2 = new Uint16Array(nc * 2); d2.set(stCandDist); stCandDist = d2;
-        }
-        stCandKey[nc] = key; stCandDist[nc] = d | 0; nc++;
-        stDistHist[d | 0]++;
-      }
+  let bound = 0;
+  for (const set of placedByChunk) if (set) bound += set.size;
+  const pieces = debris.children;
+  for (let p = 0; p < pieces.length; p++) bound += pieces[p].userData.blocks?.length || 0;
+  stressEnsure(bound);
+  const S = stCur;
+
+  // --- every built block ---
+  for (const set of placedByChunk) {
+    if (!set) continue;
+    for (const key of set) {
+      const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+      const m = voxelAt(i, j, lvl);
+      if (!solidMat(m)) { set.delete(key); continue; }
+      S.key[stN] = key; S.mat[stN] = m; S.fixed[stN] = 0;
+      S.pos[stN * 3] = i; S.pos[stN * 3 + 1] = lvl; S.pos[stN * 3 + 2] = j;
+      stKeyMap.set(key, stN++);
     }
-  }
-  let dMax = R + 1;
-  if (nc > STRESS_MAX_TERR) {
-    let acc = 0;
-    for (dMax = 0; dMax <= R; dMax++) { if (acc + stDistHist[dMax] > STRESS_MAX_TERR) break; acc += stDistHist[dMax]; }
-  }
-  for (let c = 0; c < nc; c++) {
-    if (stCandDist[c] >= dMax) continue;
-    const key = stCandKey[c];
-    const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
-    stKey[stN] = key; stMat[stN] = voxelAt(i, j, lvl); stFixed[stN] = 0;
-    stKeyMap.set(key, stN++);
   }
   stNTerr = stN;
 
-  // --- fallen pieces near the window's centre, whole or not at all ---
+  // --- every fallen piece, as it lies now ---
   stPieces.length = 0;
-  const pieces = debris.children;
   for (let p = 0; p < pieces.length; p++) {
     const mesh = pieces[p], lat = mesh.userData.blocks;
-    if (!lat || !lat.length || !stressNearPiece(mesh, cx, cy, cz) || stN + lat.length > ST_CAP) continue;
+    if (!lat || !lat.length) continue;
     const down = stressDownCode(mesh), dAx = down & 3, dSign = down & 4 ? 1 : -1;
     // Its lowest layer as it lies now is what it rests on.
     let ext = -Infinity;
     for (const b of lat) { const v = dSign * (dAx === 0 ? b.gi : dAx === 1 ? b.lvl : b.gj); if (v > ext) ext = v; }
-    stPieces.push({ mesh, start: stN, count: lat.length, overlay: null, dAx, dSign });
+    stPieces.push({ mesh, start: stN, count: lat.length, dAx, dSign });
     for (const b of lat) {
       const key = stPieceKey(mesh, b.gi, b.gj, b.lvl);
-      stKey[stN] = key; stMat[stN] = b.mat;
-      stFixed[stN] = dSign * (dAx === 0 ? b.gi : dAx === 1 ? b.lvl : b.gj) === ext ? 1 : 0;
+      S.key[stN] = key; S.mat[stN] = b.mat;
+      S.pos[stN * 3] = b.gi; S.pos[stN * 3 + 1] = b.lvl; S.pos[stN * 3 + 2] = b.gj;
+      S.fixed[stN] = dSign * (dAx === 0 ? b.gi : dAx === 1 ? b.lvl : b.gj) === ext ? 1 : 0;
       stKeyMap.set(key, stN++);
     }
   }
 
-  // --- loads, warm start, beams ---
-  stDiag.fill(0, 0, stN * 6);
-  stF.fill(0, 0, stN * 6);
-  let sameNodes = stN === nPrev;   // every node where it was: the solve's vectors still line up
-  for (let n = 0; n < stN; n++) {
-    const old = stKeyMapPrev.get(stKey[n]);
-    if (old !== n) sameNodes = false;
-    if (old !== undefined) stU.set(stUPrev.subarray(old * 6, old * 6 + 6), n * 6);
-    else stU.fill(0, n * 6, n * 6 + 6);
-    stHeld[n] = old !== undefined ? stLut[old] : -1;
-  }
+  // --- loads, beams ---
+  S.f.fill(0, 0, stN * 6);
   for (let n = 0; n < stNTerr; n++) {
-    const key = stKey[n], m = stMat[n];
-    stF[n * 6 + 1] = -(MAT_STATS[m]?.weight ?? 0);
+    const key = S.key[n], m = S.mat[n];
+    S.f[n * 6 + 1] = -(MAT_STATS[m]?.weight ?? 0);
     const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
     for (let d = 0; d < 6; d++) {
       const ax = d >> 1, sg = d & 1 ? -1 : 1;
       const ii = i + (ax === 0 ? sg : 0), ll = lvl + (ax === 1 ? sg : 0), jj = j + (ax === 2 ? sg : 0);
       if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N || ll < VOX_FLOOR) continue;
       const nb = stKeyMap.get(gravCell(ii, jj, ll));
-      if (nb !== undefined) { if (sg > 0) stressAddEdge(n, nb, ax, m, stMat[nb]); continue; }
-      // Ground, or a built block outside the window: either way it holds.
+      if (nb !== undefined) { if (sg > 0) stressAddEdge(n, nb, ax, m, S.mat[nb]); continue; }
+      // Solid and not built: generated ground, and it holds.
       const m2 = voxelAt(ii, jj, ll);
       if (solidMat(m2)) { if (sg > 0) stressAddEdge(n, -1, ax, m, m2); else stressAddEdge(-1, n, ax, m2, m); }
     }
@@ -8960,16 +9316,16 @@ function stressRebuild(cx, cy, cz) {
   for (const pc of stPieces) {
     const lat = pc.mesh.userData.blocks;
     for (let q = 0; q < pc.count; q++) {
-      const n = pc.start + q, b = lat[q], m = stMat[n];
-      stF[n * 6 + pc.dAx] = pc.dSign * (MAT_STATS[m]?.weight ?? 0);
+      const n = pc.start + q, b = lat[q], m = S.mat[n];
+      S.f[n * 6 + pc.dAx] = pc.dSign * (MAT_STATS[m]?.weight ?? 0);
       for (let ax = 0; ax < 3; ax++) {
         const nb = stKeyMap.get(stPieceKey(pc.mesh, b.gi + (ax === 0), b.gj + (ax === 2), b.lvl + (ax === 1)));
-        if (nb !== undefined) stressAddEdge(n, nb, ax, m, stMat[nb]);
+        if (nb !== undefined) stressAddEdge(n, nb, ax, m, S.mat[nb]);
       }
     }
   }
 
-  // --- anything with no path to a support has nothing to solve for ---
+  // --- structures: blocks joined by beams, each a system of its own ---
   stAdjStart.fill(0, 0, stN + 1);
   for (let e = 0; e < stNE; e++) {
     if (stEA[e] >= 0 && stEB[e] >= 0) { stAdjStart[stEA[e] + 1]++; stAdjStart[stEB[e] + 1]++; }
@@ -8980,59 +9336,210 @@ function stressRebuild(cx, cy, cz) {
     const a = stEA[e], b = stEB[e];
     if (a >= 0 && b >= 0) { stAdj[stQueue[a]++] = b; stAdj[stQueue[b]++] = a; }
   }
-  const reached = stLut;   // borrowed as a visited flag; rewritten by the colour pass
-  reached.fill(0, 0, stN);
-  let qh = 0, qt = 0;
-  for (let n = 0; n < stN; n++) if (stFixed[n]) { reached[n] = 1; stQueue[qt++] = n; }
-  for (let e = 0; e < stNE; e++) {
-    const n = stEA[e] < 0 ? stEB[e] : stEB[e] < 0 ? stEA[e] : -1;
-    if (n >= 0 && !reached[n]) { reached[n] = 1; stQueue[qt++] = n; }
-  }
-  while (qh < qt) {
-    const n = stQueue[qh++];
-    for (let k = stAdjStart[n]; k < stAdjStart[n + 1]; k++) {
-      const m = stAdj[k];
-      if (!reached[m]) { reached[m] = 1; stQueue[qt++] = m; }
+  // Breadth first from each node not yet reached: stQueue ends up holding every
+  // node, structure by structure, and stCompStart where each one begins.
+  S.comp.fill(-1, 0, stN);
+  let qt = 0;
+  stNComp = 0;
+  for (let s = 0; s < stN; s++) {
+    if (S.comp[s] >= 0) continue;
+    if (stCompStart.length < stNComp + 2) {
+      const c2 = new Int32Array(stCompStart.length * 2); c2.set(stCompStart); stCompStart = c2;
+      stCompHash = new Int32Array(stCompStart.length); stCompHeld = new Uint8Array(stCompStart.length);
+    }
+    const c = stNComp++;
+    stCompStart[c] = qt;
+    S.comp[s] = c; stQueue[qt++] = s;
+    for (let qh = stCompStart[c]; qh < qt; qh++) {
+      const n = stQueue[qh];
+      for (let k = stAdjStart[n]; k < stAdjStart[n + 1]; k++) {
+        const m = stAdj[k];
+        if (S.comp[m] < 0) { S.comp[m] = c; stQueue[qt++] = m; }
+      }
     }
   }
-  for (let n = 0; n < stN; n++) if (!reached[n]) stFixed[n] = 2;
+  stCompStart[stNComp] = qt;
+  for (let c = 0; c < stNComp; c++) { stCompHash[c] = stCompStart[c + 1] - stCompStart[c]; stCompHeld[c] = 0; }
+  // stCompHeld, for now: 1 if anything holds the structure up.
   for (let n = 0; n < stN; n++) {
-    if (stFixed[n]) { stU.fill(0, n * 6, n * 6 + 6); stF.fill(0, n * 6, n * 6 + 6); stDiag.fill(1, n * 6, n * 6 + 6); }
+    const c = S.comp[n];
+    if (S.fixed[n]) stCompHeld[c] = 1;
+    let h = stressMix(stressMix(0x1b873593, S.key[n]), S.mat[n] * 4 + S.fixed[n]);
+    for (let d = 0; d < 6; d++) if (S.f[n * 6 + d] !== 0) h = stressMix(stressMix(h, d), S.f[n * 6 + d]);
+    stCompHash[c] = (stCompHash[c] + h) | 0;
   }
-  // Until this solve converges, every block keeps the colour it had and a new
-  // one shows as not solved yet: a CG iterate part way there is not a stress
-  // field, and drawn block by block it reads as noise.
-  stLut.set(stHeld.subarray(0, stN));
+  for (let e = 0; e < stNE; e++) {
+    const a = stEA[e], b = stEB[e], c = S.comp[a >= 0 ? a : b];
+    if (a < 0 || b < 0) stCompHeld[c] = 1;
+    const h = stressMix(stressMix(stressMix(stressMix(0x2c1b3c6d, a >= 0 ? S.key[a] : -1), b >= 0 ? S.key[b] : -1), stEAx[e]), stEK[e]);
+    stCompHash[c] = (stCompHash[c] + h) | 0;
+  }
 
-  // --- conjugate gradients, from the warm start ---
-  // Nothing the solve depends on changed (an edit somewhere else, a step that
-  // moved the window but not what is in it): the solve under way carries on.
-  // Restarting it threw its search directions away, so a run of such rebuilds
-  // could keep it from ever converging, the overlay frozen meanwhile.
-  stressLayout();
-  stRelaid = true;
-  const sys = stressSystemHash();
-  if (sameNodes && sys === stSysHash) return;
-  stSysHash = sys;
-  stressKmul(stU, stQ);
-  for (let k = 0, nd = stN * 6; k < nd; k++) {
-    stR[k] = stF[k] - stQ[k];
-    stZ[k] = stR[k] / stDiag[k];
-    stP[k] = stZ[k];
+  // --- what shows until a solve says otherwise, and the warm start ---
+  // A block keeps the colour it had and a new one shows as not solved yet: an
+  // answer to a structure that has since changed is still closer than grey.
+  for (let n = 0; n < stN; n++) {
+    const o = stKeyMapPrev.get(S.key[n]);
+    if (o !== undefined && o < stOldN) {
+      S.u.set(stOld.u.subarray(o * 6, o * 6 + 6), n * 6);
+      S.stress[n] = stOld.stress[o];
+    } else {
+      S.u.fill(0, n * 6, n * 6 + 6);
+      S.stress[n] = NaN;
+    }
+    // Hanging off nothing at all reads as the worst there is, and has nothing to solve.
+    if (!stCompHeld[S.comp[n]]) S.stress[n] = Infinity;
   }
-  stRz = stressDot(stR, stZ);
-  stF2 = stressDot(stF, stF);
-  stIter = 0;
-  stConverged = stF2 === 0 || stressDot(stR, stR) < STRESS_TOL2 * stF2;
+
+  // --- which structures need solving ---
+  const solved = new Set(), dirty = [];
+  for (let c = 0; c < stNComp; c++) {
+    if (!stCompHeld[c]) continue;
+    if (stSolved.has(stCompHash[c])) solved.add(stCompHash[c]);
+    else dirty.push(c);
+  }
+  stSolved = solved;
+  stressDrawSig = NaN;   // the drawn window is laid out again on this tick
+  if (dirty.length) stressPost(dirty);
 }
 
-// Overlay instances: built blocks with an open face, and every block of each piece.
-function stressLayout() {
+// Pack the structures that changed into one job and send it off.
+function stressPost(dirty) {
+  const S = stCur;
+  let nn = 0;
+  const nStart = new Int32Array(dirty.length + 1), eStart = new Int32Array(dirty.length + 1);
+  for (let q = 0; q < dirty.length; q++) {
+    const c = dirty[q];
+    nStart[q] = nn;
+    nn += stCompStart[c + 1] - stCompStart[c];
+  }
+  nStart[dirty.length] = nn;
+  const nodes = new Int32Array(nn), fixed = new Uint8Array(nn), pos = new Int32Array(nn * 3);
+  const f = new Float64Array(nn * 6), u = new Float64Array(nn * 6);
+  // Job slot of each structure, and each node's number within its structure.
+  const slot = new Int32Array(stNComp).fill(-1);
+  for (let q = 0; q < dirty.length; q++) {
+    const c = dirty[q];
+    slot[c] = q;
+    for (let k = stCompStart[c], x = nStart[q]; k < stCompStart[c + 1]; k++, x++) {
+      const n = stQueue[k];
+      stLocal[n] = x - nStart[q];
+      nodes[x] = n; fixed[x] = S.fixed[n];
+      pos.set(S.pos.subarray(n * 3, n * 3 + 3), x * 3);
+      f.set(S.f.subarray(n * 6, n * 6 + 6), x * 6);
+      u.set(S.u.subarray(n * 6, n * 6 + 6), x * 6);
+    }
+  }
+  // Beams, grouped by structure (a counting sort over the slots).
+  for (let e = 0; e < stNE; e++) {
+    const q = slot[S.comp[stEA[e] >= 0 ? stEA[e] : stEB[e]]];
+    if (q >= 0) eStart[q + 1]++;
+  }
+  for (let q = 0; q < dirty.length; q++) eStart[q + 1] += eStart[q];
+  const ne = eStart[dirty.length], cur = eStart.slice(0, dirty.length);
+  const ea = new Int32Array(ne), eb = new Int32Array(ne), eax = new Uint8Array(ne), ek = new Float64Array(ne);
+  for (let e = 0; e < stNE; e++) {
+    const a = stEA[e], b = stEB[e], q = slot[S.comp[a >= 0 ? a : b]];
+    if (q < 0) continue;
+    const x = cur[q]++;
+    ea[x] = a >= 0 ? stLocal[a] : -1; eb[x] = b >= 0 ? stLocal[b] : -1;
+    eax[x] = stEAx[e]; ek[x] = stEK[e];
+  }
+  const seq = ++stJobSeq;
+  stJob = { seq, nodes, hashes: dirty.map((c) => stCompHash[c]) };
+  stJobT0 = performance.now();
+  const job = { seq, nStart, eStart, fixed, f, u, ea, eb, eax, ek, pos, tol2: STRESS_TOL2 };
+  if (stressWorker) {
+    stressWorker.postMessage(job, [nStart.buffer, eStart.buffer, fixed.buffer, f.buffer, u.buffer,
+                                   ea.buffer, eb.buffer, eax.buffer, ek.buffer, pos.buffer]);
+  } else {
+    const r = stressSolveJob(job);
+    r.seq = seq;
+    stressApply(r);
+  }
+}
+
+// A solve came back: its answers go in, and the structures it was for are solved.
+function stressApply(r) {
+  if (!stJob || r.seq !== stJob.seq) return;   // for a world since forgotten
+  const S = stCur, nodes = stJob.nodes;
+  for (let x = 0; x < nodes.length; x++) {
+    const n = nodes[x];
+    S.u.set(r.u.subarray(x * 6, x * 6 + 6), n * 6);
+    S.stress[n] = r.stress[x];
+  }
+  for (const h of stJob.hashes) stSolved.add(h);
+  stLastIters = r.iters;
+  stLastUnconverged = r.unconverged;
+  stLastMs = performance.now() - stJobT0;
+  stJob = null;
+  stressRecolor();
+}
+
+let stressWorker = null;
+// The worker is gone: what it still owed is solved here and now, and from here
+// on every solve is, on the main thread.
+function stressWorkerFail(err) {
+  if (!stressWorker) return;
+  console.warn('stress worker failed; solving on the main thread', err);
+  try { stressWorker.terminate(); } catch (e) {}
+  stressWorker = null;
+  if (stJob) { stJob = null; stBuiltRev = -1; }   // laid out and solved again on the next tick
+}
+try {
+  if (typeof Worker === 'function' && typeof Blob === 'function' && typeof URL !== 'undefined' && URL.createObjectURL) {
+    stressWorker = new Worker(URL.createObjectURL(new Blob([stressWorkerSource()], { type: 'text/javascript' })));
+    stressWorker.onmessage = (e) => {
+      if (e.data.error) { stressWorkerFail(e.data.error); return; }
+      stressApply(e.data);
+    };
+    stressWorker.onerror = (e) => { e.preventDefault(); stressWorkerFail(e.message); };
+  }
+} catch (err) {
+  console.warn('no stress worker; solving on the main thread', err);
+  stressWorker = null;
+}
+
+// The drawn window: built blocks with an open face within STRESS_RADIUS of the
+// player, nearest first past STRESS_MAX_DRAW, and every block of each piece
+// within STRESS_DEBRIS_R. What they are coloured with was solved for the world.
+function stressLayout(cx, cy, cz) {
+  const S = stCur;
+  const ci = colI(cx), cj = colJ(cz), cl = lvlOfY(cy), R = STRESS_RADIUS;
+  let nc = 0;
+  stDistHist.fill(0);
+  const c0i = Math.max(0, Math.floor((ci - R) / CHUNK)), c1i = Math.min(CHUNK_N - 1, Math.floor((ci + R) / CHUNK));
+  const c0j = Math.max(0, Math.floor((cj - R) / CHUNK)), c1j = Math.min(CHUNK_N - 1, Math.floor((cj + R) / CHUNK));
+  for (let chj = c0j; chj <= c1j; chj++) {
+    for (let chi = c0i; chi <= c1i; chi++) {
+      const set = placedByChunk[chj * CHUNK_N + chi];
+      if (!set) continue;
+      for (const key of set) {
+        const n = stKeyMap.get(key);
+        if (n === undefined || n >= stNTerr) continue;   // placed since the layout: drawn once it is solved
+        const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+        const di = i - ci, dj = j - cj, dl = lvl - cl;
+        const d = Math.sqrt(di * di + dj * dj + dl * dl);
+        if (d > R || !isVisible(voxOff[j * GEN_N + i] + lvl - VOX_FLOOR)) continue;
+        if (nc === stCandNode.length) {
+          const k2 = new Int32Array(nc * 2); k2.set(stCandNode); stCandNode = k2;
+          const d2 = new Uint16Array(nc * 2); d2.set(stCandDist); stCandDist = d2;
+        }
+        stCandNode[nc] = n; stCandDist[nc] = d | 0; nc++;
+        stDistHist[d | 0]++;
+      }
+    }
+  }
+  let dMax = R + 1;
+  if (nc > STRESS_MAX_DRAW) {
+    let acc = 0;
+    for (dMax = 0; dMax <= R; dMax++) { if (acc + stDistHist[dMax] > STRESS_MAX_DRAW) break; acc += stDistHist[dMax]; }
+  }
   let t = 0;
-  for (let n = 0; n < stNTerr; n++) {
-    const key = stKey[n];
+  for (let c = 0; c < nc; c++) {
+    if (stCandDist[c] >= dMax) continue;
+    const n = stCandNode[c], key = S.key[n];
     const i = key % GEN_N, tt = (key - i) / GEN_N, j = tt % GEN_N, lvl = (tt - j) / GEN_N + VOX_FLOOR;
-    if (!isVisible(voxOff[j * GEN_N + i] + lvl - VOX_FLOOR)) continue;
     stTerrInst[t] = n;
     stressTerr.setMatrixAt(t++, _stM4.makeTranslation(colX(i), (lvl + 0.5) * BLOCK, colZ(j)));
   }
@@ -9040,16 +9547,25 @@ function stressLayout() {
   stressTerr.instanceMatrix.needsUpdate = true;
   stressTerr.boundingSphere = null;
 
-  // Overlays of pieces that left the solve go; the rest are refitted.
-  for (const mesh of stOverlays.keys()) {
-    if (mesh.parent !== debris || !stPieces.some((pc) => pc.mesh === mesh)) stressDropOverlay(mesh);
-  }
+  // Overlays of pieces out of range or out of the world go; the rest are refitted.
+  stDrawnPieces.length = 0;
+  const near = new Set();
   for (const pc of stPieces) {
+    if (pc.mesh.parent === debris && pc.mesh.userData.blocks?.length === pc.count
+        && stressNearPiece(pc.mesh, cx, cy, cz)) near.add(pc);
+  }
+  for (const mesh of stOverlays.keys()) {
+    let keep = false;
+    for (const pc of near) if (pc.mesh === mesh) { keep = true; break; }
+    if (!keep) stressDropOverlay(mesh);
+  }
+  for (const pc of near) {
     let ov = stOverlays.get(pc.mesh);
     if (ov && ov.instanceMatrix.count < pc.count) { stressDropOverlay(pc.mesh); ov = null; }
     if (!ov) {
       ov = stressInstances(Math.max(pc.count, 8));
       ov.layers.set(STRESS_LAYER);
+      ov.visible = stressOn;
       pc.mesh.add(ov);
       stOverlays.set(pc.mesh, ov);
     }
@@ -9058,85 +9574,34 @@ function stressLayout() {
     ov.count = pc.count;
     ov.instanceMatrix.needsUpdate = true;
     ov.boundingSphere = null;
-    pc.overlay = ov;
+    stDrawnPieces.push({ overlay: ov, start: pc.start, count: pc.count });
   }
+  stressRecolor();
 }
 
-// A slice of CG, as many iterations as fit in ms (one at the least).
-function stressIterate(ms) {
-  const until = performance.now() + ms, nd = stN * 6, maxIter = Math.max(200, nd);
-  while (!stConverged) {
-    stressKmul(stP, stQ);
-    const pq = stressDot(stP, stQ);
-    if (!(pq > 0)) { stConverged = true; break; }
-    const alpha = stRz / pq;
-    let r2 = 0;
-    for (let k = 0; k < nd; k++) {
-      stU[k] += alpha * stP[k];
-      stR[k] -= alpha * stQ[k];
-      r2 += stR[k] * stR[k];
-    }
-    if (r2 < STRESS_TOL2 * stF2 || ++stIter >= maxIter) { stConverged = true; break; }
-    let rz = 0;
-    for (let k = 0; k < nd; k++) { stZ[k] = stR[k] / stDiag[k]; rz += stR[k] * stZ[k]; }
-    const beta = rz / stRz;
-    stRz = rz;
-    for (let k = 0; k < nd; k++) stP[k] = stZ[k] + beta * stP[k];
-    if (performance.now() >= until) break;
-  }
-}
-
-// Each block's worst beam, |N| + M/L, against its own strength, into the overlays.
-// Only from a converged solve; before that only what can't wait — a block
-// hanging off nothing — changes, and a re-laid overlay is redrawn as held.
+// Every drawn cube, coloured from what its node shows: its stress over its own
+// strength (read now, so a strength edited in the panel shows at once).
 function stressRecolor() {
-  if (stConverged) {
-    stStress.fill(0, 0, stN);
-    for (let e = 0; e < stNE; e++) {
-      stressElem(stU, e);
-      const s = Math.abs(_stN) + _stM;
-      const a = stEA[e], b = stEB[e];
-      if (a >= 0 && s > stStress[a]) stStress[a] = s;
-      if (b >= 0 && s > stStress[b]) stStress[b] = s;
-    }
-  }
-  let terrDirty = stRelaid, piecesDirty = stRelaid;
-  stRelaid = false;
-  for (let n = 0; n < stN; n++) {
-    // Hanging off nothing at all reads as the worst there is.
-    let idx;
-    if (stFixed[n] === 2) idx = STRESS_LUT_N - 1;
-    else if (stConverged) idx = stressLutIndex(stStress[n], MAT_STATS[stMat[n]]?.strength ?? 0);
-    else continue;
-    if (idx === stLut[n]) continue;
-    stLut[n] = idx;
-    if (n < stNTerr) terrDirty = true;
-    else piecesDirty = true;
-  }
-  if (terrDirty) {
-    for (let t = 0; t < stressTerr.count; t++) stressWriteColor(stressTerr, t, stTerrInst[t]);
-    stressTerr.instanceColor.needsUpdate = true;
-  }
-  if (piecesDirty) {
-    for (let p = 0; p < stPieces.length; p++) {
-      const pc = stPieces[p];
-      for (let q = 0; q < pc.count; q++) stressWriteColor(pc.overlay, q, pc.start + q);
-      pc.overlay.instanceColor.needsUpdate = true;
-    }
+  for (let t = 0; t < stressTerr.count; t++) stressWriteColor(stressTerr, t, stTerrInst[t]);
+  stressTerr.instanceColor.needsUpdate = true;
+  for (const dp of stDrawnPieces) {
+    for (let q = 0; q < dp.count; q++) stressWriteColor(dp.overlay, q, dp.start + q);
+    dp.overlay.instanceColor.needsUpdate = true;
   }
 }
-// Not solved yet (stLut -1): a neutral grey, not a reading on the ramp.
+// Not solved yet (NaN): a neutral grey, not a reading on the ramp.
 const STRESS_PENDING = 0.35;
 function stressWriteColor(im, inst, n) {
-  const a = im.instanceColor.array, l = stLut[n];
-  if (l < 0) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
+  const a = im.instanceColor.array, s = stCur.stress[n];
+  if (Number.isNaN(s)) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
+  const l = s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(s, MAT_STATS[stCur.mat[n]]?.strength ?? 0);
   const o = l * 3;
   a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];
 }
 
-// Where the window is centred: on the player, not the camera, which in top-down
-// hangs 8-90 m overhead and in third person 5 m back — far enough that blocks
-// right beside the player could fall outside it. Flying free, nobody is
+// Where the drawn window is centred: on the player, not the camera, which in
+// top-down hangs 8-90 m overhead and in third person 5 m back — far enough that
+// blocks right beside the player could fall outside it. Flying free, nobody is
 // anywhere, and the camera is all there is.
 const _stFocus = new THREE.Vector3();
 function stressFocus() {
@@ -9144,46 +9609,49 @@ function stressFocus() {
   const p = playerBody.position;
   return _stFocus.set(p.x, p.y - centerOffset() + eyeH, p.z);
 }
+// What the drawn window depends on: the layout, where the player is, and which
+// pieces are near.
+function stressDrawSignature(cx, cy, cz) {
+  let h = stBuildSeq | 0;
+  h = Math.imul(h ^ Math.floor(colI(cx) / STRESS_MOVE_Q), 0x9e3779b1);
+  h = Math.imul(h ^ Math.floor(lvlOfY(cy) / STRESS_MOVE_Q), 0x85ebca6b);
+  h = Math.imul(h ^ Math.floor(colJ(cz) / STRESS_MOVE_Q), 0xc2b2ae35);
+  for (const pc of stPieces) if (stressNearPiece(pc.mesh, cx, cy, cz)) h = Math.imul(h ^ pc.mesh.id, 0x27d4eb2f);
+  return h;
+}
 
-// Ten times a second: follow the world if it changed. While a solve is open,
-// a slice of it every frame, STRESS_DUTY of the time on average and never more
-// than STRESS_SLICE_MS in one frame. Once solved and still, this is a signature
-// check ten times a second and nothing more.
+// Ten times a second: a block added or removed since the last layout lays the
+// world out again, and that sends whatever changed to be solved — not while a
+// solve is still out, which lays out again once it is back. The player moving
+// only redraws the window from answers in hand. Nothing is solved here.
 function updateStress(dt) {
   if (!stressOn) return;
   stressTimer += dt;
-  if (stressTimer >= STRESS_TICK) {
-    stressTimer = 0;
-    const f = stressFocus(), cx = f.x, cy = f.y, cz = f.z;
-    const sig = stressSignature(cx, cy, cz);
-    if (sig !== stressSig && elapsed - stressLastRebuild >= STRESS_REBUILD) {
-      stressSig = sig;
-      stressLastRebuild = elapsed;
-      stressRebuild(cx, cy, cz);
-      stressRecolor();
-    }
+  if (stressTimer < STRESS_TICK) return;
+  stressTimer = 0;
+  if (stressRev !== stBuiltRev && !stJob && elapsed - stressLastRebuild >= STRESS_REBUILD) {
+    stBuiltRev = stressRev;
+    stressLastRebuild = elapsed;
+    stressRebuild();
   }
-  if (stConverged) { stressBudget = 0; return; }
-  stressBudget = Math.min(STRESS_SLICE_MS, stressBudget + dt * 1000 * STRESS_DUTY);
-  if (stressBudget <= 0) return;
-  const t0 = performance.now();
-  stressIterate(stressBudget);
-  stressBudget -= performance.now() - t0;
-  stressRecolor();
+  const f = stressFocus(), sig = stressDrawSignature(f.x, f.y, f.z);
+  if (sig !== stressDrawSig) {
+    stressDrawSig = sig;
+    stressLayout(f.x, f.y, f.z);
+  }
 }
 
 function setStress(on) {
   stressOn = on;
   stressTerr.visible = on;
   for (const ov of stOverlays.values()) ov.visible = on;
-  stressSig = NaN;   // rebuild on the next tick it is on
+  stressDrawSig = NaN;   // redrawn on the next tick it is on
   stressBtn.textContent = on ? 'Stress: On' : 'Stress: Off';
 }
-// A material's strength changed: rebuild on the next tick, past the throttle,
-// so the beams take the new stiffness and the overlay re-reads it.
+// A material's strength changed: every cube re-reads it now. The beams take
+// the new stiffness at the next solve, which a block added or removed starts.
 function stressInvalidate() {
-  stressSig = NaN;
-  stressLastRebuild = -Infinity;
+  stressRecolor();
 }
 const stressBtn = document.getElementById('btn-stress');
 bindTap(stressBtn, () => setStress(!stressOn));
@@ -10410,8 +10878,9 @@ window.hermes = {
   setVolume, volumePlace,
   // The stress overlay — visual only. markPlaced tags a cell as player-built.
   setStress, markPlaced,
-  stress: () => ({ on: stressOn, nodes: stN, built: stNTerr, beams: stNE, drawn: stressTerr.count,
-                   pieces: stPieces.length, iters: stIter, converged: stConverged }),
+  stress: () => ({ on: stressOn, nodes: stN, built: stNTerr, beams: stNE, structures: stNComp,
+                   drawn: stressTerr.count, pieces: stPieces.length, solving: !!stJob, worker: !!stressWorker,
+                   iters: stLastIters, unconverged: stLastUnconverged, ms: stLastMs }),
   volume: () => ({ on: volumeOn, step: volumeStep, c1: volumeC1, c2: volumeC2, top: volumeTop,
                    live: volumeLive, ghosts: volumeGhost.visible ? volumeGhostCells : 0 }),
   // The voxel store — the material of every block in the volume, not just the

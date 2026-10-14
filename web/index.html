@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 185;
+window.GAME_VERSION = 186;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2264,22 +2264,22 @@ const AIR = N_MATS;
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 1.1, buoyancy: 0, strength: 25,  powder: true  },  // SAND
-  { name: 'Dirt',          weight: 1,   buoyancy: 0, strength: 50,  powder: false },  // DIRT
-  { name: 'Rock',          weight: 3,   buoyancy: 0, strength: 350, powder: false },  // ROCK
+  { name: 'Sand',          weight: 0.022, buoyancy: 0, strength: 25,  powder: true  },  // SAND
+  { name: 'Dirt',          weight: 0.02,  buoyancy: 0, strength: 50,  powder: false },  // DIRT
+  { name: 'Rock',          weight: 0.06,  buoyancy: 0, strength: 350, powder: false },  // ROCK
   null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 1,   buoyancy: 0, strength: 25,  powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 2,   buoyancy: 0, strength: 65,  powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 1,   buoyancy: 0, strength: 100, powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 2,   buoyancy: 0, strength: 75,  powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 2.5, buoyancy: 0, strength: 50,  powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 3,   buoyancy: 0, strength: 75,  powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 2.5, buoyancy: 0, strength: 100, powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 1.2, buoyancy: 0, strength: 60,  powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 2.2, buoyancy: 0, strength: 75,  powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 1.2, buoyancy: 0, strength: 125, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 2.1, buoyancy: 0, strength: 40,  powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 1.1, buoyancy: 0, strength: 70,  powder: false },  // HARD_SAND
+  { name: 'Fine Dirt',     weight: 0.02,  buoyancy: 0, strength: 25,  powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 0.04,  buoyancy: 0, strength: 65,  powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 0.02,  buoyancy: 0, strength: 100, powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 0.04,  buoyancy: 0, strength: 75,  powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 0.05,  buoyancy: 0, strength: 50,  powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 0.06,  buoyancy: 0, strength: 75,  powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 0.05,  buoyancy: 0, strength: 100, powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 0.024, buoyancy: 0, strength: 60,  powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 0.044, buoyancy: 0, strength: 75,  powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 0.024, buoyancy: 0, strength: 125, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 0.042, buoyancy: 0, strength: 40,  powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 0.022, buoyancy: 0, strength: 70,  powder: false },  // HARD_SAND
 ];
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
@@ -6303,7 +6303,7 @@ function recentreDebris(mesh, body) {
   const c = debrisCoM.set(0, 0, 0);
   let tw = 0;
   for (const b of lat) {
-    const w = MAT_STATS[b.mat]?.weight ?? 1;
+    const w = (MAT_STATS[b.mat]?.weight ?? 0.02) * 1000;
     c.x += b.pos.x * w; c.y += b.pos.y * w; c.z += b.pos.z * w;
     tw += w;
   }
@@ -6423,7 +6423,7 @@ function rebuildDebrisBody(mesh, body) {
   body.shapeOrientations.length = 0;
   addDebrisColliders(body, lat);
   recentreDebris(mesh, body);
-  { let mw = 0; for (const b of lat) mw += (MAT_STATS[b.mat]?.weight ?? 1) * 0.5; body.mass = Math.min(mw, FALL_MASS_CAP); }
+  { let mw = 0; for (const b of lat) mw += (MAT_STATS[b.mat]?.weight ?? 0.02) * 1000 * 0.5; body.mass = Math.min(mw, FALL_MASS_CAP); }
   body.updateMassProperties();
   body.updateBoundingRadius();
   body.updateAABB();
@@ -8808,7 +8808,7 @@ function stressRebuild(cx, cy, cz) {
   }
   for (let n = 0; n < stNTerr; n++) {
     const key = stKey[n], m = stMat[n];
-    stF[n * 6 + 1] = -(MAT_STATS[m]?.weight ?? 0);
+    stF[n * 6 + 1] = -(MAT_STATS[m]?.weight ?? 0) * 1000;
     const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
     for (let d = 0; d < 6; d++) {
       const ax = d >> 1, sg = d & 1 ? -1 : 1;
@@ -8825,7 +8825,7 @@ function stressRebuild(cx, cy, cz) {
     const lat = pc.mesh.userData.blocks;
     for (let q = 0; q < pc.count; q++) {
       const n = pc.start + q, b = lat[q], m = stMat[n];
-      stF[n * 6 + pc.dAx] = pc.dSign * (MAT_STATS[m]?.weight ?? 0);
+      stF[n * 6 + pc.dAx] = pc.dSign * (MAT_STATS[m]?.weight ?? 0) * 1000;
       for (let ax = 0; ax < 3; ax++) {
         const nb = stKeyMap.get(stPieceKey(pc.mesh, b.gi + (ax === 0), b.gj + (ax === 2), b.lvl + (ax === 1)));
         if (nb !== undefined) stressAddEdge(n, nb, ax, m, stMat[nb]);

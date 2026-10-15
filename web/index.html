@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 198;
+window.GAME_VERSION = 199;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1538,7 +1538,7 @@ window.GAME_VERSION = 198;
       <button id="btn-debug-chunks" class="ui-el">Chunks: Off</button>
       <button id="btn-debug-collision" class="ui-el">Collision: Off</button>
       <button id="btn-coltest" class="ui-el">COL TEST: Off</button>
-      <button id="btn-stress" class="ui-el">Stress: On</button>
+      <button id="btn-stress" class="ui-el">Stress: Shown</button>
     </div>
   </div>
 </div>
@@ -8644,7 +8644,7 @@ function collectPlaced() {
 }
 function restorePlaced(ss) {
   placedByChunk.fill(null);
-  if (ss && typeof ss.on === 'boolean') setStress(ss.on);
+  if (ss && typeof ss.on === 'boolean') setStress(ss.on, typeof ss.shown === 'boolean' ? ss.shown : ss.on);
   if (ss && Array.isArray(ss.placed)) {
     for (const key of ss.placed) {
       if (!Number.isInteger(key) || key < 0) continue;
@@ -9199,7 +9199,10 @@ const stressTerr = stressInstances(STRESS_MAX_DRAW);
 scene.add(stressTerr);
 camera.layers.enable(STRESS_LAYER);
 
-let stressOn = true;
+// Two switches: stressOn runs the solver (and the breaking that follows from
+// it); stressShown draws the coloured overlay over what it solved. Shown needs
+// on — there is nothing to draw from a solver that is not running.
+let stressOn = true, stressShown = true;
 let stressTimer = 0, stressLastRebuild = -Infinity, stressDrawSig = NaN;
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
 
@@ -9638,7 +9641,7 @@ function stressApply(r) {
 // hanging off nothing (Infinity) is gravity's to bring down, not this. What
 // comes down bumps stressRev, and what is left is laid out and solved again.
 function stressBreakSaturated() {
-  if (!stressOn) return;   // nothing is drawn, so nothing reads red
+  if (!stressOn) return;   // not solving, so nothing reads red
   const S = stCur, top = STRESS_LUT_N - 1, hit = [];
   for (let n = 0; n < stN; n++) {
     const s = S.stress[n];
@@ -9756,7 +9759,7 @@ function stressLayout(cx, cy, cz) {
     if (!ov) {
       ov = stressInstances(Math.max(pc.count, 8));
       ov.layers.set(STRESS_LAYER);
-      ov.visible = stressOn;
+      ov.visible = stressShown;
       pc.mesh.add(ov);
       stOverlays.set(pc.mesh, ov);
     }
@@ -9773,6 +9776,7 @@ function stressLayout(cx, cy, cz) {
 // Every drawn cube, coloured from what its node shows: its stress over its own
 // strength (read now, so a strength edited in the panel shows at once).
 function stressRecolor() {
+  if (!stressShown) return;   // the layout recolours everything when shown again
   for (let t = 0; t < stressTerr.count; t++) stressWriteColor(stressTerr, t, stTerrInst[t]);
   stressTerr.instanceColor.needsUpdate = true;
   for (const dp of stDrawnPieces) {
@@ -9831,6 +9835,7 @@ function updateStress(dt) {
     stressLastRebuild = elapsed;
     stressRebuild();
   }
+  if (!stressShown) return;   // solving and breaking go on; nothing is drawn
   const f = stressFocus(), sig = stressDrawSignature(f.x, f.y, f.z);
   if (sig !== stressDrawSig) {
     stressDrawSig = sig;
@@ -9838,12 +9843,15 @@ function updateStress(dt) {
   }
 }
 
-function setStress(on) {
-  stressOn = on;
-  stressTerr.visible = on;
-  for (const ov of stOverlays.values()) ov.visible = on;
-  stressDrawSig = NaN;   // redrawn on the next tick it is on
-  stressBtn.textContent = on ? 'Stress: On' : 'Stress: Off';
+// on: run the solver; shown: also draw the overlay (defaults to on, so
+// setStress(true/false) keeps meaning overlay on / everything off).
+function setStress(on, shown = on) {
+  stressOn = !!on;
+  stressShown = stressOn && !!shown;
+  stressTerr.visible = stressShown;
+  for (const ov of stOverlays.values()) ov.visible = stressShown;
+  stressDrawSig = NaN;   // redrawn on the next tick it is shown
+  stressBtn.textContent = stressShown ? 'Stress: Shown' : stressOn ? 'Stress: Hidden' : 'Stress: Off';
 }
 // A material's strength changed: every cube re-reads it now. The beams take
 // the new stiffness at the next solve, which a block added or removed starts.
@@ -9852,7 +9860,12 @@ function stressInvalidate() {
   stressBreakSaturated();
 }
 const stressBtn = document.getElementById('btn-stress');
-bindTap(stressBtn, () => setStress(!stressOn));
+// Shown -> Hidden (running, not drawn) -> Off -> Shown.
+bindTap(stressBtn, () => {
+  if (stressShown) setStress(true, false);
+  else if (stressOn) setStress(false);
+  else setStress(true);
+});
 
 // ---- Material bar (creative tool) ----
 const matBar = document.getElementById('mat-bar');
@@ -10453,7 +10466,7 @@ function collectWorldMeta() {
 
   // Stress overlay: which cells the player built. Optional on load — a save
   // without it just has no placed blocks to tint.
-  const stressState = { on: stressOn, placed: collectPlaced() };
+  const stressState = { on: stressOn, shown: stressShown, placed: collectPlaced() };
 
   return {
     version: SAVE_VERSION,
@@ -11074,9 +11087,10 @@ window.hermes = {
   hammer, setHammer, hammerStrike,
   // The Volume tool — step 0..3 and the corners committed so far.
   setVolume, volumePlace,
-  // The stress overlay — visual only. markPlaced tags a cell as player-built.
+  // The stress system — setStress(on, shown): run the solver, and draw it or
+  // not. markPlaced tags a cell as player-built.
   setStress, markPlaced,
-  stress: () => ({ on: stressOn, nodes: stN, built: stNTerr, beams: stNE, structures: stNComp,
+  stress: () => ({ on: stressOn, shown: stressShown, nodes: stN, built: stNTerr, beams: stNE, structures: stNComp,
                    drawn: stressTerr.count, pieces: stPieces.length, solving: !!stJob, worker: !!stressWorker,
                    iters: stLastIters, unconverged: stLastUnconverged, ms: stLastMs }),
   volume: () => ({ on: volumeOn, step: volumeStep, c1: volumeC1, c2: volumeC2, top: volumeTop,

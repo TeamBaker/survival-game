@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 199;
+window.GAME_VERSION = 200;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2788,6 +2788,10 @@ function growColumn(k, needLv) {
 // Bumped on every write, and on every change to a fallen piece's lattice, so the
 // stress overlay (updateStress) knows the structure it last solved is stale.
 let stressRev = 0;
+// Columns written since the stress layout last looked at them: the only places
+// ground can have come to hang over a gap (see stressHangScan). Generated ground
+// is solid from bedrock up, so nothing else needs looking at.
+const stressCols = new Set();
 function setVoxel(i, j, lvl, m) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
   const k = j * GEN_N + i;
@@ -2801,6 +2805,7 @@ function setVoxel(i, j, lvl, m) {
   if (was === m) return was;
   voxMat[p] = m;
   stressRev++;
+  stressCols.add(k);
   if (was === AIR) worldBlocks++;
   else if (m === AIR) worldBlocks--;
   // Keep the cached surface honest. Stacking one on top only ever raises it;
@@ -8589,11 +8594,26 @@ function updatePlacer() {
 // Structural stress overlay — visual only
 // ---------------------------------------------------------------------------
 // The Tension Sandbox's frame analysis, on the voxel lattice: every block the
-// player built, anywhere in the world, and every block of every fallen piece is
-// a node with six DOFs — three displacements, three rotations — and every
-// face-sharing pair is an axis-aligned Euler-Bernoulli beam with axial (EA/L),
-// torsional and two-plane bending (EI/L^3) stiffness. Generated ground a built
-// block touches is a fixed support. A fallen piece is solved once it has come to
+// player built, every block of ground that hangs (below), anywhere in the world,
+// and every block of every fallen piece is a node with six DOFs — three
+// displacements, three rotations — and every face-sharing pair is an
+// axis-aligned Euler-Bernoulli beam with axial (EA/L), torsional and two-plane
+// bending (EI/L^3) stiffness.
+//
+// Ground hangs when it is not standing on bedrock: a block with a gap (air or
+// water) anywhere under it in its own column — an overhang, the ceiling of a
+// tunnel or a cave, the face of a cliff someone has dug under. Its weight has to
+// go sideways to reach anything, so it bends and pulls, and it is laid out and
+// solved and broken exactly as a built block is. Ground that stands on an
+// unbroken run of solid down to bedrock carries its load straight down into it
+// and is the fixed support everything else is held by: it is most of the
+// world, under nothing but its own column, and in this frame that compression
+// alone reads as stress — every sand beach would read red and crumble — so it
+// is not a node. Generated ground is all of that kind (a heightmap, solid from
+// bedrock up); only a write can open a gap under something, so only the
+// columns written to (stressCols) are ever looked at.
+//
+// A fallen piece is solved once it has come to
 // rest, as it lies: its supports are the blocks that actually touch something
 // solid — the ground, a built block, another piece — where the touch pushes
 // them up, measured cube against cube in the world; and its weight acts
@@ -8628,6 +8648,8 @@ const STRESS_LAYER      = 1;      // debris overlays: drawn, but not hit by debr
 const STRESS_CONTACT_EPS = 0.1 * BLOCK;   // m — cubes nearer than this touch: cannon rests bodies a hair apart or into each other
 const STRESS_SUPPORT_NY = 0.05;  // a touch holds a block up when its normal lifts it at least this much (not a wall, not a ceiling)
 const STRESS_LUT_N      = 128;
+const STRESS_TERRAIN_MAX = 20000; // hanging-ground nodes at most (a phone solves ~20k in seconds); past this the nearest columns are kept
+const STRESS_BREAK_MAX  = 64;    // blocks broken per solve, worst first; the rest go on the next one
 
 // Cells the player has built, by chunk, as gravCell keys. Pruned lazily: a key
 // whose cell is no longer solid is dropped the next time the world is laid out.
@@ -8653,6 +8675,9 @@ function restorePlaced(ss) {
       (placedByChunk[c] || (placedByChunk[c] = new Set())).add(key);
     }
   }
+  // Ground can only hang where something has dug, and the save says where.
+  stressCols.clear();
+  for (let c = 0; c < GEN_N * GEN_N; c++) if (colDug[c]) stressCols.add(c);
   stressForget();   // nothing solved for the last world carries into this one
   stressRev++;
 }
@@ -9146,7 +9171,11 @@ function stressNodeArrays(cap) {
   };
 }
 let stCur = stressNodeArrays(1024), stOld = stressNodeArrays(1024);
-let stN = 0, stNE = 0, stNTerr = 0, stNComp = 0, stOldN = 0;
+// Nodes: built blocks 0..stNBuilt, hanging ground stNBuilt..stNTerr (both in
+// the voxel grid, keyed by gravCell), fallen pieces' blocks stNTerr..stN.
+let stN = 0, stNE = 0, stNBuilt = 0, stNTerr = 0, stNComp = 0, stOldN = 0;
+// Hanging columns found by stressHangScan: column, lowest hanging level, blocks.
+let stHangK = new Int32Array(256), stHangLo = new Int16Array(256), stHangCnt = new Int32Array(256), stHangN = 0;
 let stKeyMap = new Map(), stKeyMapPrev = new Map();
 let stECap = 0, stEA, stEB, stEAx, stEK;
 let stAdjStart, stAdj, stQueue, stLocal;
@@ -9390,14 +9419,62 @@ function stressDropOverlay(mesh) {
 function stressForget() {
   stKeyMap.clear(); stKeyMapPrev.clear();
   stSolved.clear();
-  stN = 0; stNE = 0; stNTerr = 0; stNComp = 0;
+  stN = 0; stNE = 0; stNBuilt = 0; stNTerr = 0; stNComp = 0; stHangN = 0;
   stPieces.length = 0;
   stJob = null;   // whatever the worker sends back for it is dropped
   stBuiltRev = -1;
   stressDrawSig = NaN;
 }
 
-// Lay the whole world out: every built block and every fallen piece, the beams
+// Which written columns have ground hanging in them, and from what level up:
+// each column's lowest solid run (from bedrock, or in the sandbox from the
+// platform) stands on its own; every solid block above the first gap over it
+// hangs. A column with nothing hanging is let go until it is written again.
+// Returns how many blocks hang, at most STRESS_TERRAIN_MAX: past that, whole
+// columns are kept nearest the player first, and the ones left out hold as
+// ground does — a safety valve for a world dug hollow, not a rule.
+function stressHangScan() {
+  stHangN = 0;
+  let total = 0;
+  for (const k of stressCols) {
+    const o = voxOff[k];
+    if (topLvl[k] === NO_COLUMN || o < 0) { stressCols.delete(k); continue; }
+    const len = voxLen(k);
+    let l = 0;
+    while (l < len && !solidMat(voxMat[o + l])) l++;
+    while (l < len && solidMat(voxMat[o + l])) l++;
+    let cnt = 0;
+    for (let x = l + 1; x < len; x++) if (solidMat(voxMat[o + x])) cnt++;
+    if (!cnt) { stressCols.delete(k); continue; }
+    if (stHangN === stHangK.length) {
+      const n2 = stHangN * 2;
+      const k2 = new Int32Array(n2); k2.set(stHangK); stHangK = k2;
+      const l2 = new Int16Array(n2); l2.set(stHangLo); stHangLo = l2;
+      const c2 = new Int32Array(n2); c2.set(stHangCnt); stHangCnt = c2;
+    }
+    stHangK[stHangN] = k; stHangLo[stHangN] = l + 1 + VOX_FLOOR; stHangCnt[stHangN] = cnt;
+    stHangN++;
+    total += cnt;
+  }
+  if (total <= STRESS_TERRAIN_MAX) return total;
+  const f = stressFocus(), ci = colI(f.x), cj = colJ(f.z);
+  const order = Array.from({ length: stHangN }, (_, q) => q);
+  const d2 = (q) => { const k = stHangK[q], di = k % GEN_N - ci, dj = ((k / GEN_N) | 0) - cj; return di * di + dj * dj; };
+  order.sort((a, b) => d2(a) - d2(b));
+  const K = stHangK.slice(0, stHangN), L = stHangLo.slice(0, stHangN), C = stHangCnt.slice(0, stHangN);
+  let kept = 0;
+  total = 0;
+  for (const q of order) {
+    if (total + C[q] > STRESS_TERRAIN_MAX) continue;
+    stHangK[kept] = K[q]; stHangLo[kept] = L[q]; stHangCnt[kept] = C[q];
+    kept++;
+    total += C[q];
+  }
+  stHangN = kept;
+  return total;
+}
+
+// Lay the whole world out: every built block, all the ground that hangs, and every fallen piece, the beams
 // between them, the structures they make. Structures whose system is unchanged
 // keep their answer; the rest go off to be solved.
 function stressRebuild() {
@@ -9407,7 +9484,7 @@ function stressRebuild() {
   stKeyMap.clear();
   stN = 0; stNE = 0;
 
-  let bound = 0;
+  let bound = stressHangScan();
   for (const set of placedByChunk) if (set) bound += set.size;
   const pieces = debris.children;
   for (let p = 0; p < pieces.length; p++) bound += pieces[p].userData.blocks?.length || 0;
@@ -9421,6 +9498,21 @@ function stressRebuild() {
       const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
       const m = voxelAt(i, j, lvl);
       if (!solidMat(m)) { set.delete(key); continue; }
+      S.key[stN] = key; S.mat[stN] = m; S.fixed[stN] = 0;
+      S.pos[stN * 3] = i; S.pos[stN * 3 + 1] = lvl; S.pos[stN * 3 + 2] = j;
+      stKeyMap.set(key, stN++);
+    }
+  }
+  stNBuilt = stN;
+
+  // --- every block of ground that hangs (what was built there already is in) ---
+  for (let q = 0; q < stHangN; q++) {
+    const k = stHangK[q], i = k % GEN_N, j = (k - i) / GEN_N, o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
+    for (let lvl = stHangLo[q]; lvl <= cap; lvl++) {
+      const m = voxMat[o + lvl];
+      if (!solidMat(m)) continue;
+      const key = gravCell(i, j, lvl);
+      if (stKeyMap.has(key)) continue;
       S.key[stN] = key; S.mat[stN] = m; S.fixed[stN] = 0;
       S.pos[stN * 3] = i; S.pos[stN * 3 + 1] = lvl; S.pos[stN * 3 + 2] = j;
       stKeyMap.set(key, stN++);
@@ -9460,7 +9552,7 @@ function stressRebuild() {
       if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N || ll < VOX_FLOOR) continue;
       const nb = stKeyMap.get(gravCell(ii, jj, ll));
       if (nb !== undefined) { if (sg > 0) stressAddEdge(n, nb, ax, m, S.mat[nb]); continue; }
-      // Solid and not built: generated ground, and it holds.
+      // Solid and not a node: ground standing on bedrock, and it holds.
       const m2 = voxelAt(ii, jj, ll);
       if (solidMat(m2)) { if (sg > 0) stressAddEdge(n, -1, ax, m, m2); else stressAddEdge(-1, n, ax, m2, m); }
     }
@@ -9558,6 +9650,9 @@ function stressRebuild() {
   stSolved = solved;
   stressDrawSig = NaN;   // the drawn window is laid out again on this tick
   if (dirty.length) stressPost(dirty);
+  // Nothing to solve, but answers in hand may still be red — what a pass capped
+  // at STRESS_BREAK_MAX left standing.
+  else stressBreakSaturated();
 }
 
 // Pack the structures that changed into one job and send it off.
@@ -9640,6 +9735,11 @@ function stressApply(r) {
 // but not yet solved still shows its old colour and is left alone, and one
 // hanging off nothing (Infinity) is gravity's to bring down, not this. What
 // comes down bumps stressRev, and what is left is laid out and solved again.
+// Built and hanging ground alike. At most STRESS_BREAK_MAX go in one pass, the
+// most overloaded (stress over strength) first: an undercut hill can be
+// hundreds of red blocks at once, each one a physics body, and a phone cannot
+// take them all in a frame. The rest are still red in the next solve if what
+// went did not relieve them.
 function stressBreakSaturated() {
   if (!stressOn) return;   // not solving, so nothing reads red
   const S = stCur, top = STRESS_LUT_N - 1, hit = [];
@@ -9649,13 +9749,20 @@ function stressBreakSaturated() {
     hit.push(n);
   }
   if (!hit.length) return;
+  if (hit.length > STRESS_BREAK_MAX) {
+    const over = new Map();
+    for (const n of hit) over.set(n, S.stress[n] / MAT_STATS[S.mat[n]].strength);
+    hit.sort((a, b) => over.get(b) - over.get(a));
+  }
   const brokenPieces = new Set();
+  let broken = 0;
   for (const n of hit) {
+    if (broken >= STRESS_BREAK_MAX) break;
     if (n < stNTerr) {
       const key = S.key[n];
       const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
       if (voxelAt(i, j, lvl) !== S.mat[n]) continue;   // gone or changed since the layout
-      breakBlock(i, j, lvl);
+      if (breakBlock(i, j, lvl)) broken++;
     } else {
       // A fallen piece: one break per piece, since knocking a block off it can
       // split it and renumber the rest. Whatever else is still red is caught
@@ -9665,7 +9772,7 @@ function stressBreakSaturated() {
       if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
       if (pc.mesh.userData.stressRest !== pc.rest) continue;   // moved since: laid out again first
       brokenPieces.add(pc.mesh);
-      breakDebrisBlock(pc.mesh, n - pc.start);
+      if (breakDebrisBlock(pc.mesh, n - pc.start)) broken++;
     }
   }
 }
@@ -9694,14 +9801,26 @@ try {
   stressWorker = null;
 }
 
-// The drawn window: built blocks with an open face within STRESS_RADIUS of the
-// player, nearest first past STRESS_MAX_DRAW, and every block of each piece
-// within STRESS_DEBRIS_R. What they are coloured with was solved for the world.
+// The drawn window: built blocks and hanging ground with an open face within
+// STRESS_RADIUS of the player, nearest first past STRESS_MAX_DRAW, and every
+// block of each piece within STRESS_DEBRIS_R. What they are coloured with was
+// solved for the world.
 function stressLayout(cx, cy, cz) {
   const S = stCur;
   const ci = colI(cx), cj = colJ(cz), cl = lvlOfY(cy), R = STRESS_RADIUS;
   let nc = 0;
   stDistHist.fill(0);
+  const cand = (n, i, j, lvl) => {
+    const di = i - ci, dj = j - cj, dl = lvl - cl;
+    const d = Math.sqrt(di * di + dj * dj + dl * dl);
+    if (d > R || !isVisible(voxOff[j * GEN_N + i] + lvl - VOX_FLOOR)) return;
+    if (nc === stCandNode.length) {
+      const k2 = new Int32Array(nc * 2); k2.set(stCandNode); stCandNode = k2;
+      const d2 = new Uint16Array(nc * 2); d2.set(stCandDist); stCandDist = d2;
+    }
+    stCandNode[nc] = n; stCandDist[nc] = d | 0; nc++;
+    stDistHist[d | 0]++;
+  };
   const c0i = Math.max(0, Math.floor((ci - R) / CHUNK)), c1i = Math.min(CHUNK_N - 1, Math.floor((ci + R) / CHUNK));
   const c0j = Math.max(0, Math.floor((cj - R) / CHUNK)), c1j = Math.min(CHUNK_N - 1, Math.floor((cj + R) / CHUNK));
   for (let chj = c0j; chj <= c1j; chj++) {
@@ -9710,19 +9829,22 @@ function stressLayout(cx, cy, cz) {
       if (!set) continue;
       for (const key of set) {
         const n = stKeyMap.get(key);
-        if (n === undefined || n >= stNTerr) continue;   // placed since the layout: drawn once it is solved
+        if (n === undefined || n >= stNBuilt) continue;   // placed since the layout: drawn once it is solved
         const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
-        const di = i - ci, dj = j - cj, dl = lvl - cl;
-        const d = Math.sqrt(di * di + dj * dj + dl * dl);
-        if (d > R || !isVisible(voxOff[j * GEN_N + i] + lvl - VOX_FLOOR)) continue;
-        if (nc === stCandNode.length) {
-          const k2 = new Int32Array(nc * 2); k2.set(stCandNode); stCandNode = k2;
-          const d2 = new Uint16Array(nc * 2); d2.set(stCandDist); stCandDist = d2;
-        }
-        stCandNode[nc] = n; stCandDist[nc] = d | 0; nc++;
-        stDistHist[d | 0]++;
+        cand(n, i, j, lvl);
       }
     }
+  }
+  // Hanging ground, column by column as it was laid out (its nodes run up each
+  // column in turn): a column out of reach sideways is passed over whole.
+  for (let n = stNBuilt; n < stNTerr; ) {
+    const i = S.pos[n * 3], j = S.pos[n * 3 + 2];
+    if (Math.abs(i - ci) > R || Math.abs(j - cj) > R) {
+      while (n < stNTerr && S.pos[n * 3] === i && S.pos[n * 3 + 2] === j) n++;
+      continue;
+    }
+    if (voxelAt(i, j, S.pos[n * 3 + 1]) === S.mat[n]) cand(n, i, j, S.pos[n * 3 + 1]);
+    n++;
   }
   let dMax = R + 1;
   if (nc > STRESS_MAX_DRAW) {
@@ -11088,9 +11210,10 @@ window.hermes = {
   // The Volume tool — step 0..3 and the corners committed so far.
   setVolume, volumePlace,
   // The stress system — setStress(on, shown): run the solver, and draw it or
-  // not. markPlaced tags a cell as player-built.
+  // not. markPlaced tags a cell as player-built; ground counts the hanging
+  // ground in the solve.
   setStress, markPlaced,
-  stress: () => ({ on: stressOn, shown: stressShown, nodes: stN, built: stNTerr, beams: stNE, structures: stNComp,
+  stress: () => ({ on: stressOn, shown: stressShown, nodes: stN, built: stNBuilt, ground: stNTerr - stNBuilt, beams: stNE, structures: stNComp,
                    drawn: stressTerr.count, pieces: stPieces.length, solving: !!stJob, worker: !!stressWorker,
                    iters: stLastIters, unconverged: stLastUnconverged, ms: stLastMs }),
   volume: () => ({ on: volumeOn, step: volumeStep, c1: volumeC1, c2: volumeC2, top: volumeTop,

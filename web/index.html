@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 197;
+window.GAME_VERSION = 198;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -8593,10 +8593,14 @@ function updatePlacer() {
 // a node with six DOFs — three displacements, three rotations — and every
 // face-sharing pair is an axis-aligned Euler-Bernoulli beam with axial (EA/L),
 // torsional and two-plane bending (EI/L^3) stiffness. Generated ground a built
-// block touches is a fixed support; the lowest layer of a fallen piece (by the
-// way it lies when it is solved) is what it rests on. Gravity is each block's
-// MAT_STATS weight; EA is the mean of the two blocks' strength, EI = EA*L^2/12,
-// L = 1 lattice step — all as the sandbox does it.
+// block touches is a fixed support. A fallen piece is solved once it has come to
+// rest, as it lies: its supports are the blocks that actually touch something
+// solid — the ground, a built block, another piece — where the touch pushes
+// them up, measured cube against cube in the world; and its weight acts
+// straight down in the world, which in the piece's own turned frame is spread
+// over all three of its axes. Gravity is each block's MAT_STATS weight; EA is
+// the mean of the two blocks' strength, EI = EA*L^2/12, L = 1 lattice step —
+// all as the sandbox does it.
 //
 // A solve happens when a block is added or removed — stressRev moving — and at
 // no other time. The whole world is laid out then and split into structures
@@ -8621,6 +8625,8 @@ const STRESS_REBUILD    = 0.5;    // s at least between laying the world out aga
 const STRESS_TOL2       = 1e-8;   // converged once |r|^2 < this * |F|^2, per structure
 const STRESS_MOVE_Q     = 8;      // blocks the player moves before the drawn window follows
 const STRESS_LAYER      = 1;      // debris overlays: drawn, but not hit by debrisAim
+const STRESS_CONTACT_EPS = 0.1 * BLOCK;   // m — cubes nearer than this touch: cannon rests bodies a hair apart or into each other
+const STRESS_SUPPORT_NY = 0.05;  // a touch holds a block up when its normal lifts it at least this much (not a wall, not a ceiling)
 const STRESS_LUT_N      = 128;
 
 // Cells the player has built, by chunk, as gravCell keys. Pruned lazily: a key
@@ -9132,7 +9138,7 @@ function stressNodeArrays(cap) {
   return {
     cap,
     key: new Float64Array(cap), mat: new Uint8Array(cap),
-    fixed: new Uint8Array(cap),       // 1: a support (a fallen piece's bottom layer)
+    fixed: new Uint8Array(cap),       // 1: a support (a fallen piece's block touching what holds it up)
     pos: new Int32Array(cap * 3),     // lattice cell: i (or gi), lvl, j (or gj)
     comp: new Int32Array(cap),        // which structure
     stress: new Float64Array(cap),    // what shows: NaN not solved yet, Infinity hanging off nothing
@@ -9150,8 +9156,10 @@ let stBuiltRev = -1;        // stressRev the layout was made from
 let stBuildSeq = 0;
 let stJob = null;           // the solve out on the worker: { seq, nodes, hashes }
 let stJobSeq = 0, stLastIters = 0, stLastUnconverged = 0, stLastMs = 0, stJobT0 = 0;
-// Fallen pieces in the world: the piece, its first node, how it lay when laid out.
-const stPieces = [];   // { mesh, start, count, dAx, dSign }
+// Fallen pieces in the world: the piece, its first node, whether it was at rest
+// (stressRestCode) and how it lay when laid out — its rotation R (row-major,
+// local to world) and its lattice's offset k from the cell numbers.
+const stPieces = [];   // { mesh, start, count, rest, R, kx, ky, kz, r }
 const stOverlays = new Map();   // piece mesh -> InstancedMesh, kept between layouts
 const stDrawnPieces = [];       // { overlay, start, count } of the ones drawn
 // Built-block candidates inside the draw radius, before the cap.
@@ -9199,13 +9207,152 @@ const solidMat = (m) => m !== AIR && m !== WATER && !!MAT_STATS[m];
 // Fallen-piece node keys: far above any gravCell, one band per piece.
 const stPieceKey = (mesh, gi, gj, lvl) => (mesh.id + 1) * 1e11 + ((lvl + 2048) * 4096 + (gj + 2048)) * 4096 + (gi + 2048);
 
-// Down in a piece's own frame, snapped to the nearest lattice axis: 0 x (gi),
-// 1 y (lvl), 2 z (gj), with the sign in the next bit.
-function stressDownCode(mesh) {
-  _stV.set(0, -1, 0).applyQuaternion(_stQuat.copy(mesh.quaternion).invert());
-  const ax = Math.abs(_stV.x), ay = Math.abs(_stV.y), az = Math.abs(_stV.z);
-  const d = ax >= ay && ax >= az ? 0 : ay >= az ? 1 : 2;
-  return d | ((d === 0 ? _stV.x : d === 1 ? _stV.y : _stV.z) > 0 ? 4 : 0);
+// Whether a piece is at rest: 0 moving, 1 stopped but awake, 2 asleep. Only a
+// piece at rest is solved — one in the air is held by nothing and loaded by
+// nothing it would feel — and a change of state lays the world out again, so a
+// piece is measured as it came to lie, not as it was falling when it broke off.
+function stressRestCode(mesh, was = 0) {
+  const b = mesh.userData.body;
+  if (!b || b.sleepState === CANNON.Body.SLEEPING) return 2;
+  // Settling needs it under FALL_REST_V; leaving rest needs twice that, so a
+  // piece rocking on its contacts does not flip back and forth.
+  const v2 = FALL_REST_V * FALL_REST_V * (was ? 4 : 1);
+  return b.velocity.lengthSquared() < v2 && b.angularVelocity.lengthSquared() < v2 ? 1 : 0;
+}
+// Every frame, stress on or off: a piece's rest changing means it lies
+// somewhere new, and its measured contacts only hold for as long as it sleeps.
+function stressWatchPieces() {
+  const pieces = debris.children;
+  for (let p = 0; p < pieces.length; p++) {
+    const ud = pieces[p].userData;
+    if (!ud.blocks) continue;
+    const code = stressRestCode(pieces[p], ud.stressRest);
+    if (code !== 2) ud.stressContacts = null;
+    if (code !== ud.stressRest) { ud.stressRest = code; stressRev++; }
+  }
+}
+
+// Whether two cubes of side BLOCK touch, and which way. Centres a and b, axes
+// A and B (row-major, column c is local axis c in the world). Separating axes:
+// B's faces, A's, then the nine edge pairs; more than STRESS_CONTACT_EPS apart
+// along any of them and they do not touch (NaN). Otherwise the normal is the
+// axis they overlap least along, pointed from b to a, and what comes back is
+// its world y: how much the touch pushes a up.
+let _stTx = 0, _stTy = 0, _stTz = 0, _stA = null, _stB = null, _stBest = 0, _stNy = 0;
+function stressAxis(lx, ly, lz) {
+  const len = Math.sqrt(lx * lx + ly * ly + lz * lz);
+  if (len < 1e-3) return true;   // parallel edges: no axis
+  lx /= len; ly /= len; lz /= len;
+  const A = _stA, B = _stB;
+  let r = 0;
+  for (let c = 0; c < 3; c++) {
+    r += Math.abs(A[c] * lx + A[3 + c] * ly + A[6 + c] * lz) + Math.abs(B[c] * lx + B[3 + c] * ly + B[6 + c] * lz);
+  }
+  const d = _stTx * lx + _stTy * ly + _stTz * lz;
+  const o = r * HALF_BLOCK + STRESS_CONTACT_EPS - Math.abs(d);
+  if (o < 0) return false;
+  if (o < _stBest) { _stBest = o; _stNy = d >= 0 ? ly : -ly; }
+  return true;
+}
+function stressTouchNy(ax, ay, az, A, bx, by, bz, B) {
+  _stTx = ax - bx; _stTy = ay - by; _stTz = az - bz; _stA = A; _stB = B; _stBest = Infinity;
+  for (let c = 0; c < 3; c++) if (!stressAxis(B[c], B[3 + c], B[6 + c])) return NaN;
+  for (let c = 0; c < 3; c++) if (!stressAxis(A[c], A[3 + c], A[6 + c])) return NaN;
+  for (let i = 0; i < 3; i++) {
+    const x = A[i], y = A[3 + i], z = A[6 + i];
+    for (let j = 0; j < 3; j++) {
+      const u = B[j], v = B[3 + j], w = B[6 + j];
+      if (!stressAxis(y * w - z * v, z * u - x * w, x * v - y * u)) return NaN;
+    }
+  }
+  return _stNy;
+}
+const STRESS_I3 = new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+// A piece's pose for the measuring: rotation, lattice offset, reach.
+function stressPiecePose(pc) {
+  const mesh = pc.mesh, lat = mesh.userData.blocks, e = _stM4.makeRotationFromQuaternion(mesh.quaternion).elements;
+  const R = pc.R;
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) R[r * 3 + c] = e[c * 4 + r];
+  const ref = lat[0];
+  pc.kx = ref.pos.x - ref.gi * BLOCK; pc.ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK; pc.kz = ref.pos.z - ref.gj * BLOCK;
+  let r2 = 0;
+  for (const b of lat) r2 = Math.max(r2, b.pos.lengthSq());
+  pc.r = Math.sqrt(r2) + HALF_BLOCK * Math.sqrt(3);   // + a cube's half-diagonal
+}
+
+// Which of a piece's blocks hold it up: those that touch a solid cell of the
+// world, or a block of another piece, where the touch pushes them upward. A
+// block with all six of its neighbours in the piece has no outside to touch
+// with. Asleep and lying exactly where it was last measured, with the same
+// blocks, it still rests on the same things (a dig nearby wakes it).
+function stressPieceSupports(pc, S) {
+  const mesh = pc.mesh, ud = mesh.userData, lat = ud.blocks, n0 = pc.start, P = mesh.position, Q = mesh.quaternion;
+  const c = ud.stressContacts;
+  if (c && pc.rest === 2 && c.n === lat.length && c.px === P.x && c.py === P.y && c.pz === P.z
+      && c.qx === Q.x && c.qy === Q.y && c.qz === Q.z && c.qw === Q.w && c.others === debris.children.length) {
+    S.fixed.set(c.fixed, n0);
+    return;
+  }
+  const R = pc.R, h = HALF_BLOCK, eps = STRESS_CONTACT_EPS;
+  // How far a turned cube reaches along each world axis from its centre.
+  const ex = h * (Math.abs(R[0]) + Math.abs(R[1]) + Math.abs(R[2])) + eps;
+  const ey = h * (Math.abs(R[3]) + Math.abs(R[4]) + Math.abs(R[5])) + eps;
+  const ez = h * (Math.abs(R[6]) + Math.abs(R[7]) + Math.abs(R[8])) + eps;
+  const reach = h * Math.sqrt(3) + eps;
+  const others = stPieces.filter((o) => o !== pc && o.mesh.position.distanceTo(P) < pc.r + o.r + eps);
+  for (let q = 0; q < lat.length; q++) {
+    const b = lat[q];
+    let held = 0;
+    for (let d = 0; d < 6; d++) {
+      const sg = d & 1 ? -1 : 1, ax = d >> 1;
+      if (stKeyMap.get(stPieceKey(mesh, b.gi + (ax === 0 ? sg : 0), b.gj + (ax === 2 ? sg : 0), b.lvl + (ax === 1 ? sg : 0))) === undefined) { held = -1; break; }
+    }
+    if (held === 0) { S.fixed[n0 + q] = 0; continue; }   // buried in its own piece
+    held = 0;
+    const lx = b.pos.x, ly = b.pos.y, lz = b.pos.z;
+    const ax = P.x + R[0] * lx + R[1] * ly + R[2] * lz;
+    const ay = P.y + R[3] * lx + R[4] * ly + R[5] * lz;
+    const az = P.z + R[6] * lx + R[7] * ly + R[8] * lz;
+    // The world's cells it reaches.
+    const i0 = colI(ax - ex), i1 = colI(ax + ex), j0 = colJ(az - ez), j1 = colJ(az + ez);
+    const l0 = lvlOfY(ay - ey), l1 = lvlOfY(ay + ey);
+    cells: for (let l = l0; l <= l1; l++) {
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          if (!solidMat(voxelAt(i, j, l))) continue;
+          if (stressTouchNy(ax, ay, az, R, colX(i), (l + 0.5) * BLOCK, colZ(j), STRESS_I3) > STRESS_SUPPORT_NY) { held = 1; break cells; }
+        }
+      }
+    }
+    // Other pieces' blocks it reaches, found in their own lattice.
+    for (let k = 0; k < others.length && !held; k++) {
+      const o = others[k], Ro = o.R, Po = o.mesh.position;
+      const wx = ax - Po.x, wy = ay - Po.y, wz = az - Po.z;
+      if (wx * wx + wy * wy + wz * wz > (o.r + reach) * (o.r + reach)) continue;
+      // Into o's frame (Ro transposed), then its cell numbers.
+      const ox = (Ro[0] * wx + Ro[3] * wy + Ro[6] * wz - o.kx) / BLOCK;
+      const oy = (Ro[1] * wx + Ro[4] * wy + Ro[7] * wz - o.ky) / BLOCK - 0.5;
+      const oz = (Ro[2] * wx + Ro[5] * wy + Ro[8] * wz - o.kz) / BLOCK;
+      const rr = reach / BLOCK + 0.5;
+      near: for (let gl = Math.ceil(oy - rr); gl <= Math.floor(oy + rr); gl++) {
+        for (let gj = Math.ceil(oz - rr); gj <= Math.floor(oz + rr); gj++) {
+          for (let gi = Math.ceil(ox - rr); gi <= Math.floor(ox + rr); gi++) {
+            if (stKeyMap.get(stPieceKey(o.mesh, gi, gj, gl)) === undefined) continue;
+            const bx = gi * BLOCK + o.kx, by = (gl + 0.5) * BLOCK + o.ky, bz = gj * BLOCK + o.kz;
+            if (stressTouchNy(ax, ay, az, R,
+                              Po.x + Ro[0] * bx + Ro[1] * by + Ro[2] * bz,
+                              Po.y + Ro[3] * bx + Ro[4] * by + Ro[5] * bz,
+                              Po.z + Ro[6] * bx + Ro[7] * by + Ro[8] * bz, Ro) > STRESS_SUPPORT_NY) { held = 1; break near; }
+          }
+        }
+      }
+    }
+    S.fixed[n0 + q] = held;
+  }
+  if (pc.rest === 2) {
+    ud.stressContacts = { n: lat.length, px: P.x, py: P.y, pz: P.z, qx: Q.x, qy: Q.y, qz: Q.z, qw: Q.w,
+                          others: debris.children.length, fixed: S.fixed.slice(n0, n0 + lat.length) };
+  }
 }
 const stressNearPiece = (mesh, cx, cy, cz) => {
   const dx = mesh.position.x - cx, dy = mesh.position.y - cy, dz = mesh.position.z - cz;
@@ -9283,19 +9430,20 @@ function stressRebuild() {
   for (let p = 0; p < pieces.length; p++) {
     const mesh = pieces[p], lat = mesh.userData.blocks;
     if (!lat || !lat.length) continue;
-    const down = stressDownCode(mesh), dAx = down & 3, dSign = down & 4 ? 1 : -1;
-    // Its lowest layer as it lies now is what it rests on.
-    let ext = -Infinity;
-    for (const b of lat) { const v = dSign * (dAx === 0 ? b.gi : dAx === 1 ? b.lvl : b.gj); if (v > ext) ext = v; }
-    stPieces.push({ mesh, start: stN, count: lat.length, dAx, dSign });
+    const rest = mesh.userData.stressRest ?? stressRestCode(mesh);
+    const pc = { mesh, start: stN, count: lat.length, rest, R: new Float64Array(9), kx: 0, ky: 0, kz: 0, r: 0 };
+    stressPiecePose(pc);
+    stPieces.push(pc);
     for (const b of lat) {
       const key = stPieceKey(mesh, b.gi, b.gj, b.lvl);
       S.key[stN] = key; S.mat[stN] = b.mat;
       S.pos[stN * 3] = b.gi; S.pos[stN * 3 + 1] = b.lvl; S.pos[stN * 3 + 2] = b.gj;
-      S.fixed[stN] = dSign * (dAx === 0 ? b.gi : dAx === 1 ? b.lvl : b.gj) === ext ? 1 : 0;
+      S.fixed[stN] = 0;
       stKeyMap.set(key, stN++);
     }
   }
+  // What each piece at rest is held up by, now every piece's blocks can be found.
+  for (const pc of stPieces) if (pc.rest) stressPieceSupports(pc, S);
 
   // --- loads, beams ---
   S.f.fill(0, 0, stN * 6);
@@ -9315,10 +9463,13 @@ function stressRebuild() {
     }
   }
   for (const pc of stPieces) {
-    const lat = pc.mesh.userData.blocks;
+    const lat = pc.mesh.userData.blocks, R = pc.R;
+    // World down (0, -1, 0) in the piece's frame: R's middle row, negated. A
+    // piece lying at 45 degrees carries its weight along both axes it leans on.
+    const gx = -R[3], gy = -R[4], gz = -R[5];
     for (let q = 0; q < pc.count; q++) {
-      const n = pc.start + q, b = lat[q], m = S.mat[n];
-      S.f[n * 6 + pc.dAx] = pc.dSign * (MAT_STATS[m]?.weight ?? 0);
+      const n = pc.start + q, b = lat[q], m = S.mat[n], w = MAT_STATS[m]?.weight ?? 0;
+      S.f[n * 6] = gx * w; S.f[n * 6 + 1] = gy * w; S.f[n * 6 + 2] = gz * w;
       for (let ax = 0; ax < 3; ax++) {
         const nb = stKeyMap.get(stPieceKey(pc.mesh, b.gi + (ax === 0), b.gj + (ax === 2), b.lvl + (ax === 1)));
         if (nb !== undefined) stressAddEdge(n, nb, ax, m, S.mat[nb]);
@@ -9388,8 +9539,10 @@ function stressRebuild() {
       S.u.fill(0, n * 6, n * 6 + 6);
       S.stress[n] = NaN;
     }
-    // Hanging off nothing at all reads as the worst there is, and has nothing to solve.
-    if (!stCompHeld[S.comp[n]]) S.stress[n] = Infinity;
+    // Hanging off nothing at all reads as the worst there is, and has nothing to
+    // solve. A piece held by nothing is in the air, or touches nothing that
+    // lifts it: there is no reading to give, so it shows as not solved.
+    if (!stCompHeld[S.comp[n]]) S.stress[n] = n < stNTerr ? Infinity : NaN;
   }
 
   // --- which structures need solving ---
@@ -9507,6 +9660,7 @@ function stressBreakSaturated() {
       const pc = stPieces.find((p) => n >= p.start && n < p.start + p.count);
       if (!pc || brokenPieces.has(pc.mesh)) continue;
       if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
+      if (pc.mesh.userData.stressRest !== pc.rest) continue;   // moved since: laid out again first
       brokenPieces.add(pc.mesh);
       breakDebrisBlock(pc.mesh, n - pc.start);
     }
@@ -9667,6 +9821,7 @@ function stressDrawSignature(cx, cy, cz) {
 // solve is still out, which lays out again once it is back. The player moving
 // only redraws the window from answers in hand. Nothing is solved here.
 function updateStress(dt) {
+  stressWatchPieces();
   if (!stressOn) return;
   stressTimer += dt;
   if (stressTimer < STRESS_TICK) return;

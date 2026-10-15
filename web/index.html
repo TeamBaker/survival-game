@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 204;
+window.GAME_VERSION = 205;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5980,7 +5980,24 @@ function restFallingChunk(n) {
   const f = fallingChunks[n];
   fallingChunks.splice(n, 1);
   restedChunks.push(f);
-  while (restedChunks.length > FALL_MESH_CAP) dropChunk(restedChunks.shift());
+}
+
+// Past FALL_MESH_CAP settled pieces, the smallest go first, the farthest of
+// those first: a break sends off one-cube pieces by the dozen, and evicting the
+// oldest would take the very boulder they came off out of the world. Run once a
+// frame, after everything that spawns pieces, so nothing is dropped from under
+// a break still working on it.
+function trimRestedChunks() {
+  while (restedChunks.length > FALL_MESH_CAP) {
+    let worst = 0, wn = Infinity, wd = -1;
+    for (let q = 0; q < restedChunks.length; q++) {
+      const f = restedChunks[q], n = f.mesh.userData.blocks.length;
+      if (n > wn) continue;
+      const d = camera.position.distanceToSquared(f.mesh.position);
+      if (n < wn || d > wd) { worst = q; wn = n; wd = d; }
+    }
+    dropChunk(restedChunks.splice(worst, 1)[0]);
+  }
 }
 
 // Take a piece away for good: body out of the world, mesh out of the scene.
@@ -6241,6 +6258,7 @@ function updateFallingChunks() {
     const dot = Math.abs(q.x * aq.x + q.y * aq.y + q.z * aq.z + q.w * aq.w);
     if (dx * dx + dy * dy + dz * dz < FALL_FREEZE_D * FALL_FREEZE_D && dot > 1 - 1e-5 && restsOnStill(b)) b.sleep();
   }
+  trimRestedChunks();
 }
 
 // Whether everything `body` touched in the last step is static or asleep. Two
@@ -7207,7 +7225,7 @@ function resolveBreakMat(m) {
 // Knock one block out of the world and let it fall. Nothing is kept: the block
 // leaves the grid, becomes a one-cube piece of rubble, and from then on belongs
 // to the physics. The hammer does it, and so does a block the stress solver
-// finds past its strength — both through breakBlock / breakDebrisBlock.
+// finds past its strength — both through breakBlock / breakDebrisBlocks.
 function hammerStrike() {
   if (!hammer.on || !hammer.hit) return false;
   const ok = hammer.debris ? breakDebrisBlock(hammer.debris.mesh, hammer.debris.idx)
@@ -7218,26 +7236,47 @@ function hammerStrike() {
 
 // Debris block — knock it off the piece as its own physics object (splits if needed).
 function breakDebrisBlock(mesh, idx) {
+  return breakDebrisBlocks(mesh, [idx]) > 0;
+}
+
+// Knock blocks `idxs` (lattice slots) off a piece in one go, and return how many
+// went. The tension break takes every red block of a piece at once, so a
+// heavily overloaded piece comes apart in one pass instead of shedding a block
+// per solve while the rest stays red. All of them are read before any is cut:
+// cutting renumbers the slots behind it, and a split hands blocks to new pieces.
+// Each solid block leaves as a one-cube piece sitting exactly where it was —
+// built in the piece's frame, turned with it, moving with it (spawnDebrisPart)
+// — rather than snapped to the world grid, where it would overlap the blocks
+// beside it and kick the piece away.
+function breakDebrisBlocks(mesh, idxs) {
   const lat = mesh.userData.blocks;
-  if (!lat || idx < 0 || idx >= lat.length) return false;
-  const dropMat = resolveBreakMat(lat[idx].mat);
-  // Get the block's world position before removing it.
-  const wp = lat[idx].pos.clone().applyMatrix4(mesh.matrixWorld);
-  // Powder leaves as a loose grain, as the powder rule sheds it: from this piece,
-  // so it is never caught back on it. Wrapped in a one-cube piece of its own it
-  // sheds just the same, but from that cube — and lands back in the hole it
-  // left, under the same load, to be broken again forever.
-  if (MAT_STATS[dropMat]?.powder) {
-    powderFalling.push({ pos: wp, mat: dropMat, v: 0, from: mesh });
-    digDebrisBlock(mesh, idx);
-    return true;
+  if (!lat) return 0;
+  const f = chunkOfMesh(mesh);
+  mesh.updateWorldMatrix(true, false);
+  const qs = [...new Set(idxs)].filter((q) => q >= 0 && q < lat.length).sort((x, y) => y - x);
+  const cubes = [];
+  // From the back, so a cut never moves a block still to be cut.
+  for (const q of qs) {
+    const b = lat[q], dropMat = resolveBreakMat(b.mat);
+    // Powder leaves as a loose grain, as the powder rule sheds it: from this
+    // piece, so it is never caught back on it. Wrapped in a one-cube piece of
+    // its own it sheds just the same, but from that cube — and lands back in
+    // the hole it left, under the same load, to be broken again forever.
+    if (MAT_STATS[dropMat]?.powder) {
+      powderFalling.push({ pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: dropMat, v: 0, from: mesh });
+    } else {
+      cubes.push({ pos: b.pos.clone(), mat: dropMat, color: dropMat === b.mat ? b.color : null, gi: b.gi, gj: b.gj, lvl: b.lvl });
+    }
+    cutDebrisLat(mesh, q);
   }
-  const gi = colI(wp.x), gj = colJ(wp.z), gl = lvlOfY(wp.y);
-  // Spawn it as its own single-block falling piece.
-  spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat, color: lat[idx].color || terrainBlockColor(gi, gj, gl, dropMat) }]]));
-  // Remove from the original piece (may split it).
-  digDebrisBlock(mesh, idx);
-  return true;
+  if (!qs.length) return 0;
+  // Spawned while the piece still lies in the frame the cubes were read in:
+  // the rebuild below re-centres it.
+  for (const c of cubes) spawnDebrisPart(mesh, [c], f && f.body);
+  if (!lat.length) { removeDebrisMesh(mesh); return qs.length; }
+  splitDebrisIfNeeded(mesh);
+  if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }   // lighter, and disturbed
+  return qs.length;
 }
 
 // Terrain block. The housekeeping is editBlock's, done by hand because the
@@ -9995,7 +10034,7 @@ function stressBreakSaturated() {
     // weight loads what it lies on, but it comes away by the powder rule alone
     // (nothing under it). Broken off something holding it up, it sheds as a
     // grain, lands back in the very cell it left, reads red again and is broken
-    // again, forever. Powder on a fallen piece does break: breakDebrisBlock
+    // again, forever. Powder on a fallen piece does break: breakDebrisBlocks
     // sheds it from the piece, which never catches its own grains back.
     if (n < stNTerr && MAT_STATS[S.mat[n]]?.powder) continue;
     hit.push(n);
@@ -10025,7 +10064,10 @@ function stressBreakSaturated() {
     for (const n of hit) over.set(n, n < 0 ? gHit[-1 - n] : S.stress[n] / MAT_STATS[S.mat[n]].strength);
     hit.sort((a, b) => over.get(b) - over.get(a));
   }
-  const brokenPieces = new Set();
+  // A fallen piece's red blocks are gathered here and broken together after
+  // the walk, piece by piece: knocking one off renumbers the rest and can split
+  // the piece, so none of its node numbers would hold past the first.
+  const pieceHits = new Map();   // stPieces entry -> lattice slots
   let broken = 0;
   for (const n of hit) {
     if (broken >= STRESS_BREAK_MAX) break;
@@ -10039,17 +10081,21 @@ function stressBreakSaturated() {
       if (voxelAt(i, j, lvl) !== S.mat[n]) continue;   // gone or changed since the layout
       if (breakBlock(i, j, lvl)) broken++;
     } else {
-      // A fallen piece: one break per piece, since knocking a block off it can
-      // split it and renumber the rest. Whatever else is still red is caught
-      // by the solve its change sets off.
       const pc = stPieces.find((p) => n >= p.start && n < p.start + p.count);
-      if (!pc || brokenPieces.has(pc.mesh)) continue;
-      if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
-      if (pc.mesh.userData.stressRest !== pc.rest) continue;   // moved since: laid out again first
-      brokenPieces.add(pc.mesh);
-      if (breakDebrisBlock(pc.mesh, n - pc.start)) broken++;
+      // A lone cube is never broken: it would only be swapped for another the
+      // same, lying under the same load.
+      if (!pc || pc.count < 2) continue;
+      let qs = pieceHits.get(pc);
+      if (!qs) {
+        if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
+        if (pc.mesh.userData.stressRest !== pc.rest) continue;   // moved since: laid out again first
+        pieceHits.set(pc, qs = []);
+      }
+      qs.push(n - pc.start);
+      broken++;
     }
   }
+  for (const [pc, qs] of pieceHits) breakDebrisBlocks(pc.mesh, qs);
 }
 
 let stressWorker = null;

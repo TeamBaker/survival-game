@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 201;
+window.GAME_VERSION = 202;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5297,6 +5297,58 @@ const camTarget   = new THREE.Vector3();
 const camBack     = new THREE.Vector3();
 const boomRay     = new THREE.Raycaster();
 
+// Does a block stop the third-person camera? Water does only while the head is
+// out of it, so the camera stays above the surface on land and follows you in
+// when you wade under.
+let boomWaterBlocks = true;
+const boomBlocks = (m) => m !== AIR && (m !== WATER || boomWaterBlocks);
+
+// How far along a ray from `o` in unit direction `d` the first blocking block
+// starts, or Infinity if there is none within `maxT`. A grid walk (Amanatides &
+// Woo) in block coordinates, so it never steps over a block however thin.
+function boomBlockHit(o, d, maxT) {
+  boomWaterBlocks = voxelAtWorld(o.x, o.y, o.z) !== WATER;
+  const gx = (o.x + GEN_R) / BLOCK, gy = o.y / BLOCK, gz = (o.z + GEN_R) / BLOCK;
+  let i = Math.floor(gx), l = Math.floor(gy), j = Math.floor(gz);
+  const si = d.x > 0 ? 1 : -1, sl = d.y > 0 ? 1 : -1, sj = d.z > 0 ? 1 : -1;
+  const di = d.x !== 0 ? Math.abs(BLOCK / d.x) : Infinity;
+  const dl = d.y !== 0 ? Math.abs(BLOCK / d.y) : Infinity;
+  const dj = d.z !== 0 ? Math.abs(BLOCK / d.z) : Infinity;
+  let ti = d.x !== 0 ? ((d.x > 0 ? i + 1 - gx : gx - i) * di) : Infinity;
+  let tl = d.y !== 0 ? ((d.y > 0 ? l + 1 - gy : gy - l) * dl) : Infinity;
+  let tj = d.z !== 0 ? ((d.z > 0 ? j + 1 - gz : gz - j) * dj) : Infinity;
+  let t = 0;
+  while (t <= maxT) {
+    if (boomBlocks(voxelAt(i, j, l))) return t;
+    if (ti <= tl && ti <= tj) { t = ti; ti += di; i += si; }
+    else if (tl <= tj)        { t = tl; tl += dl; l += sl; }
+    else                      { t = tj; tj += dj; j += sj; }
+  }
+  return Infinity;
+}
+
+// The boom only keeps the camera's centre out of the blocks; the near plane is a
+// little in front of it and would still cut into a floor or roof it runs along.
+// Ease it off either one vertically, but only into air that the head can see,
+// and if it is squeezed between both settle it halfway rather than pass through.
+const BOOM_PAD = 0.3;
+function boomClearance(c, head) {
+  const solid = (y) => boomBlocks(voxelAtWorld(c.x, y, c.z));
+  if (solid(c.y)) { c.copy(head); return; }          // nowhere safe on the boom
+  const below = solid(c.y - BOOM_PAD), above = solid(c.y + BOOM_PAD);
+  if (below && above) {
+    const floor = (lvlOfY(c.y - BOOM_PAD) + 1) * BLOCK, roof = lvlOfY(c.y + BOOM_PAD) * BLOCK;
+    const y = (floor + roof) / 2;
+    if (!solid(y)) c.y = y;
+  } else if (below) {
+    const y = (lvlOfY(c.y - BOOM_PAD) + 1) * BLOCK + BOOM_PAD;
+    if (!solid(y + BOOM_PAD) && !solid(y)) c.y = y;
+  } else if (above) {
+    const y = lvlOfY(c.y + BOOM_PAD) * BLOCK - BOOM_PAD;
+    if (!solid(y - BOOM_PAD) && !solid(y)) c.y = y;
+  }
+}
+
 function updateCamera(dt) {
   const p = playerBody.position;
   const feetY = p.y - centerOffset();
@@ -5319,14 +5371,26 @@ function updateCamera(dt) {
       boomRay.far = dist + 0.5;
       const hit = boomRay.intersectObjects(objects.children, false)[0];
       if (hit) dist = Math.max(1.1, hit.distance - 0.35);   // pull in past props
+      // The boom ray only knows about the props, so the terrain is handled
+      // separately: walk the blocks from the head back along the boom and pull
+      // the camera in in front of the first one, whichever way it is facing —
+      // floor, wall or a ceiling overhead. It used to be lifted to the top of the
+      // column instead, which under a roof meant up through it and out on top.
+      const tHit = boomBlockHit(camTarget, camBack, dist + 0.35);
+      if (tHit < dist + 0.35) dist = Math.min(dist, Math.max(0.05, tHit - 0.35));
       desiredPos.copy(camTarget).addScaledVector(camBack, dist);
+      boomClearance(desiredPos, camTarget);
+      // Off the field there are no blocks to walk, only the sea floor, and
+      // nothing overhead to push through.
+      const ci = colI(desiredPos.x), cj = colJ(desiredPos.z);
+      if (ci < 0 || cj < 0 || ci >= GEN_N || cj >= GEN_N || topLvl[cj * GEN_N + ci] === NO_COLUMN) {
+        const floorY = groundHeightAt(desiredPos.x, desiredPos.z) + 0.6;
+        if (desiredPos.y < floorY) desiredPos.y = floorY;
+      }
     }
-    // The boom ray only knows about the props, so the ground is handled
-    // separately: never let the boom drop the camera through the deck. Off the
-    // platform the floor is the sea bed. (Top-down needs no such guard — it sits straight
-    // above the player, and flat ground has nothing overhead.)
-    const floorY = groundHeightAt(desiredPos.x, desiredPos.z) + 0.6;
-    if (desiredPos.y < floorY) desiredPos.y = floorY;
+    // First person needs no guard: the eye is inside the body, and the body is
+    // kept out of the ground by the physics. (Top-down needs none either — it
+    // sits straight above the player, and flat ground has nothing overhead.)
   }
   desiredQuat.setFromEuler(camEuler);
 

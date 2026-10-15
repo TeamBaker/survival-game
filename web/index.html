@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 196;
+window.GAME_VERSION = 197;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -6778,14 +6778,15 @@ function placeOnDebris(mesh, local, m, rebuild = true) {
 // fill that walks down before it walks out reaches bedrock in a hundred-odd
 // steps from the surface instead of ballooning outwards on the way.
 const GRAV_DIRS = [[0, 0, 1], [-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1]];
-const GRAV_MAX  = 1024;   // blocks one fill walks before it gives the group up as terrain
 
 // Everything joined to (i, j, lvl) through solid faces, as one group. Water is
 // not solid, so it neither joins a group nor holds one up. The group is adrift —
 // and comes down whole — only if none of it reaches bedrock: with all six
 // directions walked, a block standing on anything solid is standing on another
 // member, so the floor is the one thing left that can anchor the lot. Returns
-// the group's blocks, or null if it is anchored, or too big to be worth walking.
+// the group's blocks, or null if it is anchored. There is no size limit: a
+// loose structure of any size comes down, and the down-first walk and the
+// early out at the first anchored block keep an anchored fill short.
 // `topOf`, if given, says what each column's surface was when the group came
 // loose, for a group taken later than that (flushGravity).
 //
@@ -6795,7 +6796,7 @@ const GRAV_MAX  = 1024;   // blocks one fill walks before it gives the group up 
 // can place any. An untouched column is all that from its bed down, so a fill
 // that steps into the hillside stops at the first block of it. Finding one only
 // ends the walk sooner: the group was anchored, and the full fill would have
-// said null too, at the floor or at GRAV_MAX.
+// said null too, at the floor.
 const adriftSeen = new Set();   // gravCell keys the current fill has reached
 const adriftCells = [];         // i, j, lvl, m, ... — the same, in the order reached
 const adriftStack = [];         // i, j, lvl, ... — still to walk out from
@@ -6820,7 +6821,6 @@ function adriftGroup(i, j, lvl, topOf) {
       if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
       const key = gravCell(ii, jj, ll);
       if (adriftSeen.has(key) || !gravSolid(ii, jj, ll)) continue;
-      if (adriftSeen.size >= GRAV_MAX) return null;
       if (adriftAnchored(ii, jj, ll)) return null;   // sitting on bedrock: the whole group is held up
       adriftSeen.add(key);
       adriftCells.push(ii, jj, ll, voxelAt(ii, jj, ll));
@@ -6954,7 +6954,7 @@ const gravWalk = [];
 
 // What adriftGroup would say of the group joined to (i, j, lvl), without
 // building it: GRAV_DOOMED if it would hand the group back to break off, and
-// GRAV_SAFE if it reaches bedrock, is too big to walk, or is nothing but loose
+// GRAV_SAFE if it reaches bedrock, or is nothing but loose
 // grain. Stops at the first cell known to be anchored — in gravAnchored, or in
 // `stop`. The cells walked are left in gravFrom. A route found to bedrock goes
 // into gravAnchored, less the starting cell unless `keepStart`: the guard walks
@@ -6975,7 +6975,6 @@ function gravFate(i, j, lvl, stop, keepStart) {
       if (!gravSolid(ii, jj, ll)) continue;
       const key = gravCell(ii, jj, ll);
       if (gravFrom.has(key)) continue;
-      if (gravFrom.size >= GRAV_MAX) return GRAV_SAFE;   // adriftGroup's cap, to the block
       gravFrom.set(key, bk);
       if (ll <= VOX_FLOOR || gravAnchored.has(key) || stop?.has(key)) { hit = key; break walk; }
       if (!MAT_STATS[voxelAt(ii, jj, ll)]?.powder) solid = true;

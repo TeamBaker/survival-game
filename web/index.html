@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 200;
+window.GAME_VERSION = 201;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -9746,6 +9746,11 @@ function stressBreakSaturated() {
   for (let n = 0; n < stN; n++) {
     const s = S.stress[n];
     if (s === Infinity || stressLevel(n) !== top || !stSolved.has(stCompHash[S.comp[n]])) continue;
+    // Powder is never broken here: it is still a node, so its weight loads what
+    // it lies on, but it comes away by the powder rule alone (nothing under it).
+    // Broken off something holding it up, it sheds as a grain, lands back in the
+    // very cell it left, reads red again and is broken again, forever.
+    if (MAT_STATS[S.mat[n]]?.powder) continue;
     hit.push(n);
   }
   if (!hit.length) return;

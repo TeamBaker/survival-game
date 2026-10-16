@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 205;
+window.GAME_VERSION = 206;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -6139,11 +6139,9 @@ function shedColumn(c, budget) {
   for (let lvl = hi; lvl >= lo && budget > 0; lvl--) {
     const m = voxMat[o + lvl];
     if (m === AIR || !MAT_STATS[m]?.powder) continue;
+    // Only the cell directly under it holds powder up: what touches its sides
+    // or sits on top of it makes no difference.
     if (lvl - 1 < VOX_FLOOR || voxMat[o + lvl - 1] !== AIR) continue;
-    // Something solid stacked on top was put there on purpose. Only powder that
-    // is properly exposed sheds; the grain holding up a placed block stays put.
-    if (lvl + 1 <= voxCap(c) && voxMat[o + lvl + 1] !== AIR
-        && !MAT_STATS[voxMat[o + lvl + 1]]?.powder) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
     // Its group may have come loose already; if that was paid for, look again.
     if (gravGuard(i, j, lvl)) { o = voxOff[c] - VOX_FLOOR; lvl++; continue; }
@@ -10030,13 +10028,12 @@ function stressBreakSaturated() {
   for (let n = 0; n < stN; n++) {
     const s = S.stress[n];
     if (s === Infinity || stressLevel(n) !== top || !stSolved.has(stCompHash[S.comp[n]])) continue;
-    // Powder in the ground is never broken here: it is still a node, so its
-    // weight loads what it lies on, but it comes away by the powder rule alone
-    // (nothing under it). Broken off something holding it up, it sheds as a
-    // grain, lands back in the very cell it left, reads red again and is broken
-    // again, forever. Powder on a fallen piece does break: breakDebrisBlocks
-    // sheds it from the piece, which never catches its own grains back.
-    if (n < stNTerr && MAT_STATS[S.mat[n]]?.powder) continue;
+    // Powder is never broken here, in the ground or on a fallen piece: it is
+    // still a node, so its weight loads what it lies on, but it comes away by
+    // the powder rule alone (nothing under it) or the hammer. Broken off
+    // something holding it up, it would shed as a grain, land back in the very
+    // cell it left, read red again and be broken again, forever.
+    if (MAT_STATS[S.mat[n]]?.powder) continue;
     hit.push(n);
   }
   // Ground standing on bedrock: every column a node puts load into, and up to

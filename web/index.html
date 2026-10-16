@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 206;
+window.GAME_VERSION = 207;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -10279,7 +10279,7 @@ function stressRecolor() {
   for (let t = 0; t < stressGround.count; t++) {
     const i = stGInst[t * 3], l = stGInst[t * 3 + 1], j = stGInst[t * 3 + 2], m = voxelAt(i, j, l);
     if (!solidMat(m)) { ga[t * 3] = ga[t * 3 + 1] = ga[t * 3 + 2] = STRESS_PENDING; continue; }
-    const o = stressLutIndex(stressGroundLoad(i, j, l), MAT_STATS[m].strength) * 3;
+    const o = MAT_STATS[m].powder ? 0 : stressLutIndex(stressGroundLoad(i, j, l), MAT_STATS[m].strength) * 3;
     ga[t * 3] = STRESS_LUT[o]; ga[t * 3 + 1] = STRESS_LUT[o + 1]; ga[t * 3 + 2] = STRESS_LUT[o + 2];
   }
   stressGround.instanceColor.needsUpdate = true;
@@ -10296,8 +10296,9 @@ function stressLevel(n) {
   if (Number.isNaN(s)) return -1;
   return s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(s, MAT_STATS[stCur.mat[n]]?.strength ?? 0);
 }
+// Powder always shows safe green: it carries and passes on load, but never breaks.
 function stressWriteColor(im, inst, n) {
-  const a = im.instanceColor.array, l = stressLevel(n);
+  const a = im.instanceColor.array, l = MAT_STATS[stCur.mat[n]]?.powder ? 0 : stressLevel(n);
   if (l < 0) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
   const o = l * 3;
   a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];

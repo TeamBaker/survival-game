@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 210;
+window.GAME_VERSION = 211;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -9401,6 +9401,9 @@ stressMat.onBeforeCompile = (sh) => {
 float stressCrackAt(float t) {
   vec3 an = abs(vCkN);
   vec2 uv = an.x > 0.5 ? vCkP.zy : an.y > 0.5 ? vCkP.xz : vCkP.xy;
+  // Pixel-art look: the pattern is read at the centre of a 16x16 grid of
+  // texels per face and drawn hard-edged, so each crack is a chain of squares.
+  uv = (min(floor(uv * 16.0), 15.0) + 0.5) / 16.0;
   vec2 off = ckHash2(fract(vCkSeed.xz * 0.1031 + vCkSeed.y * 0.0713) * 97.0) * 17.0;
   vec2 p = uv * 3.0 + off + 0.12 * vec2(sin(uv.y * 17.0 + off.x), sin(uv.x * 15.0 + off.y));
   vec2 ip = floor(p), fp = fract(p), c1 = vec2(0.0), c2 = vec2(0.0);
@@ -9412,8 +9415,8 @@ float stressCrackAt(float t) {
   }
   // Each edge (the pair of cells either side) cracks once t passes its own draw.
   if (ckHash2(c1 + c2).x > 0.12 + 0.88 * t) return 0.0;
-  float e = sqrt(d2) - sqrt(d1), w = mix(0.025, 0.11, t);
-  return (1.0 - smoothstep(w * 0.4, w, e)) * mix(0.3, 0.92, t);
+  float e = sqrt(d2) - sqrt(d1), w = mix(0.17, 0.42, t);
+  return e < w ? mix(0.3, 0.92, t) : 0.0;
 }
 `
     + sh.fragmentShader.replace('#include <tonemapping_fragment>', `{

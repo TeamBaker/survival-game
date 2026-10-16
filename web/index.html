@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 207;
+window.GAME_VERSION = 208;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -414,7 +414,7 @@ window.GAME_VERSION = 207;
     touch-action: manipulation;
   }
   #mat-close:active { transform: translateY(1px); }
-  /* Strength is the one number tuned from here. 16px keeps iOS from zooming on
+  /* Strength and pull are the numbers tuned from here. 16px keeps iOS from zooming on
      focus; the box is tall enough to hit with a thumb. */
   .mat-str {
     width: 72px;
@@ -2300,6 +2300,9 @@ const AIR = N_MATS;
 // Buoyancy is how much the water pushes it back up, strength how much work it
 // takes to break out of the ground — read as-is too, by the stress solver's
 // beam stiffness and overlay — powder whether it is loose and crumbly.
+// Strength is what it takes to crush it (compression, and the beam stiffness);
+// pull what it takes to pull it apart (tension). A row with no pull of its own
+// takes its strength for both.
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
@@ -2320,6 +2323,7 @@ const MAT_STATS = [
   { name: 'Wet Sand',      weight: 4.2,   buoyancy: 0, strength: 0.8,  powder: false },  // WET_SAND
   { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 1000, powder: false },  // HARD_SAND
 ];
+for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -7662,8 +7666,10 @@ document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
   const name = st ? st.name : titleCase(MAT_NAMES[i]);
   // Full width now, so the stats spell themselves out on one line.
   const stats = st
-    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: `
-      + `<input class="mat-str" data-mat="${i}" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
+    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Compression: `
+      + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
+      + ` &middot; Pull: `
+      + `<input class="mat-str" data-mat="${i}" data-key="pull" type="text" inputmode="decimal" autocomplete="off" value="${st.pull}">`
       + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
     : '<span>no stats &mdash; not carryable</span>';
   return '<div class="mat-row">'
@@ -7685,20 +7691,20 @@ function setMaterialsUI(on) {
 }
 function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
 
-// Strength is edited in place: a number above zero goes straight into MAT_STATS
-// and the stress overlay re-solves with it; anything else is left marked until
-// the field is left, when it snaps back to the strength actually in force.
+// Strength (compression) and pull are edited in place: a number above zero goes
+// straight into MAT_STATS and the stress overlay re-solves with it; anything else
+// is left marked until the field is left, when it snaps back to the value in force.
 for (const el of document.querySelectorAll('#mat-list .mat-str')) {
-  const st = MAT_STATS[+el.dataset.mat];
+  const st = MAT_STATS[+el.dataset.mat], key = el.dataset.key;
   el.addEventListener('input', () => {
     const v = parseFloat(el.value.replace(',', '.'));
     const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && v > 0;
     el.classList.toggle('bad', !ok);
-    if (!ok || v === st.strength) return;
-    st.strength = v;
+    if (!ok || v === st[key]) return;
+    st[key] = v;
     stressInvalidate();
   });
-  el.addEventListener('change', () => { el.value = String(st.strength); el.classList.remove('bad'); });
+  el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
 }
 
@@ -7709,7 +7715,7 @@ function matStatsSource() {
     if (!st) return '  null,'.padEnd(77) + tag;
     return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
          + `buoyancy: ${(st.buoyancy + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(6)}`
-         + `powder: ${String(st.powder).padEnd(6)}},` + tag;
+         + `pull: ${(st.pull + ',').padEnd(6)}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
   return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n';
 }
@@ -8866,7 +8872,12 @@ function stressSolveJob(job) {
   const P1 = [1, 2, 0], P2 = [2, 0, 1];
   const { nStart, eStart, fixed, f, u, ea, eb, eax, ek, pos, tol2 } = job;
   const stress = new Float64Array(fixed.length);
-  let iters = 0, unconverged = 0;
+  // The worst beam's stress again, split by which way it loads the block: a
+  // beam's moment both squeezes one face and pulls the other, its axial force
+  // does one or the other, so push = squeeze + moment and pull = stretch +
+  // moment, and the larger of the two is stress as it always was.
+  const push = new Float64Array(fixed.length), pull = new Float64Array(fixed.length);
+  let iters = 0, unconverged = 0, beamN = 0, beamM = 0;
 
   // One beam: its twelve end forces y (A's six, then B's) for end displacements
   // x, and back its stress, |N| + the worst end's moment with torsion.
@@ -8884,7 +8895,9 @@ function stressSolveJob(job) {
     y[ax] -= N; y[3 + ax] -= T; y[6 + ax] += N; y[9 + ax] += T;
     y[t1] += f1; y[3 + t2] += m1a; y[6 + t1] -= f1; y[9 + t2] += m1b;
     y[t2] += f2; y[3 + t1] -= m2a; y[6 + t2] -= f2; y[9 + t1] -= m2b;
-    return Math.abs(N) + Math.sqrt(Math.max(m1a * m1a + m2a * m2a, m1b * m1b + m2b * m2b) + T * T);
+    beamN = N;
+    beamM = Math.sqrt(Math.max(m1a * m1a + m2a * m2a, m1b * m1b + m2b * m2b) + T * T);
+    return Math.abs(N) + beamM;
   }
   // Each axis's beam at EA = 1 as a 12x12 matrix, a column per unit end displacement.
   const x12 = new Float64Array(12), y12 = new Float64Array(12);
@@ -9268,11 +9281,16 @@ function stressSolveJob(job) {
         x12[6 + d] = b >= 0 ? U[b * 6 + d] : 0;
       }
       const s = beam(eax[e], ek[e], x12, y12);
+      const sp = Math.max(0, -beamN) + beamM, st = Math.max(0, beamN) + beamM;
       if (a >= 0 && s > stress[n0 + a]) stress[n0 + a] = s;
       if (b >= 0 && s > stress[n0 + b]) stress[n0 + b] = s;
+      if (a >= 0 && sp > push[n0 + a]) push[n0 + a] = sp;
+      if (b >= 0 && sp > push[n0 + b]) push[n0 + b] = sp;
+      if (a >= 0 && st > pull[n0 + a]) pull[n0 + a] = st;
+      if (b >= 0 && st > pull[n0 + b]) pull[n0 + b] = st;
     }
   }
-  return { u, stress, iters, unconverged };
+  return { u, stress, push, pull, iters, unconverged };
 }
 
 function stressWorkerSource() {
@@ -9282,7 +9300,7 @@ onmessage = (e) => {
   try {
     const r = stressSolveJob(e.data);
     r.seq = e.data.seq;
-    postMessage(r, [r.u.buffer, r.stress.buffer]);
+    postMessage(r, [r.u.buffer, r.stress.buffer, r.push.buffer, r.pull.buffer]);
   } catch (err) {
     postMessage({ seq: e.data.seq, error: String(err && err.message || err) });
   }
@@ -9300,6 +9318,7 @@ function stressNodeArrays(cap) {
     pos: new Int32Array(cap * 3),     // lattice cell: i (or gi), lvl, j (or gj)
     comp: new Int32Array(cap),        // which structure
     stress: new Float64Array(cap),    // what shows: NaN not solved yet, Infinity hanging off nothing
+    push: new Float64Array(cap), pull: new Float64Array(cap),   // the solved stress split by direction (stressSolveJob)
     u: new Float64Array(cap * 6), f: new Float64Array(cap * 6),
   };
 }
@@ -9688,7 +9707,7 @@ function stressGroundLoad(i, j, lvl) {
   }
   const r = stGroundR.get(k);
   if (r) for (let q = 0; q < r.length; q += 2) if (r[q] >= lvl && r[q] <= top) N += r[q + 1];
-  return Math.abs(N);
+  return N;   // signed: above zero squeezes the cell, below pulls it
 }
 // Every block of ground in column k at the top of the ramp, walked from the top
 // down with the load gathering block by block and starting over under each gap.
@@ -9706,8 +9725,9 @@ function stressGroundRedIn(k, out) {
     const st = MAT_STATS[m];
     N += st.weight;
     // Powder is never broken by this, as for nodes (stressBreakSaturated).
-    if (st.powder || stressLutIndex(Math.abs(N), st.strength) !== top) continue;
-    out.push(Math.abs(N) / st.strength, i, j, l, m);
+    const str = N >= 0 ? st.strength : st.pull;
+    if (st.powder || stressLutIndex(Math.abs(N), str) !== top) continue;
+    out.push(Math.abs(N) / str, i, j, l, m);
     found++;
   }
   return found;
@@ -9910,6 +9930,7 @@ function stressRebuild() {
     if (o !== undefined && o < stOldN) {
       S.u.set(stOld.u.subarray(o * 6, o * 6 + 6), n * 6);
       S.stress[n] = stOld.stress[o];
+      S.push[n] = stOld.push[o]; S.pull[n] = stOld.pull[o];
     } else {
       S.u.fill(0, n * 6, n * 6 + 6);
       S.stress[n] = NaN;
@@ -10000,6 +10021,7 @@ function stressApply(r) {
     const n = nodes[x];
     S.u.set(r.u.subarray(x * 6, x * 6 + 6), n * 6);
     S.stress[n] = r.stress[x];
+    S.push[n] = r.push[x]; S.pull[n] = r.pull[x];
   }
   for (const h of stJob.hashes) stSolved.add(h);
   stLastIters = r.iters;
@@ -10058,7 +10080,7 @@ function stressBreakSaturated() {
   if (!hit.length) return;
   if (hit.length > STRESS_BREAK_MAX) {
     const over = new Map();
-    for (const n of hit) over.set(n, n < 0 ? gHit[-1 - n] : S.stress[n] / MAT_STATS[S.mat[n]].strength);
+    for (const n of hit) over.set(n, n < 0 ? gHit[-1 - n] : stressOver(n));
     hit.sort((a, b) => over.get(b) - over.get(a));
   }
   // A fallen piece's red blocks are gathered here and broken together after
@@ -10279,7 +10301,8 @@ function stressRecolor() {
   for (let t = 0; t < stressGround.count; t++) {
     const i = stGInst[t * 3], l = stGInst[t * 3 + 1], j = stGInst[t * 3 + 2], m = voxelAt(i, j, l);
     if (!solidMat(m)) { ga[t * 3] = ga[t * 3 + 1] = ga[t * 3 + 2] = STRESS_PENDING; continue; }
-    const o = MAT_STATS[m].powder ? 0 : stressLutIndex(stressGroundLoad(i, j, l), MAT_STATS[m].strength) * 3;
+    const N = stressGroundLoad(i, j, l), st = MAT_STATS[m];
+    const o = st.powder ? 0 : stressLutIndex(Math.abs(N), N >= 0 ? st.strength : st.pull) * 3;
     ga[t * 3] = STRESS_LUT[o]; ga[t * 3 + 1] = STRESS_LUT[o + 1]; ga[t * 3 + 2] = STRESS_LUT[o + 2];
   }
   stressGround.instanceColor.needsUpdate = true;
@@ -10290,11 +10313,18 @@ function stressRecolor() {
 }
 // Not solved yet (NaN): a neutral grey, not a reading on the ramp.
 const STRESS_PENDING = 0.35;
+// A node's stress over its strength: what squeezes it over its strength, what
+// pulls it over its pull, whichever is the worse.
+function stressOver(n) {
+  const st = MAT_STATS[stCur.mat[n]];
+  if (!st) return 0;
+  return Math.max(stCur.push[n] / st.strength, stCur.pull[n] / st.pull);
+}
 // A node's place on the ramp, -1 while it is not solved yet.
 function stressLevel(n) {
   const s = stCur.stress[n];
   if (Number.isNaN(s)) return -1;
-  return s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(s, MAT_STATS[stCur.mat[n]]?.strength ?? 0);
+  return s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(stressOver(n), 1);
 }
 // Powder always shows safe green: it carries and passes on load, but never breaks.
 function stressWriteColor(im, inst, n) {

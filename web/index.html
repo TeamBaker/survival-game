@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 209;
+window.GAME_VERSION = 210;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1538,7 +1538,8 @@ window.GAME_VERSION = 209;
       <button id="btn-debug-chunks" class="ui-el">Chunks: Off</button>
       <button id="btn-debug-collision" class="ui-el">Collision: Off</button>
       <button id="btn-coltest" class="ui-el">COL TEST: Off</button>
-      <button id="btn-stress" class="ui-el">Stress: Shown</button>
+      <button id="btn-stress" class="ui-el">Tension: On</button>
+      <button id="btn-stress-show" class="ui-el">Show Tension: On</button>
     </div>
   </div>
 </div>
@@ -9376,8 +9377,61 @@ const stressMat = new THREE.MeshBasicMaterial({
   color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false,
   polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4,
 });
+// The same cubes carry the cracks: each instance has its place on the ramp
+// (instanceCrack, 0 unloaded .. 1 about to break), and the faces draw dark
+// fracture lines — a Voronoi edge network, more of its edges and wider and
+// darker the higher up the ramp. stressShowU 0 hides the colour, leaving only
+// the lines (every other pixel discarded); stressCrackU 0 (the solver off)
+// hides the lines. A pixel with no line on it draws exactly what it did before.
+const stressShowU = { value: 1 }, stressCrackU = { value: 1 };
+stressMat.onBeforeCompile = (sh) => {
+  sh.uniforms.stressShow = stressShowU;
+  sh.uniforms.stressCrack = stressCrackU;
+  sh.vertexShader = 'attribute float instanceCrack;\nvarying float vCrack;\nvarying vec3 vCkP;\nvarying vec3 vCkN;\nvarying vec3 vCkSeed;\n'
+    + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+  vCrack = instanceCrack;
+  vCkP = position / ${(BLOCK * 1.01).toFixed(4)} + 0.5;
+  vCkN = normal;
+  vCkSeed = instanceMatrix[3].xyz / ${BLOCK.toFixed(4)} + normal * 0.37;`);
+  sh.fragmentShader = 'uniform float stressShow;\nuniform float stressCrack;\nvarying float vCrack;\nvarying vec3 vCkP;\nvarying vec3 vCkN;\nvarying vec3 vCkSeed;\n'
+    + `vec2 ckHash2(vec2 p) {
+  return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
+}
+// How dark the crack is here, 0 off every line.
+float stressCrackAt(float t) {
+  vec3 an = abs(vCkN);
+  vec2 uv = an.x > 0.5 ? vCkP.zy : an.y > 0.5 ? vCkP.xz : vCkP.xy;
+  vec2 off = ckHash2(fract(vCkSeed.xz * 0.1031 + vCkSeed.y * 0.0713) * 97.0) * 17.0;
+  vec2 p = uv * 3.0 + off + 0.12 * vec2(sin(uv.y * 17.0 + off.x), sin(uv.x * 15.0 + off.y));
+  vec2 ip = floor(p), fp = fract(p), c1 = vec2(0.0), c2 = vec2(0.0);
+  float d1 = 8.0, d2 = 8.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    vec2 g = ip + vec2(float(i), float(j)), r = g + ckHash2(g) - p;
+    float d = dot(r, r);
+    if (d < d1) { d2 = d1; c2 = c1; d1 = d; c1 = g; } else if (d < d2) { d2 = d; c2 = g; }
+  }
+  // Each edge (the pair of cells either side) cracks once t passes its own draw.
+  if (ckHash2(c1 + c2).x > 0.12 + 0.88 * t) return 0.0;
+  float e = sqrt(d2) - sqrt(d1), w = mix(0.025, 0.11, t);
+  return (1.0 - smoothstep(w * 0.4, w, e)) * mix(0.3, 0.92, t);
+}
+`
+    + sh.fragmentShader.replace('#include <tonemapping_fragment>', `{
+    float a0 = stressShow * gl_FragColor.a;
+    float c = vCrack * stressCrack > 0.0 ? stressCrackAt(vCrack) : 0.0;
+    if (c > 0.0) {
+      // Over the tint as if drawn after it: the ground shows through both.
+      float a = 1.0 - (1.0 - a0) * (1.0 - c);
+      gl_FragColor = vec4((gl_FragColor.rgb * a0 * (1.0 - c) + vec3(0.03) * c) / a, a);
+    } else if (a0 <= 0.0) discard;
+  }
+  #include <tonemapping_fragment>`);
+};
 function stressInstances(n) {
-  const im = new THREE.InstancedMesh(stressGeo, stressMat, n);
+  // Its own copy of the cube, to carry the per-instance crack (24 vertices).
+  const g = stressGeo.clone();
+  g.setAttribute('instanceCrack', new THREE.InstancedBufferAttribute(new Float32Array(n), 1));
+  const im = new THREE.InstancedMesh(g, stressMat, n);
   im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
   im.count = 0;
   im.castShadow = false;
@@ -9395,8 +9449,8 @@ const stGDistHist = new Int32Array(STRESS_GROUND_R + 2);
 camera.layers.enable(STRESS_LAYER);
 
 // Two switches: stressOn runs the solver (and the breaking that follows from
-// it); stressShown draws the coloured overlay over what it solved. Shown needs
-// on — there is nothing to draw from a solver that is not running.
+// it, and the cracks on loaded blocks); stressShown draws the coloured overlay.
+// Independent: shown with the solver off draws the last answers in hand.
 let stressOn = true, stressShown = true;
 let stressTimer = 0, stressLastRebuild = -Infinity, stressDrawSig = NaN;
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
@@ -9578,6 +9632,7 @@ function stressDropOverlay(mesh) {
   if (!ov) return;
   ov.removeFromParent();
   ov.dispose();
+  ov.geometry.dispose();
   stOverlays.delete(mesh);
 }
 
@@ -10222,7 +10277,7 @@ function stressLayout(cx, cy, cz) {
     if (!ov) {
       ov = stressInstances(Math.max(pc.count, 8));
       ov.layers.set(STRESS_LAYER);
-      ov.visible = stressShown;
+      ov.visible = stressShown;   // or cracked: set by the recolour below
       pc.mesh.add(ov);
       stOverlays.set(pc.mesh, ov);
     }
@@ -10292,24 +10347,37 @@ function stressGroundLayout(ci, cj, cl) {
 
 // Every drawn cube, coloured from what its node shows: its stress over its own
 // strength (read now, so a strength edited in the panel shows at once).
+// Cracks too, so this runs while solving even with the colours hidden; a set
+// of cubes with no crack among them is then not drawn at all.
 function stressRecolor() {
-  if (!stressShown) return;   // the layout recolours everything when shown again
+  if (!stressShown && !stressOn) return;   // the layout recolours everything when switched on again
+  stCracked = false;
   for (let t = 0; t < stressTerr.count; t++) stressWriteColor(stressTerr, t, stTerrInst[t]);
-  stressTerr.instanceColor.needsUpdate = true;
+  stressRecolored(stressTerr);
   // Ground: its load worked out again now, from the answers in hand.
-  const ga = stressGround.instanceColor.array;
+  const ga = stressGround.instanceColor.array, gk = stressGround.geometry.attributes.instanceCrack.array;
   for (let t = 0; t < stressGround.count; t++) {
     const i = stGInst[t * 3], l = stGInst[t * 3 + 1], j = stGInst[t * 3 + 2], m = voxelAt(i, j, l);
-    if (!solidMat(m)) { ga[t * 3] = ga[t * 3 + 1] = ga[t * 3 + 2] = STRESS_PENDING; continue; }
+    if (!solidMat(m)) { ga[t * 3] = ga[t * 3 + 1] = ga[t * 3 + 2] = STRESS_PENDING; gk[t] = 0; continue; }
     const N = stressGroundLoad(i, j, l), st = MAT_STATS[m];
-    const o = st.powder ? 0 : stressLutIndex(Math.abs(N), N >= 0 ? st.strength : st.pull) * 3;
+    const lv = st.powder ? 0 : stressLutIndex(Math.abs(N), N >= 0 ? st.strength : st.pull), o = lv * 3;
     ga[t * 3] = STRESS_LUT[o]; ga[t * 3 + 1] = STRESS_LUT[o + 1]; ga[t * 3 + 2] = STRESS_LUT[o + 2];
+    gk[t] = lv / (STRESS_LUT_N - 1);
+    if (lv > 0) stCracked = true;
   }
-  stressGround.instanceColor.needsUpdate = true;
+  stressRecolored(stressGround);
   for (const dp of stDrawnPieces) {
     for (let q = 0; q < dp.count; q++) stressWriteColor(dp.overlay, q, dp.start + q);
-    dp.overlay.instanceColor.needsUpdate = true;
+    stressRecolored(dp.overlay);
   }
+}
+// Whether any cube written since the last stressRecolored() has a crack.
+let stCracked = false;
+function stressRecolored(im) {
+  im.instanceColor.needsUpdate = true;
+  im.geometry.attributes.instanceCrack.needsUpdate = true;
+  im.visible = stressShown || (stressOn && stCracked);
+  stCracked = false;
 }
 // Not solved yet (NaN): a neutral grey, not a reading on the ramp.
 const STRESS_PENDING = 0.35;
@@ -10327,8 +10395,11 @@ function stressLevel(n) {
   return s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(stressOver(n), 1);
 }
 // Powder always shows safe green: it carries and passes on load, but never breaks.
+// Its crack follows its place on the ramp: none unloaded, powder or pending.
 function stressWriteColor(im, inst, n) {
   const a = im.instanceColor.array, l = MAT_STATS[stCur.mat[n]]?.powder ? 0 : stressLevel(n);
+  im.geometry.attributes.instanceCrack.array[inst] = l > 0 ? l / (STRESS_LUT_N - 1) : 0;
+  if (l > 0) stCracked = true;
   if (l < 0) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
   const o = l * 3;
   a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];
@@ -10361,19 +10432,19 @@ function stressDrawSignature(cx, cy, cz) {
 // only redraws the window from answers in hand. Nothing is solved here.
 function updateStress(dt) {
   stressWatchPieces();
-  if (!stressOn) return;
+  if (!stressOn && !stressShown) return;
   stressTimer += dt;
   if (stressTimer < STRESS_TICK) return;
   stressTimer = 0;
-  if (stressRev !== stBuiltRev && !stJob && elapsed - stressLastRebuild >= STRESS_REBUILD) {
+  if (stressOn && stressRev !== stBuiltRev && !stJob && elapsed - stressLastRebuild >= STRESS_REBUILD) {
     stBuiltRev = stressRev;
     stressLastRebuild = elapsed;
     stressRebuild();
   }
   // A slice of the untouched world; anything it turns up is broken now, unless
   // a solve is out, whose answer breaks it when it comes back.
-  if (stGenAt < GEN_N * GEN_N && !sandboxMode && stressGenSweep() && !stJob) stressBreakSaturated();
-  if (!stressShown) return;   // solving and breaking go on; nothing is drawn
+  if (stressOn && stGenAt < GEN_N * GEN_N && !sandboxMode && stressGenSweep() && !stJob) stressBreakSaturated();
+  // Drawn while solving (the cracks) or shown (the colours: off, the last answers in hand).
   const f = stressFocus(), sig = stressDrawSignature(f.x, f.y, f.z);
   if (sig !== stressDrawSig) {
     stressDrawSig = sig;
@@ -10381,16 +10452,21 @@ function updateStress(dt) {
   }
 }
 
-// on: run the solver; shown: also draw the overlay (defaults to on, so
-// setStress(true/false) keeps meaning overlay on / everything off).
+// on: run the solver (and crack loaded blocks); shown: draw the colour overlay.
+// Independent; shown defaults to on, so setStress(true/false) keeps meaning
+// everything on / everything off.
 function setStress(on, shown = on) {
   stressOn = !!on;
-  stressShown = stressOn && !!shown;
+  stressShown = !!shown;
+  stressShowU.value = stressShown ? 1 : 0;
+  stressCrackU.value = stressOn ? 1 : 0;
+  // Only cracks left to draw: the next layout shows the cubes that have one.
   stressTerr.visible = stressShown;
   stressGround.visible = stressShown;
   for (const ov of stOverlays.values()) ov.visible = stressShown;
-  stressDrawSig = NaN;   // redrawn on the next tick it is shown
-  stressBtn.textContent = stressShown ? 'Stress: Shown' : stressOn ? 'Stress: Hidden' : 'Stress: Off';
+  stressDrawSig = NaN;   // redrawn on the next tick
+  stressBtn.textContent = stressOn ? 'Tension: On' : 'Tension: Off';
+  stressShowBtn.textContent = stressShown ? 'Show Tension: On' : 'Show Tension: Off';
 }
 // A material's strength changed: every cube re-reads it now. The beams take
 // the new stiffness at the next solve, which a block added or removed starts.
@@ -10403,12 +10479,9 @@ function stressInvalidate() {
   stressBreakSaturated();
 }
 const stressBtn = document.getElementById('btn-stress');
-// Shown -> Hidden (running, not drawn) -> Off -> Shown.
-bindTap(stressBtn, () => {
-  if (stressShown) setStress(true, false);
-  else if (stressOn) setStress(false);
-  else setStress(true);
-});
+const stressShowBtn = document.getElementById('btn-stress-show');
+bindTap(stressBtn, () => setStress(!stressOn, stressShown));
+bindTap(stressShowBtn, () => setStress(stressOn, !stressShown));
 
 // ---- Material bar (creative tool) ----
 const matBar = document.getElementById('mat-bar');
@@ -11630,8 +11703,8 @@ window.hermes = {
   hammer, setHammer, hammerStrike,
   // The Volume tool — step 0..3 and the corners committed so far.
   setVolume, volumePlace,
-  // The stress system — setStress(on, shown): run the solver, and draw it or
-  // not. markPlaced tags a cell as player-built; ground counts the hanging
+  // The stress system — setStress(on, shown): run the solver (and crack
+  // loaded blocks), and draw the colours or not, independently. markPlaced tags a cell as player-built; ground counts the hanging
   // ground in the solve.
   setStress, markPlaced,
   stress: () => ({ on: stressOn, shown: stressShown, nodes: stN, built: stNBuilt, ground: stNTerr - stNBuilt, beams: stNE, structures: stNComp,

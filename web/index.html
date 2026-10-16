@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 211;
+window.GAME_VERSION = 212;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1539,7 +1539,7 @@ window.GAME_VERSION = 211;
       <button id="btn-debug-collision" class="ui-el">Collision: Off</button>
       <button id="btn-coltest" class="ui-el">COL TEST: Off</button>
       <button id="btn-stress" class="ui-el">Tension: On</button>
-      <button id="btn-stress-show" class="ui-el">Show Tension: On</button>
+      <button id="btn-stress-show" class="ui-el">Show Tension: Off</button>
     </div>
   </div>
 </div>
@@ -8846,6 +8846,8 @@ const STRESS_LUT = new Float32Array(STRESS_LUT_N * 3);
   }
 }
 // stressColor(): stress over strength, clamped to [0, 1], times 6 into the ramp.
+// Cracks start where the ramp reaches yellow; below it a block is clean.
+const STRESS_CRACK_LV = Math.ceil(STRESS_STOPS[1][0] / 3 * (STRESS_LUT_N - 1));
 function stressLutIndex(stress, strength) {
   const ratio = strength > 0 ? Math.min(1, Math.max(0, stress) / strength) : 0;
   return Math.min(STRESS_LUT_N - 1, Math.round(ratio * 2 * (STRESS_LUT_N - 1)));
@@ -9383,7 +9385,7 @@ const stressMat = new THREE.MeshBasicMaterial({
 // darker the higher up the ramp. stressShowU 0 hides the colour, leaving only
 // the lines (every other pixel discarded); stressCrackU 0 (the solver off)
 // hides the lines. A pixel with no line on it draws exactly what it did before.
-const stressShowU = { value: 1 }, stressCrackU = { value: 1 };
+const stressShowU = { value: 0 }, stressCrackU = { value: 1 };
 stressMat.onBeforeCompile = (sh) => {
   sh.uniforms.stressShow = stressShowU;
   sh.uniforms.stressCrack = stressCrackU;
@@ -9454,7 +9456,7 @@ camera.layers.enable(STRESS_LAYER);
 // Two switches: stressOn runs the solver (and the breaking that follows from
 // it, and the cracks on loaded blocks); stressShown draws the coloured overlay.
 // Independent: shown with the solver off draws the last answers in hand.
-let stressOn = true, stressShown = true;
+let stressOn = true, stressShown = false;
 let stressTimer = 0, stressLastRebuild = -Infinity, stressDrawSig = NaN;
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
 
@@ -10365,8 +10367,8 @@ function stressRecolor() {
     const N = stressGroundLoad(i, j, l), st = MAT_STATS[m];
     const lv = st.powder ? 0 : stressLutIndex(Math.abs(N), N >= 0 ? st.strength : st.pull), o = lv * 3;
     ga[t * 3] = STRESS_LUT[o]; ga[t * 3 + 1] = STRESS_LUT[o + 1]; ga[t * 3 + 2] = STRESS_LUT[o + 2];
-    gk[t] = lv / (STRESS_LUT_N - 1);
-    if (lv > 0) stCracked = true;
+    gk[t] = lv >= STRESS_CRACK_LV ? lv / (STRESS_LUT_N - 1) : 0;
+    if (lv >= STRESS_CRACK_LV) stCracked = true;
   }
   stressRecolored(stressGround);
   for (const dp of stDrawnPieces) {
@@ -10398,11 +10400,11 @@ function stressLevel(n) {
   return s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(stressOver(n), 1);
 }
 // Powder always shows safe green: it carries and passes on load, but never breaks.
-// Its crack follows its place on the ramp: none unloaded, powder or pending.
+// Its crack follows its place on the ramp: none below yellow, powder or pending.
 function stressWriteColor(im, inst, n) {
   const a = im.instanceColor.array, l = MAT_STATS[stCur.mat[n]]?.powder ? 0 : stressLevel(n);
-  im.geometry.attributes.instanceCrack.array[inst] = l > 0 ? l / (STRESS_LUT_N - 1) : 0;
-  if (l > 0) stCracked = true;
+  im.geometry.attributes.instanceCrack.array[inst] = l >= STRESS_CRACK_LV ? l / (STRESS_LUT_N - 1) : 0;
+  if (l >= STRESS_CRACK_LV) stCracked = true;
   if (l < 0) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
   const o = l * 3;
   a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];

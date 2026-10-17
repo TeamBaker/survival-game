@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 218;
+window.GAME_VERSION = 219;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -9678,6 +9678,8 @@ let stEG;
 // the solved nodes put into ground cells (column -> [lvl, downward force, ...]),
 // with the columns where some of that load comes from a structure not yet solved.
 let stColNodes = new Map(), stGroundR = new Map(), stGroundPend = new Set();
+// What fallen pieces at rest put into ground cells: column, lvl, force, ...
+const stPieceGround = [];
 // The background sweep of the untouched world: next column, or GEN_N^2 when done.
 let stGenAt = 0;
 let stAdjStart, stAdj, stQueue, stLocal;
@@ -9690,7 +9692,9 @@ let stJobSeq = 0, stLastIters = 0, stLastUnconverged = 0, stLastMs = 0, stJobT0 
 // Fallen pieces in the world: the piece, its first node, whether it was at rest
 // (stressRestCode) and how it lay when laid out — its rotation R (row-major,
 // local to world) and its lattice's offset k from the cell numbers.
-const stPieces = [];   // { mesh, start, count, rest, R, kx, ky, kz, r }
+// on: what each block holding it up rests on (a cell's or a piece block's key);
+// load: its weight and all that rests on it.
+const stPieces = [];   // { mesh, start, count, rest, R, kx, ky, kz, r, on, load }
 const stOverlays = new Map();   // piece mesh -> InstancedMesh, kept between layouts
 const stDrawnPieces = [];       // { overlay, start, count, lat } of the ones drawn
 // Built-block candidates inside the draw radius, before the cap.
@@ -9888,6 +9892,7 @@ function stressPieceSupports(pc, S) {
   if (c && pc.rest === 2 && c.n === lat.length && c.px === P.x && c.py === P.y && c.pz === P.z
       && c.qx === Q.x && c.qy === Q.y && c.qz === Q.z && c.qw === Q.w && c.others === debris.children.length) {
     S.fixed.set(c.fixed, n0);
+    pc.on = c.on;
     return;
   }
   const R = pc.R, h = HALF_BLOCK, eps = STRESS_CONTACT_EPS;
@@ -9906,6 +9911,7 @@ function stressPieceSupports(pc, S) {
     }
     if (held === 0) { S.fixed[n0 + q] = 0; continue; }   // buried in its own piece
     held = 0;
+    let on = -1;
     const lx = b.pos.x, ly = b.pos.y, lz = b.pos.z;
     const ax = P.x + R[0] * lx + R[1] * ly + R[2] * lz;
     const ay = P.y + R[3] * lx + R[4] * ly + R[5] * lz;
@@ -9917,7 +9923,7 @@ function stressPieceSupports(pc, S) {
       for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) {
           if (!solidMat(voxelAt(i, j, l))) continue;
-          if (stressTouchNy(ax, ay, az, R, colX(i), (l + 0.5) * BLOCK, colZ(j), STRESS_I3) > STRESS_SUPPORT_NY) { held = 1; break cells; }
+          if (stressTouchNy(ax, ay, az, R, colX(i), (l + 0.5) * BLOCK, colZ(j), STRESS_I3) > STRESS_SUPPORT_NY) { held = 1; on = gravCell(i, j, l); break cells; }
         }
       }
     }
@@ -9939,16 +9945,48 @@ function stressPieceSupports(pc, S) {
             if (stressTouchNy(ax, ay, az, R,
                               Po.x + Ro[0] * bx + Ro[1] * by + Ro[2] * bz,
                               Po.y + Ro[3] * bx + Ro[4] * by + Ro[5] * bz,
-                              Po.z + Ro[6] * bx + Ro[7] * by + Ro[8] * bz, Ro) > STRESS_SUPPORT_NY) { held = 1; break near; }
+                              Po.z + Ro[6] * bx + Ro[7] * by + Ro[8] * bz, Ro) > STRESS_SUPPORT_NY) {
+              held = 1; on = stPieceKey(o.mesh, gi, gj, gl); break near;
+            }
           }
         }
       }
     }
     S.fixed[n0 + q] = held;
+    if (held) pc.on.push(on);
   }
   if (pc.rest === 2) {
     ud.stressContacts = { n: lat.length, px: P.x, py: P.y, pz: P.z, qx: Q.x, qy: Q.y, qz: Q.z, qw: Q.w,
-                          others: debris.children.length, fixed: S.fixed.slice(n0, n0 + lat.length) };
+                          others: debris.children.length, fixed: S.fixed.slice(n0, n0 + lat.length), on: pc.on };
+  }
+}
+// A piece at rest weighs on what holds it up: its load shared evenly between
+// the blocks it is held by. Those blocks are pinned, so without this nothing
+// under it would feel it. A share goes into the ground cell (as a beam's
+// reaction would), the built or hanging node, or the other piece's block it
+// rests on — that piece then carries it on too, so pieces go highest first and
+// a stack's weight reaches the bottom.
+function stressPieceLoads(S) {
+  stPieceGround.length = 0;
+  const order = stPieces.filter((pc) => pc.rest && pc.on.length).sort((a, b) => b.mesh.position.y - a.mesh.position.y);
+  for (const pc of order) {
+    const share = pc.load / pc.on.length;
+    for (const key of pc.on) {
+      const nb = stKeyMap.get(key);
+      if (nb === undefined) {
+        if (key >= 0 && key < 1e11) {   // a cell of ground standing on bedrock
+          const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N;
+          stPieceGround.push(j * GEN_N + i, (t - j) / GEN_N + VOX_FLOOR, share);
+        }
+        continue;
+      }
+      if (nb < stNTerr) { S.f[nb * 6 + 1] -= share; continue; }
+      let lo = 0, hi = stPieces.length - 1;   // the piece the block is in
+      while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (stPieces[mid].start <= nb) lo = mid; else hi = mid - 1; }
+      const o = stPieces[lo], R = o.R;
+      S.f[nb * 6] -= R[3] * share; S.f[nb * 6 + 1] -= R[4] * share; S.f[nb * 6 + 2] -= R[5] * share;
+      o.load += share;
+    }
   }
 }
 const stressNearPiece = (mesh, cx, cy, cz) => {
@@ -9986,6 +10024,7 @@ function stressForget() {
   stKeyMap.clear(); stKeyMapPrev.clear();
   stSolved.clear();
   stColNodes.clear(); stGroundR.clear(); stGroundPend.clear();
+  stPieceGround.length = 0;
   stressGround.count = 0;
   stGenAt = 0;   // the new world's untouched ground is swept again
   stN = 0; stNE = 0; stNBuilt = 0; stNTerr = 0; stNComp = 0; stHangN = 0;
@@ -10091,6 +10130,12 @@ function stressGroundReactions() {
     let r = stGroundR.get(k);
     if (!r) stGroundR.set(k, r = []);
     r.push(lvl, stressFixedLoad(e));
+  }
+  for (let q = 0; q < stPieceGround.length; q += 3) {
+    const k = stPieceGround[q];
+    let r = stGroundR.get(k);
+    if (!r) stGroundR.set(k, r = []);
+    r.push(stPieceGround[q + 1], stPieceGround[q + 2]);
   }
 }
 // The force in the beam under ground cell (i, j, lvl): the weight of it and of
@@ -10223,7 +10268,7 @@ function stressRebuild() {
     const mesh = pieces[p], lat = mesh.userData.blocks;
     if (!lat || !lat.length) continue;
     const rest = mesh.userData.stressRest ?? stressRestCode(mesh);
-    const pc = { mesh, start: stN, count: lat.length, rest, R: new Float64Array(9), kx: 0, ky: 0, kz: 0, r: 0 };
+    const pc = { mesh, start: stN, count: lat.length, rest, R: new Float64Array(9), kx: 0, ky: 0, kz: 0, r: 0, on: [], load: 0 };
     stressPiecePose(pc);
     stPieces.push(pc);
     for (const b of lat) {
@@ -10265,12 +10310,14 @@ function stressRebuild() {
     for (let q = 0; q < pc.count; q++) {
       const n = pc.start + q, b = lat[q], m = S.mat[n], w = MAT_STATS[m]?.weight ?? 0;
       S.f[n * 6] = gx * w; S.f[n * 6 + 1] = gy * w; S.f[n * 6 + 2] = gz * w;
+      pc.load += w;
       for (let ax = 0; ax < 3; ax++) {
         const nb = stKeyMap.get(stPieceKey(pc.mesh, b.gi + (ax === 0), b.gj + (ax === 2), b.lvl + (ax === 1)));
         if (nb !== undefined) stressAddEdge(n, nb, ax, m, S.mat[nb]);
       }
     }
   }
+  stressPieceLoads(S);
 
   // --- structures: blocks joined by beams, each a system of its own ---
   stAdjStart.fill(0, 0, stN + 1);

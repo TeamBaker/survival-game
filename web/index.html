@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 220;
+window.GAME_VERSION = 221;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3756,6 +3756,13 @@ const chunkStep = new Int8Array(CHUNK_N * CHUNK_N);
 // is waiting on, 0 for none; see the mesh worker below updateLOD.
 const chunkRev = new Uint32Array(CHUNK_N * CHUNK_N);
 const meshJob = new Uint32Array(CHUNK_N * CHUNK_N);
+// Bumped every time a chunk's mesh goes in, whoever built it — the load, a dig,
+// the mesh worker, a change of LOD. The tension overlay folds the counts of the
+// chunks under its window into its draw signature (stressDrawSignature), so
+// ground that comes into view around the player is laid out without anyone
+// having to edit a block or walk away and back. Unlike chunkRev it moves only
+// when a mesh actually lands, not when one is asked for.
+const chunkBuilt = new Uint32Array(CHUNK_N * CHUNK_N);
 
 // A chunk mesh's vertex buffer has room for this many more corners than it was
 // first built with, rounded up to a whole VB_ROUND, so digging a few blocks out
@@ -3915,6 +3922,7 @@ function chunkPalette(nv) {
 // its buffer has run out of room or the chunk has run past the shared index.
 function rebuildChunk(c, r) {
   unbatchChunk(c);
+  chunkBuilt[c]++;
   qN = 0;
   faceN = 0;
 
@@ -10823,13 +10831,28 @@ function stressFocus() {
   const p = playerBody.position;
   return _stFocus.set(p.x, p.y - centerOffset() + eyeH, p.z);
 }
-// What the drawn window depends on: the layout, where the player is, and which
-// pieces are near.
+// What the drawn window depends on: the layout, where the player is, which
+// chunks under the window have been meshed (and how often), and which pieces
+// are near. The chunks are there because the first layout can run before the
+// ground around the player has come into view — at startup, or flying into
+// ground not drawn yet — and finds nothing to draw; with only the layout and
+// the player's cell in here, nothing would lay it out again until a block was
+// edited or the player walked 8 blocks. A chunk landing a mesh moves its count
+// and the window is laid out on the next tick. The chunks are the ones
+// stressLayout walks (STRESS_RADIUS, which reaches past STRESS_GROUND_R): about
+// 120 reads ten times a second, and with nothing new meshed the signature
+// stands still and nothing is laid out.
 function stressDrawSignature(cx, cy, cz) {
   let h = stBuildSeq | 0;
-  h = Math.imul(h ^ Math.floor(colI(cx) / STRESS_MOVE_Q), 0x9e3779b1);
+  const ci = colI(cx), cj = colJ(cz), R = STRESS_RADIUS;
+  h = Math.imul(h ^ Math.floor(ci / STRESS_MOVE_Q), 0x9e3779b1);
   h = Math.imul(h ^ Math.floor(lvlOfY(cy) / STRESS_MOVE_Q), 0x85ebca6b);
-  h = Math.imul(h ^ Math.floor(colJ(cz) / STRESS_MOVE_Q), 0xc2b2ae35);
+  h = Math.imul(h ^ Math.floor(cj / STRESS_MOVE_Q), 0xc2b2ae35);
+  const c0i = Math.max(0, Math.floor((ci - R) / CHUNK)), c1i = Math.min(CHUNK_N - 1, Math.floor((ci + R) / CHUNK));
+  const c0j = Math.max(0, Math.floor((cj - R) / CHUNK)), c1j = Math.min(CHUNK_N - 1, Math.floor((cj + R) / CHUNK));
+  for (let chj = c0j; chj <= c1j; chj++) {
+    for (let chi = c0i; chi <= c1i; chi++) h = Math.imul(h ^ chunkBuilt[chj * CHUNK_N + chi], 0x165667b1);
+  }
   for (const pc of stPieces) if (stressNearPiece(pc.mesh, cx, cy, cz)) h = Math.imul(h ^ pc.mesh.id, 0x27d4eb2f);
   return h;
 }

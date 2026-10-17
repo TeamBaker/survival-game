@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 214;
+window.GAME_VERSION = 215;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -6081,11 +6081,14 @@ function spawnFallingChunk(unit) {
   // against the piece is snapped to this rather than to the world grid.
   mesh.userData.blocks = blocks.map((b, q) => {
     const pos = new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
-    const e = { pos, mat: b.m, color: b.color ? b.color.clone() : null, gi: b.i, gj: b.j, lvl: b.lvl };
+    // The crack it had where it stood goes with it (stressWriteColor).
+    const e = { pos, mat: b.m, color: b.color ? b.color.clone() : null, gi: b.i, gj: b.j, lvl: b.lvl,
+                crack: b.crack ?? stressCrackAt(b.i, b.j, b.lvl) };
     if (q >= nSolid) addGrain(mesh, e);
     return e;
   });
   debrisFaceMask(mesh);
+  stressDrawSig = NaN;   // the cube it left drawn in the air goes on the next tick
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   debris.add(mesh);
@@ -6711,11 +6714,12 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    const e = { pos: p, mat: b.mat, color: b.color || null, gi: b.gi, gj: b.gj, lvl: b.lvl };
+    const e = { pos: p, mat: b.mat, color: b.color || null, gi: b.gi, gj: b.gj, lvl: b.lvl, crack: b.crack || 0 };
     if (q >= nSolid) addGrain(mesh, e);
     return e;
   });
   debrisFaceMask(mesh);
+  stressDrawSig = NaN;
   if (nSolid) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.instanceColor.needsUpdate = true;
@@ -7268,7 +7272,7 @@ function breakDebrisBlocks(mesh, idxs) {
     if (MAT_STATS[dropMat]?.powder) {
       powderFalling.push({ pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: dropMat, v: 0, from: mesh });
     } else {
-      cubes.push({ pos: b.pos.clone(), mat: dropMat, color: dropMat === b.mat ? b.color : null, gi: b.gi, gj: b.gj, lvl: b.lvl });
+      cubes.push({ pos: b.pos.clone(), mat: dropMat, color: dropMat === b.mat ? b.color : null, gi: b.gi, gj: b.gj, lvl: b.lvl, crack: b.crack });
     }
     cutDebrisLat(mesh, q);
   }
@@ -7289,6 +7293,7 @@ function breakBlock(i, j, lvl) {
   const m = voxelAt(i, j, lvl);
   if (m === AIR || m === WATER) return false;
   const dropMat = resolveBreakMat(m);
+  const crack = stressCrackAt(i, j, lvl);   // read while the cell still holds it
 
   setVoxel(i, j, lvl, AIR);
   const k = j * GEN_N + i;
@@ -7312,7 +7317,7 @@ function breakBlock(i, j, lvl) {
   }
 
   // A group of one — the same path a broken-off cliff takes, just smaller.
-  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat) }]]));
+  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat), crack }]]));
   // And whatever the hole left hanging comes down after it.
   applyGravity(i, j, lvl);
   return true;
@@ -9353,7 +9358,7 @@ let stJobSeq = 0, stLastIters = 0, stLastUnconverged = 0, stLastMs = 0, stJobT0 
 // local to world) and its lattice's offset k from the cell numbers.
 const stPieces = [];   // { mesh, start, count, rest, R, kx, ky, kz, r }
 const stOverlays = new Map();   // piece mesh -> InstancedMesh, kept between layouts
-const stDrawnPieces = [];       // { overlay, start, count } of the ones drawn
+const stDrawnPieces = [];       // { overlay, start, count, lat } of the ones drawn
 // Built-block candidates inside the draw radius, before the cap.
 let stCandNode = new Int32Array(4096), stCandDist = new Uint16Array(4096);
 const stDistHist = new Int32Array(STRESS_RADIUS + 2);
@@ -10175,7 +10180,12 @@ function stressBreakSaturated() {
       broken++;
     }
   }
-  for (const [pc, qs] of pieceHits) breakDebrisBlocks(pc.mesh, qs);
+  for (const [pc, qs] of pieceHits) {
+    // What each block shows now goes with it, broken off or left on the piece.
+    const lat = pc.mesh.userData.blocks;
+    for (let q = 0; q < pc.count; q++) { const k = stressCrackOf(pc.start + q); if (k >= 0) lat[q].crack = k; }
+    breakDebrisBlocks(pc.mesh, qs);
+  }
 }
 
 let stressWorker = null;
@@ -10267,10 +10277,18 @@ function stressLayout(cx, cy, cz) {
 
   // Overlays of pieces out of range or out of the world go; the rest are refitted.
   stDrawnPieces.length = 0;
-  const near = new Set();
+  const near = new Set(), laid = new Set();
   for (const pc of stPieces) {
-    if (pc.mesh.parent === debris && pc.mesh.userData.blocks?.length === pc.count
-        && stressNearPiece(pc.mesh, cx, cy, cz)) near.add(pc);
+    if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
+    laid.add(pc.mesh);
+    if (stressNearPiece(pc.mesh, cx, cy, cz)) near.add(pc);
+  }
+  // Pieces broken off or cut since the layout have no nodes yet: drawn with
+  // the cracks they carry, if any (start -1).
+  for (const mesh of debris.children) {
+    const lat = mesh.userData.blocks;
+    if (!lat?.length || laid.has(mesh) || !lat.some((b) => b.crack > 0) || !stressNearPiece(mesh, cx, cy, cz)) continue;
+    near.add({ mesh, start: -1, count: lat.length });
   }
   for (const mesh of stOverlays.keys()) {
     let keep = false;
@@ -10292,7 +10310,7 @@ function stressLayout(cx, cy, cz) {
     ov.count = pc.count;
     ov.instanceMatrix.needsUpdate = true;
     ov.boundingSphere = null;
-    stDrawnPieces.push({ overlay: ov, start: pc.start, count: pc.count });
+    stDrawnPieces.push({ overlay: ov, start: pc.start, count: pc.count, lat });
   }
   stressRecolor();
 }
@@ -10373,7 +10391,7 @@ function stressRecolor() {
   }
   stressRecolored(stressGround);
   for (const dp of stDrawnPieces) {
-    for (let q = 0; q < dp.count; q++) stressWriteColor(dp.overlay, q, dp.start + q);
+    for (let q = 0; q < dp.count; q++) stressWriteColor(dp.overlay, q, dp.start < 0 ? -1 : dp.start + q, dp.lat[q]);
     stressRecolored(dp.overlay);
   }
 }
@@ -10402,13 +10420,35 @@ function stressLevel(n) {
 }
 // Powder always shows safe green: it carries and passes on load, but never breaks.
 // Its crack follows its place on the ramp: none below yellow, powder or pending.
-function stressWriteColor(im, inst, n) {
-  const a = im.instanceColor.array, l = MAT_STATS[stCur.mat[n]]?.powder ? 0 : stressLevel(n);
-  im.geometry.attributes.instanceCrack.array[inst] = l >= STRESS_CRACK_LV ? l / (STRESS_LUT_N - 1) : 0;
-  if (l >= STRESS_CRACK_LV) stCracked = true;
+// A piece's block b (n -1: no node yet), not solved as it lies now, keeps the
+// crack it broke off with; solved, that is the crack it carries on with.
+function stressWriteColor(im, inst, n, b) {
+  const a = im.instanceColor.array, l = n < 0 ? -1 : MAT_STATS[stCur.mat[n]]?.powder ? 0 : stressLevel(n);
+  let k = l >= STRESS_CRACK_LV ? l / (STRESS_LUT_N - 1) : 0;
+  if (b) { if (l < 0) k = b.crack || 0; else b.crack = k; }
+  im.geometry.attributes.instanceCrack.array[inst] = k;
+  if (k > 0) stCracked = true;
   if (l < 0) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
   const o = l * 3;
   a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];
+}
+// A node's crack: none below yellow or for powder, -1 while it is not solved.
+function stressCrackOf(n) {
+  if (MAT_STATS[stCur.mat[n]]?.powder) return 0;
+  const l = stressLevel(n);
+  return l < 0 ? -1 : l >= STRESS_CRACK_LV ? l / (STRESS_LUT_N - 1) : 0;
+}
+// The crack cell (i, j, lvl) shows now — a node's, or ground's as stressRecolor
+// works it out — read for a block about to leave it as a piece.
+function stressCrackAt(i, j, lvl) {
+  if (!stressOn || !inVoxelRange(i, j, lvl)) return 0;
+  const key = gravCell(i, j, lvl), n = stKeyMap.get(key);
+  if (n !== undefined) return Math.max(0, stressCrackOf(n));
+  if (placedByChunk[chunkOf(i, j)]?.has(key)) return 0;   // built since the layout: not solved
+  const m = voxelAt(i, j, lvl), st = MAT_STATS[m];
+  if (!solidMat(m) || !st || st.powder) return 0;
+  const N = stressGroundLoad(i, j, lvl), lv = stressLutIndex(Math.abs(N), N >= 0 ? st.strength : st.pull);
+  return lv >= STRESS_CRACK_LV ? lv / (STRESS_LUT_N - 1) : 0;
 }
 
 // Where the drawn window is centred: on the player, not the camera, which in

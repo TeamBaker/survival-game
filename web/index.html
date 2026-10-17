@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 219;
+window.GAME_VERSION = 220;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5783,7 +5783,6 @@ const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 // that it collides as the single box that encloses it, which still falls and
 // tumbles convincingly and costs the same whatever it is made of.
 const FALL_BODY_CAP  = 20;    // pieces under physics at once
-const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
 const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
 const FALL_KG_PER_WEIGHT = 5;   // kg of body mass per unit of MAT_STATS weight
 // Water has no stats and is never part of a piece; anything statless counts as dirt.
@@ -6083,30 +6082,13 @@ const powderQueue = [];  // { i, j, lvl }
 // puts a body that has not moved for a second to sleep on its own, and a
 // sleeping body still collides — so the player walking into a heap, or the next
 // piece landing on it, shoves it awake again instead of passing through scenery.
-// Only the cull below, and digging the last block off a piece, take a body out
-// of the world.
+// There is no cap on how many lie about: once landed, a piece stays. Only
+// falling out of the world, and digging the last block off a piece, take a
+// body out of the world.
 function restFallingChunk(n) {
   const f = fallingChunks[n];
   fallingChunks.splice(n, 1);
   restedChunks.push(f);
-}
-
-// Past FALL_MESH_CAP settled pieces, the smallest go first, the farthest of
-// those first: a break sends off one-cube pieces by the dozen, and evicting the
-// oldest would take the very boulder they came off out of the world. Run once a
-// frame, after everything that spawns pieces, so nothing is dropped from under
-// a break still working on it.
-function trimRestedChunks() {
-  while (restedChunks.length > FALL_MESH_CAP) {
-    let worst = 0, wn = Infinity, wd = -1;
-    for (let q = 0; q < restedChunks.length; q++) {
-      const f = restedChunks[q], n = f.mesh.userData.blocks.length;
-      if (n > wn) continue;
-      const d = camera.position.distanceToSquared(f.mesh.position);
-      if (n < wn || d > wd) { worst = q; wn = n; wd = d; }
-    }
-    dropChunk(restedChunks.splice(worst, 1)[0]);
-  }
 }
 
 // Take a piece away for good: body out of the world, mesh out of the scene.
@@ -6368,7 +6350,6 @@ function updateFallingChunks() {
     const dot = Math.abs(q.x * aq.x + q.y * aq.y + q.z * aq.z + q.w * aq.w);
     if (dx * dx + dy * dy + dz * dz < FALL_FREEZE_D * FALL_FREEZE_D && dot > 1 - 1e-5 && restsOnStill(b)) b.sleep();
   }
-  trimRestedChunks();
 }
 
 // Whether everything `body` touched in the last step is static or asleep. Two

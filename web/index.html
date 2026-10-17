@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 216;
+window.GAME_VERSION = 218;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -449,6 +449,29 @@ window.GAME_VERSION = 216;
     touch-action: manipulation;
   }
   #mat-copy:active { transform: translateY(1px); }
+  /* The New material form, and the Delete on a created material's row. */
+  #mat-new { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(150, 195, 245, 0.25); }
+  .mn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 8px; color: #7fa8d8; font-size: 11px; }
+  #mn-name { width: 180px; }
+  #mn-color { width: 54px; height: 38px; padding: 0; border: 1px solid rgba(150, 195, 245, 0.45); border-radius: 6px; background: none; }
+  .mn-chk input { width: 22px; height: 22px; vertical-align: middle; }
+  .mat-btn, .mat-del {
+    min-height: 38px;
+    padding: 0 16px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .mat-del { flex: 0 0 auto; margin-left: auto; color: #f0b0a6; border-color: rgba(224, 106, 90, 0.5); }
+  #mn-msg { min-height: 1.4em; margin-top: 6px; color: #9ecbff; font-size: 11px; }
   #mat-foot { margin-top: 14px; color: #62819f; font-size: 11px; }
   #mat-foot b { color: #9ecbff; }
   /* A phone has no number row — the MATS button is the whole interface there. */
@@ -1429,6 +1452,22 @@ window.GAME_VERSION = 216;
   <span class="title">Materials</span>
   <button id="mat-copy">Copy stats</button>
   <div id="mat-list"></div>
+  <div id="mat-new">
+    <span class="title">New material</span>
+    <div class="mn-row">
+      <input id="mn-name" class="mat-str" type="text" maxlength="20" placeholder="Name" autocomplete="off">
+      <input id="mn-color" type="color" value="#6f9a5a" aria-label="Colour">
+    </div>
+    <div class="mn-row">
+      <label>Weight <input id="mn-weight" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="2"></label>
+      <label>Buoyancy <input id="mn-buoy" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="0"></label>
+      <label>Compression <input id="mn-str" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="1000"></label>
+      <label>Pull <input id="mn-pull" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="100"></label>
+      <label class="mn-chk"><input id="mn-powder" type="checkbox"> Powder</label>
+    </div>
+    <button id="mn-add" class="mat-btn">Create</button>
+    <div id="mn-msg"></div>
+  </div>
   <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / buoy / str</div>
 </div>
 
@@ -2291,8 +2330,16 @@ const STONE_DUST = 8, STONE_MUD = 9, BRITTLE_STONE = 10;
 const CLAY = 11, CLAY_MUD = 12, HARD_CLAY = 13;
 const N_MATS = 16;
 // Not a terrain material: the value the voxel store below uses for a block that
-// is not there. It sorts after the real ones so `m < AIR` means solid.
+// is not there. It sorts after the built-in ones.
 const AIR = N_MATS;
+// Materials the player creates in the Materials panel take the ids after AIR, so
+// the built-in ids, AIR and every old save keep the values they always had. The
+// store is bytes and has room; it is the chunk vertex, with 4 bits for the
+// material, that sets the limit — a chunk may name 16 materials at once (see
+// chunkPalette) — so the cap is kept well under that. MAT_IDS bounds every id a
+// voxel can hold, AIR included.
+const CUSTOM_MAT0 = AIR + 1, CUSTOM_MAT_MAX = 8;
+const MAT_IDS = CUSTOM_MAT0 + CUSTOM_MAT_MAX;
 
 // The numbers are the material's own properties, indexed by material id: weight
 // is how much a block of it drags on you, and is read as-is by the sim — the
@@ -2325,6 +2372,8 @@ const MAT_STATS = [
   { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 1000, pull: 500,  powder: false },  // HARD_SAND
 ];
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
+// AIR's row and the created materials' (filled in by customMatInstall).
+while (MAT_STATS.length < MAT_IDS) MAT_STATS.push(null);
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -2916,6 +2965,9 @@ const TERRAIN_MATS = [
   mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
   mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
 ];
+// AIR's slot (never drawn) and the created materials', recoloured by
+// customMatInstall — every table below is indexed by the same ids.
+while (TERRAIN_MATS.length < MAT_IDS) TERRAIN_MATS.push(mat(0x808080, 0.92, 0.00, { envMapIntensity: 0.40 }));
 // The same materials again, white and vertex-coloured, for what carries its
 // colour on its own vertices — falling grains and broken-off pieces, which bake
 // in the shade the block had in the ground — so what the shader multiplies that
@@ -2962,6 +3014,11 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 // before the one transform every chunk mesh shares (TERRAIN_ORIGIN, HALF_BLOCK)
 // takes it on to metres. A corner two chunks share still comes out
 // bit-identical in both.
+//
+// The 4-bit material id is a slot in the chunk's own palette, not the material:
+// terrainPal, one vec4 per instance (so per chunk, and no bigger a vertex), holds
+// the material id of each of the 16 slots, 6 bits apiece, four to a float. A
+// chunk of built-in materials only has the identity palette; see chunkPalette.
 const TERRAIN_PBR = TERRAIN_MATS.map((m, i) =>
   new THREE.Vector4(m.roughness, m.metalness, m.envMapIntensity, MAT_STATS[i]?.powder ? 1 : 0));
 const TERRAIN_BASE = TERRAIN_MATS.map((m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b));
@@ -3038,7 +3095,8 @@ TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
   sh.uniforms.terrainCols = { value: terrainCols };
   sh.uniforms.terrainSeed = { value: SEED | 0 };
   terrainVertex(sh);
-  sh.vertexShader = `uniform vec4 terrainPbr[${TERRAIN_PBR.length}];\nuniform vec3 terrainBase[${TERRAIN_BASE.length}];\n`
+  sh.vertexShader = `#ifndef TERRAIN_NO_PAL\nattribute vec4 terrainPal;\n#endif\n`
+    + `uniform vec4 terrainPbr[${TERRAIN_PBR.length}];\nuniform vec3 terrainBase[${TERRAIN_BASE.length}];\n`
     + `varying vec4 vPbr;\nvarying vec3 vBase;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\nvarying vec3 vLod;\n`
     + `varying vec4 vTerrSpec;\nvarying vec3 vTerrRad;\nvarying vec3 vTerrIrr;\n`
     + sh.vertexShader.replace('#include <common>', '#include <common>\n' + terrainSpecGlsl(scene.environment))
@@ -3047,7 +3105,12 @@ TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
   float tsg = (tf & 1) == 0 ? 1.0 : -1.0;
   vec3 objectNormal = vec3(tf < 2 ? tsg : 0.0, tf / 2 == 1 ? tsg : 0.0, tf >= 4 ? tsg : 0.0);`)
     .replace('// terrain vertex unpacked', `
+#ifdef TERRAIN_NO_PAL
   int tm = tw.x >> 12;
+#else
+  int tl = tw.x >> 12;
+  int tm = (int(terrainPal[tl >> 2]) >> ((tl & 3) * 6)) & 63;
+#endif
   vPbr = terrainPbr[tm];
   vBase = terrainBase[tm];
   vTerrPos = (modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz;
@@ -3170,8 +3233,10 @@ void RE_Direct_Terrain(const in IncidentLight directLight, const in vec3 geometr
 // instance matrix is the identity and each corner carries its own chunk's origin
 // beside it instead: added on in the same whole half-blocks, the sum is exactly
 // what the chunk's own mesh would have drawn.
+// A group is only merged when none of its chunks has a palette of its own
+// (chunkCustom), so its slots are the material ids as they stand.
 function terrainBatchVertex(sh) {
-  sh.vertexShader = 'attribute vec3 terrainOff;\n' + sh.vertexShader
+  sh.vertexShader = '#define TERRAIN_NO_PAL\nattribute vec3 terrainOff;\n' + sh.vertexShader
     .replace('float((tw.x >> 6) & 63));', 'float((tw.x >> 6) & 63)) + terrainOff;')
     .replace('ivec2(instanceMatrix[3].xz)', 'ivec2(instanceMatrix[3].xz + terrainOff.xz)');
 }
@@ -3323,7 +3388,7 @@ function lodStepFor(dist) {
 const MERGE_SIZE = [1, 2, 4, 5];
 const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
 
-const mergeMatCounts = new Uint32Array(N_MATS);
+const mergeMatCounts = new Uint32Array(MAT_IDS);
 
 // Scratch, reused by every rebuild. The first pass records each exposed face of
 // the chunk as a single number (see addFace): its direction, the plane it lies
@@ -3336,7 +3401,7 @@ let faceKeys = new Float64Array(16384);
 let faceN = 0;
 let mergeMask = new Uint8Array(4096);
 // What the merge comes out as: four loose corners a quad — position in
-// half-blocks and m | f << 4 | (step - 1) << 7, which rebuildChunk packs into
+// half-blocks and m | f << 6 | (step - 1) << 9, which rebuildChunk packs into
 // the chunk's vertices (see TERRAIN_CHUNK_MAT) — and nothing shared
 // between quads, since two faces meeting at an edge disagree about the normal
 // there. Every material goes in the one buffer: typed scratch that only ever
@@ -3413,8 +3478,9 @@ function setColTexel(i, j, t, top, cx, cz) {
 // One face, as a key that sorts by direction, then plane, then row (v), then
 // along the row (u). Columns and rows count from the chunk's first (a LOD cube
 // may run a few past its last), levels up from VOX_FLOOR; 13 bits apiece, which
-// with the direction and the material is a 46-bit integer — exact in a double,
-// and every field a power of two apart, so it comes back apart exactly too.
+// with the direction and the material is a 47-bit integer — exact in a double,
+// and every field but the material a power of two apart; all of them come back
+// apart exactly by floor and modulo.
 const FK = 8192;
 function addFace(f, plane, u, v, m) {
   if (faceN === faceKeys.length) {
@@ -3422,7 +3488,7 @@ function addFace(f, plane, u, v, m) {
     grown.set(faceKeys);
     faceKeys = grown;
   }
-  faceKeys[faceN++] = (((f * FK + plane) * FK + v) * FK + u) * N_MATS + m;
+  faceKeys[faceN++] = (((f * FK + plane) * FK + v) * FK + u) * MAT_IDS + m;
 }
 
 // Face f of the box S blocks a side whose low corner is chunk-local column li,
@@ -3448,7 +3514,7 @@ function pushQuad(f, m) {
     qPos = pos; qInfo = inf;
   }
   const v = FACES[f].v;
-  const info = m | f << 4 | (rbStep - 1) << 7;
+  const info = m | f << 6 | (rbStep - 1) << 9;
   for (let q = 0; q < 4; q++, qN++) {
     const o = q * 3, p = qN * 3;
     qPos[p]     = v[o]     < 0 ? qLo[0] : qHi[0];
@@ -3490,7 +3556,7 @@ function emitRect(f, plane, u, v, w, h, m) {
 // many rows as hold it all the way across, and emit that as one quad.
 function mergeFaces() {
   const keys = faceKeys.subarray(0, faceN).sort();
-  const ROW = FK * N_MATS, PLANE = FK * ROW;
+  const ROW = FK * MAT_IDS, PLANE = FK * ROW;
   for (let g0 = 0; g0 < faceN; ) {
     const fp = Math.floor(keys[g0] / PLANE);
     let g1 = g0 + 1;
@@ -3499,7 +3565,7 @@ function mergeFaces() {
     const vMin = Math.floor(keys[g0] / ROW) % FK, vMax = Math.floor(keys[g1 - 1] / ROW) % FK;
     let uMin = FK, uMax = 0;
     for (let g = g0; g < g1; g++) {
-      const u = Math.floor(keys[g] / N_MATS) % FK;
+      const u = Math.floor(keys[g] / MAT_IDS) % FK;
       if (u < uMin) uMin = u;
       if (u > uMax) uMax = u;
     }
@@ -3509,7 +3575,7 @@ function mergeFaces() {
     M.fill(0, 0, W * H);
     for (let g = g0; g < g1; g++) {
       const k = keys[g];
-      M[(Math.floor(k / ROW) % FK - vMin) * W + Math.floor(k / N_MATS) % FK - uMin] = k % N_MATS + 1;
+      M[(Math.floor(k / ROW) % FK - vMin) * W + Math.floor(k / MAT_IDS) % FK - uMin] = k % MAT_IDS + 1;
     }
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
@@ -3606,7 +3672,7 @@ function collectColumn(i, j, step = 1) {
         if (mm !== AIR) mergeMatCounts[mm]++;
       }
   let m = -1, best = 0;
-  for (let mm = 0; mm < N_MATS; mm++) {
+  for (let mm = 0; mm < MAT_IDS; mm++) {
     if (mergeMatCounts[mm] > best) { best = mergeMatCounts[mm]; m = mm; }
   }
   if (m < 0) return 0;
@@ -3747,7 +3813,7 @@ function mergeBatch(b) {
   let nv = 0, n = 0;
   for (let cj = cj0; cj < cj1; cj++) for (let ci = ci0; ci < ci1; ci++) {
     const c = cj * CHUNK_N + ci, ms = chunkMesh[c];
-    if (!ms || chunkStep[c] < BATCH_STEP) return;
+    if (!ms || chunkStep[c] < BATCH_STEP || chunkCustom[c]) return;
     if (ms.length) { nv += (ms[0].geometry.drawRange.count / 6) * 4; n++; }
   }
   // Nothing to gain from fewer than two, and past QUAD_INDEX's reach the chunks
@@ -3807,6 +3873,39 @@ function applyRenderDist() {
   }
 }
 
+// A vertex has 4 bits for its material, so the 16 values are a chunk-local
+// palette (terrainPal, see TERRAIN_CHUNK_MAT). Each built-in material is its own
+// slot; a created one borrows the slot of a built-in material this chunk does
+// not draw. Should one chunk ever draw more than 16 materials at once, the ones
+// left over are drawn in DIRT's slot — only the colour is wrong, and only until
+// the chunk is rebuilt with fewer; the store itself never sees the palette.
+// chunkCustom marks a chunk whose palette is not the identity, which keeps it
+// out of mergeBatch (a merged group has no per-chunk palette to carry).
+const chunkCustom = new Uint8Array(CHUNK_N * CHUNK_N);
+const palSlot = new Uint8Array(MAT_IDS), palId = new Uint8Array(16);
+const palWords = new Float32Array(4);
+function chunkPalette(nv) {
+  let used = 0, custom = 0;
+  for (let v = 0; v < nv; v += 4) {
+    const m = qInfo[v] & 63;
+    if (m < N_MATS) used |= 1 << m;
+    else if (m >= CUSTOM_MAT0) custom |= 1 << (m - CUSTOM_MAT0);
+  }
+  for (let m = 0; m < 16; m++) palSlot[m] = palId[m] = m;
+  for (let c = 0, free = 0; c < CUSTOM_MAT_MAX; c++) {
+    if (!(custom >> c & 1)) continue;
+    while (free < 16 && used >> free & 1) free++;
+    if (free === 16) { palSlot[CUSTOM_MAT0 + c] = DIRT; continue; }
+    palSlot[CUSTOM_MAT0 + c] = free;
+    palId[free] = CUSTOM_MAT0 + c;
+    used |= 1 << free;
+  }
+  for (let w = 0; w < 4; w++) {
+    palWords[w] = palId[w * 4] + palId[w * 4 + 1] * 64 + palId[w * 4 + 2] * 4096 + palId[w * 4 + 3] * 262144;
+  }
+  return custom !== 0;
+}
+
 // (Re)build one chunk's mesh from the store. Cheap enough to call from a tap:
 // the whole cost is one pass over the chunk's columns, a sort and merge of the
 // faces it found, and two small uploads — the mesh and the chunk's column patch.
@@ -3862,6 +3961,7 @@ function rebuildChunk(c, r) {
   let me = meshes[0] || null;
   const nv = qN, nq = nv >> 2;
   if (nq === 0) {                                // plenty of chunks are all air
+    chunkCustom[c] = 0;
     if (me) dropChunkMesh(me);
     meshes.length = 0;
   } else {
@@ -3897,6 +3997,7 @@ function rebuildChunk(c, r) {
         }
         geo.setIndex(new THREE.BufferAttribute(idx, 1));
       }
+      geo.setAttribute('terrainPal', new THREE.InstancedBufferAttribute(new Float32Array(4), 4));
       me = new THREE.InstancedMesh(geo, TERRAIN_CHUNK_MAT, 1);
       me.boundingSphere = new THREE.Sphere();
       me.customDepthMaterial = TERRAIN_CHUNK_DEPTH;
@@ -3910,14 +4011,17 @@ function rebuildChunk(c, r) {
       meshes.length = 0;
       meshes.push(me);
     }
+    chunkCustom[c] = chunkPalette(nv) ? 1 : 0;
+    const pal = me.geometry.attributes.terrainPal;
+    if (pal.array.some((x, w) => x !== palWords[w])) { pal.array.set(palWords); pal.needsUpdate = true; }
     const attr = me.geometry.attributes.position, vb = attr.array;
     for (let v = 0, p = 0; v < nv; v++, p += 2) {
       const x = qPos[v * 3] - ox, y = qPos[v * 3 + 1] - oy, z = qPos[v * 3 + 2] - oz;
       const info = qInfo[v];
       if (x > xMax) xMax = x;
       if (z > zMax) zMax = z;
-      vb[p]     = x | z << 6 | (info & 15) << 12;
-      vb[p + 1] = y | (info >> 4) << 11;
+      vb[p]     = x | z << 6 | palSlot[info & 63] << 12;
+      vb[p + 1] = y | (info >> 6) << 11;
     }
     // A fresh buffer goes up whole on its first draw; a reused one sends only
     // the corners this rebuild wrote — whatever lies past them is never drawn.
@@ -4069,7 +4173,7 @@ let meshWorker = null, meshInflight = 0, meshJobSeq = 0;
 function meshWorkerSource() {
   return `'use strict';
 const GEN_N = ${GEN_N}, GEN_R = ${GEN_R}, BLOCK = ${BLOCK}, CHUNK = ${CHUNK}, CHUNK_N = ${CHUNK_N};
-const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, FK = ${FK};
+const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, MAT_IDS = ${MAT_IDS}, FK = ${FK};
 const GRAIN_GRID = ${GRAIN_GRID}, HALF_BLOCK = ${HALF_BLOCK};
 const FACES = ${JSON.stringify(FACES)}, MERGE_SIZE = ${JSON.stringify(MERGE_SIZE)};
 const GRAIN_TINTS = ${JSON.stringify(GRAIN_TINTS)};
@@ -4078,7 +4182,7 @@ const GRAIN_COS_B = new Float64Array(${JSON.stringify(Array.from(GRAIN_COS_B))})
 const sTop = new Int16Array(GEN_N * GEN_N), topLvl = new Int16Array(GEN_N * GEN_N), airLo = new Int16Array(GEN_N * GEN_N);
 const tint = new Float32Array(GEN_N * GEN_N), colMaxCap = new Int32Array(GEN_N * GEN_N), voxOff = new Int32Array(GEN_N * GEN_N);
 let voxMat = new Uint8Array(0), visBits = new Uint8Array(0);
-const mergeMatCounts = new Uint32Array(N_MATS);
+const mergeMatCounts = new Uint32Array(MAT_IDS);
 let faceKeys = new Float64Array(16384), faceN = 0, mergeMask = new Uint8Array(4096);
 let qPos = new Int32Array(16384 * 3), qInfo = new Uint16Array(16384), qN = 0;
 let rbI0 = 0, rbJ0 = 0, rbStep = 1;
@@ -7417,10 +7521,10 @@ const blocksHudEl = document.getElementById('blocks-hud');
 
 function refreshShovelUI() {
   const n = shovel.held.length;
-  const by = new Array(N_MATS).fill(0);
+  const by = new Array(MAT_IDS).fill(0);
   for (const m of shovel.held) by[m]++;
   const parts = [];
-  for (let m = 0; m < N_MATS; m++) if (by[m]) parts.push(by[m] + ' ' + MAT_NAMES[m]);
+  for (let m = 0; m < MAT_IDS; m++) if (by[m]) parts.push(by[m] + ' ' + (MAT_NAMES[m] || '?'));
   heldPanel.textContent = 'Blocks held: ' + n + (parts.length ? '  —  ' + parts.join(', ') : '');
   heldHudEl.textContent = String(n);
   shovelBtn.innerHTML = 'Shovel &mdash; ' + (shovel.on ? 'On' : 'Off');
@@ -7664,66 +7768,216 @@ const materialsBtn = document.getElementById('btn-materials');
 // Title-cased from MAT_NAMES for the one material with no stats row to name it.
 const titleCase = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
 
-document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
-  // getHexString() converts the linear-space colour back to the sRGB the browser
-  // wants, so the swatch matches what the cubes actually render as.
-  const hex = '#' + m.color.getHexString();
-  const st = MAT_STATS[i];
-  const name = st ? st.name : titleCase(MAT_NAMES[i]);
-  // Full width now, so the stats spell themselves out on one line.
-  const stats = st
-    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Compression: `
-      + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
-      + ` &middot; Pull: `
-      + `<input class="mat-str" data-mat="${i}" data-key="pull" type="text" inputmode="decimal" autocomplete="off" value="${st.pull}">`
-      + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
-    : '<span>no stats &mdash; not carryable</span>';
-  return '<div class="mat-row">'
-       + `<div class="mat-sw" style="background:${hex}"></div>`
-       + `<div class="mat-txt"><b>${name}</b>${stats}</div>`
-       + '</div>';
-}).join('');
-
-let materialsOpen = false;
-function setMaterialsUI(on) {
-  materialsOpen = on;
-  materialsEl.classList.toggle('on', on);
-  materialsBtn.classList.toggle('on', on);
-  // Closing with a strength field focused would leave the iOS keyboard up.
-  if (!on && materialsEl.contains(document.activeElement)) document.activeElement.blur();
-  // Full screen now, so it wants the cursor back — with the pointer locked there
-  // is nothing to click the X with, and mouse look would run on under the panel.
-  if (on && isLocked()) enterMouseMode();
+// ----- created materials -----
+// The player's own materials: ids CUSTOM_MAT0 and up, each a full row in every
+// table the built-in ones are in (MAT_STATS, MAT_NAMES, TERRAIN_MATS and the
+// shader's TERRAIN_BASE / TERRAIN_PBR), so everything that reads a material by
+// id — placing, the stress solver, powder, debris — takes them as they are.
+// Kept in localStorage, and carried in every save beside the blocks made of them.
+const CUSTOM_MATS_KEY = 'hermes.customMats';
+const isCustomMat = (m) => m >= CUSTOM_MAT0 && m < MAT_IDS && !!MAT_STATS[m];
+const customMatIds = () => {
+  const ids = [];
+  for (let m = CUSTOM_MAT0; m < MAT_IDS; m++) if (MAT_STATS[m]) ids.push(m);
+  return ids;
+};
+// A definition as stored, or null if it is not one.
+function customMatDef(d) {
+  if (!d || typeof d !== 'object') return null;
+  const num = (v, min) => (Number.isFinite(+v) && +v >= min ? +v : NaN);
+  const def = {
+    id: d.id | 0,
+    name: String(d.name || '').trim().slice(0, 20),
+    color: /^#[0-9a-f]{6}$/i.test(d.color) ? d.color.toLowerCase() : '',
+    weight: num(d.weight, 0), buoyancy: num(d.buoyancy, 0),
+    strength: num(d.strength, 1e-6), pull: num(d.pull, 1e-6), powder: !!d.powder,
+  };
+  if (def.id < CUSTOM_MAT0 || def.id >= MAT_IDS || !def.name || !def.color) return null;
+  if ([def.weight, def.buoyancy, def.strength, def.pull].some(Number.isNaN)) return null;
+  return def;
 }
-function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
+const customMatDefs = () => customMatIds().map((m) => ({ id: m, ...MAT_STATS[m] }));
+function customMatInstall(d) {
+  const { id, name, color, weight, buoyancy, strength, pull, powder } = d;
+  MAT_STATS[id] = { name, weight, buoyancy, strength, pull, powder, color };
+  MAT_NAMES[id] = name.toLowerCase();
+  const c = TERRAIN_MATS[id].color.set(color);
+  TERRAIN_BASE[id].set(c.r, c.g, c.b);
+  TERRAIN_PBR[id].w = powder ? 1 : 0;
+  // Grains of it were built in the old colour (an id freed by a delete, or
+  // recoloured by a save's own copy).
+  const g = fallingGrainGeos.get(id);
+  if (g) {
+    fallingGrainGeos.delete(id);
+    const L = fallingGrainLayers.get(id);
+    if (L) L.geometry = fallingGrainGeo(id);
+    g.dispose();
+  }
+}
+function customMatsStore() {
+  try { localStorage.setItem(CUSTOM_MATS_KEY, JSON.stringify(customMatDefs())); } catch (e) {}
+}
+try {
+  const saved = JSON.parse(localStorage.getItem(CUSTOM_MATS_KEY) || '[]');
+  if (Array.isArray(saved)) for (const d of saved) { const def = customMatDef(d); if (def) customMatInstall(def); }
+} catch (e) { console.warn('created materials unreadable', e); }
 
-// Strength (compression) and pull are edited in place: a number above zero goes
-// straight into MAT_STATS and the stress overlay re-solves with it; anything else
-// is left marked until the field is left, when it snaps back to the value in force.
-for (const el of document.querySelectorAll('#mat-list .mat-str')) {
-  const st = MAT_STATS[+el.dataset.mat], key = el.dataset.key;
-  el.addEventListener('input', () => {
-    const v = parseFloat(el.value.replace(',', '.'));
-    const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && v > 0;
-    el.classList.toggle('bad', !ok);
-    if (!ok || v === st[key]) return;
-    st[key] = v;
-    stressInvalidate();
-  });
-  el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
+// Blocks of material m anywhere they can be: the store, the player's hands, the
+// loose pieces and the grains in the air.
+function customMatInUse(m) {
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    const o = voxOff[k];
+    if (o < 0) continue;
+    for (let p = o, end = o + voxLen(k); p < end; p++) if (voxMat[p] === m) return true;
+  }
+  if (shovel.held.includes(m) || powderFalling.some((g) => g.mat === m)) return true;
+  for (const f of [...fallingChunks, ...restedChunks]) {
+    if (f.mesh?.userData.blocks?.some((b) => b.mat === m)) return true;
+  }
+  return false;
+}
+// Deleting is refused while any block of it exists (customMatInUse): an id with
+// no definition under blocks would leave them weightless and colourless, and a
+// later material reusing the id would silently take them over. Dig it out first.
+function customMatDelete(m) {
+  if (!isCustomMat(m)) return '';
+  if (customMatInUse(m)) return `${MAT_STATS[m].name} is still in the world — remove its blocks first`;
+  MAT_STATS[m] = null;
+  MAT_NAMES[m] = undefined;
+  if (placerMat === m) { placerMat = DIRT; placerMatName.textContent = MAT_STATS[DIRT].name; }
+  customMatsStore();
+  customMatsChanged();
+  return '';
+}
+// A save's own materials, put back at the ids its blocks use. A material of
+// this player's under one of those ids is moved to a free id (the world that
+// used it is the one being replaced, so nothing points at it) or, with none
+// free, dropped; one the save has too, by name, gives way to the save's copy.
+function customMatsAdopt(list) {
+  if (!Array.isArray(list)) return;
+  const defs = list.map(customMatDef).filter(Boolean);
+  if (!defs.length) return;
+  const mine = customMatDefs();
+  const names = new Set(defs.map((d) => d.name.toLowerCase()));
+  for (const d of mine) if (names.has(d.name.toLowerCase())) { MAT_STATS[d.id] = null; MAT_NAMES[d.id] = undefined; }
+  for (const d of defs) customMatInstall(d);
+  for (const d of mine) {
+    if (names.has(d.name.toLowerCase()) || !defs.some((s) => s.id === d.id)) continue;
+    let id = CUSTOM_MAT0;
+    while (id < MAT_IDS && MAT_STATS[id]) id++;
+    if (id === MAT_IDS) { console.warn('no free id for created material', d.name); continue; }
+    customMatInstall({ ...d, id });
+  }
+  customMatsStore();
+  customMatsChanged();
+}
+// Every list of materials is rebuilt from the tables.
+function customMatsChanged() {
+  buildMatList();
+  buildPlacerMatGrid();
+  buildMatBar();
+  buildChartGrid();
+  refreshShovelUI();
+}
+
+// One row per material: the built-in ones in TERRAIN_MATS order, then the
+// created ones, which can also be deleted.
+const matListEl = document.getElementById('mat-list');
+const matNewMsg = document.getElementById('mn-msg');
+function buildMatList() {
+  const ids = [];
+  for (let i = 0; i < N_MATS; i++) ids.push(i);
+  ids.push(...customMatIds());
+  matListEl.innerHTML = ids.map((i) => {
+    // getHexString() converts the linear-space colour back to the sRGB the browser
+    // wants, so the swatch matches what the cubes actually render as.
+    const hex = '#' + TERRAIN_MATS[i].color.getHexString();
+    const st = MAT_STATS[i];
+    const name = st ? escapeHtml(st.name) : titleCase(MAT_NAMES[i]);
+    // Full width now, so the stats spell themselves out on one line.
+    const stats = st
+      ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Compression: `
+        + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
+        + ` &middot; Pull: `
+        + `<input class="mat-str" data-mat="${i}" data-key="pull" type="text" inputmode="decimal" autocomplete="off" value="${st.pull}">`
+        + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
+      : '<span>no stats &mdash; not carryable</span>';
+    return '<div class="mat-row">'
+         + `<div class="mat-sw" style="background:${hex}"></div>`
+         + `<div class="mat-txt"><b>${name}</b>${stats}</div>`
+         + (isCustomMat(i) ? `<button class="mat-del" data-mat="${i}">Delete</button>` : '')
+         + '</div>';
+  }).join('');
+
+  // Strength (compression) and pull are edited in place: a number above zero goes
+  // straight into MAT_STATS and the stress overlay re-solves with it; anything else
+  // is left marked until the field is left, when it snaps back to the value in force.
+  for (const el of matListEl.querySelectorAll('.mat-str')) {
+    const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
+    el.addEventListener('input', () => {
+      const v = parseFloat(el.value.replace(',', '.'));
+      const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && v > 0;
+      el.classList.toggle('bad', !ok);
+      if (!ok || v === st[key]) return;
+      st[key] = v;
+      if (isCustomMat(m)) customMatsStore();
+      stressInvalidate();
+    });
+    el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+  }
+  for (const el of matListEl.querySelectorAll('.mat-del')) {
+    bindTap(el, () => { matNewMsg.textContent = customMatDelete(+el.dataset.mat) || 'Deleted'; });
+  }
+}
+const escapeHtml = (t) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+buildMatList();
+
+// The New material form. Strength and pull are the same numbers as the rows'
+// fields; weight and buoyancy are fixed once made, as they are for the others.
+const matNewEl = document.getElementById('mat-new');
+matNewEl.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+matNewEl.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
+for (const el of matNewEl.querySelectorAll('input[type=text]')) {
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
 }
+bindTap(document.getElementById('mn-add'), () => {
+  const val = (id) => parseFloat(document.getElementById(id).value.replace(',', '.'));
+  const name = document.getElementById('mn-name').value.trim();
+  const ids = customMatIds();
+  let id = CUSTOM_MAT0;
+  while (id < MAT_IDS && MAT_STATS[id]) id++;
+  const def = customMatDef({
+    id, name, color: document.getElementById('mn-color').value,
+    weight: val('mn-weight'), buoyancy: val('mn-buoy'), strength: val('mn-str'), pull: val('mn-pull'),
+    powder: document.getElementById('mn-powder').checked,
+  });
+  let msg = '';
+  if (ids.length >= CUSTOM_MAT_MAX) msg = `At most ${CUSTOM_MAT_MAX} created materials — delete one first`;
+  else if (!name) msg = 'Give it a name';
+  else if (MAT_NAMES.some((n) => n === name.toLowerCase().slice(0, 20))) msg = 'That name is taken';
+  else if (!def) msg = 'Weight and buoyancy need a number of 0 or more, compression and pull above 0';
+  if (msg) { matNewMsg.textContent = msg; return; }
+  customMatInstall(def);
+  customMatsStore();
+  customMatsChanged();
+  document.getElementById('mn-name').value = '';
+  matNewMsg.textContent = `Made ${def.name}`;
+});
 
 // The whole table, laid out as the MAT_STATS source is, so it pastes straight back.
 function matStatsSource() {
-  const rows = MAT_STATS.map((st, i) => {
+  const rows = MAT_STATS.slice(0, N_MATS).map((st, i) => {
     const tag = '  // ' + MAT_NAMES[i].toUpperCase().replace(/ /g, '_');
     if (!st) return '  null,'.padEnd(77) + tag;
     return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
          + `buoyancy: ${(st.buoyancy + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(6)}`
          + `pull: ${(st.pull + ',').padEnd(6)}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
-  return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n';
+  // The created materials after it, as their own list: id, colour and stats.
+  const made = customMatDefs().map((d) => '  ' + JSON.stringify(d).replace(/"(\w+)":/g, '$1: ').replace(/,(?=\w+: )/g, ', ') + ',');
+  return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n'
+    + (made.length ? '// Created in game\nconst CUSTOM_MATS = [\n' + made.join('\n') + '\n];\n' : '');
 }
 // iOS only lets a page write the clipboard inside the tap itself, so this is a
 // plain click handler (bindTap fires on pointerdown, which Safari doesn't count
@@ -7762,6 +8016,18 @@ matCopyBtn.addEventListener('click', (e) => {
 });
 matCopyBtn.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
 matCopyBtn.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
+let materialsOpen = false;
+function setMaterialsUI(on) {
+  // Closing with one of the fields still focused would leave the iOS keyboard up.
+  if (!on && materialsEl.contains(document.activeElement)) document.activeElement.blur();
+  materialsOpen = on;
+  materialsEl.classList.toggle('on', on);
+  materialsBtn.classList.toggle('on', on);
+  // With the pointer locked there is no cursor to hit the X or the fields with,
+  // and mouse look would keep running underneath.
+  if (on && isLocked()) enterMouseMode();
+}
+function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
 bindTap(materialsBtn, toggleMaterialsUI);
 bindTap(document.getElementById('mat-close'), () => setMaterialsUI(false));
 
@@ -7795,13 +8061,19 @@ const MAT_CHART = [
   { mat: 'Hard sand',     dry: '',              water: 'Wet sand',   rain: '',           break: 'Sand',                     compress: '' },
 ];
 
-document.getElementById('chart-grid').innerHTML =
-  '<div class="ch-h mat">Material</div>'
-  + CHART_COLS.map((c) => `<div class="ch-h ${c.key}">${c.label}${c.sub ? `<small>${c.sub}</small>` : ''}</div>`).join('')
-  + MAT_CHART.map((r) => `<div class="ch-mat">${r.mat}</div>`
-      + CHART_COLS.map((c) => r[c.key]
-          ? `<div class="ch-c">${r[c.key]}</div>`
-          : '<div class="ch-c empty">&mdash;</div>').join('')).join('');
+// A created material has no row of its own in MAT_CHART, so it shows with every
+// column empty — nothing happens to it, and it breaks as itself.
+function buildChartGrid() {
+  const made = customMatIds().map((m) => ({ mat: escapeHtml(MAT_STATS[m].name) }));
+  document.getElementById('chart-grid').innerHTML =
+    '<div class="ch-h mat">Material</div>'
+    + CHART_COLS.map((c) => `<div class="ch-h ${c.key}">${c.label}${c.sub ? `<small>${c.sub}</small>` : ''}</div>`).join('')
+    + [...MAT_CHART, ...made].map((r) => `<div class="ch-mat">${r.mat}</div>`
+        + CHART_COLS.map((c) => r[c.key]
+            ? `<div class="ch-c">${r[c.key]}</div>`
+            : '<div class="ch-c empty">&mdash;</div>').join('')).join('');
+}
+buildChartGrid();
 
 const chartBtn = document.getElementById('btn-chart');
 
@@ -8238,28 +8510,33 @@ function creativeAim() {
 }
 
 
-for (let m = 0; m < N_MATS; m++) {
-  if (m === WATER) continue;
-  const s = MAT_STATS[m];
-  if (!s) continue;
-  const btn = document.createElement('button');
-  btn.className = 'placer-mat-sel-btn';
-  const swatch = document.createElement('div');
-  swatch.className = 'swatch';
-  swatch.style.background = '#' + TERRAIN_MATS[m].color.getHexString();
-  const label = document.createElement('span');
-  label.textContent = s.name;
-  btn.appendChild(swatch);
-  btn.appendChild(label);
-  btn.addEventListener('click', () => {
-    placerMat = m;
-    placerMatName.textContent = s.name;
-    setPlacerMatUI(false);
-    if (volumeOn) updateVolumeGhosts();   // picking a material shouldn't swap tools
-    else setPlacer(true);
-  });
-  placerMatGrid.appendChild(btn);
+// Rebuilt by customMatsChanged when a material is made or deleted.
+function buildPlacerMatGrid() {
+  placerMatGrid.textContent = '';
+  for (let m = 0; m < MAT_IDS; m++) {
+    if (m === WATER) continue;
+    const s = MAT_STATS[m];
+    if (!s) continue;
+    const btn = document.createElement('button');
+    btn.className = 'placer-mat-sel-btn';
+    const swatch = document.createElement('div');
+    swatch.className = 'swatch';
+    swatch.style.background = '#' + TERRAIN_MATS[m].color.getHexString();
+    const label = document.createElement('span');
+    label.textContent = s.name;
+    btn.appendChild(swatch);
+    btn.appendChild(label);
+    btn.addEventListener('click', () => {
+      placerMat = m;
+      placerMatName.textContent = s.name;
+      setPlacerMatUI(false);
+      if (volumeOn) updateVolumeGhosts();   // picking a material shouldn't swap tools
+      else setPlacer(true);
+    });
+    placerMatGrid.appendChild(btn);
+  }
 }
+buildPlacerMatGrid();
 
 function setPlacerMatUI(on) {
   document.body.classList.toggle('placer-mat-open', on);
@@ -10588,8 +10865,9 @@ bindTap(stressShowBtn, () => setStress(stressOn, !stressShown));
 
 // ---- Material bar (creative tool) ----
 const matBar = document.getElementById('mat-bar');
-(function buildMatBar() {
-  for (let m = 0; m < N_MATS; m++) {
+function buildMatBar() {
+  matBar.textContent = '';
+  for (let m = 0; m < MAT_IDS; m++) {
     if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;
@@ -10611,9 +10889,9 @@ const matBar = document.getElementById('mat-bar');
     });
     matBar.appendChild(sq);
   }
-
-
-})();
+  updateMatBar();
+}
+buildMatBar();
 
 const btnMatBar = document.getElementById('btn-matbar');
 let matBarVisible = false;
@@ -11197,6 +11475,9 @@ function collectWorldMeta() {
     genState,
     settingsState,
     stressState,
+    // The created materials' definitions, so the ids in the store mean the same
+    // material wherever the save is opened (customMatsAdopt).
+    customMats: customMatDefs(),
   };
 }
 
@@ -11500,6 +11781,7 @@ function applyWorldState(s) {
   // damaged one fails here with the world untouched.
   const vs = s.voxelStore;
   const laid = vs.runs ? decodeVoxRuns(vs) : null;
+  customMatsAdopt(s.customMats);
   topLvl.set(vs.topLvl);
   bedLvl.set(vs.bedLvl);
   bedMat.set(vs.bedMat);
@@ -11542,7 +11824,8 @@ function applyWorldState(s) {
   shovel.held.push(...ts.shovel.held);
   setHammer(ts.hammer.on);
   setPlacer(ts.placer.on);
-  placerMat = ts.placer.mat;
+  placerMat = MAT_STATS[ts.placer.mat] ? ts.placer.mat : DIRT;
+  updateMatBar();
   placerMatName.textContent = MAT_STATS[placerMat]?.name || MAT_NAMES[placerMat];
   sandboxMode = ts.sandboxMode;
   document.body.classList.toggle('sandbox-mode', sandboxMode);

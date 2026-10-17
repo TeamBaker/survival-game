@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 215;
+window.GAME_VERSION = 216;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -8520,7 +8520,15 @@ function volumeGhostDebris(box, mesh) {
 function resetVolume() {
   volumeStep = 0;
   volumeC1 = volumeC2 = volumeLive = null;
+  volumeDelUI();
   updateVolumeGhosts();
+}
+
+// The shared DELETE button is the box's REMOVE, shown only once the box is set;
+// it goes back to DELETE for the creative tool.
+function volumeDelUI() {
+  placerDel.style.display = volumeOn && volumeStep !== 3 ? 'none' : '';
+  placerDel.lastChild.textContent = volumeOn ? 'REMOVE' : 'DELETE';
 }
 
 function setVolume(on) {
@@ -8531,8 +8539,6 @@ function setVolume(on) {
   volumeBtn.classList.toggle('on', on);
   volumeBtn.innerHTML = 'Volume &mdash; ' + (on ? 'On' : 'Off');
   document.body.classList.toggle('volume-on', on);
-  // PLACE is shared with the creative tool; DELETE has no meaning for a box.
-  placerDel.style.display = on ? 'none' : '';
   btnMatBar.style.display = on || placerOn ? 'block' : 'none';
   if (!on && !placerOn) setMatBarVis(false);
   resetVolume();
@@ -8562,6 +8568,7 @@ function volumePlace() {
     volumeTop = volumeLive ? volumeLive.lvl : volumeC1.lvl;
     volumeStep = 3;
     volumeLive = null;
+    volumeDelUI();
   } else {
     volumeFill(volumeBox(), placerMat);
     resetVolume();
@@ -8648,6 +8655,55 @@ function volumeFillDebris(f, box, m) {
   return placed;
 }
 
+// REMOVE on a set box: every solid block in it goes, as a creative DELETE would
+// take it, with the gravity owed by all of them paid once at the end.
+function volumeRemove() {
+  if (!volumeOn || volumeStep !== 3) return;
+  const box = volumeBox();
+  const f = volumeC1.mesh && volumeC1.mesh.parent && chunkOfMesh(volumeC1.mesh);
+  if (f) volumeRemoveDebris(f, box);
+  else {
+    gravDefer = true;
+    try {
+      for (let lvl = Math.max(VOX_FLOOR, box.l1); lvl <= box.l2; lvl++) {
+        for (let j = Math.max(0, box.j1); j <= Math.min(GEN_N - 1, box.j2); j++) {
+          for (let i = Math.max(0, box.i1); i <= Math.min(GEN_N - 1, box.i2); i++) {
+            const m = voxelAt(i, j, lvl);
+            if (m !== AIR && m !== WATER) editBlock(i, j, lvl, AIR);
+          }
+        }
+      }
+    } finally {
+      gravDefer = false;
+      flushGravity();
+      flushGravTouched();
+      gravAnchored.clear();
+    }
+  }
+  resetVolume();
+}
+
+// The piece's blocks inside the box are dug out as digDebrisBlock digs one —
+// from the back, so a cut never moves a block still to be cut — with the split
+// and the collider rebuild done once at the end.
+function volumeRemoveDebris(f, box) {
+  const mesh = f.mesh, lat = mesh.userData.blocks;
+  if (!lat) return 0;
+  let n = 0;
+  for (let q = lat.length - 1; q >= 0; q--) {
+    const b = lat[q];
+    if (b.gi < box.i1 || b.gi > box.i2 || b.gj < box.j1 || b.gj > box.j2 || b.lvl < box.l1 || b.lvl > box.l2) continue;
+    cutDebrisLat(mesh, q);
+    n++;
+  }
+  if (!n) return 0;
+  if (!lat.length) { removeDebrisMesh(mesh); return n; }
+  splitDebrisIfNeeded(mesh);
+  rebuildDebrisBody(mesh, f.body);
+  f.still = 0;
+  return n;
+}
+
 // Called every frame while the Volume tool is active — updates aim and ghost preview.
 function updateVolume() {
   // The piece the box was anchored on is gone — its lattice cells mean nothing now.
@@ -8676,6 +8732,7 @@ bindTap(placerDo, () => {
 });
 
 bindTap(placerDel, () => {
+  if (volumeOn) { volumeRemove(); return; }
   if (!placerOn) return;
   if (creative.hit) {
     const { i, j, lvl } = creative.hit;

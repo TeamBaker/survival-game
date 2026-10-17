@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 199;
+window.GAME_VERSION = 220;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -414,7 +414,7 @@ window.GAME_VERSION = 199;
     touch-action: manipulation;
   }
   #mat-close:active { transform: translateY(1px); }
-  /* Strength is the one number tuned from here. 16px keeps iOS from zooming on
+  /* Strength and pull are the numbers tuned from here. 16px keeps iOS from zooming on
      focus; the box is tall enough to hit with a thumb. */
   .mat-str {
     width: 72px;
@@ -449,6 +449,29 @@ window.GAME_VERSION = 199;
     touch-action: manipulation;
   }
   #mat-copy:active { transform: translateY(1px); }
+  /* The New material form, and the Delete on a created material's row. */
+  #mat-new { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(150, 195, 245, 0.25); }
+  .mn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 8px; color: #7fa8d8; font-size: 11px; }
+  #mn-name { width: 180px; }
+  #mn-color { width: 54px; height: 38px; padding: 0; border: 1px solid rgba(150, 195, 245, 0.45); border-radius: 6px; background: none; }
+  .mn-chk input { width: 22px; height: 22px; vertical-align: middle; }
+  .mat-btn, .mat-del {
+    min-height: 38px;
+    padding: 0 16px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .mat-del { flex: 0 0 auto; margin-left: auto; color: #f0b0a6; border-color: rgba(224, 106, 90, 0.5); }
+  #mn-msg { min-height: 1.4em; margin-top: 6px; color: #9ecbff; font-size: 11px; }
   #mat-foot { margin-top: 14px; color: #62819f; font-size: 11px; }
   #mat-foot b { color: #9ecbff; }
   /* A phone has no number row — the MATS button is the whole interface there. */
@@ -1429,6 +1452,22 @@ window.GAME_VERSION = 199;
   <span class="title">Materials</span>
   <button id="mat-copy">Copy stats</button>
   <div id="mat-list"></div>
+  <div id="mat-new">
+    <span class="title">New material</span>
+    <div class="mn-row">
+      <input id="mn-name" class="mat-str" type="text" maxlength="20" placeholder="Name" autocomplete="off">
+      <input id="mn-color" type="color" value="#6f9a5a" aria-label="Colour">
+    </div>
+    <div class="mn-row">
+      <label>Weight <input id="mn-weight" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="2"></label>
+      <label>Buoyancy <input id="mn-buoy" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="0"></label>
+      <label>Compression <input id="mn-str" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="1000"></label>
+      <label>Pull <input id="mn-pull" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="100"></label>
+      <label class="mn-chk"><input id="mn-powder" type="checkbox"> Powder</label>
+    </div>
+    <button id="mn-add" class="mat-btn">Create</button>
+    <div id="mn-msg"></div>
+  </div>
   <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / buoy / str</div>
 </div>
 
@@ -1538,7 +1577,8 @@ window.GAME_VERSION = 199;
       <button id="btn-debug-chunks" class="ui-el">Chunks: Off</button>
       <button id="btn-debug-collision" class="ui-el">Collision: Off</button>
       <button id="btn-coltest" class="ui-el">COL TEST: Off</button>
-      <button id="btn-stress" class="ui-el">Stress: Shown</button>
+      <button id="btn-stress" class="ui-el">Tension: On</button>
+      <button id="btn-stress-show" class="ui-el">Show Tension: Off</button>
     </div>
   </div>
 </div>
@@ -2290,8 +2330,16 @@ const STONE_DUST = 8, STONE_MUD = 9, BRITTLE_STONE = 10;
 const CLAY = 11, CLAY_MUD = 12, HARD_CLAY = 13;
 const N_MATS = 16;
 // Not a terrain material: the value the voxel store below uses for a block that
-// is not there. It sorts after the real ones so `m < AIR` means solid.
+// is not there. It sorts after the built-in ones.
 const AIR = N_MATS;
+// Materials the player creates in the Materials panel take the ids after AIR, so
+// the built-in ids, AIR and every old save keep the values they always had. The
+// store is bytes and has room; it is the chunk vertex, with 4 bits for the
+// material, that sets the limit — a chunk may name 16 materials at once (see
+// chunkPalette) — so the cap is kept well under that. MAT_IDS bounds every id a
+// voxel can hold, AIR included.
+const CUSTOM_MAT0 = AIR + 1, CUSTOM_MAT_MAX = 8;
+const MAT_IDS = CUSTOM_MAT0 + CUSTOM_MAT_MAX;
 
 // The numbers are the material's own properties, indexed by material id: weight
 // is how much a block of it drags on you, and is read as-is by the sim — the
@@ -2300,26 +2348,32 @@ const AIR = N_MATS;
 // Buoyancy is how much the water pushes it back up, strength how much work it
 // takes to break out of the ground — read as-is too, by the stress solver's
 // beam stiffness and overlay — powder whether it is loose and crumbly.
+// Strength is what it takes to crush it (compression, and the beam stiffness);
+// pull what it takes to pull it apart (tension). A row with no pull of its own
+// takes its strength for both.
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 2.2,   buoyancy: 0, strength: 0.5,  powder: true  },  // SAND
-  { name: 'Dirt',          weight: 2,     buoyancy: 0, strength: 50,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 6,     buoyancy: 0, strength: 15000,powder: false },  // ROCK
+  { name: 'Sand',          weight: 2.2,   buoyancy: 0, strength: 0.5,  pull: 0.5,  powder: true  },  // SAND
+  { name: 'Dirt',          weight: 2,     buoyancy: 0, strength: 1000, pull: 50,   powder: false },  // DIRT
+  { name: 'Rock',          weight: 6,     buoyancy: 0, strength: 15000,pull: 5000, powder: false },  // ROCK
   null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 2,     buoyancy: 0, strength: 0.5,  powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 4,     buoyancy: 0, strength: 70,   powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 2,     buoyancy: 0, strength: 100,  powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 4,     buoyancy: 0, strength: 70,   powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 5,     buoyancy: 0, strength: 1,    powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 6,     buoyancy: 0, strength: 150,  powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 5,     buoyancy: 0, strength: 5000, powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 2.4,   buoyancy: 0, strength: 1.2,  powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 4.4,   buoyancy: 0, strength: 100,  powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 2.4,   buoyancy: 0, strength: 2000, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 4.2,   buoyancy: 0, strength: 0.8,  powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 1000, powder: false },  // HARD_SAND
+  { name: 'Fine Dirt',     weight: 2,     buoyancy: 0, strength: 0.5,  pull: 0.5,  powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 4,     buoyancy: 0, strength: 1000, pull: 70,   powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 2,     buoyancy: 0, strength: 1000, pull: 100,  powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 4,     buoyancy: 0, strength: 70,   pull: 70,   powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 5,     buoyancy: 0, strength: 1,    pull: 1,    powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 6,     buoyancy: 0, strength: 1000, pull: 150,  powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 5,     buoyancy: 0, strength: 5000, pull: 2500, powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 2.4,   buoyancy: 0, strength: 1.2,  pull: 1.2,  powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 4.4,   buoyancy: 0, strength: 1000, pull: 100,  powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 2.4,   buoyancy: 0, strength: 2000, pull: 1000, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 4.2,   buoyancy: 0, strength: 1000, pull: 0.8,  powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 1000, pull: 500,  powder: false },  // HARD_SAND
 ];
+for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
+// AIR's row and the created materials' (filled in by customMatInstall).
+while (MAT_STATS.length < MAT_IDS) MAT_STATS.push(null);
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -2788,6 +2842,14 @@ function growColumn(k, needLv) {
 // Bumped on every write, and on every change to a fallen piece's lattice, so the
 // stress overlay (updateStress) knows the structure it last solved is stale.
 let stressRev = 0;
+// Columns written since the stress layout last looked at them: the only places
+// ground can have come to hang over a gap (see stressHangScan). Generated ground
+// is solid from bedrock up, so nothing else needs looking at.
+const stressCols = new Set();
+// Columns written since the ground standing in them was last checked for
+// breaking under its own weight (see stressGroundBreaks). Unlike stressCols,
+// nothing is let go of here until it has been looked at.
+const stressGroundCols = new Set();
 function setVoxel(i, j, lvl, m) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
   const k = j * GEN_N + i;
@@ -2801,6 +2863,8 @@ function setVoxel(i, j, lvl, m) {
   if (was === m) return was;
   voxMat[p] = m;
   stressRev++;
+  stressCols.add(k);
+  stressGroundCols.add(k);
   if (was === AIR) worldBlocks++;
   else if (m === AIR) worldBlocks--;
   // Keep the cached surface honest. Stacking one on top only ever raises it;
@@ -2901,6 +2965,9 @@ const TERRAIN_MATS = [
   mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
   mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
 ];
+// AIR's slot (never drawn) and the created materials', recoloured by
+// customMatInstall — every table below is indexed by the same ids.
+while (TERRAIN_MATS.length < MAT_IDS) TERRAIN_MATS.push(mat(0x808080, 0.92, 0.00, { envMapIntensity: 0.40 }));
 // The same materials again, white and vertex-coloured, for what carries its
 // colour on its own vertices — falling grains and broken-off pieces, which bake
 // in the shade the block had in the ground — so what the shader multiplies that
@@ -2947,6 +3014,11 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 // before the one transform every chunk mesh shares (TERRAIN_ORIGIN, HALF_BLOCK)
 // takes it on to metres. A corner two chunks share still comes out
 // bit-identical in both.
+//
+// The 4-bit material id is a slot in the chunk's own palette, not the material:
+// terrainPal, one vec4 per instance (so per chunk, and no bigger a vertex), holds
+// the material id of each of the 16 slots, 6 bits apiece, four to a float. A
+// chunk of built-in materials only has the identity palette; see chunkPalette.
 const TERRAIN_PBR = TERRAIN_MATS.map((m, i) =>
   new THREE.Vector4(m.roughness, m.metalness, m.envMapIntensity, MAT_STATS[i]?.powder ? 1 : 0));
 const TERRAIN_BASE = TERRAIN_MATS.map((m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b));
@@ -3023,7 +3095,8 @@ TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
   sh.uniforms.terrainCols = { value: terrainCols };
   sh.uniforms.terrainSeed = { value: SEED | 0 };
   terrainVertex(sh);
-  sh.vertexShader = `uniform vec4 terrainPbr[${TERRAIN_PBR.length}];\nuniform vec3 terrainBase[${TERRAIN_BASE.length}];\n`
+  sh.vertexShader = `#ifndef TERRAIN_NO_PAL\nattribute vec4 terrainPal;\n#endif\n`
+    + `uniform vec4 terrainPbr[${TERRAIN_PBR.length}];\nuniform vec3 terrainBase[${TERRAIN_BASE.length}];\n`
     + `varying vec4 vPbr;\nvarying vec3 vBase;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\nvarying vec3 vLod;\n`
     + `varying vec4 vTerrSpec;\nvarying vec3 vTerrRad;\nvarying vec3 vTerrIrr;\n`
     + sh.vertexShader.replace('#include <common>', '#include <common>\n' + terrainSpecGlsl(scene.environment))
@@ -3032,7 +3105,12 @@ TERRAIN_CHUNK_MAT.onBeforeCompile = (sh) => {
   float tsg = (tf & 1) == 0 ? 1.0 : -1.0;
   vec3 objectNormal = vec3(tf < 2 ? tsg : 0.0, tf / 2 == 1 ? tsg : 0.0, tf >= 4 ? tsg : 0.0);`)
     .replace('// terrain vertex unpacked', `
+#ifdef TERRAIN_NO_PAL
   int tm = tw.x >> 12;
+#else
+  int tl = tw.x >> 12;
+  int tm = (int(terrainPal[tl >> 2]) >> ((tl & 3) * 6)) & 63;
+#endif
   vPbr = terrainPbr[tm];
   vBase = terrainBase[tm];
   vTerrPos = (modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz;
@@ -3155,8 +3233,10 @@ void RE_Direct_Terrain(const in IncidentLight directLight, const in vec3 geometr
 // instance matrix is the identity and each corner carries its own chunk's origin
 // beside it instead: added on in the same whole half-blocks, the sum is exactly
 // what the chunk's own mesh would have drawn.
+// A group is only merged when none of its chunks has a palette of its own
+// (chunkCustom), so its slots are the material ids as they stand.
 function terrainBatchVertex(sh) {
-  sh.vertexShader = 'attribute vec3 terrainOff;\n' + sh.vertexShader
+  sh.vertexShader = '#define TERRAIN_NO_PAL\nattribute vec3 terrainOff;\n' + sh.vertexShader
     .replace('float((tw.x >> 6) & 63));', 'float((tw.x >> 6) & 63)) + terrainOff;')
     .replace('ivec2(instanceMatrix[3].xz)', 'ivec2(instanceMatrix[3].xz + terrainOff.xz)');
 }
@@ -3308,7 +3388,7 @@ function lodStepFor(dist) {
 const MERGE_SIZE = [1, 2, 4, 5];
 const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
 
-const mergeMatCounts = new Uint32Array(N_MATS);
+const mergeMatCounts = new Uint32Array(MAT_IDS);
 
 // Scratch, reused by every rebuild. The first pass records each exposed face of
 // the chunk as a single number (see addFace): its direction, the plane it lies
@@ -3321,7 +3401,7 @@ let faceKeys = new Float64Array(16384);
 let faceN = 0;
 let mergeMask = new Uint8Array(4096);
 // What the merge comes out as: four loose corners a quad — position in
-// half-blocks and m | f << 4 | (step - 1) << 7, which rebuildChunk packs into
+// half-blocks and m | f << 6 | (step - 1) << 9, which rebuildChunk packs into
 // the chunk's vertices (see TERRAIN_CHUNK_MAT) — and nothing shared
 // between quads, since two faces meeting at an edge disagree about the normal
 // there. Every material goes in the one buffer: typed scratch that only ever
@@ -3398,8 +3478,9 @@ function setColTexel(i, j, t, top, cx, cz) {
 // One face, as a key that sorts by direction, then plane, then row (v), then
 // along the row (u). Columns and rows count from the chunk's first (a LOD cube
 // may run a few past its last), levels up from VOX_FLOOR; 13 bits apiece, which
-// with the direction and the material is a 46-bit integer — exact in a double,
-// and every field a power of two apart, so it comes back apart exactly too.
+// with the direction and the material is a 47-bit integer — exact in a double,
+// and every field but the material a power of two apart; all of them come back
+// apart exactly by floor and modulo.
 const FK = 8192;
 function addFace(f, plane, u, v, m) {
   if (faceN === faceKeys.length) {
@@ -3407,7 +3488,7 @@ function addFace(f, plane, u, v, m) {
     grown.set(faceKeys);
     faceKeys = grown;
   }
-  faceKeys[faceN++] = (((f * FK + plane) * FK + v) * FK + u) * N_MATS + m;
+  faceKeys[faceN++] = (((f * FK + plane) * FK + v) * FK + u) * MAT_IDS + m;
 }
 
 // Face f of the box S blocks a side whose low corner is chunk-local column li,
@@ -3433,7 +3514,7 @@ function pushQuad(f, m) {
     qPos = pos; qInfo = inf;
   }
   const v = FACES[f].v;
-  const info = m | f << 4 | (rbStep - 1) << 7;
+  const info = m | f << 6 | (rbStep - 1) << 9;
   for (let q = 0; q < 4; q++, qN++) {
     const o = q * 3, p = qN * 3;
     qPos[p]     = v[o]     < 0 ? qLo[0] : qHi[0];
@@ -3475,7 +3556,7 @@ function emitRect(f, plane, u, v, w, h, m) {
 // many rows as hold it all the way across, and emit that as one quad.
 function mergeFaces() {
   const keys = faceKeys.subarray(0, faceN).sort();
-  const ROW = FK * N_MATS, PLANE = FK * ROW;
+  const ROW = FK * MAT_IDS, PLANE = FK * ROW;
   for (let g0 = 0; g0 < faceN; ) {
     const fp = Math.floor(keys[g0] / PLANE);
     let g1 = g0 + 1;
@@ -3484,7 +3565,7 @@ function mergeFaces() {
     const vMin = Math.floor(keys[g0] / ROW) % FK, vMax = Math.floor(keys[g1 - 1] / ROW) % FK;
     let uMin = FK, uMax = 0;
     for (let g = g0; g < g1; g++) {
-      const u = Math.floor(keys[g] / N_MATS) % FK;
+      const u = Math.floor(keys[g] / MAT_IDS) % FK;
       if (u < uMin) uMin = u;
       if (u > uMax) uMax = u;
     }
@@ -3494,7 +3575,7 @@ function mergeFaces() {
     M.fill(0, 0, W * H);
     for (let g = g0; g < g1; g++) {
       const k = keys[g];
-      M[(Math.floor(k / ROW) % FK - vMin) * W + Math.floor(k / N_MATS) % FK - uMin] = k % N_MATS + 1;
+      M[(Math.floor(k / ROW) % FK - vMin) * W + Math.floor(k / MAT_IDS) % FK - uMin] = k % MAT_IDS + 1;
     }
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
@@ -3591,7 +3672,7 @@ function collectColumn(i, j, step = 1) {
         if (mm !== AIR) mergeMatCounts[mm]++;
       }
   let m = -1, best = 0;
-  for (let mm = 0; mm < N_MATS; mm++) {
+  for (let mm = 0; mm < MAT_IDS; mm++) {
     if (mergeMatCounts[mm] > best) { best = mergeMatCounts[mm]; m = mm; }
   }
   if (m < 0) return 0;
@@ -3732,7 +3813,7 @@ function mergeBatch(b) {
   let nv = 0, n = 0;
   for (let cj = cj0; cj < cj1; cj++) for (let ci = ci0; ci < ci1; ci++) {
     const c = cj * CHUNK_N + ci, ms = chunkMesh[c];
-    if (!ms || chunkStep[c] < BATCH_STEP) return;
+    if (!ms || chunkStep[c] < BATCH_STEP || chunkCustom[c]) return;
     if (ms.length) { nv += (ms[0].geometry.drawRange.count / 6) * 4; n++; }
   }
   // Nothing to gain from fewer than two, and past QUAD_INDEX's reach the chunks
@@ -3792,6 +3873,39 @@ function applyRenderDist() {
   }
 }
 
+// A vertex has 4 bits for its material, so the 16 values are a chunk-local
+// palette (terrainPal, see TERRAIN_CHUNK_MAT). Each built-in material is its own
+// slot; a created one borrows the slot of a built-in material this chunk does
+// not draw. Should one chunk ever draw more than 16 materials at once, the ones
+// left over are drawn in DIRT's slot — only the colour is wrong, and only until
+// the chunk is rebuilt with fewer; the store itself never sees the palette.
+// chunkCustom marks a chunk whose palette is not the identity, which keeps it
+// out of mergeBatch (a merged group has no per-chunk palette to carry).
+const chunkCustom = new Uint8Array(CHUNK_N * CHUNK_N);
+const palSlot = new Uint8Array(MAT_IDS), palId = new Uint8Array(16);
+const palWords = new Float32Array(4);
+function chunkPalette(nv) {
+  let used = 0, custom = 0;
+  for (let v = 0; v < nv; v += 4) {
+    const m = qInfo[v] & 63;
+    if (m < N_MATS) used |= 1 << m;
+    else if (m >= CUSTOM_MAT0) custom |= 1 << (m - CUSTOM_MAT0);
+  }
+  for (let m = 0; m < 16; m++) palSlot[m] = palId[m] = m;
+  for (let c = 0, free = 0; c < CUSTOM_MAT_MAX; c++) {
+    if (!(custom >> c & 1)) continue;
+    while (free < 16 && used >> free & 1) free++;
+    if (free === 16) { palSlot[CUSTOM_MAT0 + c] = DIRT; continue; }
+    palSlot[CUSTOM_MAT0 + c] = free;
+    palId[free] = CUSTOM_MAT0 + c;
+    used |= 1 << free;
+  }
+  for (let w = 0; w < 4; w++) {
+    palWords[w] = palId[w * 4] + palId[w * 4 + 1] * 64 + palId[w * 4 + 2] * 4096 + palId[w * 4 + 3] * 262144;
+  }
+  return custom !== 0;
+}
+
 // (Re)build one chunk's mesh from the store. Cheap enough to call from a tap:
 // the whole cost is one pass over the chunk's columns, a sort and merge of the
 // faces it found, and two small uploads — the mesh and the chunk's column patch.
@@ -3847,6 +3961,7 @@ function rebuildChunk(c, r) {
   let me = meshes[0] || null;
   const nv = qN, nq = nv >> 2;
   if (nq === 0) {                                // plenty of chunks are all air
+    chunkCustom[c] = 0;
     if (me) dropChunkMesh(me);
     meshes.length = 0;
   } else {
@@ -3882,6 +3997,7 @@ function rebuildChunk(c, r) {
         }
         geo.setIndex(new THREE.BufferAttribute(idx, 1));
       }
+      geo.setAttribute('terrainPal', new THREE.InstancedBufferAttribute(new Float32Array(4), 4));
       me = new THREE.InstancedMesh(geo, TERRAIN_CHUNK_MAT, 1);
       me.boundingSphere = new THREE.Sphere();
       me.customDepthMaterial = TERRAIN_CHUNK_DEPTH;
@@ -3895,14 +4011,17 @@ function rebuildChunk(c, r) {
       meshes.length = 0;
       meshes.push(me);
     }
+    chunkCustom[c] = chunkPalette(nv) ? 1 : 0;
+    const pal = me.geometry.attributes.terrainPal;
+    if (pal.array.some((x, w) => x !== palWords[w])) { pal.array.set(palWords); pal.needsUpdate = true; }
     const attr = me.geometry.attributes.position, vb = attr.array;
     for (let v = 0, p = 0; v < nv; v++, p += 2) {
       const x = qPos[v * 3] - ox, y = qPos[v * 3 + 1] - oy, z = qPos[v * 3 + 2] - oz;
       const info = qInfo[v];
       if (x > xMax) xMax = x;
       if (z > zMax) zMax = z;
-      vb[p]     = x | z << 6 | (info & 15) << 12;
-      vb[p + 1] = y | (info >> 4) << 11;
+      vb[p]     = x | z << 6 | palSlot[info & 63] << 12;
+      vb[p + 1] = y | (info >> 6) << 11;
     }
     // A fresh buffer goes up whole on its first draw; a reused one sends only
     // the corners this rebuild wrote — whatever lies past them is never drawn.
@@ -4054,7 +4173,7 @@ let meshWorker = null, meshInflight = 0, meshJobSeq = 0;
 function meshWorkerSource() {
   return `'use strict';
 const GEN_N = ${GEN_N}, GEN_R = ${GEN_R}, BLOCK = ${BLOCK}, CHUNK = ${CHUNK}, CHUNK_N = ${CHUNK_N};
-const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, FK = ${FK};
+const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, MAT_IDS = ${MAT_IDS}, FK = ${FK};
 const GRAIN_GRID = ${GRAIN_GRID}, HALF_BLOCK = ${HALF_BLOCK};
 const FACES = ${JSON.stringify(FACES)}, MERGE_SIZE = ${JSON.stringify(MERGE_SIZE)};
 const GRAIN_TINTS = ${JSON.stringify(GRAIN_TINTS)};
@@ -4063,7 +4182,7 @@ const GRAIN_COS_B = new Float64Array(${JSON.stringify(Array.from(GRAIN_COS_B))})
 const sTop = new Int16Array(GEN_N * GEN_N), topLvl = new Int16Array(GEN_N * GEN_N), airLo = new Int16Array(GEN_N * GEN_N);
 const tint = new Float32Array(GEN_N * GEN_N), colMaxCap = new Int32Array(GEN_N * GEN_N), voxOff = new Int32Array(GEN_N * GEN_N);
 let voxMat = new Uint8Array(0), visBits = new Uint8Array(0);
-const mergeMatCounts = new Uint32Array(N_MATS);
+const mergeMatCounts = new Uint32Array(MAT_IDS);
 let faceKeys = new Float64Array(16384), faceN = 0, mergeMask = new Uint8Array(4096);
 let qPos = new Int32Array(16384 * 3), qInfo = new Uint16Array(16384), qN = 0;
 let rbI0 = 0, rbJ0 = 0, rbStep = 1;
@@ -5292,6 +5411,58 @@ const camTarget   = new THREE.Vector3();
 const camBack     = new THREE.Vector3();
 const boomRay     = new THREE.Raycaster();
 
+// Does a block stop the third-person camera? Water does only while the head is
+// out of it, so the camera stays above the surface on land and follows you in
+// when you wade under.
+let boomWaterBlocks = true;
+const boomBlocks = (m) => m !== AIR && (m !== WATER || boomWaterBlocks);
+
+// How far along a ray from `o` in unit direction `d` the first blocking block
+// starts, or Infinity if there is none within `maxT`. A grid walk (Amanatides &
+// Woo) in block coordinates, so it never steps over a block however thin.
+function boomBlockHit(o, d, maxT) {
+  boomWaterBlocks = voxelAtWorld(o.x, o.y, o.z) !== WATER;
+  const gx = (o.x + GEN_R) / BLOCK, gy = o.y / BLOCK, gz = (o.z + GEN_R) / BLOCK;
+  let i = Math.floor(gx), l = Math.floor(gy), j = Math.floor(gz);
+  const si = d.x > 0 ? 1 : -1, sl = d.y > 0 ? 1 : -1, sj = d.z > 0 ? 1 : -1;
+  const di = d.x !== 0 ? Math.abs(BLOCK / d.x) : Infinity;
+  const dl = d.y !== 0 ? Math.abs(BLOCK / d.y) : Infinity;
+  const dj = d.z !== 0 ? Math.abs(BLOCK / d.z) : Infinity;
+  let ti = d.x !== 0 ? ((d.x > 0 ? i + 1 - gx : gx - i) * di) : Infinity;
+  let tl = d.y !== 0 ? ((d.y > 0 ? l + 1 - gy : gy - l) * dl) : Infinity;
+  let tj = d.z !== 0 ? ((d.z > 0 ? j + 1 - gz : gz - j) * dj) : Infinity;
+  let t = 0;
+  while (t <= maxT) {
+    if (boomBlocks(voxelAt(i, j, l))) return t;
+    if (ti <= tl && ti <= tj) { t = ti; ti += di; i += si; }
+    else if (tl <= tj)        { t = tl; tl += dl; l += sl; }
+    else                      { t = tj; tj += dj; j += sj; }
+  }
+  return Infinity;
+}
+
+// The boom only keeps the camera's centre out of the blocks; the near plane is a
+// little in front of it and would still cut into a floor or roof it runs along.
+// Ease it off either one vertically, but only into air that the head can see,
+// and if it is squeezed between both settle it halfway rather than pass through.
+const BOOM_PAD = 0.3;
+function boomClearance(c, head) {
+  const solid = (y) => boomBlocks(voxelAtWorld(c.x, y, c.z));
+  if (solid(c.y)) { c.copy(head); return; }          // nowhere safe on the boom
+  const below = solid(c.y - BOOM_PAD), above = solid(c.y + BOOM_PAD);
+  if (below && above) {
+    const floor = (lvlOfY(c.y - BOOM_PAD) + 1) * BLOCK, roof = lvlOfY(c.y + BOOM_PAD) * BLOCK;
+    const y = (floor + roof) / 2;
+    if (!solid(y)) c.y = y;
+  } else if (below) {
+    const y = (lvlOfY(c.y - BOOM_PAD) + 1) * BLOCK + BOOM_PAD;
+    if (!solid(y + BOOM_PAD) && !solid(y)) c.y = y;
+  } else if (above) {
+    const y = lvlOfY(c.y + BOOM_PAD) * BLOCK - BOOM_PAD;
+    if (!solid(y - BOOM_PAD) && !solid(y)) c.y = y;
+  }
+}
+
 function updateCamera(dt) {
   const p = playerBody.position;
   const feetY = p.y - centerOffset();
@@ -5314,14 +5485,26 @@ function updateCamera(dt) {
       boomRay.far = dist + 0.5;
       const hit = boomRay.intersectObjects(objects.children, false)[0];
       if (hit) dist = Math.max(1.1, hit.distance - 0.35);   // pull in past props
+      // The boom ray only knows about the props, so the terrain is handled
+      // separately: walk the blocks from the head back along the boom and pull
+      // the camera in in front of the first one, whichever way it is facing —
+      // floor, wall or a ceiling overhead. It used to be lifted to the top of the
+      // column instead, which under a roof meant up through it and out on top.
+      const tHit = boomBlockHit(camTarget, camBack, dist + 0.35);
+      if (tHit < dist + 0.35) dist = Math.min(dist, Math.max(0.05, tHit - 0.35));
       desiredPos.copy(camTarget).addScaledVector(camBack, dist);
+      boomClearance(desiredPos, camTarget);
+      // Off the field there are no blocks to walk, only the sea floor, and
+      // nothing overhead to push through.
+      const ci = colI(desiredPos.x), cj = colJ(desiredPos.z);
+      if (ci < 0 || cj < 0 || ci >= GEN_N || cj >= GEN_N || topLvl[cj * GEN_N + ci] === NO_COLUMN) {
+        const floorY = groundHeightAt(desiredPos.x, desiredPos.z) + 0.6;
+        if (desiredPos.y < floorY) desiredPos.y = floorY;
+      }
     }
-    // The boom ray only knows about the props, so the ground is handled
-    // separately: never let the boom drop the camera through the deck. Off the
-    // platform the floor is the sea bed. (Top-down needs no such guard — it sits straight
-    // above the player, and flat ground has nothing overhead.)
-    const floorY = groundHeightAt(desiredPos.x, desiredPos.z) + 0.6;
-    if (desiredPos.y < floorY) desiredPos.y = floorY;
+    // First person needs no guard: the eye is inside the body, and the body is
+    // kept out of the ground by the physics. (Top-down needs none either — it
+    // sits straight above the player, and flat ground has nothing overhead.)
   }
   desiredQuat.setFromEuler(camEuler);
 
@@ -5600,7 +5783,6 @@ const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 // that it collides as the single box that encloses it, which still falls and
 // tumbles convincingly and costs the same whatever it is made of.
 const FALL_BODY_CAP  = 20;    // pieces under physics at once
-const FALL_MESH_CAP  = 60;    // pieces left lying about once they have settled — they keep their bodies, so this bounds the physics world too
 const FALL_MASS_CAP  = 40;    // a cliff face weighs as much as the solver can take, not as much as it is
 const FALL_KG_PER_WEIGHT = 5;   // kg of body mass per unit of MAT_STATS weight
 // Water has no stats and is never part of a piece; anything statless counts as dirt.
@@ -5900,13 +6082,13 @@ const powderQueue = [];  // { i, j, lvl }
 // puts a body that has not moved for a second to sleep on its own, and a
 // sleeping body still collides — so the player walking into a heap, or the next
 // piece landing on it, shoves it awake again instead of passing through scenery.
-// Only the cull below, and digging the last block off a piece, take a body out
-// of the world.
+// There is no cap on how many lie about: once landed, a piece stays. Only
+// falling out of the world, and digging the last block off a piece, take a
+// body out of the world.
 function restFallingChunk(n) {
   const f = fallingChunks[n];
   fallingChunks.splice(n, 1);
   restedChunks.push(f);
-  while (restedChunks.length > FALL_MESH_CAP) dropChunk(restedChunks.shift());
 }
 
 // Take a piece away for good: body out of the world, mesh out of the scene.
@@ -5985,11 +6167,14 @@ function spawnFallingChunk(unit) {
   // against the piece is snapped to this rather than to the world grid.
   mesh.userData.blocks = blocks.map((b, q) => {
     const pos = new THREE.Vector3(colX(b.i) - cx, (b.lvl + 0.5) * BLOCK - cy, colZ(b.j) - cz);
-    const e = { pos, mat: b.m, color: b.color ? b.color.clone() : null, gi: b.i, gj: b.j, lvl: b.lvl };
+    // The crack it had where it stood goes with it (stressWriteColor).
+    const e = { pos, mat: b.m, color: b.color ? b.color.clone() : null, gi: b.i, gj: b.j, lvl: b.lvl,
+                crack: b.crack ?? stressCrackAt(b.i, b.j, b.lvl) };
     if (q >= nSolid) addGrain(mesh, e);
     return e;
   });
   debrisFaceMask(mesh);
+  stressDrawSig = NaN;   // the cube it left drawn in the air goes on the next tick
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   debris.add(mesh);
@@ -6048,11 +6233,9 @@ function shedColumn(c, budget) {
   for (let lvl = hi; lvl >= lo && budget > 0; lvl--) {
     const m = voxMat[o + lvl];
     if (m === AIR || !MAT_STATS[m]?.powder) continue;
+    // Only the cell directly under it holds powder up: what touches its sides
+    // or sits on top of it makes no difference.
     if (lvl - 1 < VOX_FLOOR || voxMat[o + lvl - 1] !== AIR) continue;
-    // Something solid stacked on top was put there on purpose. Only powder that
-    // is properly exposed sheds; the grain holding up a placed block stays put.
-    if (lvl + 1 <= voxCap(c) && voxMat[o + lvl + 1] !== AIR
-        && !MAT_STATS[voxMat[o + lvl + 1]]?.powder) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
     // Its group may have come loose already; if that was paid for, look again.
     if (gravGuard(i, j, lvl)) { o = voxOff[c] - VOX_FLOOR; lvl++; continue; }
@@ -6616,11 +6799,12 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
-    const e = { pos: p, mat: b.mat, color: b.color || null, gi: b.gi, gj: b.gj, lvl: b.lvl };
+    const e = { pos: p, mat: b.mat, color: b.color || null, gi: b.gi, gj: b.gj, lvl: b.lvl, crack: b.crack || 0 };
     if (q >= nSolid) addGrain(mesh, e);
     return e;
   });
   debrisFaceMask(mesh);
+  stressDrawSig = NaN;
   if (nSolid) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.instanceColor.needsUpdate = true;
@@ -7133,7 +7317,7 @@ function resolveBreakMat(m) {
 // Knock one block out of the world and let it fall. Nothing is kept: the block
 // leaves the grid, becomes a one-cube piece of rubble, and from then on belongs
 // to the physics. The hammer does it, and so does a block the stress solver
-// finds past its strength — both through breakBlock / breakDebrisBlock.
+// finds past its strength — both through breakBlock / breakDebrisBlocks.
 function hammerStrike() {
   if (!hammer.on || !hammer.hit) return false;
   const ok = hammer.debris ? breakDebrisBlock(hammer.debris.mesh, hammer.debris.idx)
@@ -7144,17 +7328,47 @@ function hammerStrike() {
 
 // Debris block — knock it off the piece as its own physics object (splits if needed).
 function breakDebrisBlock(mesh, idx) {
+  return breakDebrisBlocks(mesh, [idx]) > 0;
+}
+
+// Knock blocks `idxs` (lattice slots) off a piece in one go, and return how many
+// went. The tension break takes every red block of a piece at once, so a
+// heavily overloaded piece comes apart in one pass instead of shedding a block
+// per solve while the rest stays red. All of them are read before any is cut:
+// cutting renumbers the slots behind it, and a split hands blocks to new pieces.
+// Each solid block leaves as a one-cube piece sitting exactly where it was —
+// built in the piece's frame, turned with it, moving with it (spawnDebrisPart)
+// — rather than snapped to the world grid, where it would overlap the blocks
+// beside it and kick the piece away.
+function breakDebrisBlocks(mesh, idxs) {
   const lat = mesh.userData.blocks;
-  if (!lat || idx < 0 || idx >= lat.length) return false;
-  const dropMat = resolveBreakMat(lat[idx].mat);
-  // Get the block's world position before removing it.
-  const wp = lat[idx].pos.clone().applyMatrix4(mesh.matrixWorld);
-  const gi = colI(wp.x), gj = colJ(wp.z), gl = lvlOfY(wp.y);
-  // Spawn it as its own single-block falling piece.
-  spawnFallingChunk(new Map([[gravKey(gi, gj, gl), { i: gi, j: gj, lvl: gl, m: dropMat, color: lat[idx].color || terrainBlockColor(gi, gj, gl, dropMat) }]]));
-  // Remove from the original piece (may split it).
-  digDebrisBlock(mesh, idx);
-  return true;
+  if (!lat) return 0;
+  const f = chunkOfMesh(mesh);
+  mesh.updateWorldMatrix(true, false);
+  const qs = [...new Set(idxs)].filter((q) => q >= 0 && q < lat.length).sort((x, y) => y - x);
+  const cubes = [];
+  // From the back, so a cut never moves a block still to be cut.
+  for (const q of qs) {
+    const b = lat[q], dropMat = resolveBreakMat(b.mat);
+    // Powder leaves as a loose grain, as the powder rule sheds it: from this
+    // piece, so it is never caught back on it. Wrapped in a one-cube piece of
+    // its own it sheds just the same, but from that cube — and lands back in
+    // the hole it left, under the same load, to be broken again forever.
+    if (MAT_STATS[dropMat]?.powder) {
+      powderFalling.push({ pos: b.pos.clone().applyMatrix4(mesh.matrixWorld), mat: dropMat, v: 0, from: mesh });
+    } else {
+      cubes.push({ pos: b.pos.clone(), mat: dropMat, color: dropMat === b.mat ? b.color : null, gi: b.gi, gj: b.gj, lvl: b.lvl, crack: b.crack });
+    }
+    cutDebrisLat(mesh, q);
+  }
+  if (!qs.length) return 0;
+  // Spawned while the piece still lies in the frame the cubes were read in:
+  // the rebuild below re-centres it.
+  for (const c of cubes) spawnDebrisPart(mesh, [c], f && f.body);
+  if (!lat.length) { removeDebrisMesh(mesh); return qs.length; }
+  splitDebrisIfNeeded(mesh);
+  if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }   // lighter, and disturbed
+  return qs.length;
 }
 
 // Terrain block. The housekeeping is editBlock's, done by hand because the
@@ -7164,6 +7378,7 @@ function breakBlock(i, j, lvl) {
   const m = voxelAt(i, j, lvl);
   if (m === AIR || m === WATER) return false;
   const dropMat = resolveBreakMat(m);
+  const crack = stressCrackAt(i, j, lvl);   // read while the cell still holds it
 
   setVoxel(i, j, lvl, AIR);
   const k = j * GEN_N + i;
@@ -7187,7 +7402,7 @@ function breakBlock(i, j, lvl) {
   }
 
   // A group of one — the same path a broken-off cliff takes, just smaller.
-  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat) }]]));
+  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat), crack }]]));
   // And whatever the hole left hanging comes down after it.
   applyGravity(i, j, lvl);
   return true;
@@ -7287,10 +7502,10 @@ const blocksHudEl = document.getElementById('blocks-hud');
 
 function refreshShovelUI() {
   const n = shovel.held.length;
-  const by = new Array(N_MATS).fill(0);
+  const by = new Array(MAT_IDS).fill(0);
   for (const m of shovel.held) by[m]++;
   const parts = [];
-  for (let m = 0; m < N_MATS; m++) if (by[m]) parts.push(by[m] + ' ' + MAT_NAMES[m]);
+  for (let m = 0; m < MAT_IDS; m++) if (by[m]) parts.push(by[m] + ' ' + (MAT_NAMES[m] || '?'));
   heldPanel.textContent = 'Blocks held: ' + n + (parts.length ? '  —  ' + parts.join(', ') : '');
   heldHudEl.textContent = String(n);
   shovelBtn.innerHTML = 'Shovel &mdash; ' + (shovel.on ? 'On' : 'Off');
@@ -7534,64 +7749,216 @@ const materialsBtn = document.getElementById('btn-materials');
 // Title-cased from MAT_NAMES for the one material with no stats row to name it.
 const titleCase = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
 
-document.getElementById('mat-list').innerHTML = TERRAIN_MATS.map((m, i) => {
-  // getHexString() converts the linear-space colour back to the sRGB the browser
-  // wants, so the swatch matches what the cubes actually render as.
-  const hex = '#' + m.color.getHexString();
-  const st = MAT_STATS[i];
-  const name = st ? st.name : titleCase(MAT_NAMES[i]);
-  // Full width now, so the stats spell themselves out on one line.
-  const stats = st
-    ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Strength: `
-      + `<input class="mat-str" data-mat="${i}" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
-      + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
-    : '<span>no stats &mdash; not carryable</span>';
-  return '<div class="mat-row">'
-       + `<div class="mat-sw" style="background:${hex}"></div>`
-       + `<div class="mat-txt"><b>${name}</b>${stats}</div>`
-       + '</div>';
-}).join('');
-
-let materialsOpen = false;
-function setMaterialsUI(on) {
-  materialsOpen = on;
-  materialsEl.classList.toggle('on', on);
-  materialsBtn.classList.toggle('on', on);
-  // Closing with a strength field focused would leave the iOS keyboard up.
-  if (!on && materialsEl.contains(document.activeElement)) document.activeElement.blur();
-  // Full screen now, so it wants the cursor back — with the pointer locked there
-  // is nothing to click the X with, and mouse look would run on under the panel.
-  if (on && isLocked()) enterMouseMode();
+// ----- created materials -----
+// The player's own materials: ids CUSTOM_MAT0 and up, each a full row in every
+// table the built-in ones are in (MAT_STATS, MAT_NAMES, TERRAIN_MATS and the
+// shader's TERRAIN_BASE / TERRAIN_PBR), so everything that reads a material by
+// id — placing, the stress solver, powder, debris — takes them as they are.
+// Kept in localStorage, and carried in every save beside the blocks made of them.
+const CUSTOM_MATS_KEY = 'hermes.customMats';
+const isCustomMat = (m) => m >= CUSTOM_MAT0 && m < MAT_IDS && !!MAT_STATS[m];
+const customMatIds = () => {
+  const ids = [];
+  for (let m = CUSTOM_MAT0; m < MAT_IDS; m++) if (MAT_STATS[m]) ids.push(m);
+  return ids;
+};
+// A definition as stored, or null if it is not one.
+function customMatDef(d) {
+  if (!d || typeof d !== 'object') return null;
+  const num = (v, min) => (Number.isFinite(+v) && +v >= min ? +v : NaN);
+  const def = {
+    id: d.id | 0,
+    name: String(d.name || '').trim().slice(0, 20),
+    color: /^#[0-9a-f]{6}$/i.test(d.color) ? d.color.toLowerCase() : '',
+    weight: num(d.weight, 0), buoyancy: num(d.buoyancy, 0),
+    strength: num(d.strength, 1e-6), pull: num(d.pull, 1e-6), powder: !!d.powder,
+  };
+  if (def.id < CUSTOM_MAT0 || def.id >= MAT_IDS || !def.name || !def.color) return null;
+  if ([def.weight, def.buoyancy, def.strength, def.pull].some(Number.isNaN)) return null;
+  return def;
 }
-function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
+const customMatDefs = () => customMatIds().map((m) => ({ id: m, ...MAT_STATS[m] }));
+function customMatInstall(d) {
+  const { id, name, color, weight, buoyancy, strength, pull, powder } = d;
+  MAT_STATS[id] = { name, weight, buoyancy, strength, pull, powder, color };
+  MAT_NAMES[id] = name.toLowerCase();
+  const c = TERRAIN_MATS[id].color.set(color);
+  TERRAIN_BASE[id].set(c.r, c.g, c.b);
+  TERRAIN_PBR[id].w = powder ? 1 : 0;
+  // Grains of it were built in the old colour (an id freed by a delete, or
+  // recoloured by a save's own copy).
+  const g = fallingGrainGeos.get(id);
+  if (g) {
+    fallingGrainGeos.delete(id);
+    const L = fallingGrainLayers.get(id);
+    if (L) L.geometry = fallingGrainGeo(id);
+    g.dispose();
+  }
+}
+function customMatsStore() {
+  try { localStorage.setItem(CUSTOM_MATS_KEY, JSON.stringify(customMatDefs())); } catch (e) {}
+}
+try {
+  const saved = JSON.parse(localStorage.getItem(CUSTOM_MATS_KEY) || '[]');
+  if (Array.isArray(saved)) for (const d of saved) { const def = customMatDef(d); if (def) customMatInstall(def); }
+} catch (e) { console.warn('created materials unreadable', e); }
 
-// Strength is edited in place: a number above zero goes straight into MAT_STATS
-// and the stress overlay re-solves with it; anything else is left marked until
-// the field is left, when it snaps back to the strength actually in force.
-for (const el of document.querySelectorAll('#mat-list .mat-str')) {
-  const st = MAT_STATS[+el.dataset.mat];
-  el.addEventListener('input', () => {
-    const v = parseFloat(el.value.replace(',', '.'));
-    const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && v > 0;
-    el.classList.toggle('bad', !ok);
-    if (!ok || v === st.strength) return;
-    st.strength = v;
-    stressInvalidate();
-  });
-  el.addEventListener('change', () => { el.value = String(st.strength); el.classList.remove('bad'); });
+// Blocks of material m anywhere they can be: the store, the player's hands, the
+// loose pieces and the grains in the air.
+function customMatInUse(m) {
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    const o = voxOff[k];
+    if (o < 0) continue;
+    for (let p = o, end = o + voxLen(k); p < end; p++) if (voxMat[p] === m) return true;
+  }
+  if (shovel.held.includes(m) || powderFalling.some((g) => g.mat === m)) return true;
+  for (const f of [...fallingChunks, ...restedChunks]) {
+    if (f.mesh?.userData.blocks?.some((b) => b.mat === m)) return true;
+  }
+  return false;
+}
+// Deleting is refused while any block of it exists (customMatInUse): an id with
+// no definition under blocks would leave them weightless and colourless, and a
+// later material reusing the id would silently take them over. Dig it out first.
+function customMatDelete(m) {
+  if (!isCustomMat(m)) return '';
+  if (customMatInUse(m)) return `${MAT_STATS[m].name} is still in the world — remove its blocks first`;
+  MAT_STATS[m] = null;
+  MAT_NAMES[m] = undefined;
+  if (placerMat === m) { placerMat = DIRT; placerMatName.textContent = MAT_STATS[DIRT].name; }
+  customMatsStore();
+  customMatsChanged();
+  return '';
+}
+// A save's own materials, put back at the ids its blocks use. A material of
+// this player's under one of those ids is moved to a free id (the world that
+// used it is the one being replaced, so nothing points at it) or, with none
+// free, dropped; one the save has too, by name, gives way to the save's copy.
+function customMatsAdopt(list) {
+  if (!Array.isArray(list)) return;
+  const defs = list.map(customMatDef).filter(Boolean);
+  if (!defs.length) return;
+  const mine = customMatDefs();
+  const names = new Set(defs.map((d) => d.name.toLowerCase()));
+  for (const d of mine) if (names.has(d.name.toLowerCase())) { MAT_STATS[d.id] = null; MAT_NAMES[d.id] = undefined; }
+  for (const d of defs) customMatInstall(d);
+  for (const d of mine) {
+    if (names.has(d.name.toLowerCase()) || !defs.some((s) => s.id === d.id)) continue;
+    let id = CUSTOM_MAT0;
+    while (id < MAT_IDS && MAT_STATS[id]) id++;
+    if (id === MAT_IDS) { console.warn('no free id for created material', d.name); continue; }
+    customMatInstall({ ...d, id });
+  }
+  customMatsStore();
+  customMatsChanged();
+}
+// Every list of materials is rebuilt from the tables.
+function customMatsChanged() {
+  buildMatList();
+  buildPlacerMatGrid();
+  buildMatBar();
+  buildChartGrid();
+  refreshShovelUI();
+}
+
+// One row per material: the built-in ones in TERRAIN_MATS order, then the
+// created ones, which can also be deleted.
+const matListEl = document.getElementById('mat-list');
+const matNewMsg = document.getElementById('mn-msg');
+function buildMatList() {
+  const ids = [];
+  for (let i = 0; i < N_MATS; i++) ids.push(i);
+  ids.push(...customMatIds());
+  matListEl.innerHTML = ids.map((i) => {
+    // getHexString() converts the linear-space colour back to the sRGB the browser
+    // wants, so the swatch matches what the cubes actually render as.
+    const hex = '#' + TERRAIN_MATS[i].color.getHexString();
+    const st = MAT_STATS[i];
+    const name = st ? escapeHtml(st.name) : titleCase(MAT_NAMES[i]);
+    // Full width now, so the stats spell themselves out on one line.
+    const stats = st
+      ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Compression: `
+        + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
+        + ` &middot; Pull: `
+        + `<input class="mat-str" data-mat="${i}" data-key="pull" type="text" inputmode="decimal" autocomplete="off" value="${st.pull}">`
+        + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
+      : '<span>no stats &mdash; not carryable</span>';
+    return '<div class="mat-row">'
+         + `<div class="mat-sw" style="background:${hex}"></div>`
+         + `<div class="mat-txt"><b>${name}</b>${stats}</div>`
+         + (isCustomMat(i) ? `<button class="mat-del" data-mat="${i}">Delete</button>` : '')
+         + '</div>';
+  }).join('');
+
+  // Strength (compression) and pull are edited in place: a number above zero goes
+  // straight into MAT_STATS and the stress overlay re-solves with it; anything else
+  // is left marked until the field is left, when it snaps back to the value in force.
+  for (const el of matListEl.querySelectorAll('.mat-str')) {
+    const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
+    el.addEventListener('input', () => {
+      const v = parseFloat(el.value.replace(',', '.'));
+      const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && v > 0;
+      el.classList.toggle('bad', !ok);
+      if (!ok || v === st[key]) return;
+      st[key] = v;
+      if (isCustomMat(m)) customMatsStore();
+      stressInvalidate();
+    });
+    el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+  }
+  for (const el of matListEl.querySelectorAll('.mat-del')) {
+    bindTap(el, () => { matNewMsg.textContent = customMatDelete(+el.dataset.mat) || 'Deleted'; });
+  }
+}
+const escapeHtml = (t) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+buildMatList();
+
+// The New material form. Strength and pull are the same numbers as the rows'
+// fields; weight and buoyancy are fixed once made, as they are for the others.
+const matNewEl = document.getElementById('mat-new');
+matNewEl.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+matNewEl.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
+for (const el of matNewEl.querySelectorAll('input[type=text]')) {
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
 }
+bindTap(document.getElementById('mn-add'), () => {
+  const val = (id) => parseFloat(document.getElementById(id).value.replace(',', '.'));
+  const name = document.getElementById('mn-name').value.trim();
+  const ids = customMatIds();
+  let id = CUSTOM_MAT0;
+  while (id < MAT_IDS && MAT_STATS[id]) id++;
+  const def = customMatDef({
+    id, name, color: document.getElementById('mn-color').value,
+    weight: val('mn-weight'), buoyancy: val('mn-buoy'), strength: val('mn-str'), pull: val('mn-pull'),
+    powder: document.getElementById('mn-powder').checked,
+  });
+  let msg = '';
+  if (ids.length >= CUSTOM_MAT_MAX) msg = `At most ${CUSTOM_MAT_MAX} created materials — delete one first`;
+  else if (!name) msg = 'Give it a name';
+  else if (MAT_NAMES.some((n) => n === name.toLowerCase().slice(0, 20))) msg = 'That name is taken';
+  else if (!def) msg = 'Weight and buoyancy need a number of 0 or more, compression and pull above 0';
+  if (msg) { matNewMsg.textContent = msg; return; }
+  customMatInstall(def);
+  customMatsStore();
+  customMatsChanged();
+  document.getElementById('mn-name').value = '';
+  matNewMsg.textContent = `Made ${def.name}`;
+});
 
 // The whole table, laid out as the MAT_STATS source is, so it pastes straight back.
 function matStatsSource() {
-  const rows = MAT_STATS.map((st, i) => {
+  const rows = MAT_STATS.slice(0, N_MATS).map((st, i) => {
     const tag = '  // ' + MAT_NAMES[i].toUpperCase().replace(/ /g, '_');
     if (!st) return '  null,'.padEnd(77) + tag;
     return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
          + `buoyancy: ${(st.buoyancy + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(6)}`
-         + `powder: ${String(st.powder).padEnd(6)}},` + tag;
+         + `pull: ${(st.pull + ',').padEnd(6)}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
-  return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n';
+  // The created materials after it, as their own list: id, colour and stats.
+  const made = customMatDefs().map((d) => '  ' + JSON.stringify(d).replace(/"(\w+)":/g, '$1: ').replace(/,(?=\w+: )/g, ', ') + ',');
+  return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n'
+    + (made.length ? '// Created in game\nconst CUSTOM_MATS = [\n' + made.join('\n') + '\n];\n' : '');
 }
 // iOS only lets a page write the clipboard inside the tap itself, so this is a
 // plain click handler (bindTap fires on pointerdown, which Safari doesn't count
@@ -7630,6 +7997,18 @@ matCopyBtn.addEventListener('click', (e) => {
 });
 matCopyBtn.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
 matCopyBtn.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
+let materialsOpen = false;
+function setMaterialsUI(on) {
+  // Closing with one of the fields still focused would leave the iOS keyboard up.
+  if (!on && materialsEl.contains(document.activeElement)) document.activeElement.blur();
+  materialsOpen = on;
+  materialsEl.classList.toggle('on', on);
+  materialsBtn.classList.toggle('on', on);
+  // With the pointer locked there is no cursor to hit the X or the fields with,
+  // and mouse look would keep running underneath.
+  if (on && isLocked()) enterMouseMode();
+}
+function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
 bindTap(materialsBtn, toggleMaterialsUI);
 bindTap(document.getElementById('mat-close'), () => setMaterialsUI(false));
 
@@ -7663,13 +8042,19 @@ const MAT_CHART = [
   { mat: 'Hard sand',     dry: '',              water: 'Wet sand',   rain: '',           break: 'Sand',                     compress: '' },
 ];
 
-document.getElementById('chart-grid').innerHTML =
-  '<div class="ch-h mat">Material</div>'
-  + CHART_COLS.map((c) => `<div class="ch-h ${c.key}">${c.label}${c.sub ? `<small>${c.sub}</small>` : ''}</div>`).join('')
-  + MAT_CHART.map((r) => `<div class="ch-mat">${r.mat}</div>`
-      + CHART_COLS.map((c) => r[c.key]
-          ? `<div class="ch-c">${r[c.key]}</div>`
-          : '<div class="ch-c empty">&mdash;</div>').join('')).join('');
+// A created material has no row of its own in MAT_CHART, so it shows with every
+// column empty — nothing happens to it, and it breaks as itself.
+function buildChartGrid() {
+  const made = customMatIds().map((m) => ({ mat: escapeHtml(MAT_STATS[m].name) }));
+  document.getElementById('chart-grid').innerHTML =
+    '<div class="ch-h mat">Material</div>'
+    + CHART_COLS.map((c) => `<div class="ch-h ${c.key}">${c.label}${c.sub ? `<small>${c.sub}</small>` : ''}</div>`).join('')
+    + [...MAT_CHART, ...made].map((r) => `<div class="ch-mat">${r.mat}</div>`
+        + CHART_COLS.map((c) => r[c.key]
+            ? `<div class="ch-c">${r[c.key]}</div>`
+            : '<div class="ch-c empty">&mdash;</div>').join('')).join('');
+}
+buildChartGrid();
 
 const chartBtn = document.getElementById('btn-chart');
 
@@ -8106,28 +8491,33 @@ function creativeAim() {
 }
 
 
-for (let m = 0; m < N_MATS; m++) {
-  if (m === WATER) continue;
-  const s = MAT_STATS[m];
-  if (!s) continue;
-  const btn = document.createElement('button');
-  btn.className = 'placer-mat-sel-btn';
-  const swatch = document.createElement('div');
-  swatch.className = 'swatch';
-  swatch.style.background = '#' + TERRAIN_MATS[m].color.getHexString();
-  const label = document.createElement('span');
-  label.textContent = s.name;
-  btn.appendChild(swatch);
-  btn.appendChild(label);
-  btn.addEventListener('click', () => {
-    placerMat = m;
-    placerMatName.textContent = s.name;
-    setPlacerMatUI(false);
-    if (volumeOn) updateVolumeGhosts();   // picking a material shouldn't swap tools
-    else setPlacer(true);
-  });
-  placerMatGrid.appendChild(btn);
+// Rebuilt by customMatsChanged when a material is made or deleted.
+function buildPlacerMatGrid() {
+  placerMatGrid.textContent = '';
+  for (let m = 0; m < MAT_IDS; m++) {
+    if (m === WATER) continue;
+    const s = MAT_STATS[m];
+    if (!s) continue;
+    const btn = document.createElement('button');
+    btn.className = 'placer-mat-sel-btn';
+    const swatch = document.createElement('div');
+    swatch.className = 'swatch';
+    swatch.style.background = '#' + TERRAIN_MATS[m].color.getHexString();
+    const label = document.createElement('span');
+    label.textContent = s.name;
+    btn.appendChild(swatch);
+    btn.appendChild(label);
+    btn.addEventListener('click', () => {
+      placerMat = m;
+      placerMatName.textContent = s.name;
+      setPlacerMatUI(false);
+      if (volumeOn) updateVolumeGhosts();   // picking a material shouldn't swap tools
+      else setPlacer(true);
+    });
+    placerMatGrid.appendChild(btn);
+  }
 }
+buildPlacerMatGrid();
 
 function setPlacerMatUI(on) {
   document.body.classList.toggle('placer-mat-open', on);
@@ -8388,7 +8778,15 @@ function volumeGhostDebris(box, mesh) {
 function resetVolume() {
   volumeStep = 0;
   volumeC1 = volumeC2 = volumeLive = null;
+  volumeDelUI();
   updateVolumeGhosts();
+}
+
+// The shared DELETE button is the box's REMOVE, shown only once the box is set;
+// it goes back to DELETE for the creative tool.
+function volumeDelUI() {
+  placerDel.style.display = volumeOn && volumeStep !== 3 ? 'none' : '';
+  placerDel.lastChild.textContent = volumeOn ? 'REMOVE' : 'DELETE';
 }
 
 function setVolume(on) {
@@ -8399,8 +8797,6 @@ function setVolume(on) {
   volumeBtn.classList.toggle('on', on);
   volumeBtn.innerHTML = 'Volume &mdash; ' + (on ? 'On' : 'Off');
   document.body.classList.toggle('volume-on', on);
-  // PLACE is shared with the creative tool; DELETE has no meaning for a box.
-  placerDel.style.display = on ? 'none' : '';
   btnMatBar.style.display = on || placerOn ? 'block' : 'none';
   if (!on && !placerOn) setMatBarVis(false);
   resetVolume();
@@ -8430,6 +8826,7 @@ function volumePlace() {
     volumeTop = volumeLive ? volumeLive.lvl : volumeC1.lvl;
     volumeStep = 3;
     volumeLive = null;
+    volumeDelUI();
   } else {
     volumeFill(volumeBox(), placerMat);
     resetVolume();
@@ -8516,6 +8913,55 @@ function volumeFillDebris(f, box, m) {
   return placed;
 }
 
+// REMOVE on a set box: every solid block in it goes, as a creative DELETE would
+// take it, with the gravity owed by all of them paid once at the end.
+function volumeRemove() {
+  if (!volumeOn || volumeStep !== 3) return;
+  const box = volumeBox();
+  const f = volumeC1.mesh && volumeC1.mesh.parent && chunkOfMesh(volumeC1.mesh);
+  if (f) volumeRemoveDebris(f, box);
+  else {
+    gravDefer = true;
+    try {
+      for (let lvl = Math.max(VOX_FLOOR, box.l1); lvl <= box.l2; lvl++) {
+        for (let j = Math.max(0, box.j1); j <= Math.min(GEN_N - 1, box.j2); j++) {
+          for (let i = Math.max(0, box.i1); i <= Math.min(GEN_N - 1, box.i2); i++) {
+            const m = voxelAt(i, j, lvl);
+            if (m !== AIR && m !== WATER) editBlock(i, j, lvl, AIR);
+          }
+        }
+      }
+    } finally {
+      gravDefer = false;
+      flushGravity();
+      flushGravTouched();
+      gravAnchored.clear();
+    }
+  }
+  resetVolume();
+}
+
+// The piece's blocks inside the box are dug out as digDebrisBlock digs one —
+// from the back, so a cut never moves a block still to be cut — with the split
+// and the collider rebuild done once at the end.
+function volumeRemoveDebris(f, box) {
+  const mesh = f.mesh, lat = mesh.userData.blocks;
+  if (!lat) return 0;
+  let n = 0;
+  for (let q = lat.length - 1; q >= 0; q--) {
+    const b = lat[q];
+    if (b.gi < box.i1 || b.gi > box.i2 || b.gj < box.j1 || b.gj > box.j2 || b.lvl < box.l1 || b.lvl > box.l2) continue;
+    cutDebrisLat(mesh, q);
+    n++;
+  }
+  if (!n) return 0;
+  if (!lat.length) { removeDebrisMesh(mesh); return n; }
+  splitDebrisIfNeeded(mesh);
+  rebuildDebrisBody(mesh, f.body);
+  f.still = 0;
+  return n;
+}
+
 // Called every frame while the Volume tool is active — updates aim and ghost preview.
 function updateVolume() {
   // The piece the box was anchored on is gone — its lattice cells mean nothing now.
@@ -8544,6 +8990,7 @@ bindTap(placerDo, () => {
 });
 
 bindTap(placerDel, () => {
+  if (volumeOn) { volumeRemove(); return; }
   if (!placerOn) return;
   if (creative.hit) {
     const { i, j, lvl } = creative.hit;
@@ -8589,11 +9036,41 @@ function updatePlacer() {
 // Structural stress overlay — visual only
 // ---------------------------------------------------------------------------
 // The Tension Sandbox's frame analysis, on the voxel lattice: every block the
-// player built, anywhere in the world, and every block of every fallen piece is
-// a node with six DOFs — three displacements, three rotations — and every
-// face-sharing pair is an axis-aligned Euler-Bernoulli beam with axial (EA/L),
-// torsional and two-plane bending (EI/L^3) stiffness. Generated ground a built
-// block touches is a fixed support. A fallen piece is solved once it has come to
+// player built, every block of ground that hangs (below), anywhere in the world,
+// and every block of every fallen piece is a node with six DOFs — three
+// displacements, three rotations — and every face-sharing pair is an
+// axis-aligned Euler-Bernoulli beam with axial (EA/L), torsional and two-plane
+// bending (EI/L^3) stiffness.
+//
+// Ground hangs when it is not standing on bedrock: a block with a gap (air or
+// water) anywhere under it in its own column — an overhang, the ceiling of a
+// tunnel or a cave, the face of a cliff someone has dug under. Its weight has to
+// go sideways to reach anything, so it bends and pulls, and it is laid out and
+// solved and broken exactly as a built block is. Ground that stands on an
+// unbroken run of solid down to bedrock carries its load straight down into it
+// and is the fixed support everything else is held by: it is most of the
+// world, under nothing but its own column, and in this frame that compression
+// alone reads as stress — every sand beach would read red and crumble — so it
+// is not a node. Generated ground is nearly all of that kind (a heightmap, solid
+// from bedrock up); a write is what opens a gap under something, so the columns
+// written to (stressCols) are looked at, plus the few generated columns with
+// a block over a gap from the start (the surface swap leaves some over water).
+//
+// Ground standing on bedrock still has stress, though, and the frame's answer
+// for it needs no solve: a run of solid standing on bedrock carries everything
+// in it straight down, so the beam under a block carries its own weight, the
+// weight of the run over it, and every load the solved nodes put into the run
+// (the vertical end force of each beam that ends on a cell of it, read off the
+// node's solved displacements) — that compression is its stress, over its own
+// strength, on the same ramp. It is worked out on demand for the cells that need
+// it: the visible ground near the player (drawn, STRESS_GROUND_R), the columns
+// a solved node leans on, the columns written to since they were last looked
+// at, and the untouched world, swept a slice per tick in the background to
+// find any of it a strength edit has turned red. Red ground breaks as any other
+// red block does; with the generated soil bands and MAT_STATS as they are,
+// untouched ground under nothing but itself never reaches red.
+//
+// A fallen piece is solved once it has come to
 // rest, as it lies: its supports are the blocks that actually touch something
 // solid — the ground, a built block, another piece — where the touch pushes
 // them up, measured cube against cube in the world; and its weight acts
@@ -8628,6 +9105,12 @@ const STRESS_LAYER      = 1;      // debris overlays: drawn, but not hit by debr
 const STRESS_CONTACT_EPS = 0.1 * BLOCK;   // m — cubes nearer than this touch: cannon rests bodies a hair apart or into each other
 const STRESS_SUPPORT_NY = 0.05;  // a touch holds a block up when its normal lifts it at least this much (not a wall, not a ceiling)
 const STRESS_LUT_N      = 128;
+const STRESS_TERRAIN_MAX = 20000; // hanging-ground nodes at most (a phone solves ~20k in seconds); past this the nearest columns are kept
+const STRESS_BREAK_MAX  = 64;    // blocks broken per solve, worst first; the rest go on the next one
+const STRESS_GROUND_R   = 40;    // blocks (8 m) around the player whose ground gets an overlay
+const STRESS_GROUND_DRAW = 3000; // ground overlay cubes, nearest first past this (as many again as built blocks get)
+const STRESS_GEN_SLICE  = 16384; // untouched columns swept per tick for ground a strength edit turned red
+const STRESS_GROUND_WALK = 512;  // flagged columns walked per break pass at most (a whole world turned red is thousands)
 
 // Cells the player has built, by chunk, as gravCell keys. Pruned lazily: a key
 // whose cell is no longer solid is dropped the next time the world is laid out.
@@ -8653,6 +9136,8 @@ function restorePlaced(ss) {
       (placedByChunk[c] || (placedByChunk[c] = new Set())).add(key);
     }
   }
+  // Ground can only hang where something has dug, and the save says where.
+  stressSeedCols();
   stressForget();   // nothing solved for the last world carries into this one
   stressRev++;
 }
@@ -8681,6 +9166,8 @@ const STRESS_LUT = new Float32Array(STRESS_LUT_N * 3);
   }
 }
 // stressColor(): stress over strength, clamped to [0, 1], times 6 into the ramp.
+// Cracks start where the ramp reaches yellow; below it a block is clean.
+const STRESS_CRACK_LV = Math.ceil(STRESS_STOPS[1][0] / 3 * (STRESS_LUT_N - 1));
 function stressLutIndex(stress, strength) {
   const ratio = strength > 0 ? Math.min(1, Math.max(0, stress) / strength) : 0;
   return Math.min(STRESS_LUT_N - 1, Math.round(ratio * 2 * (STRESS_LUT_N - 1)));
@@ -8708,7 +9195,12 @@ function stressSolveJob(job) {
   const P1 = [1, 2, 0], P2 = [2, 0, 1];
   const { nStart, eStart, fixed, f, u, ea, eb, eax, ek, pos, tol2 } = job;
   const stress = new Float64Array(fixed.length);
-  let iters = 0, unconverged = 0;
+  // The worst beam's stress again, split by which way it loads the block: a
+  // beam's moment both squeezes one face and pulls the other, its axial force
+  // does one or the other, so push = squeeze + moment and pull = stretch +
+  // moment, and the larger of the two is stress as it always was.
+  const push = new Float64Array(fixed.length), pull = new Float64Array(fixed.length);
+  let iters = 0, unconverged = 0, beamN = 0, beamM = 0;
 
   // One beam: its twelve end forces y (A's six, then B's) for end displacements
   // x, and back its stress, |N| + the worst end's moment with torsion.
@@ -8726,7 +9218,9 @@ function stressSolveJob(job) {
     y[ax] -= N; y[3 + ax] -= T; y[6 + ax] += N; y[9 + ax] += T;
     y[t1] += f1; y[3 + t2] += m1a; y[6 + t1] -= f1; y[9 + t2] += m1b;
     y[t2] += f2; y[3 + t1] -= m2a; y[6 + t2] -= f2; y[9 + t1] -= m2b;
-    return Math.abs(N) + Math.sqrt(Math.max(m1a * m1a + m2a * m2a, m1b * m1b + m2b * m2b) + T * T);
+    beamN = N;
+    beamM = Math.sqrt(Math.max(m1a * m1a + m2a * m2a, m1b * m1b + m2b * m2b) + T * T);
+    return Math.abs(N) + beamM;
   }
   // Each axis's beam at EA = 1 as a 12x12 matrix, a column per unit end displacement.
   const x12 = new Float64Array(12), y12 = new Float64Array(12);
@@ -9110,11 +9604,16 @@ function stressSolveJob(job) {
         x12[6 + d] = b >= 0 ? U[b * 6 + d] : 0;
       }
       const s = beam(eax[e], ek[e], x12, y12);
+      const sp = Math.max(0, -beamN) + beamM, st = Math.max(0, beamN) + beamM;
       if (a >= 0 && s > stress[n0 + a]) stress[n0 + a] = s;
       if (b >= 0 && s > stress[n0 + b]) stress[n0 + b] = s;
+      if (a >= 0 && sp > push[n0 + a]) push[n0 + a] = sp;
+      if (b >= 0 && sp > push[n0 + b]) push[n0 + b] = sp;
+      if (a >= 0 && st > pull[n0 + a]) pull[n0 + a] = st;
+      if (b >= 0 && st > pull[n0 + b]) pull[n0 + b] = st;
     }
   }
-  return { u, stress, iters, unconverged };
+  return { u, stress, push, pull, iters, unconverged };
 }
 
 function stressWorkerSource() {
@@ -9124,7 +9623,7 @@ onmessage = (e) => {
   try {
     const r = stressSolveJob(e.data);
     r.seq = e.data.seq;
-    postMessage(r, [r.u.buffer, r.stress.buffer]);
+    postMessage(r, [r.u.buffer, r.stress.buffer, r.push.buffer, r.pull.buffer]);
   } catch (err) {
     postMessage({ seq: e.data.seq, error: String(err && err.message || err) });
   }
@@ -9142,13 +9641,28 @@ function stressNodeArrays(cap) {
     pos: new Int32Array(cap * 3),     // lattice cell: i (or gi), lvl, j (or gj)
     comp: new Int32Array(cap),        // which structure
     stress: new Float64Array(cap),    // what shows: NaN not solved yet, Infinity hanging off nothing
+    push: new Float64Array(cap), pull: new Float64Array(cap),   // the solved stress split by direction (stressSolveJob)
     u: new Float64Array(cap * 6), f: new Float64Array(cap * 6),
   };
 }
 let stCur = stressNodeArrays(1024), stOld = stressNodeArrays(1024);
-let stN = 0, stNE = 0, stNTerr = 0, stNComp = 0, stOldN = 0;
+// Nodes: built blocks 0..stNBuilt, hanging ground stNBuilt..stNTerr (both in
+// the voxel grid, keyed by gravCell), fallen pieces' blocks stNTerr..stN.
+let stN = 0, stNE = 0, stNBuilt = 0, stNTerr = 0, stNComp = 0, stOldN = 0;
+// Hanging columns found by stressHangScan: column, lowest hanging level, blocks.
+let stHangK = new Int32Array(256), stHangLo = new Int16Array(256), stHangCnt = new Int32Array(256), stHangN = 0;
 let stKeyMap = new Map(), stKeyMapPrev = new Map();
 let stECap = 0, stEA, stEB, stEAx, stEK;
+// For a beam with one end on ground that holds (-1), that ground cell's gravCell; else -1.
+let stEG;
+// Which levels of each column are nodes (column -> Set of levels), and the load
+// the solved nodes put into ground cells (column -> [lvl, downward force, ...]),
+// with the columns where some of that load comes from a structure not yet solved.
+let stColNodes = new Map(), stGroundR = new Map(), stGroundPend = new Set();
+// What fallen pieces at rest put into ground cells: column, lvl, force, ...
+const stPieceGround = [];
+// The background sweep of the untouched world: next column, or GEN_N^2 when done.
+let stGenAt = 0;
 let stAdjStart, stAdj, stQueue, stLocal;
 let stCompStart = new Int32Array(64), stCompHash = new Int32Array(64), stCompHeld = new Uint8Array(64);
 let stSolved = new Set();   // hashes of structures whose answer is in hand
@@ -9159,9 +9673,11 @@ let stJobSeq = 0, stLastIters = 0, stLastUnconverged = 0, stLastMs = 0, stJobT0 
 // Fallen pieces in the world: the piece, its first node, whether it was at rest
 // (stressRestCode) and how it lay when laid out — its rotation R (row-major,
 // local to world) and its lattice's offset k from the cell numbers.
-const stPieces = [];   // { mesh, start, count, rest, R, kx, ky, kz, r }
+// on: what each block holding it up rests on (a cell's or a piece block's key);
+// load: its weight and all that rests on it.
+const stPieces = [];   // { mesh, start, count, rest, R, kx, ky, kz, r, on, load }
 const stOverlays = new Map();   // piece mesh -> InstancedMesh, kept between layouts
-const stDrawnPieces = [];       // { overlay, start, count } of the ones drawn
+const stDrawnPieces = [];       // { overlay, start, count, lat } of the ones drawn
 // Built-block candidates inside the draw radius, before the cap.
 let stCandNode = new Int32Array(4096), stCandDist = new Uint16Array(4096);
 const stDistHist = new Int32Array(STRESS_RADIUS + 2);
@@ -9174,7 +9690,7 @@ function stressEnsure(nodes) {
   if (stECap < ecap) {
     stECap = ecap;
     stEA = new Int32Array(ecap); stEB = new Int32Array(ecap);   // -1: a fixed support
-    stEAx = new Uint8Array(ecap); stEK = new Float64Array(ecap);
+    stEAx = new Uint8Array(ecap); stEK = new Float64Array(ecap); stEG = new Float64Array(ecap);
     stAdj = new Int32Array(ecap * 2);
   }
   if (!stQueue || stQueue.length < cap) {
@@ -9187,8 +9703,65 @@ const stressMat = new THREE.MeshBasicMaterial({
   color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false,
   polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4,
 });
+// The same cubes carry the cracks: each instance has its place on the ramp
+// (instanceCrack, 0 unloaded .. 1 about to break), and the faces draw dark
+// fracture lines — a Voronoi edge network, more of its edges and wider and
+// darker the higher up the ramp. stressShowU 0 hides the colour, leaving only
+// the lines (every other pixel discarded); stressCrackU 0 (the solver off)
+// hides the lines. A pixel with no line on it draws exactly what it did before.
+const stressShowU = { value: 0 }, stressCrackU = { value: 1 };
+stressMat.onBeforeCompile = (sh) => {
+  sh.uniforms.stressShow = stressShowU;
+  sh.uniforms.stressCrack = stressCrackU;
+  sh.vertexShader = 'attribute float instanceCrack;\nvarying float vCrack;\nvarying vec3 vCkP;\nvarying vec3 vCkN;\nvarying vec3 vCkSeed;\n'
+    + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+  vCrack = instanceCrack;
+  vCkP = position / ${(BLOCK * 1.01).toFixed(4)} + 0.5;
+  vCkN = normal;
+  vCkSeed = instanceMatrix[3].xyz / ${BLOCK.toFixed(4)} + normal * 0.37;`);
+  sh.fragmentShader = 'uniform float stressShow;\nuniform float stressCrack;\nvarying float vCrack;\nvarying vec3 vCkP;\nvarying vec3 vCkN;\nvarying vec3 vCkSeed;\n'
+    + `vec2 ckHash2(vec2 p) {
+  return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
+}
+// How dark the crack is here, 0 off every line.
+float stressCrackAt(float t) {
+  vec3 an = abs(vCkN);
+  vec2 uv = an.x > 0.5 ? vCkP.zy : an.y > 0.5 ? vCkP.xz : vCkP.xy;
+  // Pixel-art look: the pattern is read at the centre of a 6x6 grid of
+  // texels per face and drawn hard-edged, so each crack is a chain of squares.
+  uv = (min(floor(uv * 6.0), 5.0) + 0.5) / 6.0;
+  vec2 off = ckHash2(fract(vCkSeed.xz * 0.1031 + vCkSeed.y * 0.0713) * 97.0) * 17.0;
+  vec2 p = uv * 2.0 + off + 0.12 * vec2(sin(uv.y * 17.0 + off.x), sin(uv.x * 15.0 + off.y));
+  vec2 ip = floor(p), fp = fract(p), c1 = vec2(0.0), c2 = vec2(0.0);
+  float d1 = 8.0, d2 = 8.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    vec2 g = ip + vec2(float(i), float(j)), r = g + ckHash2(g) - p;
+    float d = dot(r, r);
+    if (d < d1) { d2 = d1; c2 = c1; d1 = d; c1 = g; } else if (d < d2) { d2 = d; c2 = g; }
+  }
+  // Each edge (the pair of cells either side) cracks once t passes its own draw.
+  if (ckHash2(c1 + c2).x > 0.12 + 0.88 * t) return 0.0;
+  // A texel is 1/3 here; w of at least that keeps each crack an unbroken chain.
+  float e = sqrt(d2) - sqrt(d1), w = mix(0.34, 0.6, t);
+  return e < w ? mix(0.3, 0.92, t) : 0.0;
+}
+`
+    + sh.fragmentShader.replace('#include <tonemapping_fragment>', `{
+    float a0 = stressShow * gl_FragColor.a;
+    float c = vCrack * stressCrack > 0.0 ? stressCrackAt(vCrack) : 0.0;
+    if (c > 0.0) {
+      // Over the tint as if drawn after it: the ground shows through both.
+      float a = 1.0 - (1.0 - a0) * (1.0 - c);
+      gl_FragColor = vec4((gl_FragColor.rgb * a0 * (1.0 - c) + vec3(0.03) * c) / a, a);
+    } else if (a0 <= 0.0) discard;
+  }
+  #include <tonemapping_fragment>`);
+};
 function stressInstances(n) {
-  const im = new THREE.InstancedMesh(stressGeo, stressMat, n);
+  // Its own copy of the cube, to carry the per-instance crack (24 vertices).
+  const g = stressGeo.clone();
+  g.setAttribute('instanceCrack', new THREE.InstancedBufferAttribute(new Float32Array(n), 1));
+  const im = new THREE.InstancedMesh(g, stressMat, n);
   im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
   im.count = 0;
   im.castShadow = false;
@@ -9197,12 +9770,18 @@ function stressInstances(n) {
 }
 const stressTerr = stressInstances(STRESS_MAX_DRAW);
 scene.add(stressTerr);
+// Ground standing on bedrock near the player: what each cube is over (i, lvl, j).
+const stressGround = stressInstances(STRESS_GROUND_DRAW);
+scene.add(stressGround);
+const stGInst = new Int32Array(STRESS_GROUND_DRAW * 3);
+let stGCandK = new Int32Array(8192), stGCandL = new Int16Array(8192), stGCandD = new Uint8Array(8192);
+const stGDistHist = new Int32Array(STRESS_GROUND_R + 2);
 camera.layers.enable(STRESS_LAYER);
 
 // Two switches: stressOn runs the solver (and the breaking that follows from
-// it); stressShown draws the coloured overlay over what it solved. Shown needs
-// on — there is nothing to draw from a solver that is not running.
-let stressOn = true, stressShown = true;
+// it, and the cracks on loaded blocks); stressShown draws the coloured overlay.
+// Independent: shown with the solver off draws the last answers in hand.
+let stressOn = true, stressShown = false;
 let stressTimer = 0, stressLastRebuild = -Infinity, stressDrawSig = NaN;
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
 
@@ -9294,6 +9873,7 @@ function stressPieceSupports(pc, S) {
   if (c && pc.rest === 2 && c.n === lat.length && c.px === P.x && c.py === P.y && c.pz === P.z
       && c.qx === Q.x && c.qy === Q.y && c.qz === Q.z && c.qw === Q.w && c.others === debris.children.length) {
     S.fixed.set(c.fixed, n0);
+    pc.on = c.on;
     return;
   }
   const R = pc.R, h = HALF_BLOCK, eps = STRESS_CONTACT_EPS;
@@ -9312,6 +9892,7 @@ function stressPieceSupports(pc, S) {
     }
     if (held === 0) { S.fixed[n0 + q] = 0; continue; }   // buried in its own piece
     held = 0;
+    let on = -1;
     const lx = b.pos.x, ly = b.pos.y, lz = b.pos.z;
     const ax = P.x + R[0] * lx + R[1] * ly + R[2] * lz;
     const ay = P.y + R[3] * lx + R[4] * ly + R[5] * lz;
@@ -9323,7 +9904,7 @@ function stressPieceSupports(pc, S) {
       for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) {
           if (!solidMat(voxelAt(i, j, l))) continue;
-          if (stressTouchNy(ax, ay, az, R, colX(i), (l + 0.5) * BLOCK, colZ(j), STRESS_I3) > STRESS_SUPPORT_NY) { held = 1; break cells; }
+          if (stressTouchNy(ax, ay, az, R, colX(i), (l + 0.5) * BLOCK, colZ(j), STRESS_I3) > STRESS_SUPPORT_NY) { held = 1; on = gravCell(i, j, l); break cells; }
         }
       }
     }
@@ -9345,16 +9926,48 @@ function stressPieceSupports(pc, S) {
             if (stressTouchNy(ax, ay, az, R,
                               Po.x + Ro[0] * bx + Ro[1] * by + Ro[2] * bz,
                               Po.y + Ro[3] * bx + Ro[4] * by + Ro[5] * bz,
-                              Po.z + Ro[6] * bx + Ro[7] * by + Ro[8] * bz, Ro) > STRESS_SUPPORT_NY) { held = 1; break near; }
+                              Po.z + Ro[6] * bx + Ro[7] * by + Ro[8] * bz, Ro) > STRESS_SUPPORT_NY) {
+              held = 1; on = stPieceKey(o.mesh, gi, gj, gl); break near;
+            }
           }
         }
       }
     }
     S.fixed[n0 + q] = held;
+    if (held) pc.on.push(on);
   }
   if (pc.rest === 2) {
     ud.stressContacts = { n: lat.length, px: P.x, py: P.y, pz: P.z, qx: Q.x, qy: Q.y, qz: Q.z, qw: Q.w,
-                          others: debris.children.length, fixed: S.fixed.slice(n0, n0 + lat.length) };
+                          others: debris.children.length, fixed: S.fixed.slice(n0, n0 + lat.length), on: pc.on };
+  }
+}
+// A piece at rest weighs on what holds it up: its load shared evenly between
+// the blocks it is held by. Those blocks are pinned, so without this nothing
+// under it would feel it. A share goes into the ground cell (as a beam's
+// reaction would), the built or hanging node, or the other piece's block it
+// rests on — that piece then carries it on too, so pieces go highest first and
+// a stack's weight reaches the bottom.
+function stressPieceLoads(S) {
+  stPieceGround.length = 0;
+  const order = stPieces.filter((pc) => pc.rest && pc.on.length).sort((a, b) => b.mesh.position.y - a.mesh.position.y);
+  for (const pc of order) {
+    const share = pc.load / pc.on.length;
+    for (const key of pc.on) {
+      const nb = stKeyMap.get(key);
+      if (nb === undefined) {
+        if (key >= 0 && key < 1e11) {   // a cell of ground standing on bedrock
+          const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N;
+          stPieceGround.push(j * GEN_N + i, (t - j) / GEN_N + VOX_FLOOR, share);
+        }
+        continue;
+      }
+      if (nb < stNTerr) { S.f[nb * 6 + 1] -= share; continue; }
+      let lo = 0, hi = stPieces.length - 1;   // the piece the block is in
+      while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (stPieces[mid].start <= nb) lo = mid; else hi = mid - 1; }
+      const o = stPieces[lo], R = o.R;
+      S.f[nb * 6] -= R[3] * share; S.f[nb * 6 + 1] -= R[4] * share; S.f[nb * 6 + 2] -= R[5] * share;
+      o.load += share;
+    }
   }
 }
 const stressNearPiece = (mesh, cx, cy, cz) => {
@@ -9374,7 +9987,7 @@ function stressMix(h, v) {
 
 function stressAddEdge(a, b, ax, ma, mb) {
   const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2;
-  stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA;
+  stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA; stEG[stNE] = -1;
   stNE++;
 }
 
@@ -9383,6 +9996,7 @@ function stressDropOverlay(mesh) {
   if (!ov) return;
   ov.removeFromParent();
   ov.dispose();
+  ov.geometry.dispose();
   stOverlays.delete(mesh);
 }
 
@@ -9390,14 +10004,193 @@ function stressDropOverlay(mesh) {
 function stressForget() {
   stKeyMap.clear(); stKeyMapPrev.clear();
   stSolved.clear();
-  stN = 0; stNE = 0; stNTerr = 0; stNComp = 0;
+  stColNodes.clear(); stGroundR.clear(); stGroundPend.clear();
+  stPieceGround.length = 0;
+  stressGround.count = 0;
+  stGenAt = 0;   // the new world's untouched ground is swept again
+  stN = 0; stNE = 0; stNBuilt = 0; stNTerr = 0; stNComp = 0; stHangN = 0;
   stPieces.length = 0;
   stJob = null;   // whatever the worker sends back for it is dropped
   stBuiltRev = -1;
   stressDrawSig = NaN;
 }
 
-// Lay the whole world out: every built block and every fallen piece, the beams
+// Which written columns have ground hanging in them, and from what level up:
+// each column's lowest solid run (from bedrock, or in the sandbox from the
+// platform) stands on its own; every solid block above the first gap over it
+// hangs. A column with nothing hanging is let go until it is written again.
+// Returns how many blocks hang, at most STRESS_TERRAIN_MAX: past that, whole
+// columns are kept nearest the player first, and the ones left out hold as
+// ground does — a safety valve for a world dug hollow, not a rule.
+function stressHangScan() {
+  stHangN = 0;
+  let total = 0;
+  for (const k of stressCols) {
+    const o = voxOff[k];
+    if (topLvl[k] === NO_COLUMN || o < 0) { stressCols.delete(k); continue; }
+    const len = voxLen(k);
+    let l = 0;
+    while (l < len && !solidMat(voxMat[o + l])) l++;
+    while (l < len && solidMat(voxMat[o + l])) l++;
+    let cnt = 0;
+    for (let x = l + 1; x < len; x++) if (solidMat(voxMat[o + x])) cnt++;
+    if (!cnt) { stressCols.delete(k); continue; }
+    if (stHangN === stHangK.length) {
+      const n2 = stHangN * 2;
+      const k2 = new Int32Array(n2); k2.set(stHangK); stHangK = k2;
+      const l2 = new Int16Array(n2); l2.set(stHangLo); stHangLo = l2;
+      const c2 = new Int32Array(n2); c2.set(stHangCnt); stHangCnt = c2;
+    }
+    stHangK[stHangN] = k; stHangLo[stHangN] = l + 1 + VOX_FLOOR; stHangCnt[stHangN] = cnt;
+    stHangN++;
+    total += cnt;
+  }
+  if (total <= STRESS_TERRAIN_MAX) return total;
+  const f = stressFocus(), ci = colI(f.x), cj = colJ(f.z);
+  const order = Array.from({ length: stHangN }, (_, q) => q);
+  const d2 = (q) => { const k = stHangK[q], di = k % GEN_N - ci, dj = ((k / GEN_N) | 0) - cj; return di * di + dj * dj; };
+  order.sort((a, b) => d2(a) - d2(b));
+  const K = stHangK.slice(0, stHangN), L = stHangLo.slice(0, stHangN), C = stHangCnt.slice(0, stHangN);
+  let kept = 0;
+  total = 0;
+  for (const q of order) {
+    if (total + C[q] > STRESS_TERRAIN_MAX) continue;
+    stHangK[kept] = K[q]; stHangLo[kept] = L[q]; stHangCnt[kept] = C[q];
+    kept++;
+    total += C[q];
+  }
+  stHangN = kept;
+  return total;
+}
+
+// The columns ground can hang in: every one written to, and the generated ones
+// the surface swap left with a block sitting on water. Every written column's
+// ground is looked at for breaking again too.
+function stressSeedCols() {
+  stressCols.clear();
+  stressGroundCols.clear();
+  for (let c = 0; c < GEN_N * GEN_N; c++) {
+    if (colDug[c]) { stressCols.add(c); stressGroundCols.add(c); continue; }
+    const t = sTop[c], o = voxOff[c] - VOX_FLOOR;
+    if (t === NO_COLUMN || voxOff[c] < 0 || t <= VOX_FLOOR) continue;
+    if (solidMat(voxMat[o + t]) && !solidMat(voxMat[o + t - 1])) stressCols.add(c);
+  }
+}
+stressSeedCols();
+
+// ----- ground standing on bedrock: its stress without a solve -----
+// The downward force beam e puts into the ground cell at its fixed end: that
+// end's vertical force in stressSolveJob's beam(), the ground's six all zero
+// and the node's its solved displacements.
+const _stX = new Float64Array(12);
+function stressFixedLoad(e) {
+  const x = _stX, u = stCur.u, a = stEA[e], b = stEB[e];
+  for (let d = 0; d < 6; d++) {
+    x[d] = a >= 0 ? u[a * 6 + d] : 0;
+    x[6 + d] = b >= 0 ? u[b * 6 + d] : 0;
+  }
+  const ax = stEAx[e], EA = stEK[e], k = EA / 12;
+  let yA;
+  if (ax === 1) yA = -EA * (x[7] - x[1]);                                   // axial
+  else if (ax === 0) yA = k * (12 * (x[1] - x[7]) + 6 * (x[5] + x[11]));    // shear, bending about z
+  else yA = k * (12 * (x[1] - x[7]) - 6 * (x[3] + x[9]));                   // shear, bending about x
+  return a < 0 ? yA : -yA;
+}
+// What every beam ending on ground puts into it, by column. Read off the
+// answers in hand; a structure not solved for the world as it is marks its
+// columns pending, which keeps them from breaking on a stale answer.
+function stressGroundReactions() {
+  stGroundR.clear(); stGroundPend.clear();
+  const S = stCur;
+  for (let e = 0; e < stNE; e++) {
+    const g = stEG[e];
+    if (g < 0) continue;
+    const n = stEA[e] >= 0 ? stEA[e] : stEB[e];
+    const i = g % GEN_N, t = (g - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR, k = j * GEN_N + i;
+    if (!stSolved.has(stCompHash[S.comp[n]])) stGroundPend.add(k);
+    let r = stGroundR.get(k);
+    if (!r) stGroundR.set(k, r = []);
+    r.push(lvl, stressFixedLoad(e));
+  }
+  for (let q = 0; q < stPieceGround.length; q += 3) {
+    const k = stPieceGround[q];
+    let r = stGroundR.get(k);
+    if (!r) stGroundR.set(k, r = []);
+    r.push(stPieceGround[q + 1], stPieceGround[q + 2]);
+  }
+}
+// The force in the beam under ground cell (i, j, lvl): the weight of it and of
+// the solid run over it that is not a node (a node's weight comes in through
+// what it puts into the run), plus all that the nodes put into the run.
+function stressGroundLoad(i, j, lvl) {
+  const k = j * GEN_N + i, o = voxOff[k] - VOX_FLOOR, cap = voxCap(k), nodes = stColNodes.get(k);
+  let N = 0, top = lvl;
+  for (let l = lvl; l <= cap; l++) {
+    const m = voxMat[o + l];
+    if (!solidMat(m)) break;
+    top = l;
+    if (!nodes || !nodes.has(l)) N += MAT_STATS[m].weight;
+  }
+  const r = stGroundR.get(k);
+  if (r) for (let q = 0; q < r.length; q += 2) if (r[q] >= lvl && r[q] <= top) N += r[q + 1];
+  return N;   // signed: above zero squeezes the cell, below pulls it
+}
+// Every block of ground in column k at the top of the ramp, walked from the top
+// down with the load gathering block by block and starting over under each gap.
+// Pushes over, i, j, lvl, material for each onto out; returns how many.
+function stressGroundRedIn(k, out) {
+  if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) return 0;
+  const o = voxOff[k] - VOX_FLOOR, i = k % GEN_N, j = (k - i) / GEN_N;
+  const nodes = stColNodes.get(k), r = stGroundR.get(k), top = STRESS_LUT_N - 1;
+  let N = 0, found = 0;
+  for (let l = voxCap(k); l >= VOX_FLOOR; l--) {
+    const m = voxMat[o + l];
+    if (!solidMat(m)) { N = 0; continue; }
+    if (nodes && nodes.has(l)) continue;
+    if (r) for (let q = 0; q < r.length; q += 2) if (r[q] === l) N += r[q + 1];
+    const st = MAT_STATS[m];
+    N += st.weight;
+    // Powder is never broken by this, as for nodes (stressBreakSaturated).
+    const str = N >= 0 ? st.strength : st.pull;
+    if (st.powder || stressLutIndex(Math.abs(N), str) !== top) continue;
+    out.push(Math.abs(N) / str, i, j, l, m);
+    found++;
+  }
+  return found;
+}
+// Whether untouched column k can have ground at the top of the ramp: as
+// generated it is its soil bands over rock to bedrock, so the bands are walked
+// and the rock is taken whole at the bottom, where it carries the most. A
+// column that can goes to stressGroundCols for the exact walk.
+function stressGenRed(k) {
+  const o = voxOff[k] - VOX_FLOOR, soilLo = Math.max(VOX_FLOOR, bedLvl[k] - SOIL_DEPTH), top = STRESS_LUT_N - 1;
+  let N = 0;
+  for (let l = Math.min(sTop[k], bedLvl[k]); l >= soilLo; l--) {
+    const m = voxMat[o + l];
+    if (!solidMat(m)) { N = 0; continue; }
+    const st = MAT_STATS[m];
+    N += st.weight;
+    if (!st.powder && stressLutIndex(N, st.strength) === top) return true;
+  }
+  if (soilLo <= VOX_FLOOR) return false;
+  const m = voxMat[o + soilLo - 1];
+  if (!solidMat(m)) return false;
+  const st = MAT_STATS[m];
+  return !st.powder && stressLutIndex(N + st.weight * (soilLo - VOX_FLOOR), st.strength) === top;
+}
+// One slice of the untouched world. Returns whether it found any to look at.
+function stressGenSweep() {
+  const end = Math.min(GEN_N * GEN_N, stGenAt + STRESS_GEN_SLICE);
+  let any = false;
+  for (let k = stGenAt; k < end; k++) {
+    if (colDug[k] || topLvl[k] === NO_COLUMN || voxOff[k] < 0) continue;
+    if (stressGenRed(k)) { stressGroundCols.add(k); any = true; }
+  }
+  stGenAt = end;
+  return any;
+}
+
+// Lay the whole world out: every built block, all the ground that hangs, and every fallen piece, the beams
 // between them, the structures they make. Structures whose system is unchanged
 // keep their answer; the rest go off to be solved.
 function stressRebuild() {
@@ -9407,7 +10200,7 @@ function stressRebuild() {
   stKeyMap.clear();
   stN = 0; stNE = 0;
 
-  let bound = 0;
+  let bound = stressHangScan();
   for (const set of placedByChunk) if (set) bound += set.size;
   const pieces = debris.children;
   for (let p = 0; p < pieces.length; p++) bound += pieces[p].userData.blocks?.length || 0;
@@ -9426,7 +10219,29 @@ function stressRebuild() {
       stKeyMap.set(key, stN++);
     }
   }
+  stNBuilt = stN;
+
+  // --- every block of ground that hangs (what was built there already is in) ---
+  for (let q = 0; q < stHangN; q++) {
+    const k = stHangK[q], i = k % GEN_N, j = (k - i) / GEN_N, o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
+    for (let lvl = stHangLo[q]; lvl <= cap; lvl++) {
+      const m = voxMat[o + lvl];
+      if (!solidMat(m)) continue;
+      const key = gravCell(i, j, lvl);
+      if (stKeyMap.has(key)) continue;
+      S.key[stN] = key; S.mat[stN] = m; S.fixed[stN] = 0;
+      S.pos[stN * 3] = i; S.pos[stN * 3 + 1] = lvl; S.pos[stN * 3 + 2] = j;
+      stKeyMap.set(key, stN++);
+    }
+  }
   stNTerr = stN;
+  stColNodes.clear();
+  for (let n = 0; n < stNTerr; n++) {
+    const k = S.pos[n * 3 + 2] * GEN_N + S.pos[n * 3];
+    let set = stColNodes.get(k);
+    if (!set) stColNodes.set(k, set = new Set());
+    set.add(S.pos[n * 3 + 1]);
+  }
 
   // --- every fallen piece, as it lies now ---
   stPieces.length = 0;
@@ -9434,7 +10249,7 @@ function stressRebuild() {
     const mesh = pieces[p], lat = mesh.userData.blocks;
     if (!lat || !lat.length) continue;
     const rest = mesh.userData.stressRest ?? stressRestCode(mesh);
-    const pc = { mesh, start: stN, count: lat.length, rest, R: new Float64Array(9), kx: 0, ky: 0, kz: 0, r: 0 };
+    const pc = { mesh, start: stN, count: lat.length, rest, R: new Float64Array(9), kx: 0, ky: 0, kz: 0, r: 0, on: [], load: 0 };
     stressPiecePose(pc);
     stPieces.push(pc);
     for (const b of lat) {
@@ -9460,9 +10275,12 @@ function stressRebuild() {
       if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N || ll < VOX_FLOOR) continue;
       const nb = stKeyMap.get(gravCell(ii, jj, ll));
       if (nb !== undefined) { if (sg > 0) stressAddEdge(n, nb, ax, m, S.mat[nb]); continue; }
-      // Solid and not built: generated ground, and it holds.
+      // Solid and not a node: ground standing on bedrock, and it holds.
       const m2 = voxelAt(ii, jj, ll);
-      if (solidMat(m2)) { if (sg > 0) stressAddEdge(n, -1, ax, m, m2); else stressAddEdge(-1, n, ax, m2, m); }
+      if (solidMat(m2)) {
+        if (sg > 0) stressAddEdge(n, -1, ax, m, m2); else stressAddEdge(-1, n, ax, m2, m);
+        stEG[stNE - 1] = gravCell(ii, jj, ll);
+      }
     }
   }
   for (const pc of stPieces) {
@@ -9473,12 +10291,14 @@ function stressRebuild() {
     for (let q = 0; q < pc.count; q++) {
       const n = pc.start + q, b = lat[q], m = S.mat[n], w = MAT_STATS[m]?.weight ?? 0;
       S.f[n * 6] = gx * w; S.f[n * 6 + 1] = gy * w; S.f[n * 6 + 2] = gz * w;
+      pc.load += w;
       for (let ax = 0; ax < 3; ax++) {
         const nb = stKeyMap.get(stPieceKey(pc.mesh, b.gi + (ax === 0), b.gj + (ax === 2), b.lvl + (ax === 1)));
         if (nb !== undefined) stressAddEdge(n, nb, ax, m, S.mat[nb]);
       }
     }
   }
+  stressPieceLoads(S);
 
   // --- structures: blocks joined by beams, each a system of its own ---
   stAdjStart.fill(0, 0, stN + 1);
@@ -9538,6 +10358,7 @@ function stressRebuild() {
     if (o !== undefined && o < stOldN) {
       S.u.set(stOld.u.subarray(o * 6, o * 6 + 6), n * 6);
       S.stress[n] = stOld.stress[o];
+      S.push[n] = stOld.push[o]; S.pull[n] = stOld.pull[o];
     } else {
       S.u.fill(0, n * 6, n * 6 + 6);
       S.stress[n] = NaN;
@@ -9556,8 +10377,12 @@ function stressRebuild() {
     else dirty.push(c);
   }
   stSolved = solved;
+  stressGroundReactions();
   stressDrawSig = NaN;   // the drawn window is laid out again on this tick
   if (dirty.length) stressPost(dirty);
+  // Nothing to solve, but answers in hand may still be red — what a pass capped
+  // at STRESS_BREAK_MAX left standing.
+  else stressBreakSaturated();
 }
 
 // Pack the structures that changed into one job and send it off.
@@ -9624,12 +10449,14 @@ function stressApply(r) {
     const n = nodes[x];
     S.u.set(r.u.subarray(x * 6, x * 6 + 6), n * 6);
     S.stress[n] = r.stress[x];
+    S.push[n] = r.push[x]; S.pull[n] = r.pull[x];
   }
   for (const h of stJob.hashes) stSolved.add(h);
   stLastIters = r.iters;
   stLastUnconverged = r.unconverged;
   stLastMs = performance.now() - stJobT0;
   stJob = null;
+  stressGroundReactions();
   stressRecolor();
   stressBreakSaturated();
 }
@@ -9640,33 +10467,86 @@ function stressApply(r) {
 // but not yet solved still shows its old colour and is left alone, and one
 // hanging off nothing (Infinity) is gravity's to bring down, not this. What
 // comes down bumps stressRev, and what is left is laid out and solved again.
+// Built and hanging ground alike. At most STRESS_BREAK_MAX go in one pass, the
+// most overloaded (stress over strength) first: an undercut hill can be
+// hundreds of red blocks at once, each one a physics body, and a phone cannot
+// take them all in a frame. The rest are still red in the next solve if what
+// went did not relieve them.
 function stressBreakSaturated() {
   if (!stressOn) return;   // not solving, so nothing reads red
   const S = stCur, top = STRESS_LUT_N - 1, hit = [];
   for (let n = 0; n < stN; n++) {
     const s = S.stress[n];
     if (s === Infinity || stressLevel(n) !== top || !stSolved.has(stCompHash[S.comp[n]])) continue;
+    // Powder is never broken here, in the ground or on a fallen piece: it is
+    // still a node, so its weight loads what it lies on, but it comes away by
+    // the powder rule alone (nothing under it) or the hammer. Broken off
+    // something holding it up, it would shed as a grain, land back in the very
+    // cell it left, read red again and be broken again, forever.
+    if (MAT_STATS[S.mat[n]]?.powder) continue;
     hit.push(n);
   }
+  // Ground standing on bedrock: every column a node puts load into, and up to
+  // STRESS_GROUND_WALK of those written to or flagged since they were last
+  // looked at. One with nothing red is let go; one still red stays until it is
+  // not, and the ones not reached wait for the next pass.
+  const gHit = [];
+  for (const k of stGroundR.keys()) {
+    if (stGroundPend.has(k)) continue;   // looked at once what loads it is solved
+    if (stressGroundRedIn(k, gHit)) stressGroundCols.add(k);
+    else stressGroundCols.delete(k);
+  }
+  let walked = 0;
+  for (const k of stressGroundCols) {
+    if (walked >= STRESS_GROUND_WALK) break;
+    if (stGroundR.has(k) || stGroundPend.has(k)) continue;
+    walked++;
+    if (!stressGroundRedIn(k, gHit)) stressGroundCols.delete(k);
+  }
+  // Ground goes in as -1 - its place in gHit, after the nodes.
+  for (let q = 0; q < gHit.length; q += 5) hit.push(-1 - q);
   if (!hit.length) return;
-  const brokenPieces = new Set();
+  if (hit.length > STRESS_BREAK_MAX) {
+    const over = new Map();
+    for (const n of hit) over.set(n, n < 0 ? gHit[-1 - n] : stressOver(n));
+    hit.sort((a, b) => over.get(b) - over.get(a));
+  }
+  // A fallen piece's red blocks are gathered here and broken together after
+  // the walk, piece by piece: knocking one off renumbers the rest and can split
+  // the piece, so none of its node numbers would hold past the first.
+  const pieceHits = new Map();   // stPieces entry -> lattice slots
+  let broken = 0;
   for (const n of hit) {
-    if (n < stNTerr) {
+    if (broken >= STRESS_BREAK_MAX) break;
+    if (n < 0) {
+      const q = -1 - n, i = gHit[q + 1], j = gHit[q + 2], lvl = gHit[q + 3];
+      if (voxelAt(i, j, lvl) !== gHit[q + 4]) continue;   // gone or changed since
+      if (breakBlock(i, j, lvl)) broken++;
+    } else if (n < stNTerr) {
       const key = S.key[n];
       const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
       if (voxelAt(i, j, lvl) !== S.mat[n]) continue;   // gone or changed since the layout
-      breakBlock(i, j, lvl);
+      if (breakBlock(i, j, lvl)) broken++;
     } else {
-      // A fallen piece: one break per piece, since knocking a block off it can
-      // split it and renumber the rest. Whatever else is still red is caught
-      // by the solve its change sets off.
       const pc = stPieces.find((p) => n >= p.start && n < p.start + p.count);
-      if (!pc || brokenPieces.has(pc.mesh)) continue;
-      if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
-      if (pc.mesh.userData.stressRest !== pc.rest) continue;   // moved since: laid out again first
-      brokenPieces.add(pc.mesh);
-      breakDebrisBlock(pc.mesh, n - pc.start);
+      // A lone cube is never broken: it would only be swapped for another the
+      // same, lying under the same load.
+      if (!pc || pc.count < 2) continue;
+      let qs = pieceHits.get(pc);
+      if (!qs) {
+        if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
+        if (pc.mesh.userData.stressRest !== pc.rest) continue;   // moved since: laid out again first
+        pieceHits.set(pc, qs = []);
+      }
+      qs.push(n - pc.start);
+      broken++;
     }
+  }
+  for (const [pc, qs] of pieceHits) {
+    // What each block shows now goes with it, broken off or left on the piece.
+    const lat = pc.mesh.userData.blocks;
+    for (let q = 0; q < pc.count; q++) { const k = stressCrackOf(pc.start + q); if (k >= 0) lat[q].crack = k; }
+    breakDebrisBlocks(pc.mesh, qs);
   }
 }
 
@@ -9694,14 +10574,26 @@ try {
   stressWorker = null;
 }
 
-// The drawn window: built blocks with an open face within STRESS_RADIUS of the
-// player, nearest first past STRESS_MAX_DRAW, and every block of each piece
-// within STRESS_DEBRIS_R. What they are coloured with was solved for the world.
+// The drawn window: built blocks and hanging ground with an open face within
+// STRESS_RADIUS of the player, nearest first past STRESS_MAX_DRAW, and every
+// block of each piece within STRESS_DEBRIS_R. What they are coloured with was
+// solved for the world.
 function stressLayout(cx, cy, cz) {
   const S = stCur;
   const ci = colI(cx), cj = colJ(cz), cl = lvlOfY(cy), R = STRESS_RADIUS;
   let nc = 0;
   stDistHist.fill(0);
+  const cand = (n, i, j, lvl) => {
+    const di = i - ci, dj = j - cj, dl = lvl - cl;
+    const d = Math.sqrt(di * di + dj * dj + dl * dl);
+    if (d > R || !isVisible(voxOff[j * GEN_N + i] + lvl - VOX_FLOOR)) return;
+    if (nc === stCandNode.length) {
+      const k2 = new Int32Array(nc * 2); k2.set(stCandNode); stCandNode = k2;
+      const d2 = new Uint16Array(nc * 2); d2.set(stCandDist); stCandDist = d2;
+    }
+    stCandNode[nc] = n; stCandDist[nc] = d | 0; nc++;
+    stDistHist[d | 0]++;
+  };
   const c0i = Math.max(0, Math.floor((ci - R) / CHUNK)), c1i = Math.min(CHUNK_N - 1, Math.floor((ci + R) / CHUNK));
   const c0j = Math.max(0, Math.floor((cj - R) / CHUNK)), c1j = Math.min(CHUNK_N - 1, Math.floor((cj + R) / CHUNK));
   for (let chj = c0j; chj <= c1j; chj++) {
@@ -9710,19 +10602,22 @@ function stressLayout(cx, cy, cz) {
       if (!set) continue;
       for (const key of set) {
         const n = stKeyMap.get(key);
-        if (n === undefined || n >= stNTerr) continue;   // placed since the layout: drawn once it is solved
+        if (n === undefined || n >= stNBuilt) continue;   // placed since the layout: drawn once it is solved
         const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
-        const di = i - ci, dj = j - cj, dl = lvl - cl;
-        const d = Math.sqrt(di * di + dj * dj + dl * dl);
-        if (d > R || !isVisible(voxOff[j * GEN_N + i] + lvl - VOX_FLOOR)) continue;
-        if (nc === stCandNode.length) {
-          const k2 = new Int32Array(nc * 2); k2.set(stCandNode); stCandNode = k2;
-          const d2 = new Uint16Array(nc * 2); d2.set(stCandDist); stCandDist = d2;
-        }
-        stCandNode[nc] = n; stCandDist[nc] = d | 0; nc++;
-        stDistHist[d | 0]++;
+        cand(n, i, j, lvl);
       }
     }
+  }
+  // Hanging ground, column by column as it was laid out (its nodes run up each
+  // column in turn): a column out of reach sideways is passed over whole.
+  for (let n = stNBuilt; n < stNTerr; ) {
+    const i = S.pos[n * 3], j = S.pos[n * 3 + 2];
+    if (Math.abs(i - ci) > R || Math.abs(j - cj) > R) {
+      while (n < stNTerr && S.pos[n * 3] === i && S.pos[n * 3 + 2] === j) n++;
+      continue;
+    }
+    if (voxelAt(i, j, S.pos[n * 3 + 1]) === S.mat[n]) cand(n, i, j, S.pos[n * 3 + 1]);
+    n++;
   }
   let dMax = R + 1;
   if (nc > STRESS_MAX_DRAW) {
@@ -9740,13 +10635,22 @@ function stressLayout(cx, cy, cz) {
   stressTerr.count = t;
   stressTerr.instanceMatrix.needsUpdate = true;
   stressTerr.boundingSphere = null;
+  stressGroundLayout(ci, cj, cl);
 
   // Overlays of pieces out of range or out of the world go; the rest are refitted.
   stDrawnPieces.length = 0;
-  const near = new Set();
+  const near = new Set(), laid = new Set();
   for (const pc of stPieces) {
-    if (pc.mesh.parent === debris && pc.mesh.userData.blocks?.length === pc.count
-        && stressNearPiece(pc.mesh, cx, cy, cz)) near.add(pc);
+    if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
+    laid.add(pc.mesh);
+    if (stressNearPiece(pc.mesh, cx, cy, cz)) near.add(pc);
+  }
+  // Pieces broken off or cut since the layout have no nodes yet: drawn with
+  // the cracks they carry, if any (start -1).
+  for (const mesh of debris.children) {
+    const lat = mesh.userData.blocks;
+    if (!lat?.length || laid.has(mesh) || !lat.some((b) => b.crack > 0) || !stressNearPiece(mesh, cx, cy, cz)) continue;
+    near.add({ mesh, start: -1, count: lat.length });
   }
   for (const mesh of stOverlays.keys()) {
     let keep = false;
@@ -9759,7 +10663,7 @@ function stressLayout(cx, cy, cz) {
     if (!ov) {
       ov = stressInstances(Math.max(pc.count, 8));
       ov.layers.set(STRESS_LAYER);
-      ov.visible = stressShown;
+      ov.visible = stressShown;   // or cracked: set by the recolour below
       pc.mesh.add(ov);
       stOverlays.set(pc.mesh, ov);
     }
@@ -9768,35 +10672,145 @@ function stressLayout(cx, cy, cz) {
     ov.count = pc.count;
     ov.instanceMatrix.needsUpdate = true;
     ov.boundingSphere = null;
-    stDrawnPieces.push({ overlay: ov, start: pc.start, count: pc.count });
+    stDrawnPieces.push({ overlay: ov, start: pc.start, count: pc.count, lat });
   }
   stressRecolor();
 }
 
+// Ground with an open face within STRESS_GROUND_R that is not a node, nearest
+// first past STRESS_GROUND_DRAW. A block is only seen through a face on air,
+// and no air in its column or beside it lies under that column's airLo, so
+// each column is looked at from the lowest airLo around it up to its top.
+function stressGroundLayout(ci, cj, cl) {
+  const R = STRESS_GROUND_R;
+  let nc = 0;
+  stGDistHist.fill(0);
+  for (let j = Math.max(0, cj - R); j <= Math.min(GEN_N - 1, cj + R); j++) {
+    for (let i = Math.max(0, ci - R); i <= Math.min(GEN_N - 1, ci + R); i++) {
+      const k = j * GEN_N + i, dh2 = (i - ci) * (i - ci) + (j - cj) * (j - cj);
+      if (dh2 > R * R || topLvl[k] === NO_COLUMN || voxOff[k] < 0) continue;
+      let lo = airLo[k];
+      if (i > 0 && i < GEN_N - 1 && j > 0 && j < GEN_N - 1) {
+        lo = Math.min(lo, airLo[k - 1], airLo[k + 1], airLo[k - GEN_N], airLo[k + GEN_N]);
+      } else lo = VOX_FLOOR;
+      lo = Math.max(lo - 1, cl - R, VOX_FLOOR);
+      const hi = Math.min(sTop[k], cl + R);
+      if (hi < lo) continue;
+      const o = voxOff[k] - VOX_FLOOR, nodes = stColNodes.get(k);
+      const placed = colDug[k] ? placedByChunk[chunkOf(i, j)] : null;
+      for (let l = lo; l <= hi; l++) {
+        if (!solidMat(voxMat[o + l]) || !isVisible(o + l)) continue;
+        if (nodes && nodes.has(l)) continue;
+        if (placed && placed.has(gravCell(i, j, l))) continue;   // built since the layout: drawn once it is solved
+        const d = Math.sqrt(dh2 + (l - cl) * (l - cl));
+        if (d > R) continue;
+        if (nc === stGCandK.length) {
+          const k2 = new Int32Array(nc * 2); k2.set(stGCandK); stGCandK = k2;
+          const l2 = new Int16Array(nc * 2); l2.set(stGCandL); stGCandL = l2;
+          const d2 = new Uint8Array(nc * 2); d2.set(stGCandD); stGCandD = d2;
+        }
+        stGCandK[nc] = k; stGCandL[nc] = l; stGCandD[nc] = d | 0; nc++;
+        stGDistHist[d | 0]++;
+      }
+    }
+  }
+  let dMax = R + 1;
+  if (nc > STRESS_GROUND_DRAW) {
+    let acc = 0;
+    for (dMax = 0; dMax <= R; dMax++) { if (acc + stGDistHist[dMax] > STRESS_GROUND_DRAW) break; acc += stGDistHist[dMax]; }
+  }
+  let t = 0;
+  for (let c = 0; c < nc; c++) {
+    if (stGCandD[c] >= dMax) continue;
+    const k = stGCandK[c], i = k % GEN_N, j = (k - i) / GEN_N, l = stGCandL[c];
+    stGInst[t * 3] = i; stGInst[t * 3 + 1] = l; stGInst[t * 3 + 2] = j;
+    stressGround.setMatrixAt(t++, _stM4.makeTranslation(colX(i), (l + 0.5) * BLOCK, colZ(j)));
+  }
+  stressGround.count = t;
+  stressGround.instanceMatrix.needsUpdate = true;
+  stressGround.boundingSphere = null;
+}
+
 // Every drawn cube, coloured from what its node shows: its stress over its own
 // strength (read now, so a strength edited in the panel shows at once).
+// Cracks too, so this runs while solving even with the colours hidden; a set
+// of cubes with no crack among them is then not drawn at all.
 function stressRecolor() {
-  if (!stressShown) return;   // the layout recolours everything when shown again
+  if (!stressShown && !stressOn) return;   // the layout recolours everything when switched on again
+  stCracked = false;
   for (let t = 0; t < stressTerr.count; t++) stressWriteColor(stressTerr, t, stTerrInst[t]);
-  stressTerr.instanceColor.needsUpdate = true;
-  for (const dp of stDrawnPieces) {
-    for (let q = 0; q < dp.count; q++) stressWriteColor(dp.overlay, q, dp.start + q);
-    dp.overlay.instanceColor.needsUpdate = true;
+  stressRecolored(stressTerr);
+  // Ground: its load worked out again now, from the answers in hand.
+  const ga = stressGround.instanceColor.array, gk = stressGround.geometry.attributes.instanceCrack.array;
+  for (let t = 0; t < stressGround.count; t++) {
+    const i = stGInst[t * 3], l = stGInst[t * 3 + 1], j = stGInst[t * 3 + 2], m = voxelAt(i, j, l);
+    if (!solidMat(m)) { ga[t * 3] = ga[t * 3 + 1] = ga[t * 3 + 2] = STRESS_PENDING; gk[t] = 0; continue; }
+    const N = stressGroundLoad(i, j, l), st = MAT_STATS[m];
+    const lv = st.powder ? 0 : stressLutIndex(Math.abs(N), N >= 0 ? st.strength : st.pull), o = lv * 3;
+    ga[t * 3] = STRESS_LUT[o]; ga[t * 3 + 1] = STRESS_LUT[o + 1]; ga[t * 3 + 2] = STRESS_LUT[o + 2];
+    gk[t] = lv >= STRESS_CRACK_LV ? lv / (STRESS_LUT_N - 1) : 0;
+    if (lv >= STRESS_CRACK_LV) stCracked = true;
   }
+  stressRecolored(stressGround);
+  for (const dp of stDrawnPieces) {
+    for (let q = 0; q < dp.count; q++) stressWriteColor(dp.overlay, q, dp.start < 0 ? -1 : dp.start + q, dp.lat[q]);
+    stressRecolored(dp.overlay);
+  }
+}
+// Whether any cube written since the last stressRecolored() has a crack.
+let stCracked = false;
+function stressRecolored(im) {
+  im.instanceColor.needsUpdate = true;
+  im.geometry.attributes.instanceCrack.needsUpdate = true;
+  im.visible = stressShown || (stressOn && stCracked);
+  stCracked = false;
 }
 // Not solved yet (NaN): a neutral grey, not a reading on the ramp.
 const STRESS_PENDING = 0.35;
+// A node's stress over its strength: what squeezes it over its strength, what
+// pulls it over its pull, whichever is the worse.
+function stressOver(n) {
+  const st = MAT_STATS[stCur.mat[n]];
+  if (!st) return 0;
+  return Math.max(stCur.push[n] / st.strength, stCur.pull[n] / st.pull);
+}
 // A node's place on the ramp, -1 while it is not solved yet.
 function stressLevel(n) {
   const s = stCur.stress[n];
   if (Number.isNaN(s)) return -1;
-  return s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(s, MAT_STATS[stCur.mat[n]]?.strength ?? 0);
+  return s === Infinity ? STRESS_LUT_N - 1 : stressLutIndex(stressOver(n), 1);
 }
-function stressWriteColor(im, inst, n) {
-  const a = im.instanceColor.array, l = stressLevel(n);
+// Powder always shows safe green: it carries and passes on load, but never breaks.
+// Its crack follows its place on the ramp: none below yellow, powder or pending.
+// A piece's block b (n -1: no node yet), not solved as it lies now, keeps the
+// crack it broke off with; solved, that is the crack it carries on with.
+function stressWriteColor(im, inst, n, b) {
+  const a = im.instanceColor.array, l = n < 0 ? -1 : MAT_STATS[stCur.mat[n]]?.powder ? 0 : stressLevel(n);
+  let k = l >= STRESS_CRACK_LV ? l / (STRESS_LUT_N - 1) : 0;
+  if (b) { if (l < 0) k = b.crack || 0; else b.crack = k; }
+  im.geometry.attributes.instanceCrack.array[inst] = k;
+  if (k > 0) stCracked = true;
   if (l < 0) { a[inst * 3] = a[inst * 3 + 1] = a[inst * 3 + 2] = STRESS_PENDING; return; }
   const o = l * 3;
   a[inst * 3] = STRESS_LUT[o]; a[inst * 3 + 1] = STRESS_LUT[o + 1]; a[inst * 3 + 2] = STRESS_LUT[o + 2];
+}
+// A node's crack: none below yellow or for powder, -1 while it is not solved.
+function stressCrackOf(n) {
+  if (MAT_STATS[stCur.mat[n]]?.powder) return 0;
+  const l = stressLevel(n);
+  return l < 0 ? -1 : l >= STRESS_CRACK_LV ? l / (STRESS_LUT_N - 1) : 0;
+}
+// The crack cell (i, j, lvl) shows now — a node's, or ground's as stressRecolor
+// works it out — read for a block about to leave it as a piece.
+function stressCrackAt(i, j, lvl) {
+  if (!stressOn || !inVoxelRange(i, j, lvl)) return 0;
+  const key = gravCell(i, j, lvl), n = stKeyMap.get(key);
+  if (n !== undefined) return Math.max(0, stressCrackOf(n));
+  if (placedByChunk[chunkOf(i, j)]?.has(key)) return 0;   // built since the layout: not solved
+  const m = voxelAt(i, j, lvl), st = MAT_STATS[m];
+  if (!solidMat(m) || !st || st.powder) return 0;
+  const N = stressGroundLoad(i, j, lvl), lv = stressLutIndex(Math.abs(N), N >= 0 ? st.strength : st.pull);
+  return lv >= STRESS_CRACK_LV ? lv / (STRESS_LUT_N - 1) : 0;
 }
 
 // Where the drawn window is centred: on the player, not the camera, which in
@@ -9826,16 +10840,19 @@ function stressDrawSignature(cx, cy, cz) {
 // only redraws the window from answers in hand. Nothing is solved here.
 function updateStress(dt) {
   stressWatchPieces();
-  if (!stressOn) return;
+  if (!stressOn && !stressShown) return;
   stressTimer += dt;
   if (stressTimer < STRESS_TICK) return;
   stressTimer = 0;
-  if (stressRev !== stBuiltRev && !stJob && elapsed - stressLastRebuild >= STRESS_REBUILD) {
+  if (stressOn && stressRev !== stBuiltRev && !stJob && elapsed - stressLastRebuild >= STRESS_REBUILD) {
     stBuiltRev = stressRev;
     stressLastRebuild = elapsed;
     stressRebuild();
   }
-  if (!stressShown) return;   // solving and breaking go on; nothing is drawn
+  // A slice of the untouched world; anything it turns up is broken now, unless
+  // a solve is out, whose answer breaks it when it comes back.
+  if (stressOn && stGenAt < GEN_N * GEN_N && !sandboxMode && stressGenSweep() && !stJob) stressBreakSaturated();
+  // Drawn while solving (the cracks) or shown (the colours: off, the last answers in hand).
   const f = stressFocus(), sig = stressDrawSignature(f.x, f.y, f.z);
   if (sig !== stressDrawSig) {
     stressDrawSig = sig;
@@ -9843,34 +10860,42 @@ function updateStress(dt) {
   }
 }
 
-// on: run the solver; shown: also draw the overlay (defaults to on, so
-// setStress(true/false) keeps meaning overlay on / everything off).
+// on: run the solver (and crack loaded blocks); shown: draw the colour overlay.
+// Independent; shown defaults to on, so setStress(true/false) keeps meaning
+// everything on / everything off.
 function setStress(on, shown = on) {
   stressOn = !!on;
-  stressShown = stressOn && !!shown;
+  stressShown = !!shown;
+  stressShowU.value = stressShown ? 1 : 0;
+  stressCrackU.value = stressOn ? 1 : 0;
+  // Only cracks left to draw: the next layout shows the cubes that have one.
   stressTerr.visible = stressShown;
+  stressGround.visible = stressShown;
   for (const ov of stOverlays.values()) ov.visible = stressShown;
-  stressDrawSig = NaN;   // redrawn on the next tick it is shown
-  stressBtn.textContent = stressShown ? 'Stress: Shown' : stressOn ? 'Stress: Hidden' : 'Stress: Off';
+  stressDrawSig = NaN;   // redrawn on the next tick
+  stressBtn.textContent = stressOn ? 'Tension: On' : 'Tension: Off';
+  stressShowBtn.textContent = stressShown ? 'Show Tension: On' : 'Show Tension: Off';
 }
 // A material's strength changed: every cube re-reads it now. The beams take
 // the new stiffness at the next solve, which a block added or removed starts.
 function stressInvalidate() {
+  // Ground's strength changed too: every written column is looked at again, and
+  // the untouched world swept again from the start.
+  for (let c = 0; c < GEN_N * GEN_N; c++) if (colDug[c]) stressGroundCols.add(c);
+  stGenAt = 0;
   stressRecolor();
   stressBreakSaturated();
 }
 const stressBtn = document.getElementById('btn-stress');
-// Shown -> Hidden (running, not drawn) -> Off -> Shown.
-bindTap(stressBtn, () => {
-  if (stressShown) setStress(true, false);
-  else if (stressOn) setStress(false);
-  else setStress(true);
-});
+const stressShowBtn = document.getElementById('btn-stress-show');
+bindTap(stressBtn, () => setStress(!stressOn, stressShown));
+bindTap(stressShowBtn, () => setStress(stressOn, !stressShown));
 
 // ---- Material bar (creative tool) ----
 const matBar = document.getElementById('mat-bar');
-(function buildMatBar() {
-  for (let m = 0; m < N_MATS; m++) {
+function buildMatBar() {
+  matBar.textContent = '';
+  for (let m = 0; m < MAT_IDS; m++) {
     if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;
@@ -9892,9 +10917,9 @@ const matBar = document.getElementById('mat-bar');
     });
     matBar.appendChild(sq);
   }
-
-
-})();
+  updateMatBar();
+}
+buildMatBar();
 
 const btnMatBar = document.getElementById('btn-matbar');
 let matBarVisible = false;
@@ -10478,6 +11503,9 @@ function collectWorldMeta() {
     genState,
     settingsState,
     stressState,
+    // The created materials' definitions, so the ids in the store mean the same
+    // material wherever the save is opened (customMatsAdopt).
+    customMats: customMatDefs(),
   };
 }
 
@@ -10781,6 +11809,7 @@ function applyWorldState(s) {
   // damaged one fails here with the world untouched.
   const vs = s.voxelStore;
   const laid = vs.runs ? decodeVoxRuns(vs) : null;
+  customMatsAdopt(s.customMats);
   topLvl.set(vs.topLvl);
   bedLvl.set(vs.bedLvl);
   bedMat.set(vs.bedMat);
@@ -10823,7 +11852,8 @@ function applyWorldState(s) {
   shovel.held.push(...ts.shovel.held);
   setHammer(ts.hammer.on);
   setPlacer(ts.placer.on);
-  placerMat = ts.placer.mat;
+  placerMat = MAT_STATS[ts.placer.mat] ? ts.placer.mat : DIRT;
+  updateMatBar();
   placerMatName.textContent = MAT_STATS[placerMat]?.name || MAT_NAMES[placerMat];
   sandboxMode = ts.sandboxMode;
   document.body.classList.toggle('sandbox-mode', sandboxMode);
@@ -11087,11 +12117,13 @@ window.hermes = {
   hammer, setHammer, hammerStrike,
   // The Volume tool — step 0..3 and the corners committed so far.
   setVolume, volumePlace,
-  // The stress system — setStress(on, shown): run the solver, and draw it or
-  // not. markPlaced tags a cell as player-built.
+  // The stress system — setStress(on, shown): run the solver (and crack
+  // loaded blocks), and draw the colours or not, independently. markPlaced tags a cell as player-built; ground counts the hanging
+  // ground in the solve.
   setStress, markPlaced,
-  stress: () => ({ on: stressOn, shown: stressShown, nodes: stN, built: stNTerr, beams: stNE, structures: stNComp,
-                   drawn: stressTerr.count, pieces: stPieces.length, solving: !!stJob, worker: !!stressWorker,
+  stress: () => ({ on: stressOn, shown: stressShown, nodes: stN, built: stNBuilt, ground: stNTerr - stNBuilt, beams: stNE, structures: stNComp,
+                   drawn: stressTerr.count, groundDrawn: stressGround.count, groundWatch: stressGroundCols.size,
+                   groundSwept: stGenAt / (GEN_N * GEN_N), pieces: stPieces.length, solving: !!stJob, worker: !!stressWorker,
                    iters: stLastIters, unconverged: stLastUnconverged, ms: stLastMs }),
   volume: () => ({ on: volumeOn, step: volumeStep, c1: volumeC1, c2: volumeC2, top: volumeTop,
                    live: volumeLive, ghosts: volumeGhost.visible ? volumeGhostCells : 0 }),

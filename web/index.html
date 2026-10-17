@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 220;
+window.GAME_VERSION = 223;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -417,7 +417,7 @@ window.GAME_VERSION = 220;
   /* Strength and pull are the numbers tuned from here. 16px keeps iOS from zooming on
      focus; the box is tall enough to hit with a thumb. */
   .mat-str {
-    width: 72px;
+    width: 84px;
     height: 38px;
     margin: 2px 0;
     padding: 0 8px;
@@ -1461,7 +1461,7 @@ window.GAME_VERSION = 220;
     <div class="mn-row">
       <label>Weight <input id="mn-weight" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="2"></label>
       <label>Buoyancy <input id="mn-buoy" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="0"></label>
-      <label>Compression <input id="mn-str" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="1000"></label>
+      <label>Compression <input id="mn-str" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="100000"></label>
       <label>Pull <input id="mn-pull" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="100"></label>
       <label class="mn-chk"><input id="mn-powder" type="checkbox"> Powder</label>
     </div>
@@ -2350,26 +2350,30 @@ const MAT_IDS = CUSTOM_MAT0 + CUSTOM_MAT_MAX;
 // beam stiffness and overlay — powder whether it is loose and crumbly.
 // Strength is what it takes to crush it (compression, and the beam stiffness);
 // pull what it takes to pull it apart (tension). A row with no pull of its own
-// takes its strength for both.
+// takes its strength for both. Compression is set high on purpose — a block
+// holds a great deal of pressure before it crushes — and every row was raised
+// by the same factor (x100), so the beams' stiffness relative to each other,
+// and with it how a load spreads through a structure, is what it was; only
+// the margin before crushing grew.
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 2.2,   buoyancy: 0, strength: 0.5,  pull: 0.5,  powder: true  },  // SAND
-  { name: 'Dirt',          weight: 2,     buoyancy: 0, strength: 1000, pull: 50,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 6,     buoyancy: 0, strength: 15000,pull: 5000, powder: false },  // ROCK
-  null,                                                                        // WATER
-  { name: 'Fine Dirt',     weight: 2,     buoyancy: 0, strength: 0.5,  pull: 0.5,  powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 4,     buoyancy: 0, strength: 1000, pull: 70,   powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 2,     buoyancy: 0, strength: 1000, pull: 100,  powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 4,     buoyancy: 0, strength: 70,   pull: 70,   powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 5,     buoyancy: 0, strength: 1,    pull: 1,    powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 6,     buoyancy: 0, strength: 1000, pull: 150,  powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 5,     buoyancy: 0, strength: 5000, pull: 2500, powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 2.4,   buoyancy: 0, strength: 1.2,  pull: 1.2,  powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 4.4,   buoyancy: 0, strength: 1000, pull: 100,  powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 2.4,   buoyancy: 0, strength: 2000, pull: 1000, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 4.2,   buoyancy: 0, strength: 1000, pull: 0.8,  powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 1000, pull: 500,  powder: false },  // HARD_SAND
+  { name: 'Sand',          weight: 2.2,   buoyancy: 0, strength: 50,      pull: 0.5,  powder: true  },  // SAND
+  { name: 'Dirt',          weight: 2,     buoyancy: 0, strength: 100000,  pull: 50,   powder: false },  // DIRT
+  { name: 'Rock',          weight: 6,     buoyancy: 0, strength: 1500000, pull: 5000, powder: false },  // ROCK
+  null,                                                                           // WATER
+  { name: 'Fine Dirt',     weight: 2,     buoyancy: 0, strength: 50,      pull: 0.5,  powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 4,     buoyancy: 0, strength: 100000,  pull: 70,   powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 2,     buoyancy: 0, strength: 100000,  pull: 100,  powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 4,     buoyancy: 0, strength: 7000,    pull: 70,   powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 5,     buoyancy: 0, strength: 100,     pull: 1,    powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 6,     buoyancy: 0, strength: 100000,  pull: 150,  powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 5,     buoyancy: 0, strength: 500000,  pull: 2500, powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 2.4,   buoyancy: 0, strength: 120,     pull: 1.2,  powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 4.4,   buoyancy: 0, strength: 100000,  pull: 100,  powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 2.4,   buoyancy: 0, strength: 200000,  pull: 1000, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 4.2,   buoyancy: 0, strength: 100000,  pull: 0.8,  powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
 ];
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
 // AIR's row and the created materials' (filled in by customMatInstall).
@@ -2865,6 +2869,12 @@ function setVoxel(i, j, lvl, m) {
   stressRev++;
   stressCols.add(k);
   stressGroundCols.add(k);
+  // Ground coming or going (water moving about does not count): the ground of
+  // this chunk is no longer as it settled, and is solved for real from here on.
+  if ((was !== AIR && was !== WATER) || (m !== AIR && m !== WATER)) {
+    const c = chunkOf(i, j);
+    if (lvl < stressChunkLow[c]) stressChunkLow[c] = lvl;
+  }
   if (was === AIR) worldBlocks++;
   else if (m === AIR) worldBlocks--;
   // Keep the cached surface honest. Stacking one on top only ever raises it;
@@ -2927,6 +2937,11 @@ const MAX_DEPTH  = 80;   // and the most any column will ever draw (16 m)
 const CHUNK   = 16;                         // columns per chunk side (3.2 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
+// The lowest level anything solid was dug, built or dropped at in each chunk
+// since the world was made, NO_DIG where nothing has: those are the chunks
+// whose ground the stress solve lays out as nodes (stressRegion).
+// setVoxel keeps it; a loaded world gets it back from stressSeedCols.
+const stressChunkLow = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
 
 // A separate, coarser grid overlay used for LOD — not the mesh chunk grid above.
 const CHUNK_GRID = 20;                          // blocks per grid chunk side
@@ -7950,9 +7965,9 @@ bindTap(document.getElementById('mn-add'), () => {
 function matStatsSource() {
   const rows = MAT_STATS.slice(0, N_MATS).map((st, i) => {
     const tag = '  // ' + MAT_NAMES[i].toUpperCase().replace(/ /g, '_');
-    if (!st) return '  null,'.padEnd(77) + tag;
+    if (!st) return '  null,'.padEnd(80) + tag;
     return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
-         + `buoyancy: ${(st.buoyancy + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(6)}`
+         + `buoyancy: ${(st.buoyancy + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(9)}`
          + `pull: ${(st.pull + ',').padEnd(6)}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
   // The created materials after it, as their own list: id, colour and stats.
@@ -9094,6 +9109,18 @@ function updatePlacer() {
 // STRESS_RADIUS only decides which blocks are drawn. Nothing here writes the
 // voxel store, a body or a collider: it reads the world and draws translucent
 // cubes over it.
+//
+// Ground as it was generated is taken to have settled: each block carries the
+// column over it straight down, and no more. The whole world solved properly
+// would not fit on a phone (a displacement vector alone is gigabytes), and a
+// world nobody has touched has nothing in it that would change. Every chunk
+// something was dug, built or dropped in is laid out as nodes instead, from
+// STRESS_SOLVE_DEPTH under its lowest change up, with the settled column forces
+// as each beam's starting load (stressSolveJob's en0): what the change upset is
+// all that is left to solve, and that spreads sideways, and pulls, as it would.
+// The edge of a chunk holds rigidly, which can hide what would give past it, so
+// a block that reads past yellow in pull brings the chunks around its own into
+// the solve as well (stressEscalate); below yellow nothing grows.
 const STRESS_RADIUS     = 80;     // blocks (16 m) around the player drawn with the overlay
 const STRESS_DEBRIS_R   = 16;     // m — fallen pieces nearer than this are drawn
 const STRESS_MAX_DRAW   = 3000;   // overlay cubes on built blocks, nearest first past this
@@ -9105,7 +9132,13 @@ const STRESS_LAYER      = 1;      // debris overlays: drawn, but not hit by debr
 const STRESS_CONTACT_EPS = 0.1 * BLOCK;   // m — cubes nearer than this touch: cannon rests bodies a hair apart or into each other
 const STRESS_SUPPORT_NY = 0.05;  // a touch holds a block up when its normal lifts it at least this much (not a wall, not a ceiling)
 const STRESS_LUT_N      = 128;
-const STRESS_TERRAIN_MAX = 20000; // hanging-ground nodes at most (a phone solves ~20k in seconds); past this the nearest columns are kept
+const STRESS_TERRAIN_MAX = 20000; // ground nodes at most, hanging and solved for real (a phone solves ~20k in seconds); past this the nearest are kept
+// Levels of ground under the lowest change in and around a chunk that are
+// solved with it. Measured against a 48x48-column solve to bedrock: an undercut
+// cliff foot reads its pull within 5% at 8, 15% at 4, and no block lands on the
+// other side of yellow at 8; deeper buys little, and every level is 256 nodes a
+// chunk.
+const STRESS_SOLVE_DEPTH = 8;
 const STRESS_BREAK_MAX  = 64;    // blocks broken per solve, worst first; the rest go on the next one
 const STRESS_GROUND_R   = 40;    // blocks (8 m) around the player whose ground gets an overlay
 const STRESS_GROUND_DRAW = 3000; // ground overlay cubes, nearest first past this (as many again as built blocks get)
@@ -9181,6 +9214,13 @@ function stressLutIndex(stress, strength) {
 // u comes in as a starting guess and goes out as the answer; stress is each
 // node's worst |N| + M.
 //
+// en0 (if given) is each beam's axial force before anything moved: the settled
+// ground's own weight, carried straight down its columns. That state already
+// balances every block it holds up, so only what a change upset — a block taken
+// out from under the run it carried, one added — is left over as load, and the
+// solve works out how that spreads, sideways and in pull. A beam's force is
+// what the displacements give plus its en0.
+//
 // Conjugate gradients on K, assembled as 6x6 blocks, preconditioned by one
 // V-cycle of smoothed-aggregation multigrid. Jacobi alone needs thousands of
 // iterations on a long span — bending makes K's condition grow as the fourth
@@ -9193,7 +9233,7 @@ function stressLutIndex(stress, strength) {
 // preconditioner symmetric for CG. Tens of iterations rather than thousands.
 function stressSolveJob(job) {
   const P1 = [1, 2, 0], P2 = [2, 0, 1];
-  const { nStart, eStart, fixed, f, u, ea, eb, eax, ek, pos, tol2 } = job;
+  const { nStart, eStart, fixed, f, u, ea, eb, eax, ek, en0, pos, tol2 } = job;
   const stress = new Float64Array(fixed.length);
   // The worst beam's stress again, split by which way it loads the block: a
   // beam's moment both squeezes one face and pulls the other, its axial force
@@ -9536,6 +9576,17 @@ function stressSolveJob(job) {
     const addBlock = (at, K, ro, co, EA) => {
       for (let r = 0; r < 6; r++) for (let q = 0; q < 6; q++) A.v[at * 36 + r * 6 + q] += EA * K[(ro + r) * 12 + co + q];
     };
+    // A beam's settled force is what it already pushes its ends with: moved to
+    // the load side, a column as generated nets to nothing, and a run that lost
+    // what it carried or what carried it is left with the difference.
+    if (en0) {
+      for (let e = e0; e < e1; e++) {
+        const N0 = en0[e];
+        if (N0 === 0) continue;
+        if (ea[e] >= 0) F[ea[e] * 6 + eax[e]] += N0;
+        if (eb[e] >= 0) F[eb[e] * 6 + eax[e]] -= N0;
+      }
+    }
     for (let e = e0; e < e1; e++) {
       const a = ea[e], b = eb[e], K = KU[eax[e]], EA = ek[e];
       const fa = a >= 0 && !fx[a], fb = b >= 0 && !fx[b];
@@ -9603,8 +9654,9 @@ function stressSolveJob(job) {
         x12[d] = a >= 0 ? U[a * 6 + d] : 0;
         x12[6 + d] = b >= 0 ? U[b * 6 + d] : 0;
       }
-      const s = beam(eax[e], ek[e], x12, y12);
-      const sp = Math.max(0, -beamN) + beamM, st = Math.max(0, beamN) + beamM;
+      beam(eax[e], ek[e], x12, y12);
+      const N = beamN + (en0 ? en0[e] : 0);
+      const s = Math.abs(N) + beamM, sp = Math.max(0, -N) + beamM, st = Math.max(0, N) + beamM;
       if (a >= 0 && s > stress[n0 + a]) stress[n0 + a] = s;
       if (b >= 0 && s > stress[n0 + b]) stress[n0 + b] = s;
       if (a >= 0 && sp > push[n0 + a]) push[n0 + a] = sp;
@@ -9655,6 +9707,8 @@ let stKeyMap = new Map(), stKeyMapPrev = new Map();
 let stECap = 0, stEA, stEB, stEAx, stEK;
 // For a beam with one end on ground that holds (-1), that ground cell's gravCell; else -1.
 let stEG;
+// Each beam's settled axial force (stressSettledN): what it carried before anything changed.
+let stEN0;
 // Which levels of each column are nodes (column -> Set of levels), and the load
 // the solved nodes put into ground cells (column -> [lvl, downward force, ...]),
 // with the columns where some of that load comes from a structure not yet solved.
@@ -9663,6 +9717,16 @@ let stColNodes = new Map(), stGroundR = new Map(), stGroundPend = new Set();
 const stPieceGround = [];
 // The background sweep of the untouched world: next column, or GEN_N^2 when done.
 let stGenAt = 0;
+// The chunks solved for real (stressRegion): the lowest level a block pulled
+// past yellow brought each one in at (stressEscalate), NO_DIG for none; and, for
+// this layout, each chunk's lowest change around it, the floor its ground is
+// laid out from (NO_DIG: not laid out), and the ones that are, nearest first.
+const stressEscLow = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
+const stRegLow = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
+const stRegFloor = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
+let stRegChunks = [];
+// Weight generated over each level of a column (stressSettledN), per layout.
+const stSettledW = new Map();
 let stAdjStart, stAdj, stQueue, stLocal;
 let stCompStart = new Int32Array(64), stCompHash = new Int32Array(64), stCompHeld = new Uint8Array(64);
 let stSolved = new Set();   // hashes of structures whose answer is in hand
@@ -9690,7 +9754,7 @@ function stressEnsure(nodes) {
   if (stECap < ecap) {
     stECap = ecap;
     stEA = new Int32Array(ecap); stEB = new Int32Array(ecap);   // -1: a fixed support
-    stEAx = new Uint8Array(ecap); stEK = new Float64Array(ecap); stEG = new Float64Array(ecap);
+    stEAx = new Uint8Array(ecap); stEK = new Float64Array(ecap); stEG = new Float64Array(ecap); stEN0 = new Float64Array(ecap);
     stAdj = new Int32Array(ecap * 2);
   }
   if (!stQueue || stQueue.length < cap) {
@@ -9987,7 +10051,7 @@ function stressMix(h, v) {
 
 function stressAddEdge(a, b, ax, ma, mb) {
   const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2;
-  stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA; stEG[stNE] = -1;
+  stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA; stEG[stNE] = -1; stEN0[stNE] = 0;
   stNE++;
 }
 
@@ -10008,6 +10072,8 @@ function stressForget() {
   stPieceGround.length = 0;
   stressGround.count = 0;
   stGenAt = 0;   // the new world's untouched ground is swept again
+  stressEscLow.fill(NO_DIG);   // and what grew the solve in the last one is found again
+  stRegFloor.fill(NO_DIG); stRegChunks = [];
   stN = 0; stNE = 0; stNBuilt = 0; stNTerr = 0; stNComp = 0; stHangN = 0;
   stPieces.length = 0;
   stJob = null;   // whatever the worker sends back for it is dropped
@@ -10021,7 +10087,8 @@ function stressForget() {
 // hangs. A column with nothing hanging is let go until it is written again.
 // Returns how many blocks hang, at most STRESS_TERRAIN_MAX: past that, whole
 // columns are kept nearest the player first, and the ones left out hold as
-// ground does — a safety valve for a world dug hollow, not a rule.
+// ground does — a safety valve for a world dug hollow, not a rule. What it
+// leaves of the cap goes to the chunks solved for real (stressRegion).
 function stressHangScan() {
   stHangN = 0;
   let total = 0;
@@ -10069,8 +10136,21 @@ function stressHangScan() {
 function stressSeedCols() {
   stressCols.clear();
   stressGroundCols.clear();
+  // Where the world was changed, for the chunks solved for real: how deep each
+  // column was dug (or its top, for one only stacked on) and every built block.
+  stressChunkLow.fill(NO_DIG);
+  const low = (ch, lvl) => { if (lvl < stressChunkLow[ch]) stressChunkLow[ch] = Math.max(VOX_FLOOR, lvl); };
+  for (let ch = 0; ch < placedByChunk.length; ch++) {
+    const set = placedByChunk[ch];
+    if (set) for (const key of set) low(ch, Math.floor(key / (GEN_N * GEN_N)) + VOX_FLOOR);
+  }
   for (let c = 0; c < GEN_N * GEN_N; c++) {
-    if (colDug[c]) { stressCols.add(c); stressGroundCols.add(c); continue; }
+    if (colDug[c]) {
+      const i = c % GEN_N;
+      low(chunkOf(i, (c - i) / GEN_N), colDugLo[c] !== NO_DIG ? colDugLo[c] : sTop[c]);
+      stressCols.add(c); stressGroundCols.add(c);
+      continue;
+    }
     const t = sTop[c], o = voxOff[c] - VOX_FLOOR;
     if (t === NO_COLUMN || voxOff[c] < 0 || t <= VOX_FLOOR) continue;
     if (solidMat(voxMat[o + t]) && !solidMat(voxMat[o + t - 1])) stressCols.add(c);
@@ -10078,10 +10158,154 @@ function stressSeedCols() {
 }
 stressSeedCols();
 
+// ----- the ground solved for real -----
+// What generation put at level l of column k weighs, 0 where it put nothing
+// solid. A column never edited still holds exactly that; one that was is worked
+// out again from its bed, as the fill pass laid it — rock, then the deep and the
+// surface soil — with its top block as the surface swap left it.
+function stressGenWeight(k, l) {
+  if (l < VOX_FLOOR || l > bedLvl[k]) return 0;
+  let m;
+  if (!colDug[k]) m = voxMat[voxOff[k] + l - VOX_FLOOR];
+  else if (l === topLvl[k]) m = topMat[k];
+  else {
+    const bed = bedLvl[k], soilLo = Math.max(VOX_FLOOR, bed - SOIL_DEPTH), soilMid = Math.max(soilLo, bed - (SOIL_DEPTH >> 1));
+    m = l >= soilMid ? bedMat[k] : l >= soilLo ? DEEP_MAT[bedMat[k]] : ROCK;
+  }
+  return solidMat(m) ? MAT_STATS[m].weight : 0;
+}
+// The settled force in the beam from (i, j, lo) up to the cell over it, both
+// solid: the weight generation stacked over lo, as a squeeze — when both are
+// ground as it was generated. A built block carried nothing before it was put
+// there, so a beam to one starts from nothing, and so does every sideways beam:
+// settled ground carries its weight straight down. The sandbox's platform was
+// never generated ground at all.
+function stressSettledN(i, j, lo) {
+  if (sandboxMode) return 0;
+  const k = j * GEN_N + i, bed = bedLvl[k];
+  if (bed === NO_COLUMN || voxOff[k] < 0 || lo < VOX_FLOOR || lo + 1 > bed) return 0;
+  if (colDug[k]) {
+    const placed = placedByChunk[chunkOf(i, j)];
+    if (placed && (placed.has(gravCell(i, j, lo)) || placed.has(gravCell(i, j, lo + 1)))) return 0;
+  }
+  let W = stSettledW.get(k);
+  if (!W) {
+    W = new Float64Array(bed - VOX_FLOOR + 1);
+    let w = 0;
+    for (let l = bed; l >= VOX_FLOOR; l--) { W[l - VOX_FLOOR] = w; w += stressGenWeight(k, l); }
+    stSettledW.set(k, W);
+  }
+  return -W[lo - VOX_FLOOR];
+}
+// Which chunks have their ground laid out as nodes this layout, and from what
+// floor: every chunk dug, built or dropped in (stressChunkLow), every one a
+// piece lies at rest in (its weight came from somewhere), and every one a
+// yellow pull brought in (stressEscLow). A chunk's floor is STRESS_SOLVE_DEPTH
+// under the lowest change in it or the chunks around it, so a change at an edge
+// is as deep on both sides. Whole chunks, nearest the player first, while they
+// fit in budget nodes; the rest stay settled. Returns the nodes they can take.
+function stressRegion(budget) {
+  stRegFloor.fill(NO_DIG);
+  stRegChunks = [];
+  if (sandboxMode) return 0;
+  const NC = CHUNK_N * CHUNK_N;
+  for (let c = 0; c < NC; c++) stRegLow[c] = Math.min(stressChunkLow[c], stressEscLow[c]);
+  const pieces = debris.children;
+  for (let p = 0; p < pieces.length; p++) {
+    const mesh = pieces[p];
+    if (!mesh.userData.blocks?.length || !mesh.userData.stressRest) continue;
+    const i = colI(mesh.position.x), j = colJ(mesh.position.z);
+    if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) continue;
+    const c = chunkOf(i, j), l = Math.max(VOX_FLOOR, lvlOfY(mesh.position.y) - 1);
+    if (l < stRegLow[c]) stRegLow[c] = l;
+  }
+  const cand = [];
+  for (let c = 0; c < NC; c++) if (stRegLow[c] < NO_DIG) cand.push(c);
+  if (!cand.length) return 0;
+  const f = stressFocus(), fi = colI(f.x) / CHUNK - 0.5, fj = colJ(f.z) / CHUNK - 0.5;
+  const d2 = (c) => { const di = c % CHUNK_N - fi, dj = ((c / CHUNK_N) | 0) - fj; return di * di + dj * dj; };
+  cand.sort((a, b) => d2(a) - d2(b));
+  let total = 0;
+  for (const c of cand) {
+    const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
+    let lo = NO_DIG;
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        const x = ci + di, z = cj + dj;
+        if (x >= 0 && z >= 0 && x < CHUNK_N && z < CHUNK_N) lo = Math.min(lo, stRegLow[z * CHUNK_N + x]);
+      }
+    }
+    // Bedrock's own level stays ground: under it there is nothing to stand on.
+    const floor = Math.max(VOX_FLOOR + 1, lo - STRESS_SOLVE_DEPTH);
+    let cnt = 0;
+    for (let j = cj * CHUNK; j < Math.min(GEN_N, (cj + 1) * CHUNK); j++) {
+      for (let i = ci * CHUNK; i < Math.min(GEN_N, (ci + 1) * CHUNK); i++) {
+        const k = j * GEN_N + i;
+        if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) continue;
+        const t = Math.min(sTop[k], voxCap(k));
+        if (t >= floor) cnt += t - floor + 1;
+      }
+    }
+    if (total + cnt > budget) continue;
+    total += cnt;
+    stRegFloor[c] = floor;
+    stRegChunks.push(c);
+  }
+  return total;
+}
+// A solve came back. A block it reads past yellow in pull — the same yellow the
+// overlay turns and the cracks start at — may be reading the rigid edge of the
+// solve rather than the world, which past it might have given and let it fail.
+// So the chunks around that block's own come into the solve, each from the
+// level of the first block that brought it, and the world is laid out and
+// solved again. A chunk already in the solve for a change of its own keeps the
+// floor its change gave it, so this only ever adds chunks, once each: nothing
+// can make it grow forever, and below yellow it does not grow at all. Powder
+// never pulls, and a fallen piece is not in any chunk's ground.
+// Settled ground just outside the edge counts as well: the solved ground drags
+// on it there, and walked as a lone column (stressGroundLoad) a drag upward
+// reads as pull that its neighbours, solved, would mostly have taken. Returns
+// whether the solve grew, in which case nothing is broken on this answer: the
+// wider one decides.
+function stressEscalate(nodes) {
+  if (sandboxMode) return false;
+  const S = stCur;
+  let grew = false;
+  const around = (i, j, lvl) => {
+    const ci = (i / CHUNK) | 0, cj = (j / CHUNK) | 0;
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        const x = ci + di, z = cj + dj;
+        if (x < 0 || z < 0 || x >= CHUNK_N || z >= CHUNK_N) continue;
+        const c = z * CHUNK_N + x;
+        if (stRegLow[c] < NO_DIG || stressEscLow[c] < NO_DIG) continue;
+        stressEscLow[c] = lvl;
+        grew = true;
+      }
+    }
+  };
+  for (let x = 0; x < nodes.length; x++) {
+    const n = nodes[x];
+    if (n >= stNTerr) continue;
+    const st = MAT_STATS[S.mat[n]];
+    if (!st || st.powder || !(S.stress[n] < Infinity)) continue;
+    if (stressLutIndex(S.pull[n], st.pull) < STRESS_CRACK_LV) continue;
+    around(S.pos[n * 3], S.pos[n * 3 + 2], S.pos[n * 3 + 1]);
+  }
+  for (const k of stGroundR.keys()) {
+    if (stGroundPend.has(k)) continue;
+    const l = stressGroundPullAt(k);
+    if (l !== NO_DIG) { const i = k % GEN_N; around(i, (k - i) / GEN_N, l); }
+  }
+  if (grew) stressRev++;
+  return grew;
+}
+
 // ----- ground standing on bedrock: its stress without a solve -----
 // The downward force beam e puts into the ground cell at its fixed end: that
 // end's vertical force in stressSolveJob's beam(), the ground's six all zero
-// and the node's its solved displacements.
+// and the node's its solved displacements, plus what the beam carried settled
+// (a column solved for real still rests on the ground under its floor).
 const _stX = new Float64Array(12);
 function stressFixedLoad(e) {
   const x = _stX, u = stCur.u, a = stEA[e], b = stEB[e];
@@ -10091,7 +10315,7 @@ function stressFixedLoad(e) {
   }
   const ax = stEAx[e], EA = stEK[e], k = EA / 12;
   let yA;
-  if (ax === 1) yA = -EA * (x[7] - x[1]);                                   // axial
+  if (ax === 1) yA = -(EA * (x[7] - x[1]) + stEN0[e]);                      // axial, with what it carried settled
   else if (ax === 0) yA = k * (12 * (x[1] - x[7]) + 6 * (x[5] + x[11]));    // shear, bending about z
   else yA = k * (12 * (x[1] - x[7]) - 6 * (x[3] + x[9]));                   // shear, bending about x
   return a < 0 ? yA : -yA;
@@ -10158,6 +10382,26 @@ function stressGroundRedIn(k, out) {
   }
   return found;
 }
+// The highest block of ground in column k pulled past yellow, walked as
+// stressGroundRedIn walks it, or NO_DIG for none (powder never reads it). The
+// highest, as that is about where the drag comes in: the pull only gathers on
+// down the column from there, and a floor taken from the bottom of it would lay
+// out ground far deeper than the change reaches.
+function stressGroundPullAt(k) {
+  if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) return NO_DIG;
+  const o = voxOff[k] - VOX_FLOOR, nodes = stColNodes.get(k), r = stGroundR.get(k);
+  let N = 0;
+  for (let l = voxCap(k); l >= VOX_FLOOR; l--) {
+    const m = voxMat[o + l];
+    if (!solidMat(m)) { N = 0; continue; }
+    if (nodes && nodes.has(l)) continue;
+    if (r) for (let q = 0; q < r.length; q += 2) if (r[q] === l) N += r[q + 1];
+    const st = MAT_STATS[m];
+    N += st.weight;
+    if (N < 0 && !st.powder && stressLutIndex(-N, st.pull) >= STRESS_CRACK_LV) return l;
+  }
+  return NO_DIG;
+}
 // Whether untouched column k can have ground at the top of the ramp: as
 // generated it is its soil bands over rock to bedrock, so the bands are walked
 // and the rock is taken whole at the bottom, where it carries the most. A
@@ -10190,7 +10434,8 @@ function stressGenSweep() {
   return any;
 }
 
-// Lay the whole world out: every built block, all the ground that hangs, and every fallen piece, the beams
+// Lay the whole world out: every built block, all the ground that hangs, the
+// ground of every chunk solved for real, and every fallen piece, the beams
 // between them, the structures they make. Structures whose system is unchanged
 // keep their answer; the rest go off to be solved.
 function stressRebuild() {
@@ -10200,7 +10445,11 @@ function stressRebuild() {
   stKeyMap.clear();
   stN = 0; stNE = 0;
 
+  stSettledW.clear();   // weights may have been edited since
   let bound = stressHangScan();
+  // Hanging ground first — it has nothing under it, and left out it would hold
+  // as if it had — then whole chunks of ground in what the cap leaves.
+  bound += stressRegion(STRESS_TERRAIN_MAX - bound);
   for (const set of placedByChunk) if (set) bound += set.size;
   const pieces = debris.children;
   for (let p = 0; p < pieces.length; p++) bound += pieces[p].userData.blocks?.length || 0;
@@ -10232,6 +10481,26 @@ function stressRebuild() {
       S.key[stN] = key; S.mat[stN] = m; S.fixed[stN] = 0;
       S.pos[stN * 3] = i; S.pos[stN * 3 + 1] = lvl; S.pos[stN * 3 + 2] = j;
       stKeyMap.set(key, stN++);
+    }
+  }
+  // --- the ground of every chunk solved for real, its floor up ---
+  for (const c of stRegChunks) {
+    const floor = stRegFloor[c], ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
+    for (let j = cj * CHUNK; j < Math.min(GEN_N, (cj + 1) * CHUNK); j++) {
+      for (let i = ci * CHUNK; i < Math.min(GEN_N, (ci + 1) * CHUNK); i++) {
+        const k = j * GEN_N + i;
+        if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) continue;
+        const o = voxOff[k] - VOX_FLOOR, t = Math.min(sTop[k], voxCap(k));
+        for (let lvl = floor; lvl <= t; lvl++) {
+          const m = voxMat[o + lvl];
+          if (!solidMat(m)) continue;
+          const key = gravCell(i, j, lvl);
+          if (stKeyMap.has(key)) continue;
+          S.key[stN] = key; S.mat[stN] = m; S.fixed[stN] = 0;
+          S.pos[stN * 3] = i; S.pos[stN * 3 + 1] = lvl; S.pos[stN * 3 + 2] = j;
+          stKeyMap.set(key, stN++);
+        }
+      }
     }
   }
   stNTerr = stN;
@@ -10274,12 +10543,19 @@ function stressRebuild() {
       const ii = i + (ax === 0 ? sg : 0), ll = lvl + (ax === 1 ? sg : 0), jj = j + (ax === 2 ? sg : 0);
       if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N || ll < VOX_FLOOR) continue;
       const nb = stKeyMap.get(gravCell(ii, jj, ll));
-      if (nb !== undefined) { if (sg > 0) stressAddEdge(n, nb, ax, m, S.mat[nb]); continue; }
+      if (nb !== undefined) {
+        if (sg > 0) {
+          stressAddEdge(n, nb, ax, m, S.mat[nb]);
+          if (ax === 1) stEN0[stNE - 1] = stressSettledN(i, j, lvl);
+        }
+        continue;
+      }
       // Solid and not a node: ground standing on bedrock, and it holds.
       const m2 = voxelAt(ii, jj, ll);
       if (solidMat(m2)) {
         if (sg > 0) stressAddEdge(n, -1, ax, m, m2); else stressAddEdge(-1, n, ax, m2, m);
         stEG[stNE - 1] = gravCell(ii, jj, ll);
+        if (ax === 1) stEN0[stNE - 1] = stressSettledN(i, j, Math.min(lvl, ll));
       }
     }
   }
@@ -10346,7 +10622,7 @@ function stressRebuild() {
   for (let e = 0; e < stNE; e++) {
     const a = stEA[e], b = stEB[e], c = S.comp[a >= 0 ? a : b];
     if (a < 0 || b < 0) stCompHeld[c] = 1;
-    const h = stressMix(stressMix(stressMix(stressMix(0x2c1b3c6d, a >= 0 ? S.key[a] : -1), b >= 0 ? S.key[b] : -1), stEAx[e]), stEK[e]);
+    const h = stressMix(stressMix(stressMix(stressMix(stressMix(0x2c1b3c6d, a >= 0 ? S.key[a] : -1), b >= 0 ? S.key[b] : -1), stEAx[e]), stEK[e]), stEN0[e]);
     stCompHash[c] = (stCompHash[c] + h) | 0;
   }
 
@@ -10419,21 +10695,21 @@ function stressPost(dirty) {
   }
   for (let q = 0; q < dirty.length; q++) eStart[q + 1] += eStart[q];
   const ne = eStart[dirty.length], cur = eStart.slice(0, dirty.length);
-  const ea = new Int32Array(ne), eb = new Int32Array(ne), eax = new Uint8Array(ne), ek = new Float64Array(ne);
+  const ea = new Int32Array(ne), eb = new Int32Array(ne), eax = new Uint8Array(ne), ek = new Float64Array(ne), en0 = new Float64Array(ne);
   for (let e = 0; e < stNE; e++) {
     const a = stEA[e], b = stEB[e], q = slot[S.comp[a >= 0 ? a : b]];
     if (q < 0) continue;
     const x = cur[q]++;
     ea[x] = a >= 0 ? stLocal[a] : -1; eb[x] = b >= 0 ? stLocal[b] : -1;
-    eax[x] = stEAx[e]; ek[x] = stEK[e];
+    eax[x] = stEAx[e]; ek[x] = stEK[e]; en0[x] = stEN0[e];
   }
   const seq = ++stJobSeq;
   stJob = { seq, nodes, hashes: dirty.map((c) => stCompHash[c]) };
   stJobT0 = performance.now();
-  const job = { seq, nStart, eStart, fixed, f, u, ea, eb, eax, ek, pos, tol2: STRESS_TOL2 };
+  const job = { seq, nStart, eStart, fixed, f, u, ea, eb, eax, ek, en0, pos, tol2: STRESS_TOL2 };
   if (stressWorker) {
     stressWorker.postMessage(job, [nStart.buffer, eStart.buffer, fixed.buffer, f.buffer, u.buffer,
-                                   ea.buffer, eb.buffer, eax.buffer, ek.buffer, pos.buffer]);
+                                   ea.buffer, eb.buffer, eax.buffer, ek.buffer, en0.buffer, pos.buffer]);
   } else {
     const r = stressSolveJob(job);
     r.seq = seq;
@@ -10458,7 +10734,7 @@ function stressApply(r) {
   stJob = null;
   stressGroundReactions();
   stressRecolor();
-  stressBreakSaturated();
+  if (!stressEscalate(nodes)) stressBreakSaturated();
 }
 
 // Every block, anywhere in the world, whose solved stress sits at the top of
@@ -10608,8 +10884,9 @@ function stressLayout(cx, cy, cz) {
       }
     }
   }
-  // Hanging ground, column by column as it was laid out (its nodes run up each
-  // column in turn): a column out of reach sideways is passed over whole.
+  // Hanging ground and the ground solved for real, column by column as it was
+  // laid out (its nodes run up each column in turn): a column out of reach
+  // sideways is passed over whole.
   for (let n = stNBuilt; n < stNTerr; ) {
     const i = S.pos[n * 3], j = S.pos[n * 3 + 2];
     if (Math.abs(i - ci) > R || Math.abs(j - cj) > R) {
@@ -12121,7 +12398,10 @@ window.hermes = {
   // loaded blocks), and draw the colours or not, independently. markPlaced tags a cell as player-built; ground counts the hanging
   // ground in the solve.
   setStress, markPlaced,
+  // solvedChunks: chunks whose ground is solved for real this layout; grownChunks:
+  // how many of all of them a yellow pull brought in.
   stress: () => ({ on: stressOn, shown: stressShown, nodes: stN, built: stNBuilt, ground: stNTerr - stNBuilt, beams: stNE, structures: stNComp,
+                   solvedChunks: stRegChunks.length, grownChunks: stressEscLow.reduce((a, v) => a + (v < NO_DIG), 0),
                    drawn: stressTerr.count, groundDrawn: stressGround.count, groundWatch: stressGroundCols.size,
                    groundSwept: stGenAt / (GEN_N * GEN_N), pieces: stPieces.length, solving: !!stJob, worker: !!stressWorker,
                    iters: stLastIters, unconverged: stLastUnconverged, ms: stLastMs }),

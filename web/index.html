@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 226;
+window.GAME_VERSION = 227;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -5332,7 +5332,9 @@ function updatePlayer(dt) {
   }
 
   if (grounded) {
-    const k = 1 - Math.exp(-PLAYER.groundAccel * dt);
+    // A hard landing takes the grip away for a moment (impactJolt): the speed
+    // you came in with carries on rather than being caught at once.
+    const k = 1 - Math.exp(-PLAYER.groundAccel * (1 - PLAYER_STAGGER * impactJolt) * dt);
     v.x += (tx - v.x) * k;
     v.z += (tz - v.z) * k;
   } else if (!onSteep) {
@@ -5531,6 +5533,17 @@ function updateCamera(dt) {
   } else {
     camera.position.copy(desiredPos);
     camera.quaternion.copy(desiredQuat);
+  }
+  // A hard hit (impactJolt) drops the view as the knees take it and shakes it,
+  // both wearing off together. The free camera is not attached to anything.
+  if (impactJolt > 0) {
+    if (camMode !== CAM.FREE) {
+      const j = impactJolt, sh = PLAYER_JOLT_SHAKE * j;
+      camera.position.x += (Math.random() - 0.5) * 2 * sh;
+      camera.position.y += (Math.random() - 0.5) * 2 * sh - PLAYER_JOLT_DIP * j * j;
+      camera.position.z += (Math.random() - 0.5) * 2 * sh;
+    }
+    impactJolt = Math.max(0, impactJolt - dt / PLAYER_JOLT_SECS);
   }
 
   playerMesh.visible = camMode !== CAM.FIRST;
@@ -6215,6 +6228,7 @@ function spawnFallingChunk(unit) {
   // Oldest piece gives up its body if the field is already full of them.
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
+  watchImpacts(body, mesh);
   fallingChunks.push({ mesh, body, still: 0 });
 }
 
@@ -6379,6 +6393,311 @@ function restsOnStill(body) {
     if (o && o.type !== CANNON.Body.STATIC && o.sleepState !== CANNON.Body.SLEEPING) return false;
   }
   return true;
+}
+
+// ----- impacts -----
+// A piece that hits something hard enough does damage, and how much comes from
+// its speed and its mass. Cannon only stops a body: whatever it lands on takes
+// no harm from that, at any speed. So every first touch between two bodies is
+// read for what it would have cost. Cannon tells a body about a new contact
+// (the 'collide' event) once per pair, before the solver has touched either
+// velocity, so the approach speed along the contact normal is the real speed
+// of the hit. Nothing is ever polled: a rested heap lying still raises no
+// events, and a piece rolling along the ground stays in contact and raises none
+// either — only an arrival does.
+//
+// The energy a hit has to spend is what a perfectly dead stop along the normal
+// would take out of the pair, 0.5·μ·v² with μ the reduced mass (the moving
+// body's own mass against the ground, which does not move). Less the energy of
+// a hit at IMPACT_MIN_V, so a block toppling off a ledge, a tumble down a slope
+// or a short drop costs nothing, as it did before. What is left is shared
+// between the two sides by how soft each one is where it was struck — dirt
+// landing on rock gives most of it to the dirt — and each side spends its share
+// on blocks around the spot, each block costing what it takes to knock out
+// (impactCost). Solid ground breaks as the hammer breaks it, into rubble thrown
+// out of the crater; powder is not broken, it is pushed aside onto the rim and
+// pours back in as powder does. A piece loses blocks at the face it hit with.
+//
+// It is not put through the stress solver as a load. The solver's loads are
+// static and its answer comes back frames later from the worker, while a hit
+// lasts one step: as a held load it would be the wrong force for the wrong
+// length of time. The crater is the impact's own doing, and the solver then
+// sees the world the crater left — an undercut ledge, a hollowed pillar — on
+// its next pass, exactly as it sees a hole the shovel made, and brings down
+// whatever no longer holds.
+//
+// The events are only queued here: breaking blocks spawns and removes bodies,
+// which cannot be done halfway through cannon's step. processImpacts pays them
+// after the step.
+const IMPACT_MIN_V   = 5.0;   // m/s along the normal that does no harm: a 1.3 m drop. Under it, nothing happens
+// What a block takes to knock out, in J: this times the root of its pull. Pull
+// spans 0.5 (sand) to 5000 (rock) and strength is near-infinite for most rows,
+// so neither can be read as-is; the root keeps rock ten times tougher than
+// dirt rather than a hundred, so a big enough rock on rock still chips.
+// At 40: dirt ~280 J, hard dirt 400, mud ~330, brittle stone ~2000, rock ~2800.
+const IMPACT_J_PER_SQRT_PULL = 40;
+const IMPACT_MIN_J   = 80;    // and never less than this, so wet sand (pull 0.8) is soft but not free
+const IMPACT_POWDER_J = 40;   // J to shove one grain of powder aside — a dirt cube off a 3 m drop moves about 3
+const IMPACT_SOLID_MAX = 4;   // solid blocks one side of one hit may lose: each one is a new body
+const IMPACT_GRAIN_MAX = 12;  // grains one hit may throw aside: no body each, so more of them
+const IMPACT_FRAME_MAX = 16;  // blocks every hit in a frame may take between them — a rockfall stays a frame's work
+const IMPACT_REACH   = 2;     // blocks out from the struck one a crater, or a chip off a piece, may spread
+const IMPACT_DEPTH_BIAS = 0.6; // how much further down the line of the hit a crater reaches than sideways
+const IMPACT_EJECT   = 0.35;  // rubble leaves a crater at this fraction of the impact speed
+const IMPACT_COOLDOWN = 0.1;  // s of sim time a body that just did or took damage, or was just born, is left alone — a chip born against what it broke off does not hit it
+const IMPACT_QUEUE_CAP = 32;  // hits held for one frame; past it, the rest of a pile-up simply land
+// The player. The controller drives the body's speed, so a sprint (9.2 m/s)
+// into a wall or a jump (6.2 m/s) landing must never register; past that a hit
+// jolts the view and takes the legs out from under the controller for a
+// moment. Nothing is broken by the player.
+const PLAYER_JOLT_V    = 9.5;  // m/s: a fall of about 4.6 m
+const PLAYER_JOLT_SPAN = 8;    // m/s over that to a full jolt (a fall of about 15 m)
+const PLAYER_JOLT_SECS = 0.45; // how long a full jolt takes to wear off
+const PLAYER_JOLT_DIP  = 0.35; // m the view drops at a full jolt, as the knees take it
+const PLAYER_JOLT_SHAKE = 0.06; // m of shake at a full jolt
+const PLAYER_STAGGER   = 0.85; // share of ground grip a full jolt takes away while it lasts
+let impactJolt = 0;            // 0..1, worn off in updateCamera
+
+const impactQueue = [];        // { a, b, vn, nx, ny, nz, ax, ay, az, bx, by, bz }
+let impactLast = null;         // the contact last read: the event goes to both bodies
+let impactSpawned = null;      // bodies spawned while a hit is paid, when collecting
+const impactV = new THREE.Vector3(), impactL = new THREE.Vector3();
+
+// Every debris body is watched from birth: the one call both spawn paths make.
+function watchImpacts(body, mesh) {
+  body.impactMesh = mesh;
+  body.impactAt = world.time;   // a piece born in contact (a split, a break) is not hit by it
+  body.addEventListener('collide', onImpactContact);
+  if (impactSpawned) impactSpawned.push(body);
+}
+
+const impactCost = (m) => {
+  const st = MAT_STATS[m];
+  if (!st) return Infinity;
+  if (st.powder) return IMPACT_POWDER_J;
+  return Math.max(IMPACT_MIN_J, IMPACT_J_PER_SQRT_PULL * Math.sqrt(st.pull));
+};
+
+function onImpactContact(e) {
+  const c = e.contact;
+  if (c === impactLast) return;
+  impactLast = c;
+  const vn = c.getImpactVelocityAlongNormal();   // ni runs from bi to bj; above 0 they close
+  if (!(vn > IMPACT_MIN_V)) return;
+  const a = c.bi, b = c.bj;
+  if (a === playerBody || b === playerBody) {
+    if (vn <= PLAYER_JOLT_V) return;
+    const o = a === playerBody ? b : a;
+    // Something light bouncing off you is felt less than the ground coming up.
+    const heft = o.type === CANNON.Body.STATIC ? 1 : Math.min(1, o.mass / playerBody.mass);
+    impactJolt = Math.max(impactJolt, Math.min(1, (vn - PLAYER_JOLT_V) / PLAYER_JOLT_SPAN) * heft);
+    return;
+  }
+  // A box landing flat on a box is up to four contact points, each its own
+  // event, one after the other: one hit, kept at its hardest.
+  const last = impactQueue[impactQueue.length - 1];
+  if (last && last.a === a && last.b === b) { if (vn > last.vn) impactFill(last, c, vn); return; }
+  if (impactQueue.length >= IMPACT_QUEUE_CAP) return;
+  // Sim time, not frames: a slow phone takes as long to fall as a fast one.
+  if (world.time - (a.impactAt ?? -1e9) < IMPACT_COOLDOWN || world.time - (b.impactAt ?? -1e9) < IMPACT_COOLDOWN) return;
+  impactQueue.push(impactFill({ a, b }, c, vn));
+}
+// What a hit needs kept of contact `c`: the event object and the contact are
+// both reused by cannon, so nothing of theirs can be held on to.
+function impactFill(h, c, vn) {
+  const a = h.a, b = h.b;
+  h.vn = vn; h.nx = c.ni.x; h.ny = c.ni.y; h.nz = c.ni.z;
+  h.ax = a.position.x + c.ri.x; h.ay = a.position.y + c.ri.y; h.az = a.position.z + c.ri.z;
+  h.bx = b.position.x + c.rj.x; h.by = b.position.y + c.rj.y; h.bz = b.position.z + c.rj.z;
+  return h;
+}
+world.addEventListener('postStep', () => { impactLast = null; });
+// The player is not debris, but hears of its own landings and of what lands on it.
+playerBody.addEventListener('collide', onImpactContact);
+
+// One side of a hit: what was struck and what it costs. The ground is read at
+// the cell just inside the surface at the contact point (sign: +1 when the
+// inside of this body is along the normal, -1 against it); a piece at the block
+// of its own lattice nearest the point. A side that is neither — a prop, the
+// level's own geometry — takes nothing, and passes its share to the other.
+function impactSide(body, px, py, pz, h, sign) {
+  const mesh = body.impactMesh;
+  if (mesh) {
+    const lat = mesh.userData.blocks;
+    if (!lat || !lat.length || !mesh.parent) return null;
+    mesh.updateWorldMatrix(true, false);
+    const local = mesh.worldToLocal(impactL.set(px, py, pz)).clone();
+    let best = -1, bd = Infinity;
+    for (let q = 0; q < lat.length; q++) {
+      const d = lat[q].pos.distanceToSquared(local);
+      if (d < bd) { bd = d; best = q; }
+    }
+    return { mesh, local, px, pz, cost: impactCost(lat[best].mat) };
+  }
+  if (body.type !== CANNON.Body.STATIC) return null;
+  for (const depth of [0.25, 0.75]) {
+    const d = depth * BLOCK * sign;
+    const i = colI(px + h.nx * d), j = colJ(pz + h.nz * d), lvl = lvlOfY(py + h.ny * d);
+    const m = voxelAt(i, j, lvl);
+    if (m === AIR || m === WATER || lvl <= VOX_FLOOR) continue;
+    return { cell: { i, j, lvl }, dir: { x: h.nx * sign, y: h.ny * sign, z: h.nz * sign }, px, py, pz, cost: impactCost(m) };
+  }
+  return null;
+}
+
+// Every cell within IMPACT_REACH of the struck one, for a crater to choose from.
+const IMPACT_OFFS = [];
+for (let dl = -IMPACT_REACH; dl <= IMPACT_REACH; dl++)
+  for (let dj = -IMPACT_REACH; dj <= IMPACT_REACH; dj++)
+    for (let di = -IMPACT_REACH; di <= IMPACT_REACH; di++)
+      if (di * di + dj * dj + dl * dl <= IMPACT_REACH * IMPACT_REACH) IMPACT_OFFS.push([di, dj, dl]);
+
+// Spend energy `E` on the ground around side `s`. Cells go nearest first,
+// favouring the line of the hit, and only ones touching what is already taken,
+// so a crater is one hole and not a scatter. A block too tough for what is
+// left is passed over: the hit goes round a stone in the dirt. Returns how
+// many blocks went, out of `budget`.
+function craterGround(s, E, vn, budget) {
+  const { i: i0, j: j0, lvl: l0 } = s.cell, dir = s.dir;
+  const order = IMPACT_OFFS.map((o) => [o, o[0] * o[0] + o[1] * o[1] + o[2] * o[2]
+                                          - IMPACT_DEPTH_BIAS * (o[0] * dir.x + o[1] * dir.z + o[2] * dir.y)]);
+  order.sort((x, y) => x[1] - y[1]);
+  const taken = new Set(), out = [];
+  let solid = 0, grains = 0;
+  for (const [[di, dj, dl]] of order) {
+    if (out.length >= budget) break;
+    const i = i0 + di, j = j0 + dj, lvl = l0 + dl;
+    if (lvl <= VOX_FLOOR) continue;   // never through the bedrock
+    if (taken.size && !(taken.has(gravKey(i - 1, j, lvl)) || taken.has(gravKey(i + 1, j, lvl))
+                     || taken.has(gravKey(i, j - 1, lvl)) || taken.has(gravKey(i, j + 1, lvl))
+                     || taken.has(gravKey(i, j, lvl - 1)) || taken.has(gravKey(i, j, lvl + 1)))) continue;
+    const m = voxelAt(i, j, lvl);
+    if (m === AIR || m === WATER) continue;
+    const powder = !!MAT_STATS[m]?.powder, cost = impactCost(m);
+    if (cost > E || (powder ? grains >= IMPACT_GRAIN_MAX : solid >= IMPACT_SOLID_MAX)) continue;
+    E -= cost;
+    if (powder) grains++; else solid++;
+    taken.add(gravKey(i, j, lvl));
+    out.push({ i, j, lvl, di, dj, powder });
+  }
+  // Top down, so what a lower one brings down is never asked for again (it is
+  // re-read anyway: anything that has gone since is air and passed over).
+  out.sort((x, y) => y.lvl - x.lvl);
+  for (const c of out) {
+    const m = voxelAt(c.i, c.j, c.lvl);
+    if (m === AIR || m === WATER) continue;
+    // Out along the ground, away from the middle: straight down the line of
+    // the hit has no sideways of its own, so it takes a random one.
+    let hx = c.di, hz = c.dj;
+    if (!hx && !hz) { const a = Math.random() * Math.PI * 2; hx = Math.cos(a); hz = Math.sin(a); }
+    const hl = Math.hypot(hx, hz);
+    hx /= hl; hz /= hl;
+    if (c.powder) {
+      // Shoved aside onto the rim, as a grain in the air: dropped inside the
+      // ground it settles on the first free cell over it, dropped over a dip
+      // it falls in. The crater's own walls then pour in as powder does.
+      editBlock(c.i, c.j, c.lvl, AIR);
+      const r = (IMPACT_REACH + 1 + Math.random()) * BLOCK;
+      powderFalling.push({ pos: new THREE.Vector3(colX(c.i) + hx * r, (s.cell.lvl + 1.5) * BLOCK, colZ(c.j) + hz * r),
+                           mat: m, v: 0, from: null });
+      continue;
+    }
+    // Thrown out of the crater, up and away from the middle. The cube is the
+    // first body breakBlock spawns; whatever the hole then brings down after
+    // it is left to fall as it would.
+    const born = impactCollect(() => breakBlock(c.i, c.j, c.lvl));
+    if (!born.length) continue;
+    const u = vn * IMPACT_EJECT;
+    born[0].velocity.set(hx * u * 0.7, u, hz * u * 0.7);
+  }
+  return out.length;
+}
+
+// Spend energy `E` on piece side `s`: its blocks nearest where it was struck,
+// out to IMPACT_REACH. A one-block piece whose material breaks as itself is
+// left alone — it would only come back as the same cube.
+function chipPiece(s, E, vn, budget) {
+  const lat = s.mesh.userData.blocks;
+  const idx = [];
+  for (let q = 0; q < lat.length; q++) {
+    const d = lat[q].pos.distanceToSquared(s.local);
+    if (d <= (IMPACT_REACH * BLOCK) ** 2) idx.push([q, d]);
+  }
+  idx.sort((x, y) => x[1] - y[1]);
+  const take = [];
+  let solid = 0, grains = 0;
+  for (const [q] of idx) {
+    if (take.length >= budget) break;
+    const m = lat[q].mat, powder = !!MAT_STATS[m]?.powder, cost = impactCost(m);
+    if (cost > E || (powder ? grains >= IMPACT_GRAIN_MAX : solid >= IMPACT_SOLID_MAX)) continue;
+    E -= cost;
+    if (powder) grains++; else solid++;
+    take.push(q);
+  }
+  if (!take.length) return 0;
+  if (lat.length === 1 && !MAT_STATS[lat[0].mat]?.powder) {
+    const row = MAT_CHART.find((r) => matIndexByName(r.mat) === lat[0].mat);
+    if (!row || !row.break) return 0;
+  }
+  // A chip is spawned with the piece's own motion, which the solver has just
+  // about stopped: give it some of the hit's, up and out from where it struck.
+  // Only the one-cube chips — a part the break split off is not thrown.
+  let n = 0;
+  const born = impactCollect(() => { n = breakDebrisBlocks(s.mesh, take); });
+  const u = vn * IMPACT_EJECT;
+  for (const body of born) {
+    if (body.impactMesh.userData.blocks.length !== 1) continue;
+    const dx = body.position.x - s.px, dz = body.position.z - s.pz, d = Math.hypot(dx, dz) || 1;
+    body.velocity.x += dx / d * u * 0.7; body.velocity.y += u; body.velocity.z += dz / d * u * 0.7;
+  }
+  return n;
+}
+
+// The debris bodies `fn` spawns, in the order it spawned them, each marked as
+// just hit so it does not come straight back as an impact of its own.
+function impactCollect(fn) {
+  const outer = impactSpawned, born = impactSpawned = [];
+  try { fn(); } finally { impactSpawned = outer; }
+  for (const body of born) { body.impactAt = world.time; if (outer) outer.push(body); }
+  return born;
+}
+
+// Pay every hit queued in the last step. Called right after it, before the
+// watched pieces are looked at, so a crater dug under a piece is there before
+// it can be called settled.
+function processImpacts() {
+  if (!impactQueue.length) return;
+  let budget = IMPACT_FRAME_MAX;
+  // Hardest first. A piece landing across a chunk edge touches two ground
+  // bodies in the same step, and each one is a contact of its own: it is one
+  // landing, so a moving body is paid for once, at its hardest, and the rest
+  // of its contacts that frame pass (the cooldown stamp below says it was).
+  impactQueue.sort((x, y) => y.vn - x.vn);
+  for (const h of impactQueue) {
+    if (budget <= 0) break;
+    const { a, b } = h;
+    if (!a.world || !b.world) continue;   // gone with an earlier hit this frame
+    const ma = a.type === CANNON.Body.STATIC ? 0 : a.mass, mb = b.type === CANNON.Body.STATIC ? 0 : b.mass;
+    if ((ma && a.impactAt === world.time) || (mb && b.impactAt === world.time)) continue;
+    const mu = !ma ? mb : !mb ? ma : ma * mb / (ma + mb);
+    const E = 0.5 * mu * (h.vn * h.vn - IMPACT_MIN_V * IMPACT_MIN_V);
+    if (!(E > 0)) continue;
+    // The normal runs from a to b: a's inside is against it, b's along it.
+    const sa = impactSide(a, h.ax, h.ay, h.az, h, -1), sb = impactSide(b, h.bx, h.by, h.bz, h, 1);
+    const ka = sa ? 1 / sa.cost : 0, kb = sb ? 1 / sb.cost : 0;
+    if (!(ka + kb > 0)) continue;
+    // Only what moves is stamped: the ground is one body per chunk, and every
+    // other piece landing on it is a hit of its own.
+    if (ma) a.impactAt = world.time;
+    if (mb) b.impactAt = world.time;
+    for (const [s, k] of [[sa, ka], [sb, kb]]) {
+      if (!s || !k || budget <= 0) continue;
+      const Es = E * k / (ka + kb);
+      if (Es < s.cost) continue;   // not even the block it struck
+      budget -= s.cell ? craterGround(s, Es, h.vn, budget) : chipPiece(s, Es, h.vn, budget);
+    }
+  }
+  impactQueue.length = 0;
 }
 
 // ----- powder on loose pieces -----
@@ -6854,6 +7173,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
 
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
+  watchImpacts(body, mesh);
   fallingChunks.push({ mesh, body, still: 0 });
 }
 
@@ -11464,6 +11784,7 @@ function tick() {
     s.mesh.position.copy(s.body.position);
     s.mesh.quaternion.copy(s.body.quaternion);
   }
+  processImpacts();      // after the meshes have the bodies' poses, before anything is called settled
   updateFallingChunks();
   updatePowderBlocks(dt);
   checkTerrainPowder();

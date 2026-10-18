@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 225;
+window.GAME_VERSION = 226;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -9842,8 +9842,10 @@ float stressCrackAt(float t) {
   vec2 sh = off, sv = off + vec2(5.3, 1.7);
   bool on = (ckLine(sh, tx.x) == tx.y && ckGrown(sh, tx.x, s))
          || (ckLine(sv, tx.y) == tx.x && ckGrown(sv, tx.y, s));
-  // Darker as the load climbs; with this few lines the darkest is still sparse.
-  return on ? mix(0.4, 0.92, s) : 0.0;
+  // Darker as the load climbs, but never opaque: from a faint 0.25 just after
+  // cracking to 0.6 at the break point, so the material always shows through
+  // the line and with this few lines the darkest is still sparse.
+  return on ? mix(0.25, 0.6, s) : 0.0;
 }
 `
     + sh.fragmentShader.replace('#include <tonemapping_fragment>', `{

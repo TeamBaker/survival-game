@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 224;
+window.GAME_VERSION = 225;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -9769,8 +9769,8 @@ const stressMat = new THREE.MeshBasicMaterial({
 });
 // The same cubes carry the cracks: each instance has its place on the ramp
 // (instanceCrack, 0 unloaded .. 1 about to break), and the faces draw dark
-// fracture lines — two jagged lines per face that start at its centre and
-// grow out to its sides (and darken) the higher up the ramp. stressShowU 0 hides the colour, leaving only
+// fracture lines — two jagged lines per face that start at one of its edges and
+// grow across to the opposite one (and darken) the higher up the ramp. stressShowU 0 hides the colour, leaving only
 // the lines (every other pixel discarded); stressCrackU 0 (the solver off)
 // hides the lines. A pixel with no line on it draws exactly what it did before.
 const stressShowU = { value: 0 }, stressCrackU = { value: 1 };
@@ -9787,37 +9787,41 @@ stressMat.onBeforeCompile = (sh) => {
     + `vec2 ckHash2(vec2 p) {
   return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
 }
+// Which way a line runs: 1 if it starts on the low side of the face (column
+// 0) and grows towards column 5, 0 if the other way. A per-face, per-line
+// draw, so neighbouring blocks' cracks don't all march the same direction.
+float ckDir(vec2 sd) {
+  return step(0.5, ckHash2(sd + 19.0).x);
+}
+// How far column c is from the edge this line starts at: 0 the starting
+// border column .. 5 the opposite border.
+float ckFrom(vec2 sd, float c) {
+  return ckDir(sd) > 0.5 ? c : 5.0 - c;
+}
 // Where one jagged fracture line sits: the row it occupies at column c of
-// the 6x6 texel grid. It starts in one of the two middle rows across the two
-// middle columns and walks outward to each side a texel at a time, each step
-// up, down or straight on (a per-face draw), so it reads as a broken line
-// rather than a ruled one. A diagonal step leaves the squares touching at a
-// corner, the usual pixel-art crack.
+// the 6x6 texel grid. It enters at its starting edge in one of the four inner
+// rows (not hugging the face's own border) and walks across to the opposite
+// edge a texel at a time, each step up, down or straight on (a per-face draw),
+// so it reads as a broken line rather than a ruled one. A diagonal step leaves
+// the squares touching at a corner, the usual pixel-art crack.
 float ckLine(vec2 sd, float c) {
-  float r = 2.0 + floor(ckHash2(sd).x * 2.0);
-  if (c > 2.5) {
-    for (int k = 3; k <= 5; k++) {
-      if (float(k) > c) break;
-      r = clamp(r + floor(ckHash2(sd + vec2(float(k), 7.0)).y * 3.0) - 1.0, 0.0, 5.0);
-    }
-  } else {
-    for (int k = 1; k >= 0; k--) {
-      if (float(k) < c) break;
-      r = clamp(r + floor(ckHash2(sd + vec2(float(k), 3.0)).y * 3.0) - 1.0, 0.0, 5.0);
-    }
+  float d = ckFrom(sd, c);
+  float r = 1.0 + floor(ckHash2(sd).x * 4.0);
+  for (int k = 1; k <= 5; k++) {
+    if (float(k) > d) break;
+    r = clamp(r + floor(ckHash2(sd + vec2(float(k), 7.0)).y * 3.0) - 1.0, 0.0, 5.0);
   }
   return r;
 }
-// Has the line grown out as far as column c yet? Rings out from the centre:
-// 0 the middle pair (always there once it cracks at all), 1 the next pair,
-// 2 the texels on the face's border. s is how far up the cracking part of the
-// ramp the block is (0 at STRESS_CRACK_LV, 1 about to break); each half of
-// each line gets its own small head start so the four ends don't grow in
-// lockstep, but at s = 1 every one has reached the border.
+// Has the line grown across as far as column c yet? s is how far up the
+// cracking part of the ramp the block is (0 at STRESS_CRACK_LV, 1 about to
+// break). The line's first texel, at its starting edge, is there as soon as
+// it cracks at all; it then gains a texel per fifth of the ramp, so at s = 1
+// it has reached the opposite edge. Each line gets its own small head start
+// so the two on a face don't grow in lockstep.
 bool ckGrown(vec2 sd, float c, float s) {
-  float ring = c > 2.5 ? c - 3.0 : 2.0 - c;
-  float lead = 0.1 * ckHash2(sd + (c > 2.5 ? 11.0 : 13.0)).x;
-  return s >= ring * 0.45 - lead;
+  float lead = 0.6 * ckHash2(sd + 11.0).x;
+  return ckFrom(sd, c) <= s * 5.0 + lead;
 }
 // How dark the crack is here, 0 off every line.
 float stressCrackAt(float t) {
@@ -9828,10 +9832,10 @@ float stressCrackAt(float t) {
   vec2 tx = min(floor(uv * 6.0), 5.0);
   vec2 off = ckHash2(fract(vCkSeed.xz * 0.1031 + vCkSeed.y * 0.0713) * 97.0) * 17.0;
   // Two fracture lines per face, one crossing it side to side and one top to
-  // bottom, both starting at the middle and growing outward with the load.
-  // Just after cracking that is a little cluster at the face centre; at the
-  // break point the two lines reach all four sides of the face. Only two lines,
-  // one texel wide — at most about 11 of the 36 texels, so even a block about
+  // bottom, each starting at one edge and growing across with the load. Just
+  // after cracking that is a texel or two at the border where each line
+  // enters; at the break point both have run all the way to the opposite
+  // side. Only two lines, one texel wide — at most 12 of the 36 texels, so even a block about
   // to break is still plainly a cracked block with most of its face clean,
   // rather than the dark smear a dense web would make.
   float s = clamp((t - ${(STRESS_CRACK_LV / (STRESS_LUT_N - 1)).toFixed(4)}) / ${(1 - STRESS_CRACK_LV / (STRESS_LUT_N - 1)).toFixed(4)}, 0.0, 1.0);

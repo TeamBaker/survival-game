@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 231;
+window.GAME_VERSION = 232;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -6496,16 +6496,14 @@ function restsOnStill(body) {
 // is pushed aside onto the rim and pours back in as powder does. Past the
 // bodies a hit may spawn, solid rubble is crushed to its powder (rock to stone
 // dust, dirt to fine dirt) and thrown the same way: a big hit pulverises. A
-// crater bigger than a frame's work is dug over the next few, top down. A
-// piece loses blocks at the face it hit with.
+// crater bigger than a frame's work is dug over the next few, top down.
 //
-// It is not put through the stress solver as a load. The solver's loads are
-// static and its answer comes back frames later from the worker, while a hit
-// lasts one step: as a held load it would be the wrong force for the wrong
-// length of time. The crater is the impact's own doing, and the solver then
-// sees the world the crater left — an undercut ledge, a hollowed pillar — on
-// its next pass, exactly as it sees a hole the shovel made, and brings down
-// whatever no longer holds.
+// A piece is not dug: what it loses is what the tension check, solving the
+// hit as a force (impactLoad), finds past its strength — a slab landing on a
+// corner snaps, a lump does not. The struck ground and anything standing on it
+// feel the same force, so a ledge a rock lands on can give way past what the
+// crater took. Only a lone cube, which has nothing to solve, is knocked loose
+// by the energy itself, and with the check off a hit takes the block it struck.
 //
 // The events are only queued here: breaking blocks spawns and removes bodies,
 // which cannot be done halfway through cannon's step. processImpacts pays them
@@ -6528,12 +6526,11 @@ const IMPACT_POWDER_J = 10;   // J to shove one grain of powder aside — a dirt
 // is about a rock cube off 10 m, so no hit up to that digs any less than it did.
 const IMPACT_KNEE_J  = 2500;
 const IMPACT_SOLID_MAX = 8;   // solid blocks one side of one hit may lose as bodies: each one is a new body
-const IMPACT_GRAIN_MAX = 24;  // grains one hit may knock off a piece: chips stay as v228 had them
 const IMPACT_CRATER_MAX = 512; // blocks one crater may take: a 7x7x7 rock off 20 m, a hole ~2.6 m across
 const IMPACT_FRAME_SOLID = 12; // bodies every hit in a frame may spawn between them — past it rubble is crushed to powder
 const IMPACT_FRAME_MAX = 128; // crater blocks dug a frame; the rest wait, in order, for the next (~4 frames for the biggest)
 const IMPACT_PENDING_MAX = 1024; // crater blocks waiting at once; a rockfall past that digs smaller holes, never a longer stall
-const IMPACT_REACH   = 3;     // blocks out from the struck one a chip off a piece, or a small crater, may spread
+const IMPACT_REACH   = 3;     // blocks out from the struck one a small crater may spread
 const IMPACT_REACH_MAX = 9;   // and the furthest a crater ever reaches, which IMPACT_CRATER_MAX fills with room to spare
 const IMPACT_DEPTH_BIAS = 0.6; // how much further down the line of the hit a crater reaches than sideways
 const IMPACT_EJECT   = 0.35;  // rubble leaves a crater at this fraction of the impact speed
@@ -6555,6 +6552,21 @@ const IMPACT_QUEUE_CAP = 32;  // hits held for one frame; past it, the rest of a
 // same, and the force is that impulse over the stop.
 const IMPACT_STOP_T  = 0.05;  // s a hit takes to stop
 const IMPACT_LOAD_MAX = 64;   // hits held for the next check at once; past it, the weakest are let go
+// A piece in the air is solved for its own hit as a body being stopped: held
+// at the face that struck, every other block pushed toward it by its share of
+// the stop, as if it stood on that face under the hit's own gravity. A lump
+// takes that like a cube on the ground; a slab landing on a corner, a bar on
+// its end, bends over the corner and snaps. Blocks this close (in blocks) to
+// the leading face along the line of the hit are the face: a slab landing all
+// but flat lands on all of it.
+const IMPACT_FACE_TOL = 0.3;
+// The hammer is a hit like any other: its blow goes on the block it struck,
+// along the aim, and what gives way is what the solve says. A 4 kg head at
+// 10 m/s stopped in 0.02 s, in block weights (FALL_KG_PER_WEIGHT, g): it snaps
+// a dirt block standing out on its own, or a strained dirt span, and a block
+// set in ground or bearing straight down takes it. A rock span has to be close
+// to its limit already.
+const HAMMER_F = 4 * 10 / (FALL_KG_PER_WEIGHT * 9.82 * 0.02);
 const IMPACT_LOAD_WAIT = 1.0; // s of sim time the check waits on a crater still being dug, so the hit lands on the hole it made
 // The player. The controller drives the body's speed, so a sprint (9.2 m/s)
 // into a wall or a jump (6.2 m/s) landing must never register; past that a hit
@@ -6825,35 +6837,25 @@ function digImpactPending() {
   impactPending.splice(0, n);
 }
 
-// Spend energy `E` on piece side `s`: its blocks nearest where it was struck,
-// out to IMPACT_REACH. A one-block piece whose material breaks as itself is
-// left alone — it would only come back as the same cube.
+// Spend energy `E` on piece side `s`. With the tension check on, a piece of
+// more than one block gives way where its own solve of the hit says (stressHitLoads)
+// and nothing is taken here; a lone cube has nothing to solve, so the hit
+// knocks it loose itself. Off, there is no solve to ask, and the hit takes the
+// block it struck. One whose material breaks as itself is left alone — it
+// would only come back as the same cube.
 function chipPiece(s, E, vn) {
   const lat = s.mesh.userData.blocks;
-  const idx = [];
-  for (let q = 0; q < lat.length; q++) {
-    const d = lat[q].pos.distanceToSquared(s.local);
-    if (d <= (IMPACT_REACH * BLOCK) ** 2) idx.push([q, d]);
-  }
-  idx.sort((x, y) => x[1] - y[1]);
-  const take = [];
-  let solid = 0, grains = 0;
-  for (const [q] of idx) {
-    const m = lat[q].mat, powder = !!MAT_STATS[m]?.powder, cost = impactCost(m);
-    if (cost > E || (powder ? grains >= IMPACT_GRAIN_MAX : solid >= Math.min(IMPACT_SOLID_MAX, impactSolidLeft))) continue;
-    E -= cost;
-    if (powder) grains++; else solid++;
-    take.push(q);
-  }
-  if (!take.length) return 0;
-  if (lat.length === 1 && !MAT_STATS[lat[0].mat]?.powder) {
-    const row = MAT_CHART.find((r) => matIndexByName(r.mat) === lat[0].mat);
+  if (stressOn && lat.length > 1) return 0;
+  const m = lat[s.q].mat;
+  if (impactCost(m) > E || (!MAT_STATS[m]?.powder && impactSolidLeft <= 0)) return 0;
+  if (lat.length === 1 && !MAT_STATS[m]?.powder) {
+    const row = MAT_CHART.find((r) => matIndexByName(r.mat) === m);
     if (!row || !row.break) return 0;
   }
   // A chip is spawned with the piece's own motion, which the solver has just
   // about stopped: give it some of the hit's, up and out from where it struck.
   // Only the one-cube chips — a part the break split off is not thrown.
-  const born = impactCollect(() => breakDebrisBlocks(s.mesh, take));
+  const born = impactCollect(() => breakDebrisBlocks(s.mesh, [s.q]));
   const u = vn * IMPACT_EJECT;
   for (const body of born) {
     if (body.impactMesh.userData.blocks.length !== 1) continue;
@@ -6874,35 +6876,49 @@ function impactCollect(fn) {
 
 // Hits the next tension check is to feel (stressHitLoads), oldest first: the
 // force F in block-weight units, the way it pushes (into what was struck), and
-// the struck block — a cell of the world, or a piece's lattice cell.
-const impactLoads = [];   // { by, F, dx, dy, dz, i, j, lvl, mesh }
+// the struck block — a cell of the world, or a piece's lattice cell. fly: a
+// piece struck in the air, its push in the piece's own frame, as it is solved
+// on its own (IMPACT_FACE_TOL).
+const impactLoads = [];   // { by, F, dx, dy, dz, i, j, lvl, mesh, fly }
 let impactLoadsAt = 0;    // world.time the oldest of them was struck
+let impactStruck = false; // a hammer blow is among them: the player is waiting on it
+const impactInv = new THREE.Quaternion();
 // Side `s` of hit `h` takes force F, pushed in along sign times the normal,
-// from the body `other`. Only a side that was standing still is loaded: the
-// ground, or a piece that was at rest — one in the air is never solved, and
-// keeps to the chips it already takes. Ground the last layout had no node for
-// stands on bedrock straight down, where a hit can only squeeze it, so it is
-// only kept when the crater is about to change the layout anyway.
+// from the body `other`. A side standing still is loaded only by something
+// moving into it: the ground, or a piece at rest — two at rest only lean. A
+// piece in the air is loaded by whatever stopped it. Ground the last layout
+// had no node for stands on bedrock straight down, where a hit can only
+// squeeze it, so it is only kept when the crater is about to change the
+// layout anyway.
 function impactLoad(s, sign, other, h, F, bites) {
   if (!s || !stressOn || !(F > 0)) return;
-  if (other.type === CANNON.Body.STATIC || other.impactMesh?.userData.stressRest) return;
-  const L = { by: other.id, F, dx: h.nx * sign, dy: h.ny * sign, dz: h.nz * sign, i: 0, j: 0, lvl: 0, mesh: null };
+  const still = other.type === CANNON.Body.STATIC || other.impactMesh?.userData.stressRest;
+  const L = { by: other.id, F, dx: h.nx * sign, dy: h.ny * sign, dz: h.nz * sign, i: 0, j: 0, lvl: 0, mesh: null, fly: false };
   if (s.cell) {
-    if (!bites && !stKeyMap.has(gravCell(s.cell.i, s.cell.j, s.cell.lvl))) return;
+    if (still || (!bites && !stKeyMap.has(gravCell(s.cell.i, s.cell.j, s.cell.lvl)))) return;
     L.i = s.cell.i; L.j = s.cell.j; L.lvl = s.cell.lvl;
   } else {
-    if (!s.mesh.userData.stressRest) return;
-    const b = s.mesh.userData.blocks[s.q];
-    L.mesh = s.mesh; L.i = b.gi; L.j = b.gj; L.lvl = b.lvl;
+    const mesh = s.mesh, b = mesh.userData.blocks[s.q];
+    if (!mesh.userData.stressRest) {
+      if (mesh.userData.blocks.length < 2) return;   // a lone cube: chipPiece's
+      // Its own landing, not the other's: keyed to itself.
+      L.fly = true; L.by = mesh.userData.body?.id ?? -1;
+      impactV.set(L.dx, L.dy, L.dz).applyQuaternion(impactInv.copy(mesh.quaternion).invert());
+      L.dx = impactV.x; L.dy = impactV.y; L.dz = impactV.z;
+    } else if (still) return;
+    L.mesh = mesh; L.i = b.gi; L.j = b.gj; L.lvl = b.lvl;
   }
-  // One body is one landing until the check: a bounce in the same window is
-  // the same blow again, weaker, not a second one on top of it.
-  const was = impactLoads.findIndex((x) => x.by === L.by);
-  if (was >= 0) { if (impactLoads[was].F < F) impactLoads[was] = L; return; }
+  impactLoadPush(L);
+}
+// Into impactLoads. One body is one landing until the check: a bounce in the
+// same window is the same blow again, weaker, not a second one on top of it.
+function impactLoadPush(L) {
+  const was = impactLoads.findIndex((x) => x.by === L.by && x.fly === L.fly);
+  if (was >= 0) { if (impactLoads[was].F < L.F) impactLoads[was] = L; return; }
   if (impactLoads.length >= IMPACT_LOAD_MAX) {
     let weak = 0;
     for (let q = 1; q < impactLoads.length; q++) if (impactLoads[q].F < impactLoads[weak].F) weak = q;
-    if (impactLoads[weak].F >= F) return;
+    if (impactLoads[weak].F >= L.F) return;
     impactLoads.splice(weak, 1);
   }
   if (!impactLoads.length) impactLoadsAt = world.time;
@@ -7913,14 +7929,39 @@ function resolveBreakMat(m) {
   return m;
 }
 
-// Knock one block out of the world and let it fall. Nothing is kept: the block
-// leaves the grid, becomes a one-cube piece of rubble, and from then on belongs
-// to the physics. The hammer does it, and so does a block the stress solver
-// finds past its strength — both through breakBlock / breakDebrisBlocks.
+// A strike lands on the block under the crosshair as a force along the aim
+// (HAMMER_F), and the next tension check says what it brings down: a strained
+// span sheds, a block set in the ground takes it. What the check has nothing
+// to say about is knocked straight out, as a block the solver finds past its
+// strength is — through breakBlock / breakDebrisBlocks — and leaves the grid
+// as a one-cube piece of rubble: anything with the check off, a lone cube, a
+// piece in the air, ground hanging off nothing, and in the sandbox ground the
+// check never lays out.
 function hammerStrike() {
   if (!hammer.on || !hammer.hit) return false;
-  const ok = hammer.debris ? breakDebrisBlock(hammer.debris.mesh, hammer.debris.idx)
-                           : breakBlock(hammer.hit.i, hammer.hit.j, hammer.hit.lvl);
+  camera.getWorldDirection(aimDir);
+  const L = { by: 0, F: HAMMER_F, dx: aimDir.x, dy: aimDir.y, dz: aimDir.z, i: 0, j: 0, lvl: 0, mesh: null, fly: false };
+  let ok;
+  if (hammer.debris) {
+    const { mesh, idx } = hammer.debris, lat = mesh.userData.blocks;
+    if (!stressOn || lat.length < 2 || !mesh.userData.stressRest) ok = breakDebrisBlock(mesh, idx);
+    else {
+      const b = lat[idx];
+      L.mesh = mesh; L.i = b.gi; L.j = b.gj; L.lvl = b.lvl;
+      L.by = -1 - stPieceKey(mesh, b.gi, b.gj, b.lvl);
+    }
+  } else {
+    const { i, j, lvl } = hammer.hit, key = gravCell(i, j, lvl), n = stKeyMap.get(key);
+    if (!stressOn || (n === undefined && sandboxMode) || (n !== undefined && stCur.stress[n] === Infinity)) ok = breakBlock(i, j, lvl);
+    else {
+      L.i = i; L.j = j; L.lvl = lvl; L.by = -1 - key;
+      // Ground not laid out is solved for real from now on, as a dig would
+      // have it, so the blow has a node to land on.
+      const c = chunkOf(i, j);
+      if (n === undefined && lvl < stressChunkLow[c]) stressChunkLow[c] = lvl;
+    }
+  }
+  if (L.by) { impactLoadPush(L); impactStruck = true; ok = true; }
   if (ok) { hammer.hit = null; hammer.debris = null; }
   return ok;
 }
@@ -9713,6 +9754,7 @@ const STRESS_DEBRIS_R   = 16;     // m — fallen pieces nearer than this are dr
 const STRESS_MAX_DRAW   = 3000;   // overlay cubes on built blocks, nearest first past this
 const STRESS_TICK       = 0.1;    // s between checks of whether the world changed
 const STRESS_REBUILD    = 0.5;    // s at least between laying the world out again
+const STRESS_HIT_REBUILD = 0.1;   // and after a hammer blow, which the player stands waiting on
 const STRESS_TOL2       = 1e-8;   // converged once |r|^2 < this * |F|^2, per structure
 const STRESS_MOVE_Q     = 8;      // blocks the player moves before the drawn window follows
 const STRESS_LAYER      = 1;      // debris overlays: drawn, but not hit by debrisAim
@@ -10888,7 +10930,7 @@ function stressForget() {
   stN = 0; stNE = 0; stNBuilt = 0; stNTerr = 0; stNComp = 0; stHangN = 0;
   stPieces.length = 0;
   stJob = null;   // whatever the worker sends back for it is dropped
-  impactLoads.length = 0;
+  impactLoads.length = 0; impactStruck = false;
   stBuiltRev = -1;
   stressDrawSig = NaN;
 }
@@ -11257,6 +11299,7 @@ function stressHitLoads(S) {
   for (const L of impactLoads) {
     if (L.mesh) {
       const pc = stPieces.find((p) => p.mesh === L.mesh);
+      if (pc && L.fly) { stressHitFly(S, pc, L); found++; continue; }
       if (!pc || !pc.rest) continue;   // knocked moving, or gone: not solved
       let n = stKeyMap.get(stPieceKey(L.mesh, L.i, L.j, L.lvl));
       if (n === undefined) {   // chipped off: the nearest block left takes it
@@ -11290,7 +11333,26 @@ function stressHitLoads(S) {
     found++;
   }
   impactLoads.length = 0;
+  impactStruck = false;
   return found;
+}
+// Piece `pc`, struck in the air by hit L, laid out as the body being stopped
+// (IMPACT_FACE_TOL): its leading face along the push is what holds it, and
+// every other block is pushed toward that face by its share of the force. Its
+// weight is left out — it was falling with it — and it rests on nothing, so
+// passes nothing on.
+function stressHitFly(S, pc, L) {
+  const lat = pc.mesh.userData.blocks, n0 = pc.start;
+  let lo = Infinity;
+  for (let q = 0; q < pc.count; q++) lo = Math.min(lo, lat[q].gi * L.dx + lat[q].lvl * L.dy + lat[q].gj * L.dz);
+  const a = L.F / (pc.load || 1);   // the stop, in its own weights
+  for (let q = 0; q < pc.count; q++) {
+    const b = lat[q], n = n0 + q, w = MAT_STATS[S.mat[n]]?.weight ?? 0;
+    S.fixed[n] = b.gi * L.dx + b.lvl * L.dy + b.gj * L.dz <= lo + IMPACT_FACE_TOL ? 1 : 0;
+    S.f[n * 6] = -a * w * L.dx; S.f[n * 6 + 1] = -a * w * L.dy; S.f[n * 6 + 2] = -a * w * L.dz;
+  }
+  pc.on = [];
+  pc.fly = true;
 }
 
 // Lay the whole world out: every built block, all the ground that hangs, the
@@ -11683,7 +11745,9 @@ function stressBreakSaturated() {
       let qs = pieceHits.get(pc);
       if (!qs) {
         if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
-        if (pc.mesh.userData.stressRest !== pc.rest) continue;   // moved since: laid out again first
+        // Moved since: laid out again first. A piece solved for a hit in the
+        // air is solved in its own frame, wherever it has got to since.
+        if (!pc.fly && pc.mesh.userData.stressRest !== pc.rest) continue;
         pieceHits.set(pc, qs = []);
       }
       qs.push(n - pc.start);
@@ -12004,7 +12068,8 @@ function updateStress(dt) {
   // A hit waits for its crater to be dug, so it is felt by the ground the hole
   // left rather than by the block it took away.
   const digging = impactLoads.length && impactPending.length && world.time - impactLoadsAt < IMPACT_LOAD_WAIT;
-  if (stressOn && stressRev !== stBuiltRev && !stJob && !digging && elapsed - stressLastRebuild >= STRESS_REBUILD) {
+  if (stressOn && stressRev !== stBuiltRev && !stJob && !digging
+      && elapsed - stressLastRebuild >= (impactStruck ? STRESS_HIT_REBUILD : STRESS_REBUILD)) {
     stBuiltRev = stressRev;
     stressLastRebuild = elapsed;
     stressRebuild();
@@ -12027,7 +12092,7 @@ function setStress(on, shown = on) {
   stressOn = !!on;
   stressShown = !!shown;
   stressShowU.value = stressShown ? 1 : 0;
-  if (!stressOn) impactLoads.length = 0;   // a hit is felt by the next check, not one long after
+  if (!stressOn) { impactLoads.length = 0; impactStruck = false; }   // a hit is felt by the next check, not one long after
   stressCrackU.value = stressOn ? 1 : 0;
   // Only cracks left to draw: the next layout shows the cubes that have one.
   stressTerr.visible = stressShown;

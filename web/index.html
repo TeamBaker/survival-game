@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 233;
+window.GAME_VERSION = 234;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -366,7 +366,7 @@ window.GAME_VERSION = 233;
     z-index: 10;
   }
   /* Says once how to get back, then gets out of the shot. */
-  body.no-ui #noui-hint { display: block; animation: noui-hint 2.6s ease-in forwards; }
+  body.no-ui #noui-hint { display: block; animation: noui-hint 0.5s ease-in forwards; }
   @keyframes noui-hint { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
 
   #instructions {

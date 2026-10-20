@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 230;
+window.GAME_VERSION = 232;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2854,6 +2854,9 @@ const stressCols = new Set();
 // breaking under its own weight (see stressGroundBreaks). Unlike stressCols,
 // nothing is let go of here until it has been looked at.
 const stressGroundCols = new Set();
+// Columns written since the tension layout last threw their settled weights
+// away (stSettledW): nothing else changes what generation stacked in one.
+const stressWeightCols = new Set();
 function setVoxel(i, j, lvl, m) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
   const k = j * GEN_N + i;
@@ -2869,6 +2872,7 @@ function setVoxel(i, j, lvl, m) {
   stressRev++;
   stressCols.add(k);
   stressGroundCols.add(k);
+  stressWeightCols.add(k);
   // Ground coming or going (water moving about does not count): the ground of
   // this chunk is no longer as it settled, and is solved for real from here on.
   if ((was !== AIR && was !== WATER) || (m !== AIR && m !== WATER)) {
@@ -3328,6 +3332,10 @@ function fallingGrainGeo(m) {
 
 const terrain = new THREE.Group();
 scene.add(terrain);
+// Whether the terrain's meshes cast: set on each one as it is made and never
+// changed, which is what lets the shadow check pass the whole group by on a
+// phone (shadowCastersChanged).
+const TERRAIN_CASTS = !isTouchDevice;
 
 // Per chunk: its mesh — an array of at most one, empty where the chunk has
 // nothing to draw (still truthy, so "has this chunk been built" stays a plain
@@ -3861,7 +3869,7 @@ function mergeBatch(b) {
   bm.position.copy(TERRAIN_ORIGIN);
   bm.scale.setScalar(HALF_BLOCK);
   bm.receiveShadow = true;
-  bm.castShadow = !isTouchDevice;
+  bm.castShadow = TERRAIN_CASTS;
   bm.visible = batchInView(b);
   terrain.add(bm);
   batchMesh[b] = bm;
@@ -4021,7 +4029,7 @@ function rebuildChunk(c, r) {
       me.receiveShadow = true;
       // Casting is a second full pass over every face. A phone gets the sun's
       // shading and the player's shadow, but not the island shadowing itself.
-      me.castShadow = !isTouchDevice;
+      me.castShadow = TERRAIN_CASTS;
       terrain.add(me);
       meshes.length = 0;
       meshes.push(me);
@@ -4226,8 +4234,11 @@ onmessage = (e) => {
       tint[k] = d.tint[n]; colMaxCap[k] = d.cap[n]; voxOff[k] = d.off[n];
     }
     const c = d.c;
+    // The snapshot goes back with the answer, for the next job to fill.
+    const snap = { sTop: d.sTop, topLvl: d.topLvl, airLo: d.airLo, tint: d.tint, cap: d.cap, off: d.off, vox: d.vox, bits: d.bits };
+    const snapBufs = [d.sTop.buffer, d.topLvl.buffer, d.airLo.buffer, d.tint.buffer, d.cap.buffer, d.off.buffer, d.vox.buffer, d.bits.buffer];
     if (d.kind === 'collider') {
-      postMessage({ kind: 'collider', id: d.id, c, rev: d.rev, boxes: buildChunkColliderBoxes(c) });
+      postMessage({ kind: 'collider', id: d.id, c, rev: d.rev, boxes: buildChunkColliderBoxes(c), snap }, snapBufs);
       return;
     }
     const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
@@ -4240,8 +4251,8 @@ onmessage = (e) => {
     for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
     mergeFaces();
     const pos = qPos.slice(0, qN * 3), info = qInfo.slice(0, qN), patch = colPatch.slice();
-    postMessage({ kind: 'mesh', id: d.id, c, rev: d.rev, step, blocks, nv: qN, pos, info, patch },
-      [pos.buffer, info.buffer, patch.buffer]);
+    postMessage({ kind: 'mesh', id: d.id, c, rev: d.rev, step, blocks, nv: qN, pos, info, patch, snap },
+      [pos.buffer, info.buffer, patch.buffer, ...snapBufs]);
   } catch (err) {
     postMessage({ kind: 'error', msg: String(err && err.stack || err) });
   }
@@ -4249,40 +4260,68 @@ onmessage = (e) => {
 `;
 }
 
+// Snapshot arrays the worker has handed back (see meshSnapshot), kept for the
+// next jobs rather than made new for each one: walking made ~600 of them a
+// minute, eight arrays apiece.
+const meshSnapFree = [], MESH_SNAP_KEEP = 8;
+const MESH_SNAP_N = (CHUNK + 2 * MESH_MARGIN) * (CHUNK + 2 * MESH_MARGIN);
+function meshSnapArrays(n, total) {
+  for (let q = 0; q < meshSnapFree.length; q++) {
+    const a = meshSnapFree[q];
+    if (a.sTop.length < n || a.vox.length < total) continue;
+    meshSnapFree[q] = meshSnapFree[meshSnapFree.length - 1];
+    meshSnapFree.pop();
+    return a;
+  }
+  // Every set holds the biggest region, so any set does for any job; the store
+  // part grows to the biggest asked of it, with room over.
+  const nc = Math.max(n, MESH_SNAP_N), vc = Math.ceil(total * 1.25 / 64) * 64;
+  return { sTop: new Int16Array(nc), topLvl: new Int16Array(nc), airLo: new Int16Array(nc), tint: new Float32Array(nc),
+           cap: new Int32Array(nc), off: new Int32Array(nc), vox: new Uint8Array(vc), bits: new Uint8Array(vc >> 3) };
+}
+function meshSnapRecycle(a) {
+  if (a && meshSnapFree.length < MESH_SNAP_KEEP) meshSnapFree.push(a);
+}
+
 // The columns of chunk c and `margin` either side, packed: per-column state,
 // and each column's run of voxMat and visBits copied end to end (a run starts on
 // a multiple of eight, so its bits start on a byte), with offsets into the copy.
+// Columns next to each other in a row usually sit end to end in the store too,
+// so a row goes over in as few copies as it has breaks. The arrays may be longer
+// than the region; the worker reads only the region's part.
 function meshSnapshot(c, margin) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const ri0 = Math.max(0, i0 - margin), rj0 = Math.max(0, j0 - margin);
   const rw = Math.min(GEN_N, i0 + CHUNK + margin) - ri0, rh = Math.min(GEN_N, j0 + CHUNK + margin) - rj0;
-  const n = rw * rh;
-  const s = {
-    c, ri0, rj0, rw, rh,
-    sTop: new Int16Array(n), topLvl: new Int16Array(n), airLo: new Int16Array(n),
-    tint: new Float32Array(n), cap: new Int32Array(n), off: new Int32Array(n), vox: null, bits: null,
-  };
   let total = 0;
   for (let jj = 0; jj < rh; jj++) for (let ii = 0; ii < rw; ii++) {
     const k = (rj0 + jj) * GEN_N + ri0 + ii;
     if (voxOff[k] >= 0) total += voxSpan(voxLen(k));
   }
-  const vox = new Uint8Array(total), bits = new Uint8Array(total >> 3);
-  let at = 0;
-  for (let jj = 0, q = 0; jj < rh; jj++) for (let ii = 0; ii < rw; ii++, q++) {
-    const k = (rj0 + jj) * GEN_N + ri0 + ii;
-    s.sTop[q] = sTop[k]; s.topLvl[q] = topLvl[k]; s.airLo[q] = airLo[k];
-    s.tint[q] = tint[k]; s.cap[q] = colMaxCap[k];
-    const o = voxOff[k];
-    if (o < 0) { s.off[q] = -1; continue; }
-    const span = voxSpan(voxLen(k));
-    vox.set(voxMat.subarray(o, o + span), at);
-    bits.set(visBits.subarray(o >> 3, (o + span) >> 3), at >> 3);
-    s.off[q] = at;
-    at += span;
+  const a = meshSnapArrays(rw * rh, total), vox = a.vox, bits = a.bits;
+  let at = 0, runO = -1, runAt = 0, runEnd = -1;
+  const flush = () => {
+    if (runO < 0) return;
+    vox.set(voxMat.subarray(runO, runEnd), runAt);
+    bits.set(visBits.subarray(runO >> 3, runEnd >> 3), runAt >> 3);
+    runO = -1;
+  };
+  for (let jj = 0, q = 0; jj < rh; jj++) {
+    for (let ii = 0; ii < rw; ii++, q++) {
+      const k = (rj0 + jj) * GEN_N + ri0 + ii;
+      a.sTop[q] = sTop[k]; a.topLvl[q] = topLvl[k]; a.airLo[q] = airLo[k];
+      a.tint[q] = tint[k]; a.cap[q] = colMaxCap[k];
+      const o = voxOff[k];
+      if (o < 0) { a.off[q] = -1; continue; }
+      const span = voxSpan(voxLen(k));
+      if (o !== runEnd) { flush(); runO = o; runAt = at; }
+      runEnd = o + span;
+      a.off[q] = at;
+      at += span;
+    }
   }
-  s.vox = vox; s.bits = bits;
-  return s;
+  flush();
+  return { c, ri0, rj0, rw, rh, ...a };
 }
 
 // A job that cannot even be posted takes the worker down with it, and
@@ -4343,6 +4382,8 @@ try {
     meshWorker.onmessage = (e) => {
       const r = e.data;
       if (r.kind === 'error') { meshWorkerFail(r.msg); return; }
+      meshSnapRecycle(r.snap);
+      r.snap = null;
       if (r.kind === 'mesh') { meshInflight--; meshDone.push(r); }
       else colDone.push(r);
     };
@@ -4534,10 +4575,37 @@ let colTestChunk = -1;                // the collision tester's chunk, kept whil
 // out through unloadChunkCollider, which keep the two in step.
 const _colLoaded = [];
 const _colLoadedAt = new Int32Array(CHUNK_N * CHUNK_N).fill(-1);
+// One CANNON.Box per size, shared by every chunk body that has a box that size:
+// a Box builds its own convex hull (faces, normals, edges) when it is made, and
+// the merged boxes repeat sizes a great deal. Nothing of a shape is set per
+// body that the game reads; contacts are told apart by body. Let go of past
+// COL_BOX_KEEP sizes, which leaves the bodies that have them as they are.
+const colBoxes = new Map(), COL_BOX_KEEP = 4096;
+function colBox(hx, hy, hz) {
+  const key = hx + ',' + hy + ',' + hz;
+  let box = colBoxes.get(key);
+  if (!box) {
+    if (colBoxes.size >= COL_BOX_KEEP) colBoxes.clear();
+    colBoxes.set(key, box = new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
+  }
+  return box;
+}
+// The body sits at the middle of its boxes, not the world origin: the
+// broadphase tests a body by its bounding sphere about its position, and one
+// about the origin took in half the island, pairing every moving piece with
+// every chunk near it for the narrowphase to sort out box by box.
 function setChunkColliderBody(c, boxes) {
-  const body = new CANNON.Body({ mass: 0, material: physWorld });
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const b of boxes) {
-    body.addShape(new CANNON.Box(new CANNON.Vec3(b.hx, b.hy, b.hz)), new CANNON.Vec3(b.x, b.y, b.z));
+    if (b.x - b.hx < x0) x0 = b.x - b.hx; if (b.x + b.hx > x1) x1 = b.x + b.hx;
+    if (b.y - b.hy < y0) y0 = b.y - b.hy; if (b.y + b.hy > y1) y1 = b.y + b.hy;
+    if (b.z - b.hz < z0) z0 = b.z - b.hz; if (b.z + b.hz > z1) z1 = b.z + b.hz;
+  }
+  const cx = boxes.length ? (x0 + x1) / 2 : 0, cy = boxes.length ? (y0 + y1) / 2 : 0, cz = boxes.length ? (z0 + z1) / 2 : 0;
+  // In the constructor, so its previous and interpolated positions agree.
+  const body = new CANNON.Body({ mass: 0, material: physWorld, position: new CANNON.Vec3(cx, cy, cz) });
+  for (const b of boxes) {
+    body.addShape(colBox(b.hx, b.hy, b.hz), new CANNON.Vec3(b.x - cx, b.y - cy, b.z - cz));
   }
   body.updateAABB();
   world.addBody(body);
@@ -6428,16 +6496,14 @@ function restsOnStill(body) {
 // is pushed aside onto the rim and pours back in as powder does. Past the
 // bodies a hit may spawn, solid rubble is crushed to its powder (rock to stone
 // dust, dirt to fine dirt) and thrown the same way: a big hit pulverises. A
-// crater bigger than a frame's work is dug over the next few, top down. A
-// piece loses blocks at the face it hit with.
+// crater bigger than a frame's work is dug over the next few, top down.
 //
-// It is not put through the stress solver as a load. The solver's loads are
-// static and its answer comes back frames later from the worker, while a hit
-// lasts one step: as a held load it would be the wrong force for the wrong
-// length of time. The crater is the impact's own doing, and the solver then
-// sees the world the crater left — an undercut ledge, a hollowed pillar — on
-// its next pass, exactly as it sees a hole the shovel made, and brings down
-// whatever no longer holds.
+// A piece is not dug: what it loses is what the tension check, solving the
+// hit as a force (impactLoad), finds past its strength — a slab landing on a
+// corner snaps, a lump does not. The struck ground and anything standing on it
+// feel the same force, so a ledge a rock lands on can give way past what the
+// crater took. Only a lone cube, which has nothing to solve, is knocked loose
+// by the energy itself, and with the check off a hit takes the block it struck.
 //
 // The events are only queued here: breaking blocks spawns and removes bodies,
 // which cannot be done halfway through cannon's step. processImpacts pays them
@@ -6460,12 +6526,11 @@ const IMPACT_POWDER_J = 10;   // J to shove one grain of powder aside — a dirt
 // is about a rock cube off 10 m, so no hit up to that digs any less than it did.
 const IMPACT_KNEE_J  = 2500;
 const IMPACT_SOLID_MAX = 8;   // solid blocks one side of one hit may lose as bodies: each one is a new body
-const IMPACT_GRAIN_MAX = 24;  // grains one hit may knock off a piece: chips stay as v228 had them
 const IMPACT_CRATER_MAX = 512; // blocks one crater may take: a 7x7x7 rock off 20 m, a hole ~2.6 m across
 const IMPACT_FRAME_SOLID = 12; // bodies every hit in a frame may spawn between them — past it rubble is crushed to powder
 const IMPACT_FRAME_MAX = 128; // crater blocks dug a frame; the rest wait, in order, for the next (~4 frames for the biggest)
 const IMPACT_PENDING_MAX = 1024; // crater blocks waiting at once; a rockfall past that digs smaller holes, never a longer stall
-const IMPACT_REACH   = 3;     // blocks out from the struck one a chip off a piece, or a small crater, may spread
+const IMPACT_REACH   = 3;     // blocks out from the struck one a small crater may spread
 const IMPACT_REACH_MAX = 9;   // and the furthest a crater ever reaches, which IMPACT_CRATER_MAX fills with room to spare
 const IMPACT_DEPTH_BIAS = 0.6; // how much further down the line of the hit a crater reaches than sideways
 const IMPACT_EJECT   = 0.35;  // rubble leaves a crater at this fraction of the impact speed
@@ -6487,6 +6552,21 @@ const IMPACT_QUEUE_CAP = 32;  // hits held for one frame; past it, the rest of a
 // same, and the force is that impulse over the stop.
 const IMPACT_STOP_T  = 0.05;  // s a hit takes to stop
 const IMPACT_LOAD_MAX = 64;   // hits held for the next check at once; past it, the weakest are let go
+// A piece in the air is solved for its own hit as a body being stopped: held
+// at the face that struck, every other block pushed toward it by its share of
+// the stop, as if it stood on that face under the hit's own gravity. A lump
+// takes that like a cube on the ground; a slab landing on a corner, a bar on
+// its end, bends over the corner and snaps. Blocks this close (in blocks) to
+// the leading face along the line of the hit are the face: a slab landing all
+// but flat lands on all of it.
+const IMPACT_FACE_TOL = 0.3;
+// The hammer is a hit like any other: its blow goes on the block it struck,
+// along the aim, and what gives way is what the solve says. A 4 kg head at
+// 10 m/s stopped in 0.02 s, in block weights (FALL_KG_PER_WEIGHT, g): it snaps
+// a dirt block standing out on its own, or a strained dirt span, and a block
+// set in ground or bearing straight down takes it. A rock span has to be close
+// to its limit already.
+const HAMMER_F = 4 * 10 / (FALL_KG_PER_WEIGHT * 9.82 * 0.02);
 const IMPACT_LOAD_WAIT = 1.0; // s of sim time the check waits on a crater still being dug, so the hit lands on the hole it made
 // The player. The controller drives the body's speed, so a sprint (9.2 m/s)
 // into a wall or a jump (6.2 m/s) landing must never register; past that a hit
@@ -6757,35 +6837,25 @@ function digImpactPending() {
   impactPending.splice(0, n);
 }
 
-// Spend energy `E` on piece side `s`: its blocks nearest where it was struck,
-// out to IMPACT_REACH. A one-block piece whose material breaks as itself is
-// left alone — it would only come back as the same cube.
+// Spend energy `E` on piece side `s`. With the tension check on, a piece of
+// more than one block gives way where its own solve of the hit says (stressHitLoads)
+// and nothing is taken here; a lone cube has nothing to solve, so the hit
+// knocks it loose itself. Off, there is no solve to ask, and the hit takes the
+// block it struck. One whose material breaks as itself is left alone — it
+// would only come back as the same cube.
 function chipPiece(s, E, vn) {
   const lat = s.mesh.userData.blocks;
-  const idx = [];
-  for (let q = 0; q < lat.length; q++) {
-    const d = lat[q].pos.distanceToSquared(s.local);
-    if (d <= (IMPACT_REACH * BLOCK) ** 2) idx.push([q, d]);
-  }
-  idx.sort((x, y) => x[1] - y[1]);
-  const take = [];
-  let solid = 0, grains = 0;
-  for (const [q] of idx) {
-    const m = lat[q].mat, powder = !!MAT_STATS[m]?.powder, cost = impactCost(m);
-    if (cost > E || (powder ? grains >= IMPACT_GRAIN_MAX : solid >= Math.min(IMPACT_SOLID_MAX, impactSolidLeft))) continue;
-    E -= cost;
-    if (powder) grains++; else solid++;
-    take.push(q);
-  }
-  if (!take.length) return 0;
-  if (lat.length === 1 && !MAT_STATS[lat[0].mat]?.powder) {
-    const row = MAT_CHART.find((r) => matIndexByName(r.mat) === lat[0].mat);
+  if (stressOn && lat.length > 1) return 0;
+  const m = lat[s.q].mat;
+  if (impactCost(m) > E || (!MAT_STATS[m]?.powder && impactSolidLeft <= 0)) return 0;
+  if (lat.length === 1 && !MAT_STATS[m]?.powder) {
+    const row = MAT_CHART.find((r) => matIndexByName(r.mat) === m);
     if (!row || !row.break) return 0;
   }
   // A chip is spawned with the piece's own motion, which the solver has just
   // about stopped: give it some of the hit's, up and out from where it struck.
   // Only the one-cube chips — a part the break split off is not thrown.
-  const born = impactCollect(() => breakDebrisBlocks(s.mesh, take));
+  const born = impactCollect(() => breakDebrisBlocks(s.mesh, [s.q]));
   const u = vn * IMPACT_EJECT;
   for (const body of born) {
     if (body.impactMesh.userData.blocks.length !== 1) continue;
@@ -6806,35 +6876,49 @@ function impactCollect(fn) {
 
 // Hits the next tension check is to feel (stressHitLoads), oldest first: the
 // force F in block-weight units, the way it pushes (into what was struck), and
-// the struck block — a cell of the world, or a piece's lattice cell.
-const impactLoads = [];   // { by, F, dx, dy, dz, i, j, lvl, mesh }
+// the struck block — a cell of the world, or a piece's lattice cell. fly: a
+// piece struck in the air, its push in the piece's own frame, as it is solved
+// on its own (IMPACT_FACE_TOL).
+const impactLoads = [];   // { by, F, dx, dy, dz, i, j, lvl, mesh, fly }
 let impactLoadsAt = 0;    // world.time the oldest of them was struck
+let impactStruck = false; // a hammer blow is among them: the player is waiting on it
+const impactInv = new THREE.Quaternion();
 // Side `s` of hit `h` takes force F, pushed in along sign times the normal,
-// from the body `other`. Only a side that was standing still is loaded: the
-// ground, or a piece that was at rest — one in the air is never solved, and
-// keeps to the chips it already takes. Ground the last layout had no node for
-// stands on bedrock straight down, where a hit can only squeeze it, so it is
-// only kept when the crater is about to change the layout anyway.
+// from the body `other`. A side standing still is loaded only by something
+// moving into it: the ground, or a piece at rest — two at rest only lean. A
+// piece in the air is loaded by whatever stopped it. Ground the last layout
+// had no node for stands on bedrock straight down, where a hit can only
+// squeeze it, so it is only kept when the crater is about to change the
+// layout anyway.
 function impactLoad(s, sign, other, h, F, bites) {
   if (!s || !stressOn || !(F > 0)) return;
-  if (other.type === CANNON.Body.STATIC || other.impactMesh?.userData.stressRest) return;
-  const L = { by: other.id, F, dx: h.nx * sign, dy: h.ny * sign, dz: h.nz * sign, i: 0, j: 0, lvl: 0, mesh: null };
+  const still = other.type === CANNON.Body.STATIC || other.impactMesh?.userData.stressRest;
+  const L = { by: other.id, F, dx: h.nx * sign, dy: h.ny * sign, dz: h.nz * sign, i: 0, j: 0, lvl: 0, mesh: null, fly: false };
   if (s.cell) {
-    if (!bites && !stKeyMap.has(gravCell(s.cell.i, s.cell.j, s.cell.lvl))) return;
+    if (still || (!bites && !stKeyMap.has(gravCell(s.cell.i, s.cell.j, s.cell.lvl)))) return;
     L.i = s.cell.i; L.j = s.cell.j; L.lvl = s.cell.lvl;
   } else {
-    if (!s.mesh.userData.stressRest) return;
-    const b = s.mesh.userData.blocks[s.q];
-    L.mesh = s.mesh; L.i = b.gi; L.j = b.gj; L.lvl = b.lvl;
+    const mesh = s.mesh, b = mesh.userData.blocks[s.q];
+    if (!mesh.userData.stressRest) {
+      if (mesh.userData.blocks.length < 2) return;   // a lone cube: chipPiece's
+      // Its own landing, not the other's: keyed to itself.
+      L.fly = true; L.by = mesh.userData.body?.id ?? -1;
+      impactV.set(L.dx, L.dy, L.dz).applyQuaternion(impactInv.copy(mesh.quaternion).invert());
+      L.dx = impactV.x; L.dy = impactV.y; L.dz = impactV.z;
+    } else if (still) return;
+    L.mesh = mesh; L.i = b.gi; L.j = b.gj; L.lvl = b.lvl;
   }
-  // One body is one landing until the check: a bounce in the same window is
-  // the same blow again, weaker, not a second one on top of it.
-  const was = impactLoads.findIndex((x) => x.by === L.by);
-  if (was >= 0) { if (impactLoads[was].F < F) impactLoads[was] = L; return; }
+  impactLoadPush(L);
+}
+// Into impactLoads. One body is one landing until the check: a bounce in the
+// same window is the same blow again, weaker, not a second one on top of it.
+function impactLoadPush(L) {
+  const was = impactLoads.findIndex((x) => x.by === L.by && x.fly === L.fly);
+  if (was >= 0) { if (impactLoads[was].F < L.F) impactLoads[was] = L; return; }
   if (impactLoads.length >= IMPACT_LOAD_MAX) {
     let weak = 0;
     for (let q = 1; q < impactLoads.length; q++) if (impactLoads[q].F < impactLoads[weak].F) weak = q;
-    if (impactLoads[weak].F >= F) return;
+    if (impactLoads[weak].F >= L.F) return;
     impactLoads.splice(weak, 1);
   }
   if (!impactLoads.length) impactLoadsAt = world.time;
@@ -7845,14 +7929,39 @@ function resolveBreakMat(m) {
   return m;
 }
 
-// Knock one block out of the world and let it fall. Nothing is kept: the block
-// leaves the grid, becomes a one-cube piece of rubble, and from then on belongs
-// to the physics. The hammer does it, and so does a block the stress solver
-// finds past its strength — both through breakBlock / breakDebrisBlocks.
+// A strike lands on the block under the crosshair as a force along the aim
+// (HAMMER_F), and the next tension check says what it brings down: a strained
+// span sheds, a block set in the ground takes it. What the check has nothing
+// to say about is knocked straight out, as a block the solver finds past its
+// strength is — through breakBlock / breakDebrisBlocks — and leaves the grid
+// as a one-cube piece of rubble: anything with the check off, a lone cube, a
+// piece in the air, ground hanging off nothing, and in the sandbox ground the
+// check never lays out.
 function hammerStrike() {
   if (!hammer.on || !hammer.hit) return false;
-  const ok = hammer.debris ? breakDebrisBlock(hammer.debris.mesh, hammer.debris.idx)
-                           : breakBlock(hammer.hit.i, hammer.hit.j, hammer.hit.lvl);
+  camera.getWorldDirection(aimDir);
+  const L = { by: 0, F: HAMMER_F, dx: aimDir.x, dy: aimDir.y, dz: aimDir.z, i: 0, j: 0, lvl: 0, mesh: null, fly: false };
+  let ok;
+  if (hammer.debris) {
+    const { mesh, idx } = hammer.debris, lat = mesh.userData.blocks;
+    if (!stressOn || lat.length < 2 || !mesh.userData.stressRest) ok = breakDebrisBlock(mesh, idx);
+    else {
+      const b = lat[idx];
+      L.mesh = mesh; L.i = b.gi; L.j = b.gj; L.lvl = b.lvl;
+      L.by = -1 - stPieceKey(mesh, b.gi, b.gj, b.lvl);
+    }
+  } else {
+    const { i, j, lvl } = hammer.hit, key = gravCell(i, j, lvl), n = stKeyMap.get(key);
+    if (!stressOn || (n === undefined && sandboxMode) || (n !== undefined && stCur.stress[n] === Infinity)) ok = breakBlock(i, j, lvl);
+    else {
+      L.i = i; L.j = j; L.lvl = lvl; L.by = -1 - key;
+      // Ground not laid out is solved for real from now on, as a dig would
+      // have it, so the blow has a node to land on.
+      const c = chunkOf(i, j);
+      if (n === undefined && lvl < stressChunkLow[c]) stressChunkLow[c] = lvl;
+    }
+  }
+  if (L.by) { impactLoadPush(L); impactStruck = true; ok = true; }
   if (ok) { hammer.hit = null; hammer.debris = null; }
   return ok;
 }
@@ -8919,6 +9028,9 @@ function toggleSandbox() {
   sandboxMode = !sandboxMode;
   document.body.classList.toggle('sandbox-mode', sandboxMode);
   sandboxBtn.classList.toggle('on', sandboxMode);
+  // The columns below are rewritten under setVoxel, which is what otherwise
+  // tells the tension layout a column's settled weights are stale.
+  stSettledW.clear();
   if (sandboxMode) {
     // Empty every existing column.
     voxMat.fill(AIR);
@@ -9642,6 +9754,7 @@ const STRESS_DEBRIS_R   = 16;     // m — fallen pieces nearer than this are dr
 const STRESS_MAX_DRAW   = 3000;   // overlay cubes on built blocks, nearest first past this
 const STRESS_TICK       = 0.1;    // s between checks of whether the world changed
 const STRESS_REBUILD    = 0.5;    // s at least between laying the world out again
+const STRESS_HIT_REBUILD = 0.1;   // and after a hammer blow, which the player stands waiting on
 const STRESS_TOL2       = 1e-8;   // converged once |r|^2 < this * |F|^2, per structure
 const STRESS_MOVE_Q     = 8;      // blocks the player moves before the drawn window follows
 const STRESS_LAYER      = 1;      // debris overlays: drawn, but not hit by debrisAim
@@ -9747,9 +9860,77 @@ function stressLutIndex(stress, strength) {
 // down to a few dozen nodes, factored outright. Block Gauss-Seidel smooths each
 // level, forward on the way down and backward on the way up, which keeps the
 // preconditioner symmetric for CG. Tens of iterations rather than thousands.
-function stressSolveJob(job) {
+// mem, kept by the worker from one job to the next: the typed arrays a solve
+// is done with (take/give), and the hierarchies of the last structures solved
+// (mem.cache).
+function stressSolveJob(job, mem = {}) {
   const P1 = [1, 2, 0], P2 = [2, 0, 1];
   const { nStart, eStart, fixed, f, u, ea, eb, eax, ek, en0, pos, tol2 } = job;
+  // ----- typed arrays, recycled -----
+  // Every product, transpose and level of a solve used to be a fresh typed
+  // array, ~150 MB of them for the big terrain structure, all garbage straight
+  // after. They come from a free list of buffers instead, best fit, zeroed, and
+  // go back to it; what the list holds past POOL_MAX is left to the collector.
+  const POOL_MAX = 64 << 20;
+  const pool = mem.pool || (mem.pool = { free: [], bytes: 0 });
+  function take(Type, n) {
+    const need = Math.max(64, n * Type.BYTES_PER_ELEMENT), free = pool.free;
+    let best = -1;
+    for (let k = 0; k < free.length; k++) {
+      const L = free[k].byteLength;
+      if (L >= need && L <= need * 4 && (best < 0 || L < free[best].byteLength)) best = k;
+    }
+    let buf;
+    if (best < 0) buf = new ArrayBuffer(Math.ceil(need * 1.25 / 64) * 64);
+    else { buf = free[best]; free[best] = free[free.length - 1]; free.pop(); pool.bytes -= buf.byteLength; }
+    return new Type(buf, 0, n).fill(0);
+  }
+  function give(...arrs) {
+    for (const a of arrs) {
+      if (!a || pool.bytes + a.buffer.byteLength > POOL_MAX) continue;
+      pool.free.push(a.buffer);
+      pool.bytes += a.buffer.byteLength;
+    }
+  }
+  const giveM = (M) => give(M.rs, M.ci, M.v);
+  // ----- hierarchies, kept for the next job -----
+  // Only for structures big enough for the setup to matter, only up to
+  // CACHE_MAX in all, and only while the next job has a use for them: each
+  // entry keeps what its matrix is built from, compared in full, not a hash.
+  const CACHE_MIN = 400, CACHE_MAX = 48 << 20;
+  let cache = mem.cache || [], cacheBytes = mem.cacheBytes || 0;
+  mem.jobs = (mem.jobs || 0) + 1;
+  function sameAs(a, b, b0, b1) {
+    if (a.length !== b1 - b0) return false;
+    for (let k = 0; k < a.length; k++) if (a[k] !== b[b0 + k]) return false;
+    return true;
+  }
+  function cachedLevels(n, e0, e1, fx, n0) {
+    for (const c of cache) {
+      if (c.n !== n || c.job === mem.jobs) continue;
+      if (!sameAs(c.fx, fx, 0, n) || !sameAs(c.pos, pos, n0 * 3, (n0 + n) * 3)) continue;
+      if (!sameAs(c.ea, ea, e0, e1) || !sameAs(c.eb, eb, e0, e1) || !sameAs(c.eax, eax, e0, e1) || !sameAs(c.ek, ek, e0, e1)) continue;
+      c.job = mem.jobs;
+      return c.levels;
+    }
+    return null;
+  }
+  function cacheLevels(levels, n, e0, e1, fx, n0) {
+    if (n < CACHE_MIN) return;
+    let bytes = 0;
+    for (let l = 0; l < levels.length; l++) {
+      const L = levels[l];
+      if (l) bytes += L.A.v.byteLength + L.A.ci.byteLength;
+      bytes += L.Dinv.byteLength + 2 * L.r.byteLength;
+      if (L.P) bytes += L.P.v.byteLength + L.P.ci.byteLength;
+      if (L.chol) bytes += L.chol.M.byteLength;
+    }
+    if (cacheBytes + bytes > CACHE_MAX) return;
+    cacheBytes += bytes;
+    levels.cached = true;
+    cache.push({ job: mem.jobs, n, bytes, levels, fx: fx.slice(), pos: pos.slice(n0 * 3, (n0 + n) * 3),
+                 ea: ea.slice(e0, e1), eb: eb.slice(e0, e1), eax: eax.slice(e0, e1), ek: ek.slice(e0, e1) });
+  }
   const stress = new Float64Array(fixed.length);
   // The worst beam's stress again, split by which way it loads the block: a
   // beam's moment both squeezes one face and pulls the other, its axial force
@@ -9802,9 +9983,22 @@ function stressSolveJob(job) {
       }
     }
   }
+  // The product's blocks are counted first, so it is laid out once at its size
+  // rather than grown by doubling and trimmed by a copy.
   function bsrMul(A, B) {
-    const n = A.n, mark = new Int32Array(B.m).fill(-1), rs = new Int32Array(n + 1);
-    let ci = new Int32Array(Math.max(64, A.ci.length * 2)), v = new Float64Array(ci.length * 36), nz = 0;
+    const n = A.n, mark = take(Int32Array, B.m).fill(-1), rs = take(Int32Array, n + 1);
+    let nz = 0;
+    for (let i = 0; i < n; i++) {
+      const row0 = nz;
+      for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
+        const k = A.ci[p];
+        for (let q = B.rs[k]; q < B.rs[k + 1]; q++) if (mark[B.ci[q]] < row0) mark[B.ci[q]] = nz++;
+      }
+      rs[i + 1] = nz;
+    }
+    mark.fill(-1);
+    const ci = take(Int32Array, nz), v = take(Float64Array, nz * 36);
+    nz = 0;
     for (let i = 0; i < n; i++) {
       const row0 = nz;
       for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
@@ -9812,27 +10006,20 @@ function stressSolveJob(job) {
         for (let q = B.rs[k]; q < B.rs[k + 1]; q++) {
           const j = B.ci[q];
           let at = mark[j];
-          if (at < row0) {
-            if (nz === ci.length) {
-              const c2 = new Int32Array(nz * 2); c2.set(ci); ci = c2;
-              const v2 = new Float64Array(nz * 72); v2.set(v); v = v2;
-            }
-            at = mark[j] = nz++;
-            ci[at] = j;
-            v.fill(0, at * 36, at * 36 + 36);
-          }
+          if (at < row0) { at = mark[j] = nz++; ci[at] = j; }
           mm6(A.v, p * 36, B.v, q * 36, v, at * 36);
         }
       }
-      rs[i + 1] = nz;
     }
-    return { n, m: B.m, rs, ci: ci.slice(0, nz), v: v.slice(0, nz * 36) };
+    give(mark);
+    return { n, m: B.m, rs, ci, v };
   }
   function bsrT(A) {
-    const rs = new Int32Array(A.m + 1), nz = A.ci.length;
+    const nz = A.rs[A.n], rs = take(Int32Array, A.m + 1);
     for (let p = 0; p < nz; p++) rs[A.ci[p] + 1]++;
     for (let j = 0; j < A.m; j++) rs[j + 1] += rs[j];
-    const cur = rs.slice(0, A.m), ci = new Int32Array(nz), v = new Float64Array(nz * 36);
+    const cur = take(Int32Array, A.m), ci = take(Int32Array, nz), v = take(Float64Array, nz * 36);
+    cur.set(rs.subarray(0, A.m));
     for (let i = 0; i < A.n; i++) {
       for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
         const at = cur[A.ci[p]]++;
@@ -9840,6 +10027,7 @@ function stressSolveJob(job) {
         for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) v[at * 36 + c * 6 + r] = A.v[p * 36 + r * 6 + c];
       }
     }
+    give(cur);
     return { n: A.m, m: A.n, rs, ci, v };
   }
   // y = A x
@@ -9859,6 +10047,26 @@ function stressSolveJob(job) {
       }
       const o = i * 6;
       y[o] = y0; y[o + 1] = y1; y[o + 2] = y2; y[o + 3] = y3; y[o + 4] = y4; y[o + 5] = y5;
+    }
+  }
+  // y = A^T x, for restricting by P without keeping its transpose R about.
+  // Each coarse row is summed in the order bsrMv over bsrT(A) would sum it
+  // (bsrT lays a row's blocks out by fine row), so the bits come out the same.
+  function bsrMvT(A, x, y) {
+    const rs = A.rs, ci = A.ci, v = A.v;
+    y.fill(0, 0, A.m * 6);
+    for (let i = 0; i < A.n; i++) {
+      const o = i * 6;
+      const x0 = x[o], x1 = x[o + 1], x2 = x[o + 2], x3 = x[o + 3], x4 = x[o + 4], x5 = x[o + 5];
+      for (let p = rs[i]; p < rs[i + 1]; p++) {
+        const j = ci[p] * 6, b = p * 36;
+        y[j] += v[b] * x0 + v[b + 6] * x1 + v[b + 12] * x2 + v[b + 18] * x3 + v[b + 24] * x4 + v[b + 30] * x5;
+        y[j + 1] += v[b + 1] * x0 + v[b + 7] * x1 + v[b + 13] * x2 + v[b + 19] * x3 + v[b + 25] * x4 + v[b + 31] * x5;
+        y[j + 2] += v[b + 2] * x0 + v[b + 8] * x1 + v[b + 14] * x2 + v[b + 20] * x3 + v[b + 26] * x4 + v[b + 32] * x5;
+        y[j + 3] += v[b + 3] * x0 + v[b + 9] * x1 + v[b + 15] * x2 + v[b + 21] * x3 + v[b + 27] * x4 + v[b + 33] * x5;
+        y[j + 4] += v[b + 4] * x0 + v[b + 10] * x1 + v[b + 16] * x2 + v[b + 22] * x3 + v[b + 28] * x4 + v[b + 34] * x5;
+        y[j + 5] += v[b + 5] * x0 + v[b + 11] * x1 + v[b + 17] * x2 + v[b + 23] * x3 + v[b + 29] * x4 + v[b + 35] * x5;
+      }
     }
   }
   // Inverse of a symmetric positive definite 6x6 block, by Gauss-Jordan.
@@ -9883,7 +10091,7 @@ function stressSolveJob(job) {
     for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) out[oo + r * 6 + c] = gj[r * 12 + 6 + c];
   }
   function diagInverses(A) {
-    const D = new Float64Array(A.n * 36);
+    const D = take(Float64Array, A.n * 36);
     for (let i = 0; i < A.n; i++) {
       for (let p = A.rs[i]; p < A.rs[i + 1]; p++) if (A.ci[p] === i) { inv6(A.v, p * 36, D, i * 36); break; }
     }
@@ -9896,12 +10104,12 @@ function stressSolveJob(job) {
     const levels = [];
     for (let depth = 0; ; depth++) {
       const n = A.n, L = { A, Dinv: diagInverses(A), n };
-      L.r = new Float64Array(n * 6); L.t = new Float64Array(n * 6);
+      L.r = take(Float64Array, n * 6); L.t = take(Float64Array, n * 6);
       levels.push(L);
       if (n <= COARSEST || depth >= 12) break;
       // Aggregates: a node and all its neighbours while none are taken, then
       // stragglers join a neighbour's, then any left over stand alone.
-      const agg = new Int32Array(n).fill(-1);
+      const agg = take(Int32Array, n).fill(-1);
       let na = 0;
       for (let i = 0; i < n; i++) {
         if (agg[i] !== -1 || (excluded && excluded[i])) continue;
@@ -9923,9 +10131,9 @@ function stressSolveJob(job) {
         if (agg[i] <= -2) agg[i] = -2 - agg[i];
         else if (agg[i] === -1) agg[i] = na++;
       }
-      if (na >= n * 0.9) break;   // not coarsening: this level is the bottom
+      if (na >= n * 0.9) { give(agg); break; }   // not coarsening: this level is the bottom
       // Coarse node positions: each aggregate's centre.
-      const cpx = new Float64Array(na * 3), cnt = new Int32Array(na);
+      const cpx = take(Float64Array, na * 3), cnt = take(Int32Array, na);
       for (let i = 0; i < n; i++) {
         const a = agg[i];
         if (a < 0) continue;
@@ -9935,7 +10143,7 @@ function stressSolveJob(job) {
       for (let a = 0; a < na; a++) { cpx[a * 3] /= cnt[a]; cpx[a * 3 + 1] /= cnt[a]; cpx[a * 3 + 2] /= cnt[a]; }
       // Tentative prolongator: each node moves with its aggregate rigidly,
       // u = t + w x r, theta = w, r from the aggregate's centre to the node.
-      const T = { n, m: na, rs: new Int32Array(n + 1), ci: new Int32Array(n), v: new Float64Array(n * 36) };
+      const T = { n, m: na, rs: take(Int32Array, n + 1), ci: take(Int32Array, n), v: take(Float64Array, n * 36) };
       let nz = 0;
       for (let i = 0; i < n; i++) {
         const a = agg[i];
@@ -9954,7 +10162,7 @@ function stressSolveJob(job) {
       const AT = bsrMul(A, T);
       const rho = spectralRadius(L);
       const w = 4 / (3 * rho), blk = new Float64Array(36);
-      const P = { n, m: na, rs: AT.rs, ci: AT.ci, v: new Float64Array(AT.v.length) };
+      const P = { n, m: na, rs: AT.rs, ci: AT.ci, v: take(Float64Array, AT.v.length) };
       for (let i = 0; i < n; i++) {
         const tq = T.rs[i] < T.rs[i + 1] ? T.rs[i] : -1;
         for (let p = AT.rs[i]; p < AT.rs[i + 1]; p++) {
@@ -9965,11 +10173,14 @@ function stressSolveJob(job) {
         }
       }
       L.P = P;
-      L.R = bsrT(P);
-      A = bsrMul(L.R, bsrMul(A, P));
+      const R = bsrT(P), AP = bsrMul(A, P);
+      A = bsrMul(R, AP);
+      give(agg, cnt, T.rs, T.ci, T.v, AT.v); giveM(AP); giveM(R);
+      if (depth) give(px);   // a coarse level's centres; the finest level's are the caller's
       px = cpx;
       excluded = null;
     }
+    if (levels.length > 1) give(px);
     // The bottom level, factored outright (Cholesky on the dense matrix), unless
     // it would not shrink that far — then smoothing sweeps stand in for it.
     const B = levels[levels.length - 1];
@@ -9977,7 +10188,7 @@ function stressSolveJob(job) {
     return levels;
   }
   function spectralRadius(L) {
-    const A = L.A, n = A.n * 6, x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(n);
+    const A = L.A, n = A.n * 6, x = take(Float64Array, n), y = take(Float64Array, n), z = take(Float64Array, n);
     for (let k = 0; k < n; k++) x[k] = 1 + ((k * 7919) % 13) / 13;
     let rho = 1;
     for (let it = 0; it < 15; it++) {
@@ -9995,10 +10206,11 @@ function stressSolveJob(job) {
       const s = 1 / Math.sqrt(nz || 1);
       for (let k = 0; k < n; k++) x[k] = z[k] * s;
     }
+    give(x, y, z);
     return Math.max(rho, 1e-12);
   }
   function denseCholesky(A) {
-    const N = A.n * 6, M = new Float64Array(N * N);
+    const N = A.n * 6, M = take(Float64Array, N * N);
     for (let i = 0; i < A.n; i++) {
       for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
         const j = A.ci[p];
@@ -10054,6 +10266,17 @@ function stressSolveJob(job) {
       }
     }
   }
+  // Everything a hierarchy holds, back to the pool. The finest level's A is the
+  // structure's matrix, which the caller looks after.
+  function freeLevels(levels) {
+    for (let l = 0; l < levels.length; l++) {
+      const L = levels[l];
+      if (l) giveM(L.A);
+      give(L.Dinv, L.r, L.t, L.bc, L.xc);
+      if (L.P) give(L.P.rs, L.P.ci, L.P.v);
+      if (L.chol) give(L.chol.M);
+    }
+  }
   // x = V-cycle applied to b, from x = 0.
   function vcycle(levels, l, b, x) {
     const L = levels[l];
@@ -10064,13 +10287,23 @@ function stressSolveJob(job) {
     bsrMv(L.A, x, L.r);
     for (let k = 0; k < L.r.length; k++) L.r[k] = b[k] - L.r[k];
     const C = levels[l + 1];
-    if (!C.bc) { C.bc = new Float64Array(C.n * 6); C.xc = new Float64Array(C.n * 6); }
-    bsrMv(L.R, L.r, C.bc);
+    if (!C.bc) { C.bc = take(Float64Array, C.n * 6); C.xc = take(Float64Array, C.n * 6); }
+    bsrMvT(L.P, L.r, C.bc);
     vcycle(levels, l + 1, C.bc, C.xc);
     bsrMv(L.P, C.xc, L.t);
     for (let k = 0; k < L.t.length; k++) x[k] += L.t[k];
     smooth(L, b, x, false);
   }
+
+  // Which structures take a kept hierarchy, found first so that the ones no
+  // structure takes go back to the pool before any new one is built.
+  const reuse = [];
+  for (let c = 0; c + 1 < nStart.length; c++) {
+    const n0 = nStart[c], n = nStart[c + 1] - n0;
+    reuse.push(cachedLevels(n, eStart[c], eStart[c + 1], fixed.subarray(n0, n0 + n), n0));
+  }
+  for (const c of cache) if (c.job !== mem.jobs) { cacheBytes -= c.bytes; freeLevels(c.levels); }
+  cache = mem.cache = cache.filter((c) => c.job === mem.jobs);
 
   for (let c = 0; c + 1 < nStart.length; c++) {
     const n0 = nStart[c], n = nStart[c + 1] - n0, e0 = eStart[c], e1 = eStart[c + 1], nd = n * 6;
@@ -10079,15 +10312,15 @@ function stressSolveJob(job) {
     // K in blocks: a node's own block first, then one per beam to a free node.
     // A support's row and column are dropped (its displacement is zero), and
     // its own block is the identity.
-    const rs = new Int32Array(n + 1);
+    const rs = take(Int32Array, n + 1);
     for (let m = 0; m < n; m++) rs[m + 1] = 1;
     for (let e = e0; e < e1; e++) {
       const a = ea[e], b = eb[e];
       if (a >= 0 && b >= 0 && !fx[a] && !fx[b]) { rs[a + 1]++; rs[b + 1]++; }
     }
     for (let m = 0; m < n; m++) rs[m + 1] += rs[m];
-    const A = { n, m: n, rs, ci: new Int32Array(rs[n]), v: new Float64Array(rs[n] * 36) };
-    const cur = new Int32Array(n);
+    const A = { n, m: n, rs, ci: take(Int32Array, rs[n]), v: take(Float64Array, rs[n] * 36) };
+    const cur = take(Int32Array, n);
     for (let m = 0; m < n; m++) { A.ci[rs[m]] = m; cur[m] = rs[m] + 1; }
     const addBlock = (at, K, ro, co, EA) => {
       for (let r = 0; r < 6; r++) for (let q = 0; q < 6; q++) A.v[at * 36 + r * 6 + q] += EA * K[(ro + r) * 12 + co + q];
@@ -10127,11 +10360,22 @@ function stressSolveJob(job) {
       const b = rs[m] * 36;
       for (let d = 0; d < 6; d++) if (!(A.v[b + d * 7] > 0)) A.v[b + d * 7] = 1;
     }
-    const px = new Float64Array(n * 3);
-    for (let k = 0; k < n * 3; k++) px[k] = pos[n0 * 3 + k];
-    const levels = buildLevels(A, px, fx);
+    give(cur);
+    // The hierarchy depends on nothing but the matrix, the supports and where
+    // the nodes are, so a structure solved again under new loads alone (a hit,
+    // a piece come to rest on it) takes the one it had last time: answers the
+    // same to the bit, without the setup that was most of a solve.
+    let levels = reuse[c];
+    if (levels) levels[0].A = A;
+    else {
+      const px = take(Float64Array, n * 3);
+      for (let k = 0; k < n * 3; k++) px[k] = pos[n0 * 3 + k];
+      levels = buildLevels(A, px, fx);
+      give(px);
+      cacheLevels(levels, n, e0, e1, fx, n0);
+    }
 
-    const R = new Float64Array(nd), Z = new Float64Array(nd), P = new Float64Array(nd), Q = new Float64Array(nd);
+    const R = take(Float64Array, nd), Z = take(Float64Array, nd), P = take(Float64Array, nd), Q = take(Float64Array, nd);
     const dot = (x, y) => { let s = 0; for (let k = 0; k < nd; k++) s += x[k] * y[k]; return s; };
     bsrMv(A, U, Q);
     for (let k = 0; k < nd; k++) R[k] = F[k] - Q[k];
@@ -10180,16 +10424,29 @@ function stressSolveJob(job) {
       if (a >= 0 && st > pull[n0 + a]) pull[n0 + a] = st;
       if (b >= 0 && st > pull[n0 + b]) pull[n0 + b] = st;
     }
+    give(R, Z, P, Q); giveM(A);
+    levels[0].A = null;
+    if (!levels.cached) freeLevels(levels);
   }
+  mem.cacheBytes = cacheBytes;
   return { u, stress, push, pull, iters, unconverged };
 }
 
+// How long the solver keeps its scratch and hierarchies with no job coming.
+const STRESS_MEM_IDLE_MS = 20000;
+// The main thread's own scratch and hierarchies, when there is no worker.
+let stSolveMem = {}, stSolveIdle = 0;
 function stressWorkerSource() {
   return `'use strict';
 ${stressSolveJob}
+let mem = {}, idle = 0;
 onmessage = (e) => {
   try {
-    const r = stressSolveJob(e.data);
+    clearTimeout(idle);
+    const r = stressSolveJob(e.data, mem);
+    // A quiet spell lets go of the scratch and the hierarchies kept for the
+    // next job: on a phone they are memory the tab can be killed for.
+    idle = setTimeout(() => { mem = {}; }, ${STRESS_MEM_IDLE_MS});
     r.seq = e.data.seq;
     postMessage(r, [r.u.buffer, r.stress.buffer, r.push.buffer, r.pull.buffer]);
   } catch (err) {
@@ -10219,16 +10476,51 @@ let stCur = stressNodeArrays(1024), stOld = stressNodeArrays(1024);
 let stN = 0, stNE = 0, stNBuilt = 0, stNTerr = 0, stNComp = 0, stOldN = 0;
 // Hanging columns found by stressHangScan: column, lowest hanging level, blocks.
 let stHangK = new Int32Array(256), stHangLo = new Int16Array(256), stHangCnt = new Int32Array(256), stHangN = 0;
-let stKeyMap = new Map(), stKeyMapPrev = new Map();
+// Node index by key (a gravCell, or stPieceKey for a piece's block), open
+// addressed over doubles. It is refilled every layout, and a Map of ~20k keys
+// cost more to fill and clear than the rest of the layout's bookkeeping.
+class StressKeyMap {
+  constructor() { this.cap = 0; this.n = 0; this.grow(1 << 15); }
+  grow(cap) {
+    const oldK = this.keys, oldV = this.vals, oldCap = this.cap;
+    this.cap = cap; this.shift = 32 - Math.log2(cap); this.n = 0;
+    this.keys = new Float64Array(cap).fill(-1); this.vals = new Int32Array(cap);
+    for (let s = 0; s < oldCap; s++) if (oldK[s] >= 0) this.set(oldK[s], oldV[s]);
+  }
+  slot(key) {
+    // Both 32-bit halves: a piece's mesh id is in the high one.
+    const h = Math.imul((key | 0) ^ Math.imul((key / 4294967296) | 0, 0x85ebca6b), 0x9e3779b1);
+    const keys = this.keys, mask = this.cap - 1;
+    let s = h >>> this.shift;
+    while (keys[s] !== key && keys[s] !== -1) s = (s + 1) & mask;
+    return s;
+  }
+  get(key) { const s = this.slot(key); return this.keys[s] === key ? this.vals[s] : undefined; }
+  has(key) { return this.keys[this.slot(key)] === key; }
+  set(key, v) {
+    let s = this.slot(key);
+    if (this.keys[s] !== key) {
+      if ((this.n + 1) * 2 > this.cap) { this.grow(this.cap * 2); s = this.slot(key); }
+      this.keys[s] = key; this.n++;
+    }
+    this.vals[s] = v;
+  }
+  clear() { if (this.n) this.keys.fill(-1); this.n = 0; }
+}
+let stKeyMap = new StressKeyMap(), stKeyMapPrev = new StressKeyMap();
 let stECap = 0, stEA, stEB, stEAx, stEK;
 // For a beam with one end on ground that holds (-1), that ground cell's gravCell; else -1.
 let stEG;
 // Each beam's settled axial force (stressSettledN): what it carried before anything changed.
 let stEN0;
-// Which levels of each column are nodes (column -> Set of levels), and the load
+// Which columns have ground laid out as nodes (stColMark, 1; stColList to unmark
+// them by), which of their levels being found by key (stressIsNode); and the load
 // the solved nodes put into ground cells (column -> [lvl, downward force, ...]),
 // with the columns where some of that load comes from a structure not yet solved.
-let stColNodes = new Map(), stGroundR = new Map(), stGroundPend = new Set();
+const stColMark = new Uint8Array(GEN_N * GEN_N);
+let stColList = new Int32Array(1024), stColListN = 0;
+const stressIsNode = (k, l) => stKeyMap.has((l - VOX_FLOOR) * GEN_N * GEN_N + k);
+let stGroundR = new Map(), stGroundPend = new Set();
 // What fallen pieces at rest put into ground cells: column, lvl, force, ...
 const stPieceGround = [];
 // The background sweep of the untouched world: next column, or GEN_N^2 when done.
@@ -10241,7 +10533,8 @@ const stressEscLow = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
 const stRegLow = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
 const stRegFloor = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
 let stRegChunks = [];
-// Weight generated over each level of a column (stressSettledN), per layout.
+// Weight generated over each level of a column (stressSettledN), kept until the
+// column is written to (stressWeightCols) or the world is replaced.
 const stSettledW = new Map();
 let stAdjStart, stAdj, stQueue, stLocal;
 let stCompStart = new Int32Array(64), stCompHash = new Int32Array(64), stCompHeld = new Uint8Array(64);
@@ -10618,11 +10911,17 @@ function stressDropOverlay(mesh) {
   stOverlays.delete(mesh);
 }
 
+function stressUnmarkCols() {
+  for (let q = 0; q < stColListN; q++) stColMark[stColList[q]] = 0;
+  stColListN = 0;
+}
+
 // Everything solved is forgotten: a new world is loading.
 function stressForget() {
   stKeyMap.clear(); stKeyMapPrev.clear();
   stSolved.clear();
-  stColNodes.clear(); stGroundR.clear(); stGroundPend.clear();
+  stressUnmarkCols(); stGroundR.clear(); stGroundPend.clear();
+  stSettledW.clear(); stressWeightCols.clear();
   stPieceGround.length = 0;
   stressGround.count = 0;
   stGenAt = 0;   // the new world's untouched ground is swept again
@@ -10631,7 +10930,7 @@ function stressForget() {
   stN = 0; stNE = 0; stNBuilt = 0; stNTerr = 0; stNComp = 0; stHangN = 0;
   stPieces.length = 0;
   stJob = null;   // whatever the worker sends back for it is dropped
-  impactLoads.length = 0;
+  impactLoads.length = 0; impactStruck = false;
   stBuiltRev = -1;
   stressDrawSig = NaN;
 }
@@ -10902,13 +11201,13 @@ function stressGroundReactions() {
 // the solid run over it that is not a node (a node's weight comes in through
 // what it puts into the run), plus all that the nodes put into the run.
 function stressGroundLoad(i, j, lvl) {
-  const k = j * GEN_N + i, o = voxOff[k] - VOX_FLOOR, cap = voxCap(k), nodes = stColNodes.get(k);
+  const k = j * GEN_N + i, o = voxOff[k] - VOX_FLOOR, cap = voxCap(k), nodes = stColMark[k];
   let N = 0, top = lvl;
   for (let l = lvl; l <= cap; l++) {
     const m = voxMat[o + l];
     if (!solidMat(m)) break;
     top = l;
-    if (!nodes || !nodes.has(l)) N += MAT_STATS[m].weight;
+    if (!nodes || !stressIsNode(k, l)) N += MAT_STATS[m].weight;
   }
   const r = stGroundR.get(k);
   if (r) for (let q = 0; q < r.length; q += 2) if (r[q] >= lvl && r[q] <= top) N += r[q + 1];
@@ -10920,12 +11219,12 @@ function stressGroundLoad(i, j, lvl) {
 function stressGroundRedIn(k, out) {
   if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) return 0;
   const o = voxOff[k] - VOX_FLOOR, i = k % GEN_N, j = (k - i) / GEN_N;
-  const nodes = stColNodes.get(k), r = stGroundR.get(k), top = STRESS_LUT_N - 1;
+  const nodes = stColMark[k], r = stGroundR.get(k), top = STRESS_LUT_N - 1;
   let N = 0, found = 0;
   for (let l = voxCap(k); l >= VOX_FLOOR; l--) {
     const m = voxMat[o + l];
     if (!solidMat(m)) { N = 0; continue; }
-    if (nodes && nodes.has(l)) continue;
+    if (nodes && stressIsNode(k, l)) continue;
     if (r) for (let q = 0; q < r.length; q += 2) if (r[q] === l) N += r[q + 1];
     const st = MAT_STATS[m];
     N += st.weight;
@@ -10944,12 +11243,12 @@ function stressGroundRedIn(k, out) {
 // out ground far deeper than the change reaches.
 function stressGroundPullAt(k) {
   if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) return NO_DIG;
-  const o = voxOff[k] - VOX_FLOOR, nodes = stColNodes.get(k), r = stGroundR.get(k);
+  const o = voxOff[k] - VOX_FLOOR, nodes = stColMark[k], r = stGroundR.get(k);
   let N = 0;
   for (let l = voxCap(k); l >= VOX_FLOOR; l--) {
     const m = voxMat[o + l];
     if (!solidMat(m)) { N = 0; continue; }
-    if (nodes && nodes.has(l)) continue;
+    if (nodes && stressIsNode(k, l)) continue;
     if (r) for (let q = 0; q < r.length; q += 2) if (r[q] === l) N += r[q + 1];
     const st = MAT_STATS[m];
     N += st.weight;
@@ -11000,6 +11299,7 @@ function stressHitLoads(S) {
   for (const L of impactLoads) {
     if (L.mesh) {
       const pc = stPieces.find((p) => p.mesh === L.mesh);
+      if (pc && L.fly) { stressHitFly(S, pc, L); found++; continue; }
       if (!pc || !pc.rest) continue;   // knocked moving, or gone: not solved
       let n = stKeyMap.get(stPieceKey(L.mesh, L.i, L.j, L.lvl));
       if (n === undefined) {   // chipped off: the nearest block left takes it
@@ -11033,7 +11333,26 @@ function stressHitLoads(S) {
     found++;
   }
   impactLoads.length = 0;
+  impactStruck = false;
   return found;
+}
+// Piece `pc`, struck in the air by hit L, laid out as the body being stopped
+// (IMPACT_FACE_TOL): its leading face along the push is what holds it, and
+// every other block is pushed toward that face by its share of the force. Its
+// weight is left out — it was falling with it — and it rests on nothing, so
+// passes nothing on.
+function stressHitFly(S, pc, L) {
+  const lat = pc.mesh.userData.blocks, n0 = pc.start;
+  let lo = Infinity;
+  for (let q = 0; q < pc.count; q++) lo = Math.min(lo, lat[q].gi * L.dx + lat[q].lvl * L.dy + lat[q].gj * L.dz);
+  const a = L.F / (pc.load || 1);   // the stop, in its own weights
+  for (let q = 0; q < pc.count; q++) {
+    const b = lat[q], n = n0 + q, w = MAT_STATS[S.mat[n]]?.weight ?? 0;
+    S.fixed[n] = b.gi * L.dx + b.lvl * L.dy + b.gj * L.dz <= lo + IMPACT_FACE_TOL ? 1 : 0;
+    S.f[n * 6] = -a * w * L.dx; S.f[n * 6 + 1] = -a * w * L.dy; S.f[n * 6 + 2] = -a * w * L.dz;
+  }
+  pc.on = [];
+  pc.fly = true;
 }
 
 // Lay the whole world out: every built block, all the ground that hangs, the
@@ -11047,7 +11366,9 @@ function stressRebuild() {
   stKeyMap.clear();
   stN = 0; stNE = 0;
 
-  stSettledW.clear();   // weights may have been edited since
+  // Only a written column's generated weight can read differently now.
+  for (const k of stressWeightCols) stSettledW.delete(k);
+  stressWeightCols.clear();
   let bound = stressHangScan();
   // Hanging ground first — it has nothing under it, and left out it would hold
   // as if it had — then whole chunks of ground in what the cap leaves.
@@ -11106,12 +11427,13 @@ function stressRebuild() {
     }
   }
   stNTerr = stN;
-  stColNodes.clear();
+  stressUnmarkCols();
   for (let n = 0; n < stNTerr; n++) {
     const k = S.pos[n * 3 + 2] * GEN_N + S.pos[n * 3];
-    let set = stColNodes.get(k);
-    if (!set) stColNodes.set(k, set = new Set());
-    set.add(S.pos[n * 3 + 1]);
+    if (stColMark[k]) continue;
+    stColMark[k] = 1;
+    if (stColListN === stColList.length) { const l2 = new Int32Array(stColListN * 2); l2.set(stColList); stColList = l2; }
+    stColList[stColListN++] = k;
   }
 
   // --- every fallen piece, as it lies now ---
@@ -11315,7 +11637,9 @@ function stressPost(dirty, hit) {
     stressWorker.postMessage(job, [nStart.buffer, eStart.buffer, fixed.buffer, f.buffer, u.buffer,
                                    ea.buffer, eb.buffer, eax.buffer, ek.buffer, en0.buffer, pos.buffer]);
   } else {
-    const r = stressSolveJob(job);
+    clearTimeout(stSolveIdle);
+    const r = stressSolveJob(job, stSolveMem);
+    stSolveIdle = setTimeout(() => { stSolveMem = {}; }, STRESS_MEM_IDLE_MS);
     r.seq = seq;
     stressApply(r);
   }
@@ -11421,7 +11745,9 @@ function stressBreakSaturated() {
       let qs = pieceHits.get(pc);
       if (!qs) {
         if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
-        if (pc.mesh.userData.stressRest !== pc.rest) continue;   // moved since: laid out again first
+        // Moved since: laid out again first. A piece solved for a hit in the
+        // air is solved in its own frame, wherever it has got to since.
+        if (!pc.fly && pc.mesh.userData.stressRest !== pc.rest) continue;
         pieceHits.set(pc, qs = []);
       }
       qs.push(n - pc.start);
@@ -11437,6 +11763,13 @@ function stressBreakSaturated() {
 }
 
 let stressWorker = null;
+// Answers that came in while a save was copying the store (snapshotVoxStore) or
+// a load was putting a new one in (applyWorldState), which breaking under them
+// would have changed half-way; applied once that is done.
+const stressHeld = [];
+function stressReleaseHeld() {
+  while (stressHeld.length) stressApply(stressHeld.shift());
+}
 // The worker is gone: what it still owed is solved here and now, and from here
 // on every solve is, on the main thread.
 function stressWorkerFail(err) {
@@ -11451,7 +11784,8 @@ try {
     stressWorker = new Worker(URL.createObjectURL(new Blob([stressWorkerSource()], { type: 'text/javascript' })));
     stressWorker.onmessage = (e) => {
       if (e.data.error) { stressWorkerFail(e.data.error); return; }
-      stressApply(e.data);
+      if (storeHold) stressHeld.push(e.data);
+      else stressApply(e.data);
     };
     stressWorker.onerror = (e) => { e.preventDefault(); stressWorkerFail(e.message); };
   }
@@ -11583,11 +11917,11 @@ function stressGroundLayout(ci, cj, cl) {
       lo = Math.max(lo - 1, cl - R, VOX_FLOOR);
       const hi = Math.min(sTop[k], cl + R);
       if (hi < lo) continue;
-      const o = voxOff[k] - VOX_FLOOR, nodes = stColNodes.get(k);
+      const o = voxOff[k] - VOX_FLOOR, nodes = stColMark[k];
       const placed = colDug[k] ? placedByChunk[chunkOf(i, j)] : null;
       for (let l = lo; l <= hi; l++) {
         if (!solidMat(voxMat[o + l]) || !isVisible(o + l)) continue;
-        if (nodes && nodes.has(l)) continue;
+        if (nodes && stressIsNode(k, l)) continue;
         if (placed && placed.has(gravCell(i, j, l))) continue;   // built since the layout: drawn once it is solved
         const d = Math.sqrt(dh2 + (l - cl) * (l - cl));
         if (d > R) continue;
@@ -11734,7 +12068,8 @@ function updateStress(dt) {
   // A hit waits for its crater to be dug, so it is felt by the ground the hole
   // left rather than by the block it took away.
   const digging = impactLoads.length && impactPending.length && world.time - impactLoadsAt < IMPACT_LOAD_WAIT;
-  if (stressOn && stressRev !== stBuiltRev && !stJob && !digging && elapsed - stressLastRebuild >= STRESS_REBUILD) {
+  if (stressOn && stressRev !== stBuiltRev && !stJob && !digging
+      && elapsed - stressLastRebuild >= (impactStruck ? STRESS_HIT_REBUILD : STRESS_REBUILD)) {
     stBuiltRev = stressRev;
     stressLastRebuild = elapsed;
     stressRebuild();
@@ -11757,7 +12092,7 @@ function setStress(on, shown = on) {
   stressOn = !!on;
   stressShown = !!shown;
   stressShowU.value = stressShown ? 1 : 0;
-  if (!stressOn) impactLoads.length = 0;   // a hit is felt by the next check, not one long after
+  if (!stressOn) { impactLoads.length = 0; impactStruck = false; }   // a hit is felt by the next check, not one long after
   stressCrackU.value = stressOn ? 1 : 0;
   // Only cracks left to draw: the next layout shows the cubes that have one.
   stressTerr.visible = stressShown;
@@ -11966,11 +12301,19 @@ function shadowSigVisit(o) {
   shadowSigPut(o.material);
   shadowSigPut(o.customDepthMaterial);
 }
+// traverseVisible's walk, in its order, but past the terrain where none of it
+// casts: some 900 chunk meshes a frame that could never change the answer.
+function shadowSigWalk(o) {
+  if (!o.visible) return;
+  shadowSigVisit(o);
+  const ch = o.children;
+  for (let k = 0; k < ch.length; k++) if (TERRAIN_CASTS || ch[k] !== terrain) shadowSigWalk(ch[k]);
+}
 function shadowCastersChanged() {
   const n0 = shadowSigN;
   shadowSigN = 0;
   shadowSigDirty = false;
-  scene.traverseVisible(shadowSigVisit);
+  shadowSigWalk(scene);
   if (shadowSigN < n0) shadowSig.length = shadowSigN;
   return shadowSigDirty || shadowSigN !== n0;
 }
@@ -12286,10 +12629,10 @@ function rawBytes(bytes, n) {
 
 // The tint pass of the generator, replayed from a seed. It draws exactly once
 // per column in column order, so the seed alone reproduces it bit for bit.
-function tintMatchesSeed(seed) {
+function tintMatchesSeed(seed, t = tint) {
   const rnd = mulberry32((seed ^ 0x9e3779b9) >>> 0);
   for (let k = 0; k < GEN_N * GEN_N; k++) {
-    if (tint[k] !== Math.fround(0.86 + rnd() * 0.28)) return false;
+    if (t[k] !== Math.fround(0.86 + rnd() * 0.28)) return false;
   }
   return true;
 }
@@ -12407,14 +12750,22 @@ function collectWorldMeta() {
 // neither needs a terminator. Materials, lengths and visibility go in separate
 // streams so each one is uniform enough for gzip to find its repeats.
 function encodeVoxStore() {
-  const N = GEN_N * GEN_N;
+  const tintSeeded = tintMatchesSeed(worldSeed);
+  const sections = encodeVoxColumns({ voxOff, colMaxCap, voxMat, visBits, topLvl, bedLvl, sTop, colDugLo,
+                                      bedMat, topMat, colDug, tint: tintSeeded ? null : tint });
+  return { sections, store: { worldBlocks, tintSeeded } };
+}
+// The same, over arrays handed to it rather than the live ones, so the save
+// worker can run it on a copy (tint null when the seed reproduces it).
+function encodeVoxColumns(a) {
+  const N = GEN_N * GEN_N, voxOff = a.voxOff, voxMat = a.voxMat, visBits = a.visBits, colMaxCap = a.colMaxCap;
   const present = new Uint8Array(N);
   const mats = new ByteBuf(1 << 20), lens = new ByteBuf(1 << 20), vis = new ByteBuf(1 << 20);
   for (let k = 0; k < N; k++) {
     const o = voxOff[k];
     if (o < 0) continue;
     present[k] = 1;
-    const end = o + voxLen(k);
+    const end = o + colMaxCap[k] - VOX_FLOOR + 1;
     for (let p = o; p < end;) {
       const m = voxMat[p];
       let q = p + 1;
@@ -12430,51 +12781,189 @@ function encodeVoxStore() {
       let q = p;
       while (q < end) {
         if ((q & 7) === 0 && q + 8 <= end && visBits[q >> 3] === fill) { q += 8; continue; }
-        if (isVisible(q) !== bit) break;
+        if (((visBits[q >> 3] >> (q & 7)) & 1) !== bit) break;
         q++;
       }
       vis.uvar(q - p);
       p = q;
     }
   }
-  const tintSeeded = tintMatchesSeed(worldSeed);
   const sections = [
     ['present', present],
-    ['topLvl', packDelta(topLvl)],
-    ['bedLvl', packDelta(bedLvl)],
-    ['sTop', packDelta(sTop)],
-    ['colDugLo', packDelta(colDugLo)],
+    ['topLvl', packDelta(a.topLvl)],
+    ['bedLvl', packDelta(a.bedLvl)],
+    ['sTop', packDelta(a.sTop)],
+    ['colDugLo', packDelta(a.colDugLo)],
     ['colMaxCap', packDelta(colMaxCap)],
-    ['bedMat', bedMat],
-    ['topMat', topMat],
-    ['colDug', colDug],
+    ['bedMat', a.bedMat],
+    ['topMat', a.topMat],
+    ['colDug', a.colDug],
     ['runMat', mats.bytes()],
     ['runLen', lens.bytes()],
     ['runVis', vis.bytes()],
   ];
-  if (!tintSeeded) sections.push(['tint', packDelta(tint)]);
-  return { sections, store: { worldBlocks, tintSeeded } };
+  if (a.tint) sections.push(['tint', packDelta(a.tint)]);
+  return sections;
 }
 
-// Build the save file: magic, flags, then the (gzipped) body
-// [u32 header length][header JSON][sections…]. Everything up to the gzip is done
-// synchronously so the snapshot is of one frame; only the compression waits.
+// ----- the save worker -----
+// Run-coding the store and laying it out again took ~0.2 s each on the main
+// thread, in one block. The worker gets a copy of the store to save (taken in
+// the frame the save was asked for, so it is still one frame's world) and hands
+// back the sections; on load it gets the decompressed file and hands back the
+// arena. Without a worker both run here as they did.
+let saveWorker = null, saveWorkerTried = false, saveJobSeq = 0;
+const saveJobs = new Map();
+function saveWorkerSource() {
+  return `'use strict';
+const GEN_N = ${GEN_N}, VOX_FLOOR = ${VOX_FLOOR};
+const AIR = ${AIR}, NO_COLUMN = ${NO_COLUMN}, SAVE_GZIP = ${SAVE_GZIP}, SAVE_MAGIC = ${JSON.stringify(SAVE_MAGIC)};
+const voxSpan = ${voxSpan}, voxSlack = ${voxSlack};
+${ByteBuf}
+${readUvar}
+${packDelta}
+${unpackDelta}
+${rawBytes}
+${mulberry32}
+${tintMatchesSeed}
+${tintFromSeed}
+${encodeVoxColumns}
+${decodeVoxRuns}
+${decodeVoxSections}
+${packSaveFile}
+${unpackSaveBody}
+${saveHeader}
+const bufsOf = (o) => {
+  const out = new Set();
+  for (const v of Object.values(o)) if (v && v.buffer instanceof ArrayBuffer) out.add(v.buffer);
+  return [...out];
+};
+onmessage = async (e) => {
+  const d = e.data;
+  try {
+    if (d.kind === 'encode') {
+      const a = d.arrays;
+      const tintSeeded = tintMatchesSeed(d.seed, a.tint);
+      if (tintSeeded) a.tint = null;
+      d.meta.voxelStore = { worldBlocks: d.worldBlocks, tintSeeded };
+      const file = await packSaveFile(d.meta, encodeVoxColumns(a));
+      postMessage({ id: d.id, file }, [file.buffer]);
+    } else {
+      const body = await unpackSaveBody(d.file);
+      const meta = saveHeader(body);
+      const vs = decodeVoxSections(meta, body);
+      const laid = vs.laid;
+      postMessage({ id: d.id, meta, vs }, [...new Set([...bufsOf(vs), ...bufsOf(laid)])]);
+    }
+  } catch (err) {
+    postMessage({ id: d.id, error: String(err && err.message || err) });
+  }
+};`;
+}
+function saveWorkerGet() {
+  if (saveWorker || saveWorkerTried) return saveWorker;
+  saveWorkerTried = true;
+  try {
+    if (typeof Worker === 'function' && typeof Blob === 'function' && typeof URL !== 'undefined' && URL.createObjectURL) {
+      saveWorker = new Worker(URL.createObjectURL(new Blob([saveWorkerSource()], { type: 'text/javascript' })));
+      saveWorker.onmessage = (e) => {
+        const job = saveJobs.get(e.data.id);
+        if (!job) return;
+        saveJobs.delete(e.data.id);
+        if (e.data.error) job.reject(new Error(e.data.error));
+        else job.resolve(e.data);
+      };
+      // A worker that cannot even start fails what it owes; from then on
+      // everything runs here.
+      saveWorker.onerror = (e) => {
+        e.preventDefault();
+        saveWorker = null;
+        for (const job of saveJobs.values()) job.reject(new Error('save worker failed: ' + e.message));
+        saveJobs.clear();
+      };
+    }
+  } catch (err) {
+    console.warn('no save worker; saving on the main thread', err);
+    saveWorker = null;
+  }
+  return saveWorker;
+}
+function saveWorkerRun(msg, transfer) {
+  const w = saveWorkerGet();
+  if (!w) return null;
+  msg.id = ++saveJobSeq;
+  return new Promise((resolve, reject) => {
+    saveJobs.set(msg.id, { resolve, reject });
+    w.postMessage(msg, transfer);
+  });
+}
+
+// The store copy the worker encodes. 36 MB in one copy held the page 40-85 ms,
+// so under the menu it is taken in slices with a turn for the page between
+// them. Nothing may write the store meanwhile: the world's step does not run
+// under the menu, and tension answers, the one writer that arrives on its own,
+// wait in stressHeld until the copy is done. Asked for anywhere else (the
+// console), the world is running and it is copied in one go.
+const SAVE_SLICE = 4 << 20;
+let storeHold = false;
+const underMenu = () => menuOpen || !overlay.classList.contains('hidden');
+const nextTask = () => new Promise((r) => setTimeout(r, 0));
+async function copyStore(src, n, sliced) {
+  if (!sliced) return src.slice(0, n);
+  const out = new Uint8Array(n);
+  for (let p = 0; p < n; p += SAVE_SLICE) {
+    out.set(src.subarray(p, Math.min(n, p + SAVE_SLICE)), p);
+    if (p + SAVE_SLICE < n) await nextTask();
+  }
+  return out;
+}
+async function snapshotVoxStore() {
+  const sliced = underMenu();
+  const arrays = {
+    voxOff: voxOff.slice(), colMaxCap: colMaxCap.slice(),
+    topLvl: topLvl.slice(), bedLvl: bedLvl.slice(), sTop: sTop.slice(), colDugLo: colDugLo.slice(),
+    bedMat: bedMat.slice(), topMat: topMat.slice(), colDug: colDug.slice(), tint: tint.slice(),
+  };
+  storeHold = sliced;
+  try {
+    arrays.voxMat = await copyStore(voxMat, voxCount, sliced);
+    arrays.visBits = await copyStore(visBits, voxCount >> 3, sliced);
+  } finally {
+    storeHold = false;
+    stressReleaseHeld();
+  }
+  return arrays;
+}
+
+// Build the save file. The header is taken first and the store copied after it
+// with nothing changing between, so the file is one moment's world; with the
+// save worker, run-coding, packing and gzip all happen there.
 async function buildSaveBlob() {
   const meta = collectWorldMeta();
+  if (saveWorkerGet()) {
+    const arrays = await snapshotVoxStore();
+    const r = await saveWorkerRun({ kind: 'encode', arrays, meta, worldBlocks, seed: worldSeed },
+                                  Object.values(arrays).map((x) => x.buffer));
+    if (r) return new Blob([r.file], { type: 'application/octet-stream' });
+  }
   const { sections, store } = encodeVoxStore();
   meta.voxelStore = store;
+  return new Blob([await packSaveFile(meta, sections)], { type: 'application/octet-stream' });
+}
+// Magic, flags, then the (gzipped) body [u32 header length][header JSON][sections…].
+async function packSaveFile(meta, sections) {
   meta.sections = sections.map(([name, b]) => [name, b.length]);
   const header = new TextEncoder().encode(JSON.stringify(meta));
   const len = new Uint8Array(4);
   new DataView(len.buffer).setUint32(0, header.length, true);
-  const body = new Blob([len, header, ...sections.map(s => s[1])]);
+  const body = new Blob([len, header, ...sections.map((x) => x[1])]);
   let flags = 0, packed = body;
   if (typeof CompressionStream === 'function' && body.stream) {
     packed = await new Response(body.stream().pipeThrough(new CompressionStream('gzip'))).blob();
     flags |= SAVE_GZIP;
   }
   const head = new Uint8Array([...SAVE_MAGIC, flags, 0, 0, 0]);
-  return new Blob([head, packed], { type: 'application/octet-stream' });
+  return new Uint8Array(await new Response(new Blob([head, packed])).arrayBuffer());
 }
 
 function isBinarySave(u8) {
@@ -12486,18 +12975,43 @@ async function blobBytes(blob) {
   return new Uint8Array(await new Response(blob).arrayBuffer());
 }
 
-// Back into a world state that applyWorldState takes: the header, with the
-// voxel store's sections decoded into typed arrays.
-async function decodeBinarySave(u8) {
-  const flags = u8[4];
+// A binary save's body, gunzipped if it was compressed, and the header in it.
+async function unpackSaveBody(u8) {
   let body = u8.subarray(8);
-  if (flags & SAVE_GZIP) {
+  if (u8[4] & SAVE_GZIP) {
     if (typeof DecompressionStream !== 'function') throw new Error('This browser cannot read compressed saves');
-    const s = new Blob([body]).stream().pipeThrough(new DecompressionStream('gzip'));
-    body = new Uint8Array(await new Response(s).arrayBuffer());
+    const st = new Blob([body]).stream().pipeThrough(new DecompressionStream('gzip'));
+    body = new Uint8Array(await new Response(st).arrayBuffer());
   }
+  return body;
+}
+function saveHeader(body) {
   const hlen = new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(0, true);
-  const meta = JSON.parse(new TextDecoder().decode(body.subarray(4, 4 + hlen)));
+  return JSON.parse(new TextDecoder().decode(body.subarray(4, 4 + hlen)));
+}
+
+// Back into a world state that applyWorldState takes: the header, with the
+// voxel store's sections decoded into typed arrays — by the save worker, from
+// the file as it is, when there is one.
+async function decodeBinarySave(u8) {
+  if (saveWorkerGet()) {
+    const file = u8.slice();   // the worker takes its own copy; the caller keeps theirs
+    const r = await saveWorkerRun({ kind: 'decode', file }, [file.buffer]);
+    if (r) {
+      r.meta.voxelStore = r.vs;
+      return r.meta;
+    }
+  }
+  const body = await unpackSaveBody(u8);
+  const meta = saveHeader(body);
+  meta.voxelStore = decodeVoxSections(meta, body);
+  return meta;
+}
+// The header's sections out of the body into the arrays applyWorldState takes,
+// and the arena laid out from the runs (laid) — checked here, so a damaged save
+// is refused before anything of the world is touched.
+function decodeVoxSections(meta, body) {
+  const hlen = new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(0, true);
   const sec = {};
   let at = 4 + hlen;
   for (const [name, n] of meta.sections) {
@@ -12506,7 +13020,7 @@ async function decodeBinarySave(u8) {
     at += n;
   }
   const N = GEN_N * GEN_N;
-  meta.voxelStore = {
+  const vs = {
     worldBlocks: meta.voxelStore.worldBlocks,
     present: rawBytes(sec.present, N),
     topLvl: unpackDelta(sec.topLvl, Int16Array, N),
@@ -12521,7 +13035,9 @@ async function decodeBinarySave(u8) {
                                       : unpackDelta(sec.tint, Float32Array, N),
     runs: { mat: sec.runMat, len: sec.runLen, vis: sec.runVis },
   };
-  return meta;
+  vs.laid = decodeVoxRuns(vs);
+  vs.runs = null;
+  return vs;
 }
 
 // Lay the run-coded columns out into a fresh, packed arena — without touching
@@ -12539,17 +13055,24 @@ function decodeVoxRuns(vs) {
   const mat = new Uint8Array(voxSpan(total + voxSlack(total)));
   const bits = new Uint8Array(mat.length >> 3);
   const mats = vs.runs.mat, lr = { b: vs.runs.len, p: 0 }, vr = { b: vs.runs.vis, p: 0 };
+  // airLo comes out of the runs as they go by, which spares a scan of the
+  // whole arena after (rescanAirLo).
+  const airLo = new Int16Array(N).fill(VOX_FLOOR);
   let mi = 0;
   for (let k = 0; k < N; k++) {
     const o = off[k];
     if (o < 0) continue;
     const end = o + vs.colMaxCap[k] - VOX_FLOOR + 1;
+    let air = -1;
     for (let p = o; p < end;) {
       const n = readUvar(lr);
       if (mi >= mats.length || n <= 0 || p + n > end) throw new Error('Save is damaged');
-      mat.fill(mats[mi++], p, p + n);
+      const m = mats[mi++];
+      if (air < 0 && m === AIR) air = p;
+      mat.fill(m, p, p + n);
       p += n;
     }
+    if (vs.topLvl[k] !== NO_COLUMN) airLo[k] = (air < 0 ? end : air) - o + VOX_FLOOR;
     for (let p = o, bit = 0; p < end; bit ^= 1) {
       const n = readUvar(vr);
       if (p + n > end) throw new Error('Save is damaged');
@@ -12558,7 +13081,7 @@ function decodeVoxRuns(vs) {
     }
   }
   if (mi !== mats.length || lr.p !== lr.b.length || vr.p !== vr.b.length) throw new Error('Save is damaged');
-  return { off, mat, bits, count: total };
+  return { off, mat, bits, count: total, airLo };
 }
 
 // ----- version 1 (JSON) saves -----
@@ -12691,16 +13214,62 @@ function restoreVoxStore(vs, laid) {
   }
 }
 
-function applyWorldState(s) {
+// A saved piece is its blocks in its own frame plus the body's pose, which is
+// the form spawnDebrisPart takes — spawnFallingChunk wants terrain cells (i, j,
+// m) that a saved block does not carry. A colour comes back from JSON as the hex
+// number Color.toJSON wrote. A block that had none was shaded by its cell in
+// spawnFallingChunk; spawnDebrisPart would hash its local position instead and
+// the piece would change shade on load, so that shade is pinned here.
+const savedPose = new THREE.Object3D();
+function restoreSavedPiece(pc) {
+  if (!pc.blocks || !pc.blocks.length) return null;   // nothing to centre a body on
+  savedPose.position.set(...pc.pos);
+  savedPose.quaternion.set(...pc.quat);
+  const blocks = pc.blocks.map((b) => {
+    let color = null;
+    if (typeof b.color === 'number') color = new THREE.Color(b.color);
+    else if (b.color && Number.isFinite(b.color.r)) color = new THREE.Color(b.color.r, b.color.g, b.color.b);
+    else if (Number.isFinite(b.gi) && TERRAIN_MATS[b.mat]) {
+      color = TERRAIN_MATS[b.mat].color.clone().multiplyScalar(0.85 + nhash3(b.gi, b.gj, b.lvl) * 0.30);
+    }
+    return { pos: new THREE.Vector3(...b.pos), mat: b.mat, color, gi: b.gi, gj: b.gj, lvl: b.lvl, crack: b.crack || 0 };
+  });
+  spawnDebrisPart(savedPose, blocks, null);
+  const f = fallingChunks[fallingChunks.length - 1];
+  f.body.velocity.set(...pc.vel);
+  f.body.angularVelocity.set(...pc.angVel);
+  f.body.updateAABB();
+  return f;
+}
+
+// Under the menu nothing steps between tasks, so it is done in three with a
+// turn for the page between, each well under the whole; tension answers for the
+// old world are held until restorePlaced has forgotten it, then dropped.
+async function applyWorldState(s) {
   if (!s || (s.version !== SAVE_VERSION && s.version !== LEGACY_SAVE_VERSION)) {
     console.warn('Save version mismatch or invalid save');
     return false;
   }
-
+  const split = underMenu();
+  storeHold = split;
+  try {
+    applyWorldCore(s);
+    if (split) await nextTask();
+    // Stress overlay — absent from older saves, which load with nothing marked.
+    restorePlaced(s.stressState);
+  } finally {
+    storeHold = false;
+    stressReleaseHeld();
+  }
+  if (split) await nextTask();
+  applyWorldRebuild();
+  return true;
+}
+function applyWorldCore(s) {
   // Restore voxel store — a current save is laid out (and checked) first, so a
   // damaged one fails here with the world untouched.
   const vs = s.voxelStore;
-  const laid = vs.runs ? decodeVoxRuns(vs) : null;
+  const laid = vs.laid || null;
   customMatsAdopt(s.customMats);
   topLvl.set(vs.topLvl);
   bedLvl.set(vs.bedLvl);
@@ -12709,7 +13278,8 @@ function applyWorldState(s) {
   colDug.set(vs.colDug);
   colDugLo.set(vs.colDugLo);
   restoreVoxStore(vs, laid);
-  rescanAllAirLo();
+  if (laid) airLo.set(laid.airLo);
+  else rescanAllAirLo();
   worldBlocks = vs.worldBlocks;
   tint.set(vs.tint);
   if (vs.hRaw) hRaw.set(vs.hRaw);
@@ -12764,40 +13334,13 @@ function applyWorldState(s) {
   powderCarry.length = 0;
   impactPending.length = 0;   // a crater still being dug in the world that was left
 
-  // Restore falling chunks
+  // Restore falling chunks, then the rested ones
   for (const fc of ds.fallingChunks) {
-    const blocks = new Map();
-    for (const b of fc.blocks) {
-      blocks.set(b.gi + ',' + b.gj + ',' + b.lvl, { ...b, pos: new THREE.Vector3(...b.pos) });
-    }
-    spawnFallingChunk(blocks);
-    const f = fallingChunks[fallingChunks.length - 1];
-    if (f) {
-      f.body.position.set(...fc.pos);
-      f.body.quaternion.set(...fc.quat);
-      f.body.velocity.set(...fc.vel);
-      f.body.angularVelocity.set(...fc.angVel);
-      f.still = fc.still;
-      f.body.updateAABB();
-    }
+    const f = restoreSavedPiece(fc);
+    if (f) f.still = fc.still;
   }
-
-  // Restore rested chunks
   for (const rc of ds.restedChunks) {
-    const blocks = new Map();
-    for (const b of rc.blocks) {
-      blocks.set(b.gi + ',' + b.gj + ',' + b.lvl, { ...b, pos: new THREE.Vector3(...b.pos) });
-    }
-    spawnFallingChunk(blocks);
-    const f = fallingChunks[fallingChunks.length - 1];
-    if (f) {
-      f.body.position.set(...rc.pos);
-      f.body.quaternion.set(...rc.quat);
-      f.body.velocity.set(...rc.vel);
-      f.body.angularVelocity.set(...rc.angVel);
-      f.body.updateAABB();
-      restFallingChunk(fallingChunks.length - 1);
-    }
+    if (restoreSavedPiece(rc)) restFallingChunk(fallingChunks.length - 1);
   }
 
   // Restore powder falling
@@ -12822,11 +13365,9 @@ function applyWorldState(s) {
   debugCollision.visible = debugColOn;
   colTestOn = ss.colTestOn;
   updateColTestUI();
-
-  // Stress overlay — absent from older saves, which load with nothing marked.
-  restorePlaced(s.stressState);
-
-  // Rebuild all meshes and colliders from voxel store
+}
+// Rebuild all meshes and colliders from voxel store
+function applyWorldRebuild() {
   remeshAllChunks();
   for (let c = 0; c < colliderBody.length; c++) {
     if (colliderBody[c]) rebuildChunkCollider(c);
@@ -12839,8 +13380,6 @@ function applyWorldState(s) {
   refreshPlacerUI();
   refreshModeUI();
   blocksHudEl.textContent = worldBlocks.toLocaleString();
-
-  return true;
 }
 
 // A save or load in flight; a second tap while one runs is refused rather than
@@ -13052,6 +13591,46 @@ window.hermes = {
 // so gameplay doesn't open on a hitch. compileAsync uses parallel compilation
 // where the driver supports it; any failure falls back to the first render.
 try { await renderer.compileAsync(scene, camera); } catch (e) { console.warn('shader precompile failed', e); }
+// compileAsync only reaches what is in the scene now, never the shadow pass's
+// depth programs, and without parallel compilation (Safari) a program is only
+// really built at its first draw. So the first piece, the first sand on a piece
+// and the first look at tension each stalled a frame for a quarter to a whole
+// second. One of each, shrunk to nothing, is drawn here instead, shadow and all.
+function warmFirstUse() {
+  const warm = new THREE.Group(), made = [];
+  // own: the geometry is the stand-in's own copy and goes with it.
+  const add = (m, cast, own) => {
+    m.frustumCulled = false;
+    m.castShadow = cast;
+    m.receiveShadow = true;
+    m.userData.warmOwn = own;
+    warm.add(m);
+    made.push(m);
+    return m;
+  };
+  const white = new THREE.Color(1, 1, 1);
+  add(debrisInstances(1), true, true).setColorAt(0, white);
+  for (let m = 0; m < TERRAIN_FACE_MATS.length; m++) {
+    if (!MAT_STATS[m]?.powder || !TERRAIN_FACE_MATS[m]) continue;
+    add(debrisInstances(1, debrisGrainGeo(m), debrisGrainMat(m)), true, true).setColorAt(0, white);
+    add(new THREE.InstancedMesh(fallingGrainGeo(m), TERRAIN_FACE_MATS[m], 1), false, false);
+  }
+  add(stressInstances(1), false, true).count = 1;
+  warm.position.copy(camera.position);
+  warm.scale.setScalar(1e-4);
+  scene.add(warm);
+  renderer.shadowMap.needsUpdate = true;
+  renderer.render(scene, camera);
+  scene.remove(warm);
+  // debrisInstances and stressInstances clone their geometry; the falling
+  // grains' is the shared one and stays.
+  for (const m of made) {
+    if (m.userData.warmOwn) m.geometry.dispose();
+    m.dispose();
+  }
+  renderer.shadowMap.needsUpdate = true;
+}
+try { warmFirstUse(); } catch (e) { console.warn('shader warm-up failed', e); }
 renderer.setAnimationLoop(tick);
 document.getElementById('loading').classList.add('hidden');
 document.body.classList.remove('gen-preview');

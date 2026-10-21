@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 232;
+window.GAME_VERSION = 235;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -6312,6 +6312,31 @@ const POWDER_SCAN_CAP  = 32;      // blocks taken per pass, so a sand cliff cost
 // Columns something has just edited, answered on the spot.
 const powderDirty = new Set();
 const powderCarry = [];   // columns owed a look next pass: out of budget, or left by a loose group
+// Nor will it stand two above the ground beside it: a grain with air at its
+// side and under that rolls off into the lower column. Held up from below
+// alone, sand that fell came down its own column and stayed there, so a heap
+// a break let through a hole stood as a 1x1 pillar under it, and the heap
+// beside the hole stood on as sheer columns; this keeps both to a 45° slope.
+// Returns the side to roll to (POWDER_SIDES), or -1. Which side, when several
+// are open, is random, so a pile spreads round rather than off one way.
+const POWDER_SIDES = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+function powderRoll(i, j, lvl) {
+  const s0 = (Math.random() * 4) | 0;
+  for (let s = 0; s < 4; s++) {
+    const [di, dj] = POWDER_SIDES[(s0 + s) & 3], ni = i + di, nj = j + dj;
+    if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR && voxelAt(ni, nj, lvl - 1) === AIR) return (s0 + s) & 3;
+  }
+  return -1;
+}
+// A block taken out can leave the sand beside it standing two over the hole,
+// not just the sand above it hanging, so the columns round it want a look too:
+// without this a heap whose retaining wall went stood on as a sheer face.
+function powderDirtySides(i, j) {
+  if (i > 0) powderDirty.add(j * GEN_N + i - 1);
+  if (i < GEN_N - 1) powderDirty.add(j * GEN_N + i + 1);
+  if (j > 0) powderDirty.add((j - 1) * GEN_N + i);
+  if (j < GEN_N - 1) powderDirty.add((j + 1) * GEN_N + i);
+}
 // Shed whatever powder in column c has nothing under it, up to `budget` blocks.
 // Returns what is left of the budget.
 function shedColumn(c, budget) {
@@ -6331,9 +6356,12 @@ function shedColumn(c, budget) {
     const m = voxMat[o + lvl];
     if (m === AIR || !MAT_STATS[m]?.powder) continue;
     // Only the cell directly under it holds powder up: what touches its sides
-    // or sits on top of it makes no difference.
-    if (lvl - 1 < VOX_FLOOR || voxMat[o + lvl - 1] !== AIR) continue;
+    // or sits on top of it makes no difference — unless a side falls away
+    // under it, and then it rolls (powderRoll).
+    if (lvl - 1 < VOX_FLOOR) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
+    const roll = voxMat[o + lvl - 1] !== AIR ? powderRoll(i, j, lvl) : -1;
+    if (voxMat[o + lvl - 1] !== AIR && roll < 0) continue;
     // Its group may have come loose already; if that was paid for, look again.
     if (gravGuard(i, j, lvl)) { o = voxOff[c] - VOX_FLOOR; lvl++; continue; }
     editBlock(i, j, lvl, AIR);   // brings down what was above, once the pass is done
@@ -6344,8 +6372,10 @@ function shedColumn(c, budget) {
       const ni = i + di, nj = j + dj;
       if (ni >= 0 && nj >= 0 && ni < GEN_N && nj < GEN_N) powderDirty.add(nj * GEN_N + ni);
     }
-    // It is not gone, it is falling: hand it to the same grain path the rubble uses.
-    powderFalling.push({ pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), mat: m, v: 0, from: null });
+    // It is not gone, it is falling: hand it to the same grain path the rubble
+    // uses — off the side it rolled to, if that is how it went.
+    const [ri, rj] = roll < 0 ? [i, j] : [i + POWDER_SIDES[roll][0], j + POWDER_SIDES[roll][1]];
+    powderFalling.push({ pos: new THREE.Vector3(colX(ri), (lvl + 0.5) * BLOCK, colZ(rj)), mat: m, v: 0, from: null });
     budget--;
   }
   return budget;
@@ -7083,6 +7113,14 @@ function catchPowder(dt) {
       const i = colI(p.pos.x), j = colJ(p.pos.z);
       let lvl = lvlOfY(p.pos.y);
       while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) lvl++;   // the first free cell over what it hit
+      // Landing on an edge it rolls off and falls on down the lower column,
+      // where it may roll again — every roll is a level lower, so it stops.
+      const roll = powderRoll(i, j, lvl);
+      if (roll >= 0) {
+        p.pos.set(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]));
+        p.v = 0;
+        continue;
+      }
       if (canBuildAt(i, j, lvl)) editBlock(i, j, lvl, p.mat);
       // Cascade: if the block above is powder with nothing under it, it goes next.
       const aboveLvl = lvl + 1;
@@ -7113,6 +7151,9 @@ function catchPowder(dt) {
       // The spot depends only on the piece and the grain, not on which block was near.
       const local = debrisSpot(mesh, p.pos, powderZero);
       if (!local) continue;
+      const off = debrisRoll(mesh, local);
+      if (off === false) continue;   // it falls on past
+      if (off) { p.pos.copy(off); p.v = 0; break; }   // falls on from there, as on the ground
       placeOnDebris(mesh, local, p.mat);
       powderFalling.splice(n, 1);
       powderCatchStamp++; pieces = null;   // the piece grew and was rebuilt
@@ -7524,6 +7565,53 @@ function debrisSpot(mesh, point, dir) {
   return debrisLocal.set(best.pos.x + bestFace.dx, best.pos.y + bestFace.dy, best.pos.z + bestFace.dz);
 }
 
+// Sand caught by a piece keeps the slope it keeps on the ground (powderRoll),
+// worked in the piece's own lattice: a grain whose cell has a side open with
+// nothing under that rolls off into it. Without this every grain down the same
+// line found the top of the last one, and sand on rubble stood as a 1x1 pillar
+// beside a pile on the ground. The cell beside has to be clear of the ground
+// too, or a grain on a piece's lip would roll into the hill it rests against.
+// Nor is it laid in a cell with nothing under it: the nearest open face can be
+// the side of a column, and a grain glued there was shed straight off again,
+// and, barred from the piece it came off, fell through it to the ground.
+// Down is the lattice axis the piece leans on most, as shedPowder takes it.
+// Returns the world point to fall on from, false if the piece does not hold it
+// there at all, or null to stay where it landed.
+const _debrisRollQ = new THREE.Quaternion();
+const _debrisRollDown = new THREE.Vector3();
+const _debrisRollSide = new THREE.Vector3();
+const _debrisRollAt = new THREE.Vector3();
+const _debrisRollUnder = new THREE.Vector3();
+function debrisRoll(mesh, local) {
+  const lat = mesh.userData.blocks;
+  mesh.getWorldQuaternion(_debrisRollQ).invert();
+  const d = _debrisRollDown.set(0, -1, 0).applyQuaternion(_debrisRollQ);
+  const ax = Math.abs(d.x), ay = Math.abs(d.y), az = Math.abs(d.z);
+  const axis = ay >= ax && ay >= az ? 1 : ax >= az ? 0 : 2;
+  const sgn = Math.sign(d.getComponent(axis));
+  d.set(0, 0, 0).setComponent(axis, sgn * BLOCK);
+  const filled = (v) => {
+    for (const b of lat) {
+      if (Math.abs(b.pos.x - v.x) < 0.1 && Math.abs(b.pos.y - v.y) < 0.1 && Math.abs(b.pos.z - v.z) < 0.1) return true;
+    }
+    return false;
+  };
+  if (!filled(_debrisRollUnder.copy(local).add(d))) return false;
+  const s0 = (Math.random() * 4) | 0;
+  for (let s = 0; s < 4; s++) {
+    const [u, v] = POWDER_SIDES[(s0 + s) & 3];
+    // The two lattice axes across down, in turn, either way along each.
+    _debrisRollSide.set(0, 0, 0).setComponent((axis + 1) % 3, u * BLOCK).setComponent((axis + 2) % 3, v * BLOCK);
+    const at = _debrisRollAt.copy(local).add(_debrisRollSide);
+    const under = _debrisRollUnder.copy(at).add(d);
+    if (filled(at) || filled(under)) continue;
+    mesh.localToWorld(at); mesh.localToWorld(under);
+    if (voxelAtWorld(at.x, at.y, at.z) !== AIR || voxelAtWorld(under.x, under.y, under.z) !== AIR) continue;
+    return at;
+  }
+  return null;
+}
+
 // Put a held block onto a fallen piece. It joins the piece's lattice, in the
 // piece's own frame, so it turns and tumbles with it, and the body it is glued
 // to gets heavier and grows a collider to match. Nothing is made per block: a
@@ -7571,6 +7659,27 @@ function placeOnDebris(mesh, local, m, rebuild = true) {
   if (!f) return;
   rebuildDebrisBody(mesh, f.body);
   f.still = 0;
+}
+
+// A block put on a piece by hand. Anything but powder goes exactly where it
+// was aimed. Powder is placed and then settles, as editBlock's powderDirty
+// settles it on the ground: where debrisRoll would send a falling grain, a
+// placed one goes too, or a pile built by hand on rubble stood as a tower the
+// poured sand beside it never would. One aimed at a cell with nothing under it
+// falls from there rather than being glued on, or shedPowder would drop it as
+// a grain barred from this piece and it would fall through to the ground.
+// Either way it leaves as a grain from nowhere, free to land back on this
+// piece further down.
+function layOnDebris(mesh, local, m, rebuild = true) {
+  if (MAT_STATS[m]?.powder) {
+    const off = debrisRoll(mesh, local);
+    if (off !== null) {
+      const pos = off ? off.clone() : mesh.localToWorld(local.clone());
+      powderFalling.push({ pos, mat: m, v: 0, from: null });
+      return;
+    }
+  }
+  placeOnDebris(mesh, local, m, rebuild);
 }
 
 // The six face neighbours, with the one below last so a stack pops it first: a
@@ -7869,6 +7978,7 @@ function editBlock(i, j, lvl, m) {
   colDug[k] = 1;
   if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
   powderDirty.add(k);   // anything loose in this column falls this frame, not on the next sweep
+  if (m === AIR) powderDirtySides(i, j);
   if (gravDefer) {
     // Inside the powder pass: the rest is owed (see flushGravity).
     const key = gravCell(i, j, lvl);
@@ -8025,6 +8135,7 @@ function breakBlock(i, j, lvl) {
   colDug[k] = 1;
   if (lvl < colDugLo[k]) colDugLo[k] = lvl;
   powderDirty.add(k);
+  powderDirtySides(i, j);
   markColliderDirty(chunkOf(i, j));
   refreshVisible(i, j, lvl);
   refreshVisible(i - 1, j, lvl);
@@ -8080,7 +8191,7 @@ function shovelPickUp() {
 function shovelPlace() {
   if (!shovel.on || shovel.held.length === 0) return false;
   if (shovel.debris && shovel.debris.local) {
-    placeOnDebris(shovel.debris.mesh, shovel.debris.local, shovel.held.pop());
+    layOnDebris(shovel.debris.mesh, shovel.debris.local, shovel.held.pop());
     refreshShovelUI();
     return true;
   }
@@ -9544,7 +9655,7 @@ function volumeFillDebris(f, box, m) {
         const key = `${gi},${gj},${gl}`;
         if (taken.has(key)) continue;
         taken.add(key);
-        placeOnDebris(mesh, new THREE.Vector3(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK), m, false);
+        layOnDebris(mesh, new THREE.Vector3(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK), m, false);
         placed++;
       }
     }
@@ -9628,7 +9739,7 @@ bindTap(placerDo, () => {
       markPlaced(i, j, lvl);
     }
   } else if (creative.debris && creative.debris.local) {
-    placeOnDebris(creative.debris.mesh, creative.debris.local, placerMat);
+    layOnDebris(creative.debris.mesh, creative.debris.local, placerMat);
   }
 });
 

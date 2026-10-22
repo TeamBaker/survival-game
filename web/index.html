@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 237;
+window.GAME_VERSION = 238;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1774,6 +1774,10 @@ renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
+// Nothing moves the scene. A parent left to recompose its matrix every frame
+// makes three redo the world matrix of everything under it, so this is what
+// lets matrixAutoUpdate = false on the meshes that never move save anything.
+scene.matrixAutoUpdate = false;
 scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
 
 // The far plane sits well past anything the fog leaves visible, so nothing ever
@@ -3593,6 +3597,7 @@ function fallingGrainGeo(m) {
 }
 
 const terrain = new THREE.Group();
+terrain.matrixAutoUpdate = false;   // as the scene
 scene.add(terrain);
 // Whether the terrain's meshes cast: set on each one as it is made and never
 // changed, which is what lets the shadow check pass the whole group by on a
@@ -4130,6 +4135,8 @@ function mergeBatch(b) {
   bm.customDepthMaterial = TERRAIN_BATCH_DEPTH;
   bm.position.copy(TERRAIN_ORIGIN);
   bm.scale.setScalar(HALF_BLOCK);
+  bm.matrixAutoUpdate = false;
+  bm.updateMatrix();
   bm.receiveShadow = true;
   bm.castShadow = TERRAIN_CASTS;
   bm.visible = batchInView(b);
@@ -4288,6 +4295,9 @@ function rebuildChunk(c, r) {
       me.customDepthMaterial = TERRAIN_CHUNK_DEPTH;
       me.position.copy(TERRAIN_ORIGIN);
       me.scale.setScalar(HALF_BLOCK);
+      // Never moves: one matrix, not one a frame for each of ~900 chunks.
+      me.matrixAutoUpdate = false;
+      me.updateMatrix();
       me.receiveShadow = true;
       // Casting is a second full pass over every face. A phone gets the sun's
       // shading and the player's shadow, but not the island shadowing itself.
@@ -6319,10 +6329,32 @@ fallMat.onBeforeCompile = (sh) => {
 // a big piece costs its whole volume in the shadow map each frame.
 const fallDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
 fallDepthMat.onBeforeCompile = fallMat.onBeforeCompile;
-// The mask is per instance, so each piece needs its own copy of the cube to
-// carry it — 24 vertices, freed with the piece.
+// A geometry of its own that draws through src's buffers rather than copies of
+// them, for something that only needs an attribute or two of its own on top.
+// three frees every buffer of a geometry on dispose(), shared or not, so one
+// made here goes through freeGeo, which unhooks src's first — as dropChunkMesh
+// does QUAD_INDEX.
+function shareGeo(src) {
+  const g = new THREE.BufferGeometry();
+  g.setIndex(src.index);
+  for (const k in src.attributes) g.setAttribute(k, src.attributes[k]);
+  for (const r of src.groups) g.addGroup(r.start, r.count, r.materialIndex);
+  g.setDrawRange(src.drawRange.start, src.drawRange.count);
+  g.userData.shared = src;
+  return g;
+}
+function freeGeo(g) {
+  const src = g.userData.shared;
+  if (src) {
+    if (g.index === src.index) g.index = null;
+    for (const k in src.attributes) if (g.attributes[k] === src.attributes[k]) g.deleteAttribute(k);
+  }
+  g.dispose();
+}
+// The mask is per instance, so each piece needs its own geometry to carry it;
+// the cube under it is fallGeo's.
 function debrisInstances(n, geo = fallGeo, material = fallMat) {
-  const g = geo.clone();
+  const g = shareGeo(geo);
   g.setAttribute('faceHide', new THREE.InstancedBufferAttribute(new Float32Array(Math.max(n, 1)), 1));
   const m = new THREE.InstancedMesh(g, material, n);
   m.customDepthMaterial = fallDepthMat;
@@ -6345,11 +6377,11 @@ function debrisReserve(im, n) {
   im.instanceMatrix = mat4;
   im.instanceColor = col;
   // The face mask lives on the geometry, so that has to grow with them.
-  const g = im.geometry.clone();
+  const g = shareGeo(im.geometry.userData.shared);
   const hide = new THREE.InstancedBufferAttribute(new Float32Array(size), 1);
   hide.array.set(im.geometry.attributes.faceHide.array.subarray(0, Math.min(cap, size)));
   g.setAttribute('faceHide', hide);
-  im.geometry.dispose();
+  freeGeo(im.geometry);
   im.geometry = g;
 }
 const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -6506,12 +6538,12 @@ function debrisHitBlock(hit) {
   return e ? dm.userData.blocks.indexOf(e) : -1;
 }
 
-// Everything a piece owns on the GPU: its instance buffers and its own cube
-// copy, and the same for each grain layer. The materials are shared.
+// Everything a piece owns on the GPU: its instance buffers and its face mask,
+// and the same for each grain layer. The cubes and the materials are shared.
 function freeDebrisMesh(mesh) {
-  for (const L of Object.values(mesh.userData.grains || {})) { L.dispose(); L.geometry.dispose(); }
+  for (const L of Object.values(mesh.userData.grains || {})) { L.dispose(); freeGeo(L.geometry); }
   mesh.dispose();
-  mesh.geometry.dispose();
+  freeGeo(mesh.geometry);
 }
 
 // Its own group rather than `objects`: the camera boom raycasts that one to pull
@@ -6522,6 +6554,194 @@ scene.add(debris);
 const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
 const restedChunks  = [];  // { mesh, body, still } — come to a stop, but still in the world
 const powderFalling = [];  // { pos, mat, v, from } — a grain in the air, between the piece it left and whatever catches it
+
+// ----- sleeping pieces, drawn together -----
+// A heap of rubble is hundreds of pieces, each a draw call (two, with the
+// shadow) long after it has stopped. A piece whose body is asleep cannot move
+// until something wakes it, so its blocks are copied, at the pose it has, into
+// one InstancedMesh per material per DEBRIS_CELL of ground, and the piece goes
+// onto DEBRIS_BATCHED_LAYER: the camera, and so the shadow pass, leaves it
+// out, while debrisRay still hits it and its stress overlay (a child, on its
+// own layer) still draws. A copy is only good while nothing about the piece
+// changes, and pieces are woken, dug, built on and dropped from all over, so
+// rather than every one of those owning up, debrisBatchSync runs before each
+// render and holds every copied piece to what was copied — body still asleep,
+// pose, instance buffers and their versions, grain layers. Any difference and
+// the piece is drawn as itself in that same frame, and copied again if it is
+// still asleep.
+const DEBRIS_BATCHED_LAYER = 2;   // not STRESS_LAYER
+// Frames a body has to stay asleep before it is copied. A piece jittering on a
+// heap is put to sleep and shoved awake again every few frames, and each of
+// those would recopy its whole cell; one that has really stopped waits half a
+// second more as itself.
+const DEBRIS_BATCH_WAIT = 30;
+const DEBRIS_CELL = CHUNK * BATCH * BLOCK;   // the culling unit, and what one wake re-copies
+debrisRay.layers.enable(DEBRIS_BATCHED_LAYER);
+const debrisBatches = new THREE.Group();
+debrisBatches.matrixAutoUpdate = false;
+scene.add(debrisBatches);
+const debrisBatchCells = new Map();   // cell -> { x, z, members: Set of records, ims: Map(material -> InstancedMesh), dirty }
+const debrisBatched = [];        // records { mesh, body, cell, sig }
+const debrisCellKey = (x, z) => (z + 0x8000) * 0x10000 + x + 0x8000;
+const debrisBM = new THREE.Matrix4(), debrisIM = new THREE.Matrix4(), debrisOM = new THREE.Matrix4();
+
+// Everything about a piece its copy was made from, flattened.
+function debrisSigFill(mesh, s) {
+  const p = mesh.position, q = mesh.quaternion, g = mesh.geometry, ic = mesh.instanceColor;
+  s[0] = mesh.parent; s[1] = mesh.visible; s[2] = p.x; s[3] = p.y; s[4] = p.z;
+  s[5] = q.x; s[6] = q.y; s[7] = q.z; s[8] = q.w; s[9] = mesh.material; s[10] = mesh.count;
+  s[11] = mesh.instanceMatrix; s[12] = mesh.instanceMatrix.version; s[13] = ic; s[14] = ic ? ic.version : -1;
+  s[15] = g; s[16] = g.attributes.faceHide; s[17] = g.attributes.faceHide.version;
+  let n = 18;
+  const layers = mesh.userData.grains;
+  if (layers) for (const m in layers) {
+    const L = layers[m], lc = L.instanceColor, lh = L.geometry.attributes.faceHide;
+    s[n++] = L; s[n++] = L.visible; s[n++] = L.count; s[n++] = L.instanceMatrix; s[n++] = L.instanceMatrix.version;
+    s[n++] = lc; s[n++] = lc ? lc.version : -1; s[n++] = L.geometry; s[n++] = lh; s[n++] = lh.version;
+  }
+  s.length = n;
+}
+// The same list, checked against r's as it goes: this runs for every copied
+// piece every frame, and nearly always finds nothing.
+function debrisSigSame(r) {
+  const mesh = r.mesh, s = r.sig, p = mesh.position, q = mesh.quaternion, g = mesh.geometry, ic = mesh.instanceColor;
+  if (s[0] !== mesh.parent || s[1] !== mesh.visible || s[2] !== p.x || s[3] !== p.y || s[4] !== p.z
+   || s[5] !== q.x || s[6] !== q.y || s[7] !== q.z || s[8] !== q.w || s[9] !== mesh.material || s[10] !== mesh.count
+   || s[11] !== mesh.instanceMatrix || s[12] !== mesh.instanceMatrix.version || s[13] !== ic || s[14] !== (ic ? ic.version : -1)
+   || s[15] !== g || s[16] !== g.attributes.faceHide || s[17] !== g.attributes.faceHide.version) return false;
+  let n = 18;
+  const layers = mesh.userData.grains;
+  if (layers) for (const m in layers) {
+    const L = layers[m], lc = L.instanceColor, lh = L.geometry.attributes.faceHide;
+    if (s[n] !== L || s[n + 1] !== L.visible || s[n + 2] !== L.count || s[n + 3] !== L.instanceMatrix
+     || s[n + 4] !== L.instanceMatrix.version || s[n + 5] !== lc || s[n + 6] !== (lc ? lc.version : -1)
+     || s[n + 7] !== L.geometry || s[n + 8] !== lh || s[n + 9] !== lh.version) return false;
+    n += 10;
+  }
+  return n === s.length;
+}
+function debrisSetLayer(mesh, layer) {
+  mesh.layers.set(layer);
+  for (const m in mesh.userData.grains || {}) mesh.userData.grains[m].layers.set(layer);
+}
+function debrisBatch(mesh) {
+  const p = mesh.position;
+  const x = Math.floor(p.x / DEBRIS_CELL), z = Math.floor(p.z / DEBRIS_CELL);
+  const cell = debrisCellKey(x, z);
+  let C = debrisBatchCells.get(cell);
+  if (!C) debrisBatchCells.set(cell, C = { x, z, members: new Set(), ims: new Map(), dirty: false });
+  const r = { mesh, body: mesh.userData.body, cell, sig: [] };
+  debrisSigFill(mesh, r.sig);
+  C.members.add(r);
+  C.dirty = true;
+  mesh.userData.batch = r;
+  debrisSetLayer(mesh, DEBRIS_BATCHED_LAYER);
+  debrisBatched.push(r);
+}
+function debrisUnbatch(r) {
+  const C = debrisBatchCells.get(r.cell);
+  C.members.delete(r);
+  C.dirty = true;
+  r.mesh.userData.batch = null;
+  debrisSetLayer(r.mesh, 0);
+}
+// Copy n instances of src (a piece's mesh or grain layer) into im from slot k
+// on: each block's matrix carried through the piece's pose to the cell's
+// corner, which is where im sits — so the numbers the GPU multiplies stay as
+// small as the piece's own would be.
+function debrisCopy(im, k, src, pose) {
+  const n = src.count, from = src.instanceMatrix.array, to = im.instanceMatrix.array;
+  im.instanceColor.array.set(src.instanceColor.array.subarray(0, n * 3), k * 3);
+  im.geometry.attributes.faceHide.array.set(src.geometry.attributes.faceHide.array.subarray(0, n), k);
+  for (let q = 0; q < n; q++) {
+    debrisIM.fromArray(from, q * 16);
+    debrisOM.multiplyMatrices(pose, debrisIM).toArray(to, (k + q) * 16);
+  }
+  return k + n;
+}
+function debrisCellBuild(C) {
+  C.dirty = false;
+  const want = new Map();   // material -> [instances, source geometry, depth material]
+  const need = (o) => {
+    const w = want.get(o.material);
+    if (w) w[0] += o.count;
+    else want.set(o.material, [o.count, o.geometry.userData.shared, o.customDepthMaterial]);
+  };
+  for (const r of C.members) {
+    if (r.mesh.count) need(r.mesh);
+    for (const m in r.mesh.userData.grains || {}) { const L = r.mesh.userData.grains[m]; if (L.visible && L.count) need(L); }
+  }
+  for (const [mt, im] of C.ims) {
+    if (want.has(mt) && im.instanceMatrix.count >= want.get(mt)[0]) continue;
+    debrisBatches.remove(im);
+    im.dispose();
+    freeGeo(im.geometry);
+    C.ims.delete(mt);
+  }
+  const ox = C.x * DEBRIS_CELL, oz = C.z * DEBRIS_CELL;
+  const fill = new Map();   // material -> next free slot
+  for (const [mt, [n, src, depth]] of want) {
+    let im = C.ims.get(mt);
+    if (!im) {
+      // Twice what it needs, so a heap that a few more pieces fall asleep on
+      // is recopied into the buffers it already has.
+      const cap = Math.max(16, n * 2);
+      const g = shareGeo(src);
+      g.setAttribute('faceHide', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1));
+      im = new THREE.InstancedMesh(g, mt, cap);
+      im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+      im.customDepthMaterial = depth;
+      im.castShadow = true;
+      im.receiveShadow = true;
+      im.position.set(ox, 0, oz);
+      im.matrixAutoUpdate = false;
+      im.updateMatrix();
+      debrisBatches.add(im);
+      C.ims.set(mt, im);
+    }
+    im.count = n;
+    fill.set(mt, 0);
+  }
+  for (const r of C.members) {
+    const mesh = r.mesh;
+    debrisBM.compose(mesh.position, mesh.quaternion, mesh.scale);
+    debrisBM.elements[12] -= ox;
+    debrisBM.elements[14] -= oz;
+    if (mesh.count) fill.set(mesh.material, debrisCopy(C.ims.get(mesh.material), fill.get(mesh.material), mesh, debrisBM));
+    for (const m in mesh.userData.grains || {}) {
+      const L = mesh.userData.grains[m];
+      if (L.visible && L.count) fill.set(L.material, debrisCopy(C.ims.get(L.material), fill.get(L.material), L, debrisBM));
+    }
+  }
+  for (const im of C.ims.values()) {
+    im.instanceMatrix.needsUpdate = true;
+    im.instanceColor.needsUpdate = true;
+    im.geometry.attributes.faceHide.needsUpdate = true;
+    im.boundingSphere = null;
+  }
+  if (!C.members.size) debrisBatchCells.delete(debrisCellKey(C.x, C.z));
+}
+function debrisBatchSync() {
+  // Hand back whatever has changed since it was copied, woken included.
+  for (let k = debrisBatched.length - 1; k >= 0; k--) {
+    const r = debrisBatched[k];
+    if (r.mesh.userData.body === r.body && r.body.sleepState === CANNON.Body.SLEEPING && debrisSigSame(r)) continue;
+    debrisUnbatch(r);
+    debrisBatched[k] = debrisBatched[debrisBatched.length - 1];
+    debrisBatched.pop();
+  }
+  // Copy in whatever has been asleep long enough and is not copied yet, the
+  // pieces just handed back for an edit among them.
+  for (let n = 0; n < syncList.length; n++) {
+    const s = syncList[n];
+    if (s.body.sleepState !== CANNON.Body.SLEEPING) { s.slept = 0; continue; }
+    s.slept = (s.slept || 0) + 1;
+    if (s.slept < DEBRIS_BATCH_WAIT || s.mesh.parent !== debris || s.mesh.userData.batch) continue;
+    if (s.mesh.count && !s.mesh.instanceColor) continue;   // would draw white as itself, coloured here
+    debrisBatch(s.mesh);
+  }
+  for (const C of debrisBatchCells.values()) if (C.dirty) debrisCellBuild(C);
+}
 // Every grain in the air is drawn by one InstancedMesh per material, so a sand
 // collapse is a draw call per material rather than one per grain. A grain has no
 // mesh of its own: syncFallingGrains rewrites each layer from powderFalling once
@@ -11189,8 +11409,8 @@ float stressCrackAt(float t) {
   #include <tonemapping_fragment>`);
 };
 function stressInstances(n) {
-  // Its own copy of the cube, to carry the per-instance crack (24 vertices).
-  const g = stressGeo.clone();
+  // Its own geometry, to carry the per-instance crack; the cube is stressGeo's.
+  const g = shareGeo(stressGeo);
   g.setAttribute('instanceCrack', new THREE.InstancedBufferAttribute(new Float32Array(n), 1));
   const im = new THREE.InstancedMesh(g, stressMat, n);
   im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
@@ -11427,7 +11647,7 @@ function stressDropOverlay(mesh) {
   if (!ov) return;
   ov.removeFromParent();
   ov.dispose();
-  ov.geometry.dispose();
+  freeGeo(ov.geometry);
   stOverlays.delete(mesh);
 }
 
@@ -12793,11 +13013,12 @@ function updateFreeCam(dt) {
 }
 
 // Everything the shadow pass reads from a caster, flattened into one list and
-// compared against last frame's: its transform and every ancestor's (nothing
-// here sets a matrix by hand), its geometry and the version of each attribute
-// (the depth shaders read position, faceHide and terrainOff), its instance
-// count and matrices, and its materials. Visibility comes in through which
-// objects get walked at all. Any difference and the map is redrawn this frame.
+// compared against last frame's: its transform and every ancestor's (every
+// matrix here is made from them, if only once), its geometry and the version
+// of each attribute (the depth shaders read position, faceHide and
+// terrainOff), its instance count and matrices, and its materials. Visibility
+// comes in through which objects get walked at all. Any difference and the map
+// is redrawn this frame.
 const shadowSig = [];
 let shadowSigN = 0, shadowSigDirty = false;
 function shadowSigPut(v) {
@@ -12857,6 +13078,7 @@ function tick() {
     flushDirtyChunks();
     updateLOD();
     sky.position.copy(camera.position);
+    debrisBatchSync();   // a load from the menu drops and remakes pieces
     renderer.render(scene, camera);
     return;
   }
@@ -13003,6 +13225,7 @@ function tick() {
   updateLOD();
   if (camMode === CAM.FREE) updateShadowFrustum(state.pos.x, state.pos.y, state.pos.z);
   else updateShadowFrustum(playerBody.position.x, playerBody.position.y, playerBody.position.z);
+  debrisBatchSync();     // last, so nothing after it can change a piece it copied
   if (shadowCastersChanged()) renderer.shadowMap.needsUpdate = true;
   renderer.render(scene, camera);
 }
@@ -14118,7 +14341,7 @@ try { await renderer.compileAsync(scene, camera); } catch (e) { console.warn('sh
 // second. One of each, shrunk to nothing, is drawn here instead, shadow and all.
 function warmFirstUse() {
   const warm = new THREE.Group(), made = [];
-  // own: the geometry is the stand-in's own copy and goes with it.
+  // own: the geometry is the stand-in's own (over shared buffers) and goes with it.
   const add = (m, cast, own) => {
     m.frustumCulled = false;
     m.castShadow = cast;
@@ -14142,10 +14365,10 @@ function warmFirstUse() {
   renderer.shadowMap.needsUpdate = true;
   renderer.render(scene, camera);
   scene.remove(warm);
-  // debrisInstances and stressInstances clone their geometry; the falling
-  // grains' is the shared one and stays.
+  // debrisInstances and stressInstances give each their own geometry (over
+  // shared cubes); the falling grains' is the shared one itself and stays.
   for (const m of made) {
-    if (m.userData.warmOwn) m.geometry.dispose();
+    if (m.userData.warmOwn) freeGeo(m.geometry);
     m.dispose();
   }
   renderer.shadowMap.needsUpdate = true;

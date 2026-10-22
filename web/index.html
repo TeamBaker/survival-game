@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 236;
+window.GAME_VERSION = 237;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2073,6 +2073,56 @@ world.defaultContactMaterial.restitution = 0.0;
         bl.z > au.z + SKIN || al.z > bu.z + SKIN) return;
     pairsA.push(a);
     pairsB.push(b);
+  };
+
+  // cannon's SAP sorts its list once, on the first step (adding a body does not
+  // mark it dirty), and its sweep stops at the first body whose bounding sphere
+  // lies past this one's on x. In a list that is no longer sorted that stop
+  // skips pairs that really touch. While every chunk body was 13-30 m across it
+  // hardly ever fired; with the chunks' surface bodies 2-4 m (see
+  // setChunkColliderBody) a piece could drop through the ground. So the sweep
+  // runs over a copy of the list kept sorted by AABB and stops on the AABB,
+  // which loses nothing; the pairs then go out in the order the old sweep would
+  // have met them (list order), so wherever it found every pair the narrowphase
+  // and the solver see exactly what they did before.
+  const bp = world.broadphase, sorted = [], pa = [], pb = [];
+  let keys = new Float64Array(256);
+  world.addEventListener('addBody', (e) => { sorted.push(e.body); });
+  world.addEventListener('removeBody', (e) => { const k = sorted.indexOf(e.body); if (k >= 0) sorted.splice(k, 1); });
+  for (const body of world.bodies) sorted.push(body);
+  bp.collisionPairs = function (w, pairs1, pairs2) {
+    const list = this.axisList, n = list.length;
+    for (let k = 0; k < n; k++) { list[k]._sapAt = k; currentAABB(list[k]); }
+    // Last step's order is nearly this one's, so this is close to one pass.
+    for (let k = 1; k < n; k++) {
+      const b = sorted[k], x = b.aabb.lowerBound.x;
+      let m = k - 1;
+      while (m >= 0 && sorted[m].aabb.lowerBound.x > x) { sorted[m + 1] = sorted[m]; m--; }
+      sorted[m + 1] = b;
+    }
+    pa.length = 0;
+    pb.length = 0;
+    for (let a = 0; a < n; a++) {
+      const bi = sorted[a], ux = bi.aabb.upperBound.x + SKIN;
+      for (let c = a + 1; c < n; c++) {
+        const bj = sorted[c];
+        if (bj.aabb.lowerBound.x > ux) break;
+        if (!this.needBroadphaseCollision(bi, bj)) continue;
+        if (bi._sapAt < bj._sapAt) this.intersectionTest(bi, bj, pa, pb);
+        else this.intersectionTest(bj, bi, pa, pb);
+      }
+    }
+    // Back into list order: by first body, then second, each a list index, and
+    // the pair's own index in the low bits (exact in a double up to 2^20 pairs).
+    const m = pa.length;
+    if (keys.length < m) keys = new Float64Array(m * 2);
+    for (let q = 0; q < m; q++) keys[q] = (pa[q]._sapAt * n + pb[q]._sapAt) * 1048576 + q;
+    const ks = keys.subarray(0, m).sort();
+    for (let q = 0; q < m; q++) {
+      const at = ks[q] % 1048576;
+      pairs1.push(pa[at]);
+      pairs2.push(pb[at]);
+    }
   };
 }
 
@@ -4434,6 +4484,13 @@ ${pushQuad}
 ${emitRect}
 ${mergeFaces}
 ${collectColumn}
+const COL_CELLS = CHUNK * CHUNK;
+const colTop = new Int32Array(COL_CELLS), colFloor = new Int32Array(COL_CELLS), colConsumed = new Float64Array(COL_CELLS);
+const colSolid = new Uint8Array(COL_CELLS), colVisited = new Uint8Array(COL_CELLS);
+let colOut = new Float32Array(COL_CELLS * 6);
+${colSolidAt}
+${colFootprintSolid}
+${colRowFull}
 ${buildChunkColliderBoxes}
 onmessage = (e) => {
   const d = e.data;
@@ -4450,7 +4507,12 @@ onmessage = (e) => {
     const snap = { sTop: d.sTop, topLvl: d.topLvl, airLo: d.airLo, tint: d.tint, cap: d.cap, off: d.off, vox: d.vox, bits: d.bits };
     const snapBufs = [d.sTop.buffer, d.topLvl.buffer, d.airLo.buffer, d.tint.buffer, d.cap.buffer, d.off.buffer, d.vox.buffer, d.bits.buffer];
     if (d.kind === 'collider') {
-      postMessage({ kind: 'collider', id: d.id, c, rev: d.rev, boxes: buildChunkColliderBoxes(c), snap }, snapBufs);
+      // Into the buffer the job brought, which goes back with the answer.
+      const n = buildChunkColliderBoxes(c);
+      let boxes = d.box;
+      if (!boxes || boxes.length < n * 6) boxes = new Float32Array(Math.max(n * 6, colOut.length));
+      boxes.set(colOut.subarray(0, n * 6));
+      postMessage({ kind: 'collider', id: d.id, c, rev: d.rev, cut: d.cut, boxes, n, snap }, [...snapBufs, boxes.buffer]);
       return;
     }
     const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
@@ -4540,8 +4602,10 @@ function meshSnapshot(c, margin) {
 // meshWorkerFail builds what the job was for.
 function meshPost(s) {
   try {
-    meshWorker.postMessage(s, [s.sTop.buffer, s.topLvl.buffer, s.airLo.buffer, s.tint.buffer,
-      s.cap.buffer, s.off.buffer, s.vox.buffer, s.bits.buffer]);
+    const bufs = [s.sTop.buffer, s.topLvl.buffer, s.airLo.buffer, s.tint.buffer,
+      s.cap.buffer, s.off.buffer, s.vox.buffer, s.bits.buffer];
+    if (s.box) bufs.push(s.box.buffer);
+    meshWorker.postMessage(s, bufs);
   } catch (err) {
     meshWorkerFail(err);
   }
@@ -4561,14 +4625,21 @@ function meshDispatch(c) {
 }
 
 // Chunk c's collider boxes, sent off to the worker; buildPendingColliders makes
-// the body when they come back.
+// the body when they come back. The boxes come back in a buffer sent along for
+// them, and the buffer goes back in the pool once the body is made.
+const colBoxBufs = [], COL_BOX_BUFS_KEEP = 8;
 function colDispatch(c) {
   const s = meshSnapshot(c, 0);
   s.kind = 'collider';
   s.id = ++meshJobSeq;
   s.rev = chunkRev[c];
+  s.cut = chunkColliderCut(c);   // read off the same store as the snapshot
+  s.box = colBoxBufs.pop() || null;
   colJob[c] = s.id;
   meshPost(s);
+}
+function colBoxBufRecycle(a) {
+  if (a && colBoxBufs.length < COL_BOX_BUFS_KEEP) colBoxBufs.push(a);
 }
 
 // The worker is gone: whatever it still owed is built here and now, and from
@@ -4583,7 +4654,7 @@ function meshWorkerFail(err) {
   colDone.length = 0;
   for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
     if (meshJob[c]) { meshJob[c] = 0; if (chunkMesh[c]) rebuildChunk(c); }
-    if (colJob[c]) { colJob[c] = 0; loadChunkCollider(c); }
+    if (colJob[c]) { colJob[c] = 0; if (colliderBody[c]) rebuildChunkCollider(c); else loadChunkCollider(c); }
   }
 }
 
@@ -4630,20 +4701,46 @@ function remeshAllChunks() {
 // overhang, a tunnel, or a floating block. Boxes can.
 const HF_FLOOR = -3.2;         // where the field bottoms out under open water
 
-// Build greedy-merged collision boxes for one chunk.
+// Build greedy-merged collision boxes for one chunk, into colOut: six numbers
+// a box — first and last column i, first and last row j, bottom and top level.
+// All small integers, so a Float32Array holds them exactly and goes back from
+// the worker without a clone; the body works out the same doubles from them as
+// it did from the objects this used to make. The scratch below is kept from
+// build to build (the worker makes its own from this same source): a build used
+// to make five arrays, three closures and an object per box. Returns the count.
+const COL_CELLS = CHUNK * CHUNK;
+const colTop = new Int32Array(COL_CELLS), colFloor = new Int32Array(COL_CELLS), colConsumed = new Float64Array(COL_CELLS);
+const colSolid = new Uint8Array(COL_CELLS), colVisited = new Uint8Array(COL_CELLS);
+let colOut = new Float32Array(COL_CELLS * 6);
+// Every solid block counts, buried or not: a hidden block is still solid, and
+// letting the merge run through the interior turns a hollow shell of thin
+// slabs into a few deep boxes. (Rendering still draws exposed faces only.)
+function colSolidAt(k, lvl) { return voxMat[voxOff[k] - VOX_FLOOR + lvl] !== AIR; }
+function colFootprintSolid(ii0, ii1, jj0, jj1, lvl, lo, w, i0, j0) {
+  if (lvl < lo) return false;
+  for (let jj = jj0; jj < jj1; jj++) {
+    for (let ii = ii0; ii < ii1; ii++) {
+      const idx = jj * w + ii;
+      if (lvl < colFloor[idx]) return false;
+      const k = (j0 + jj) * GEN_N + (i0 + ii);
+      if (!colSolidAt(k, lvl)) return false;
+    }
+  }
+  return true;
+}
+function colRowFull(y, ii0, ii1, w) {
+  for (let x = ii0; x < ii1; x++) if (!colSolid[y * w + x]) return false;
+  return true;
+}
 function buildChunkColliderBoxes(c) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   const w = i1 - i0, h = j1 - j0;
-  if (w <= 0 || h <= 0) return [];
+  if (w <= 0 || h <= 0) return 0;
 
-  // Every solid block counts, buried or not: a hidden block is still solid, and
-  // letting the merge run through the interior turns a hollow shell of thin
-  // slabs into a few deep boxes. (Rendering still draws exposed faces only.)
-  const solidVisible = (k, lvl) => voxMat[voxOff[k] - VOX_FLOOR + lvl] !== AIR;
-
-  const top = new Int32Array(w * h).fill(NO_COLUMN);
-  const floor = new Int32Array(w * h);
+  const top = colTop, floor = colFloor, consumedTo = colConsumed, solid = colSolid, visited = colVisited;
+  top.fill(NO_COLUMN, 0, w * h);
+  floor.fill(0, 0, w * h);
   let lo = Infinity, hi = -Infinity;
   for (let jj = 0; jj < h; jj++) {
     for (let ii = 0; ii < w; ii++) {
@@ -4656,7 +4753,7 @@ function buildChunkColliderBoxes(c) {
       // answers on the first read.
       let floorLvl = t;
       for (let lvl = VOX_FLOOR; lvl < t; lvl++) {
-        if (solidVisible(k, lvl)) { floorLvl = lvl; break; }
+        if (colSolidAt(k, lvl)) { floorLvl = lvl; break; }
       }
       const idx = jj * w + ii;
       top[idx] = t;
@@ -4665,26 +4762,10 @@ function buildChunkColliderBoxes(c) {
       if (t > hi) hi = t;
     }
   }
-  if (hi < lo) return [];
+  if (hi < lo) return 0;
 
-  const consumedTo = new Float64Array(w * h).fill(Infinity);
-
-  function footprintSolidAt(ii0, ii1, jj0, jj1, lvl) {
-    if (lvl < lo) return false;
-    for (let jj = jj0; jj < jj1; jj++) {
-      for (let ii = ii0; ii < ii1; ii++) {
-        const idx = jj * w + ii;
-        if (lvl < floor[idx]) return false;
-        const k = (j0 + jj) * GEN_N + (i0 + ii);
-        if (!solidVisible(k, lvl)) return false;
-      }
-    }
-    return true;
-  }
-
-  const boxes = [];
-  const solid = new Uint8Array(w * h);
-  const visited = new Uint8Array(w * h);
+  consumedTo.fill(Infinity, 0, w * h);
+  let nb = 0;
   // Levels are visited top down, but only those where some column could still
   // need covering: at or under its top, at or over its floor, and under where
   // the boxes above already reach. Anything between is a level that would have
@@ -4692,7 +4773,7 @@ function buildChunkColliderBoxes(c) {
   // seen before this level's boxes are placed is never below the real one.
   let lvl = hi;
   while (lvl >= lo) {
-    solid.fill(0);
+    solid.fill(0, 0, w * h);
     let any = false, next = lo - 1;
     for (let jj = 0; jj < h; jj++) {
       for (let ii = 0; ii < w; ii++) {
@@ -4703,7 +4784,7 @@ function buildChunkColliderBoxes(c) {
         if (nc >= floor[idx] && nc > next) next = nc;
         if (lvl > t || lvl < floor[idx]) continue;
         const k = (j0 + jj) * GEN_N + (i0 + ii);
-        if (!solidVisible(k, lvl)) continue;
+        if (!colSolidAt(k, lvl)) continue;
         // 2 = still needs covering at this level; 1 = solid here but already
         // inside a box from higher up. A box may grow across 1s (overlap is free
         // on a static body), so a slope's contour merges into a few wide boxes
@@ -4714,7 +4795,7 @@ function buildChunkColliderBoxes(c) {
     }
     if (!any) { lvl = next; continue; }
 
-    visited.fill(0);
+    visited.fill(0, 0, w * h);
     for (let jj = 0; jj < h; jj++) {
       for (let ii = 0; ii < w; ii++) {
         const idx = jj * w + ii;
@@ -4724,12 +4805,8 @@ function buildChunkColliderBoxes(c) {
         let ii0 = ii, ii1 = ii + 1, jj0 = jj, jj1 = jj + 1;
         while (ii0 > 0 && solid[jj * w + ii0 - 1]) ii0--;
         while (ii1 < w && solid[jj * w + ii1]) ii1++;
-        const rowFull = (y) => {
-          for (let x = ii0; x < ii1; x++) if (!solid[y * w + x]) return false;
-          return true;
-        };
-        while (jj0 > 0 && rowFull(jj0 - 1)) jj0--;
-        while (jj1 < h && rowFull(jj1)) jj1++;
+        while (jj0 > 0 && colRowFull(jj0 - 1, ii0, ii1, w)) jj0--;
+        while (jj1 < h && colRowFull(jj1, ii0, ii1, w)) jj1++;
         for (let y = jj0; y < jj1; y++) for (let x = ii0; x < ii1; x++) visited[y * w + x] = 1;
 
         // Under every column's airLo is solid all the way to bedrock, so once the
@@ -4743,7 +4820,7 @@ function buildChunkColliderBoxes(c) {
         let botLvl = lvl;
         while (botLvl - 1 >= lo) {
           if (botLvl - 1 < runLo) { botLvl = VOX_FLOOR; break; }
-          if (!footprintSolidAt(ii0, ii1, jj0, jj1, botLvl - 1)) break;
+          if (!colFootprintSolid(ii0, ii1, jj0, jj1, botLvl - 1, lo, w, i0, j0)) break;
           botLvl--;
         }
         if (botLvl < lvl) {
@@ -4753,16 +4830,16 @@ function buildChunkColliderBoxes(c) {
           }
         }
 
-        const bi0 = i0 + ii0, bi1 = i0 + ii1 - 1, bj0 = j0 + jj0, bj1 = j0 + jj1 - 1;
-        boxes.push({
-          hx: (bi1 - bi0 + 1) * BLOCK * 0.5, hy: (lvl - botLvl + 1) * BLOCK * 0.5, hz: (bj1 - bj0 + 1) * BLOCK * 0.5,
-          x: (colX(bi0) + colX(bi1)) * 0.5, y: ((botLvl + lvl) / 2 + 0.5) * BLOCK, z: (colZ(bj0) + colZ(bj1)) * 0.5,
-        });
+        if (colOut.length < (nb + 1) * 6) { const g = new Float32Array(colOut.length * 2); g.set(colOut); colOut = g; }
+        const o = nb++ * 6;
+        colOut[o] = i0 + ii0; colOut[o + 1] = i0 + ii1 - 1;
+        colOut[o + 2] = j0 + jj0; colOut[o + 3] = j0 + jj1 - 1;
+        colOut[o + 4] = botLvl; colOut[o + 5] = lvl;
       }
     }
     lvl = next;
   }
-  return boxes;
+  return nb;
 }
 
 // One collision body per chunk. The player's own chunk and the ring around it
@@ -4787,7 +4864,8 @@ let colTestChunk = -1;                // the collision tester's chunk, kept whil
 // out through unloadChunkCollider, which keep the two in step.
 const _colLoaded = [];
 const _colLoadedAt = new Int32Array(CHUNK_N * CHUNK_N).fill(-1);
-// One CANNON.Box per size, shared by every chunk body that has a box that size:
+// One CANNON.Box per size, shared by every body that has a box that size — the
+// chunks' and the debris pieces':
 // a Box builds its own convex hull (faces, normals, edges) when it is made, and
 // the merged boxes repeat sizes a great deal. Nothing of a shape is set per
 // body that the game reads; contacts are told apart by body. Let go of past
@@ -4802,26 +4880,85 @@ function colBox(hx, hy, hz) {
   }
   return box;
 }
+// Each chunk's boxes are split between two bodies at colCut[c]: the surface
+// one, which whatever is on the ground pairs with, and the deep one under it.
+// Every box reaches bedrock (the merge pushes each one down until the columns
+// under it are solid to the floor), so one body was 2-30 m tall, and its sphere
+// and each box's took in anything near the chunk: the pair was never rejected
+// and the narrowphase ran SAT against every box. A box crossing the cut goes in
+// as two that tile it exactly — the same solid, the deep ground still there to
+// push out a rock jammed into it. The cut is COL_SPLIT_MARGIN levels under the
+// highest level at which every block of the chunk is buried on all six sides
+// (the mesher's core: under the lowest air beside it and one under its own), so
+// the seam is on no face anything can touch, and a piece pressed into the
+// ground short of that depth meets only the boxes it met before. Off the field
+// is air from the floor up, which leaves the edge chunks in one body.
+const colliderDeep = new Array(CHUNK_N * CHUNK_N).fill(null);
+const colCut = new Int32Array(CHUNK_N * CHUNK_N);
+const COL_SPLIT_MARGIN = 10;
+// A dig in the chunk next door can bare this one's border columns from the side
+// below where they were buried when it was split; once the seam is less than
+// COL_SEAM_KEEP levels under the buried level, the chunk is split again lower.
+const COL_SEAM_KEEP = 5;
+function chunkColliderBuried(c) {
+  const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+  const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+  if (i0 === 0 || j0 === 0 || i1 === GEN_N || j1 === GEN_N) return VOX_FLOOR - 1;
+  let b = Infinity;
+  for (let j = j0; j < j1; j++) {
+    for (let i = i0, k = j * GEN_N + i0; i < i1; i++, k++) {
+      const core = Math.min(airLo[k - 1], airLo[k + 1], airLo[k - GEN_N], airLo[k + GEN_N], airLo[k] - 1) - 1;
+      if (core < b) b = core;
+    }
+  }
+  return b;
+}
+function chunkColliderCut(c) { return chunkColliderBuried(c) - COL_SPLIT_MARGIN; }
+
+// Box q of a box buffer, cut to levels lo..hi, into _colPiece as half sizes and
+// centre — the same sums the boxes were always made with. False if nothing of
+// it is left.
+const _colPiece = new Float64Array(6), _colOff = new CANNON.Vec3();
+function colPiece(buf, q, lo, hi) {
+  const o = q * 6, bot = Math.max(buf[o + 4], lo), lvl = Math.min(buf[o + 5], hi);
+  if (bot > lvl) return false;
+  const bi0 = buf[o], bi1 = buf[o + 1], bj0 = buf[o + 2], bj1 = buf[o + 3], p = _colPiece;
+  p[0] = (bi1 - bi0 + 1) * BLOCK * 0.5; p[1] = (lvl - bot + 1) * BLOCK * 0.5; p[2] = (bj1 - bj0 + 1) * BLOCK * 0.5;
+  p[3] = (colX(bi0) + colX(bi1)) * 0.5; p[4] = ((bot + lvl) / 2 + 0.5) * BLOCK; p[5] = (colZ(bj0) + colZ(bj1)) * 0.5;
+  return true;
+}
 // The body sits at the middle of its boxes, not the world origin: the
 // broadphase tests a body by its bounding sphere about its position, and one
 // about the origin took in half the island, pairing every moving piece with
-// every chunk near it for the narrowphase to sort out box by box.
-function setChunkColliderBody(c, boxes) {
-  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-  for (const b of boxes) {
-    if (b.x - b.hx < x0) x0 = b.x - b.hx; if (b.x + b.hx > x1) x1 = b.x + b.hx;
-    if (b.y - b.hy < y0) y0 = b.y - b.hy; if (b.y + b.hy > y1) y1 = b.y + b.hy;
-    if (b.z - b.hz < z0) z0 = b.z - b.hz; if (b.z + b.hz > z1) z1 = b.z + b.hz;
+// every chunk near it for the narrowphase to sort out box by box. A part with
+// no boxes is no body, unless asked for: a chunk keeps one even with nothing in
+// it, which is what says it has been built.
+function colliderPart(buf, n, lo, hi, always) {
+  const p = _colPiece;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity, m = 0;
+  for (let q = 0; q < n; q++) {
+    if (!colPiece(buf, q, lo, hi)) continue;
+    m++;
+    if (p[3] - p[0] < x0) x0 = p[3] - p[0]; if (p[3] + p[0] > x1) x1 = p[3] + p[0];
+    if (p[4] - p[1] < y0) y0 = p[4] - p[1]; if (p[4] + p[1] > y1) y1 = p[4] + p[1];
+    if (p[5] - p[2] < z0) z0 = p[5] - p[2]; if (p[5] + p[2] > z1) z1 = p[5] + p[2];
   }
-  const cx = boxes.length ? (x0 + x1) / 2 : 0, cy = boxes.length ? (y0 + y1) / 2 : 0, cz = boxes.length ? (z0 + z1) / 2 : 0;
+  if (!m && !always) return null;
+  const cx = m ? (x0 + x1) / 2 : 0, cy = m ? (y0 + y1) / 2 : 0, cz = m ? (z0 + z1) / 2 : 0;
   // In the constructor, so its previous and interpolated positions agree.
   const body = new CANNON.Body({ mass: 0, material: physWorld, position: new CANNON.Vec3(cx, cy, cz) });
-  for (const b of boxes) {
-    body.addShape(colBox(b.hx, b.hy, b.hz), new CANNON.Vec3(b.x - cx, b.y - cy, b.z - cz));
+  for (let q = 0; q < n; q++) {
+    if (!colPiece(buf, q, lo, hi)) continue;
+    body.addShape(colBox(p[0], p[1], p[2]), _colOff.set(p[3] - cx, p[4] - cy, p[5] - cz));
   }
   body.updateAABB();
   world.addBody(body);
-  colliderBody[c] = body;
+  return body;
+}
+function setChunkColliderBody(c, buf, n, cut) {
+  colCut[c] = cut;
+  colliderBody[c] = colliderPart(buf, n, cut, Infinity, true);
+  colliderDeep[c] = colliderPart(buf, n, -Infinity, cut - 1, false);
   if (_colLoadedAt[c] < 0) { _colLoadedAt[c] = _colLoaded.length; _colLoaded.push(c); }
 }
 
@@ -4847,19 +4984,27 @@ function buildChunkColliderSync(c) {
   if (colliderBody[c]) return;
   colJob[c] = 0;
   unqueueChunkCollider(c);
-  setChunkColliderBody(c, buildChunkColliderBoxes(c));
+  const n = buildChunkColliderBoxes(c);
+  setChunkColliderBody(c, colOut, n, chunkColliderCut(c));
 }
 
 function buildPendingColliders() {
   // Boxes back from the mesh worker become bodies — unless the chunk got one
   // meanwhile, or the store under it has changed since, when it goes back in line.
+  // A chunk that has a body is waiting on a rebuild: the store may have moved on
+  // since it was sent (colRedo), but the boxes are still newer than the body
+  // they replace, so they go in, and the next one goes out after them.
   for (const r of colDone) {
     const c = r.c;
-    if (colJob[c] !== r.id) continue;
-    colJob[c] = 0;
-    if (colliderBody[c]) continue;
-    if (r.rev !== chunkRev[c] || dirtyChunks.has(c) || dirtyColliders.has(c)) { loadChunkCollider(c); continue; }
-    setChunkColliderBody(c, r.boxes);
+    if (colJob[c] === r.id) {
+      colJob[c] = 0;
+      if (colliderBody[c]) {
+        swapChunkCollider(c, r.boxes, r.n, r.cut);
+        if (colRedo.delete(c)) colDispatch(c);
+      } else if (r.rev !== chunkRev[c] || dirtyChunks.has(c) || dirtyColliders.has(c)) loadChunkCollider(c);
+      else setChunkColliderBody(c, r.boxes, r.n, r.cut);
+    }
+    colBoxBufRecycle(r.boxes);
   }
   colDone.length = 0;
   let built = 0;
@@ -4869,7 +5014,8 @@ function buildPendingColliders() {
     _colQueued[c] = 0;
     if (colliderBody[c]) continue;
     if (meshWorker) { colDispatch(c); built++; continue; }
-    setChunkColliderBody(c, buildChunkColliderBoxes(c));
+    const n = buildChunkColliderBoxes(c);
+    setChunkColliderBody(c, colOut, n, chunkColliderCut(c));
     built++;
   }
   if (_colQHead === _colQueue.length) { _colQueue.length = 0; _colQHead = 0; }
@@ -4931,7 +5077,11 @@ function unloadChunkCollider(c) {
   const body = colliderBody[c];
   if (!body) return;
   world.removeBody(body);
-  colliderBody[c] = null;
+  if (colliderDeep[c]) world.removeBody(colliderDeep[c]);
+  colliderBody[c] = colliderDeep[c] = null;
+  // A rebuild still out at the worker is for a body that has gone.
+  colJob[c] = 0;
+  colRedo.delete(c);
   const k = _colLoadedAt[c], last = _colLoaded.pop();
   if (last !== c) { _colLoaded[k] = last; _colLoadedAt[last] = k; }
   _colLoadedAt[c] = -1;
@@ -4952,13 +5102,24 @@ function colliderFarFrom(c, px, pz) {
 // chunk index, including the -1 the player gets just past the field's edge).
 let _colSquareCi = -0x40000000, _colSquareCj = -0x40000000;
 
-// A chunk's collider, after the store under it changed.
+// A chunk's collider, after the store under it changed, built here and now.
+// Whatever the worker is building for it is older than this and is dropped.
 function rebuildChunkCollider(c) {
   if (!colliderBody[c]) return;
-  unloadChunkCollider(c);
+  colJob[c] = 0;
+  colRedo.delete(c);
   unqueueChunkCollider(c);
-  // Build here and now: the flush calls this before the physics step sees the chunk.
-  setChunkColliderBody(c, buildChunkColliderBoxes(c));
+  const n = buildChunkColliderBoxes(c);
+  swapChunkCollider(c, colOut, n, chunkColliderCut(c));
+}
+
+// The new bodies go into the world before the old ones come out, so there is
+// never a step or a ray that finds the chunk with nothing there.
+function swapChunkCollider(c, buf, n, cut) {
+  const oldBody = colliderBody[c], oldDeep = colliderDeep[c];
+  setChunkColliderBody(c, buf, n, cut);
+  world.removeBody(oldBody);
+  if (oldDeep) world.removeBody(oldDeep);
   // v124 — wake sleeping debris whose friction surfaces vanished.
   // When terrain is dug away, cannon.js does not notify sleeping bodies
   // that their contacts are gone; they stay frozen until something bumps
@@ -4984,21 +5145,53 @@ function rebuildChunkCollider(c) {
 // Edits only mark a chunk here; its collider is rebuilt once, by
 // flushDirtyColliders, however many blocks in it changed. A collider reads only
 // its own chunk's columns, so the neighbours an edit dirties for the mesh are
-// left alone. The flush runs at the top of tick (catching edits made from input
-// handlers between frames), just before the physics step, at the end of tick,
-// and ahead of anything that queries the physics world synchronously — so the
-// step never sees a stale box and the frame never ends with one.
+// left alone (bar a seam it bares, colSeamCheck). The flush runs at the top of
+// tick (catching edits made from input handlers between frames), just before
+// the physics step, at the end of tick, and ahead of anything that queries the
+// physics world synchronously.
+//
+// With the worker up, a chunk that has a body is rebuilt there and keeps its
+// old body until the new one is back (buildPendingColliders, usually the next
+// frame) — the step and the rays see the edit a frame or two late, and the
+// main thread is spared the build, which a pour or a crater asked for every
+// frame it lasted. One rebuild per chunk is out at a time; edits made while it
+// is out send one more after it (colRedo), so a pour cannot keep throwing away
+// the build it is waiting for. A chunk a falling piece has just been cut out of
+// is rebuilt here and now instead (colSyncWant): the piece starts where its
+// blocks were, and the old body would still have them, and throw it out.
 const dirtyColliders = new Set();
+const colRedo = new Set(), colSyncWant = new Set();
 function markColliderDirty(c) { dirtyColliders.add(c); }
+function colliderSyncFor(c) {
+  if (colSyncWant.has(c)) return;
+  colSyncWant.add(c);
+  if (colJob[c] && colliderBody[c]) markColliderDirty(c);   // sent off before the piece was cut
+}
+function colSeamCheck(c) {
+  const ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
+  for (let d = 0; d < 4; d++) {
+    const ni = ci + (d === 0 ? -1 : d === 1 ? 1 : 0), nj = cj + (d === 2 ? -1 : d === 3 ? 1 : 0);
+    if (ni < 0 || nj < 0 || ni >= CHUNK_N || nj >= CHUNK_N) continue;
+    const nc = nj * CHUNK_N + ni;
+    if (colliderDeep[nc] && !dirtyColliders.has(nc) && chunkColliderBuried(nc) < colCut[nc] + COL_SEAM_KEEP) dirtyColliders.add(nc);
+  }
+}
 function flushDirtyColliders() {
   if (!dirtyColliders.size) return;
+  // A neighbour colSeamCheck adds is reached by this same walk.
   for (const c of dirtyColliders) {
-    if (colliderBody[c]) rebuildChunkCollider(c);
+    colSeamCheck(c);
+    if (colliderBody[c]) {
+      if (!meshWorker || colSyncWant.has(c)) rebuildChunkCollider(c);
+      else if (colJob[c]) colRedo.add(c);
+      else colDispatch(c);
+    }
     // No body yet, but the worker is building one from the store as it was:
     // drop that job and queue a fresh one.
     else if (colJob[c]) { colJob[c] = 0; loadChunkCollider(c); }
   }
   dirtyColliders.clear();
+  colSyncWant.clear();
 }
 
 // Where the ground is, for anything that needs to ask — the top of the block you
@@ -6501,6 +6694,7 @@ function spawnFallingChunk(unit) {
   });
   addDebrisColliders(body, mesh.userData.blocks);
   body.position.set(cx, cy, cz);
+  for (const b of blocks) colliderSyncFor(chunkOf(b.i, b.j));
   // A nudge of spin, so a piece topples off the face it broke from instead of
   // sitting dead flat all the way down.
   body.angularVelocity.set((Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.8);
@@ -7444,8 +7638,10 @@ function recentreDebris(mesh, body) {
 // footprint stays solid. A cell a box has reached down through is skipped on
 // those levels. Material plays no part: the piece is one rigid body.
 // The shape order is fixed by that sweep, so callers can rely on it.
-// Cells are integer indices into scratch arrays kept between calls, so the
-// only allocations are the shapes themselves.
+// Cells are integer indices into scratch arrays kept between calls, and the
+// boxes come from colBox like the chunks' do (a piece is rebuilt on every dig,
+// cut, place, shed and split, and a Box makes its hull when it is made), so a
+// rebuild allocates little beyond the body's own offsets.
 let debrisOcc = new Uint8Array(512), debrisPlane = new Uint8Array(64), debrisConsumed = new Int32Array(64);
 function debrisFootprintFull(occ, base, w, ii0, ii1, jj0, jj1) {
   for (let jj = jj0; jj < jj1; jj++)
@@ -7506,8 +7702,8 @@ function addDebrisColliders(body, lat) {
         const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
         const lvl = l0 + r, botLvl = l0 + rb;
         body.addShape(
-          new CANNON.Box(new CANNON.Vec3((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5)),
-          new CANNON.Vec3(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
+          colBox((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5),
+          _colOff.set(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
       }
     }
   }
@@ -9187,10 +9383,11 @@ function rebuildDebugCollision() {
   for (let c = 0; c < colliderBody.length; c++) {
     _debugColSeen[c] = colliderBody[c];
     if (!colliderBody[c]) continue;
-    const boxes = buildChunkColliderBoxes(c);
-    for (const b of boxes) {
-      const hx = b.hx, hy = b.hy, hz = b.hz;
-      const cx = b.x, cy = b.y, cz = b.z;
+    const nb = buildChunkColliderBoxes(c);
+    for (let q = 0; q < nb; q++) {
+      colPiece(colOut, q, -Infinity, Infinity);
+      const hx = _colPiece[0], hy = _colPiece[1], hz = _colPiece[2];
+      const cx = _colPiece[3], cy = _colPiece[4], cz = _colPiece[5];
       const corners = [
         [cx-hx, cy-hy, cz-hz], [cx+hx, cy-hy, cz-hz],
         [cx+hx, cy+hy, cz-hz], [cx-hx, cy+hy, cz-hz],

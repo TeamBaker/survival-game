@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 235;
+window.GAME_VERSION = 236;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2030,9 +2030,221 @@ scene.add(ambLight);
 const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
 world.broadphase = new CANNON.SAPBroadphase(world);
 world.allowSleep = true;
-world.solver.iterations = 10;
+// Solver time in a rubble pile is all iterations. At 120 Hz substeps 8 still
+// holds a resting stack still; piles only settle a touch softer than at 10.
+world.solver.iterations = 8;
 world.defaultContactMaterial.friction = 0.4;
 world.defaultContactMaterial.restitution = 0.0;
+
+// SAP pairs bodies by bounding sphere, and a chunk collider's sphere (13-30 m)
+// takes in far more than its boxes do: every piece anywhere near a chunk was
+// paired with it, and the narrowphase then ran SAT against each of its boxes.
+// A pair now also needs its AABBs to touch. Shapes that meet always have
+// touching AABBs, so no contact is lost and the pairs that are left keep
+// their order — the contacts come out exactly as before. The sphere test
+// stays in front as the cheap reject, and so no pair is ever added.
+// An AABB counts only for the pose it was taken at: the game moves bodies
+// (respawn, recentring a piece) without raising aabbNeedsUpdate, and a stale
+// box would quietly drop a real pair, so a moved body is measured again.
+{
+  const updateAABB = CANNON.Body.prototype.updateAABB;
+  CANNON.Body.prototype.updateAABB = function () {
+    updateAABB.call(this);
+    const at = this._aabbAt || (this._aabbAt = new Float64Array(7));
+    const p = this.position, q = this.quaternion;
+    at[0] = p.x; at[1] = p.y; at[2] = p.z; at[3] = q.x; at[4] = q.y; at[5] = q.z; at[6] = q.w;
+  };
+  const currentAABB = (b) => {
+    const at = b._aabbAt, p = b.position, q = b.quaternion;
+    if (b.aabbNeedsUpdate || !at || at[0] !== p.x || at[1] !== p.y || at[2] !== p.z ||
+        at[3] !== q.x || at[4] !== q.y || at[5] !== q.z || at[6] !== q.w) b.updateAABB();
+    return b.aabb;
+  };
+  // The AABB and the SAT round differently; a hair of slack keeps a pair the
+  // SAT would call touching from being thrown out by the last bit.
+  const SKIN = 1e-4;
+  world.broadphase.intersectionTest = function (a, b, pairsA, pairsB) {
+    const pa = a.position, pb = b.position;
+    const dx = pb.x - pa.x, dy = pb.y - pa.y, dz = pb.z - pa.z;
+    if (!(dx * dx + dy * dy + dz * dz < (a.boundingRadius + b.boundingRadius) ** 2)) return;
+    const A = currentAABB(a), B = currentAABB(b);
+    const al = A.lowerBound, au = A.upperBound, bl = B.lowerBound, bu = B.upperBound;
+    if (bl.x > au.x + SKIN || al.x > bu.x + SKIN || bl.y > au.y + SKIN || al.y > bu.y + SKIN ||
+        bl.z > au.z + SKIN || al.z > bu.z + SKIN) return;
+    pairsA.push(a);
+    pairsB.push(b);
+  };
+}
+
+// cannon files every contact in two overlap keepers each substep, a sorted
+// insert that is quadratic in contacts (up to ~2 ms a frame in a rockfall).
+// Only begin/end(Shape)Contact listeners read them and the game has none, so
+// the filing waits until one is added; it then picks up on its own (the first
+// step after reports every pair already touching as just begun).
+for (const [keeper, begin, end] of [[world.bodyOverlapKeeper, 'beginContact', 'endContact'],
+                                    [world.shapeOverlapKeeper, 'beginShapeContact', 'endShapeContact']]) {
+  const set = keeper.set;
+  keeper.set = function (i, j) {
+    if (world.hasAnyEventListener(begin) || world.hasAnyEventListener(end)) set.call(this, i, j);
+  };
+}
+
+// cannon's convex SAT and face clipping build their temporaries afresh on
+// every call — new vectors, polygons, contact records — which was most of the
+// heap churn (and the GC stutter) while debris moves. These are the same
+// steps on the same vector methods, so they round the same, but on scratch
+// kept here. That is safe because convexConvex reads the clip results before
+// it clips again, and nothing else calls these.
+{
+  const CP = CANNON.ConvexPolyhedron.prototype, V = CANNON.Vec3;
+  const sepA = new V(), sepB = new V(), edgeA = new V(), edgeB = new V(), edgeX = new V(), sepD = new V();
+  CP.findSeparatingAxis = function (hullB, posA, quatA, posB, quatB, target, faceListA, faceListB) {
+    const hullA = this;
+    let dmin = Number.MAX_VALUE;
+    if (hullA.uniqueAxes) {
+      for (let i = 0; i !== hullA.uniqueAxes.length; i++) {
+        quatA.vmult(hullA.uniqueAxes[i], sepA);
+        const d = hullA.testSepAxis(sepA, hullB, posA, quatA, posB, quatB);
+        if (d === false) return false;
+        if (d < dmin) { dmin = d; target.copy(sepA); }
+      }
+    } else {
+      const n = faceListA ? faceListA.length : hullA.faces.length;
+      for (let i = 0; i < n; i++) {
+        sepA.copy(hullA.faceNormals[faceListA ? faceListA[i] : i]);
+        quatA.vmult(sepA, sepA);
+        const d = hullA.testSepAxis(sepA, hullB, posA, quatA, posB, quatB);
+        if (d === false) return false;
+        if (d < dmin) { dmin = d; target.copy(sepA); }
+      }
+    }
+    if (hullB.uniqueAxes) {
+      for (let i = 0; i !== hullB.uniqueAxes.length; i++) {
+        quatB.vmult(hullB.uniqueAxes[i], sepB);
+        const d = hullA.testSepAxis(sepB, hullB, posA, quatA, posB, quatB);
+        if (d === false) return false;
+        if (d < dmin) { dmin = d; target.copy(sepB); }
+      }
+    } else {
+      const n = faceListB ? faceListB.length : hullB.faces.length;
+      for (let i = 0; i < n; i++) {
+        sepB.copy(hullB.faceNormals[faceListB ? faceListB[i] : i]);
+        quatB.vmult(sepB, sepB);
+        const d = hullA.testSepAxis(sepB, hullB, posA, quatA, posB, quatB);
+        if (d === false) return false;
+        if (d < dmin) { dmin = d; target.copy(sepB); }
+      }
+    }
+    for (let i = 0; i !== hullA.uniqueEdges.length; i++) {
+      quatA.vmult(hullA.uniqueEdges[i], edgeA);
+      for (let j = 0; j !== hullB.uniqueEdges.length; j++) {
+        quatB.vmult(hullB.uniqueEdges[j], edgeB);
+        edgeA.cross(edgeB, edgeX);
+        if (edgeX.almostZero()) continue;
+        edgeX.normalize();
+        const d = hullA.testSepAxis(edgeX, hullB, posA, quatA, posB, quatB);
+        if (d === false) return false;
+        if (d < dmin) { dmin = d; target.copy(edgeX); }
+      }
+    }
+    posB.vsub(posA, sepD);
+    if (sepD.dot(target) > 0) target.negate(target);
+    return true;
+  };
+
+  // Two polygons clipped back and forth, each over its own vectors, so a
+  // clip never writes a vector it is still reading. Records and counts are
+  // reused the same way.
+  const polyA = [], polyB = [], records = [], connected = [];
+  const vecAt = (pool, k) => pool[k] || (pool[k] = new V());
+  const faceN = new V(), planeN = new V();
+  // Sutherland-Hodgman against one plane, as clipFaceAgainstPlane does it.
+  function clipPoly(src, n, dst, normal, constant) {
+    if (n < 2) return 0;
+    let k = 0, prev = src[n - 1], dPrev = normal.dot(prev) + constant;
+    for (let c = 0; c < n; c++) {
+      const cur = src[c], dCur = normal.dot(cur) + constant;
+      if (dPrev < 0) {
+        if (dCur < 0) vecAt(dst, k++).copy(cur);
+        else prev.lerp(cur, dPrev / (dPrev - dCur), vecAt(dst, k++));
+      } else if (dCur < 0) {
+        prev.lerp(cur, dPrev / (dPrev - dCur), vecAt(dst, k++));
+        vecAt(dst, k++).copy(cur);
+      }
+      prev = cur;
+      dPrev = dCur;
+    }
+    return k;
+  }
+  CP.clipAgainstHull = function (posA, quatA, hullB, posB, quatB, separatingNormal, minDist, maxDist, result) {
+    let best = -1, dmax = -Number.MAX_VALUE;
+    for (let f = 0; f < hullB.faces.length; f++) {
+      faceN.copy(hullB.faceNormals[f]);
+      quatB.vmult(faceN, faceN);
+      const d = faceN.dot(separatingNormal);
+      if (d > dmax) { dmax = d; best = f; }
+    }
+    const faceB = hullB.faces[best];
+    for (let k = 0; k < faceB.length; k++) {
+      const v = vecAt(polyA, k);
+      v.copy(hullB.vertices[faceB[k]]);
+      quatB.vmult(v, v);
+      posB.vadd(v, v);
+    }
+    if (best < 0) return;
+
+    // clipFaceAgainstHull, on the polygon of hullB's face just built.
+    const hullA = this;
+    let ref = -1, dmin = Number.MAX_VALUE;
+    for (let f = 0; f < hullA.faces.length; f++) {
+      faceN.copy(hullA.faceNormals[f]);
+      quatA.vmult(faceN, faceN);
+      const d = faceN.dot(separatingNormal);
+      if (d < dmin) { dmin = d; ref = f; }
+    }
+    if (ref < 0) return;
+    const face = hullA.faces[ref];
+    let nConn = 0;
+    for (let f = 0; f < hullA.faces.length; f++) {
+      if (f === ref) continue;
+      const fv = hullA.faces[f];
+      for (let e = 0; e < fv.length; e++) {
+        if (face.indexOf(fv[e]) === -1) continue;
+        let seen = false;
+        for (let c = 0; c < nConn; c++) if (connected[c] === f) { seen = true; break; }
+        if (!seen) connected[nConn++] = f;
+      }
+    }
+    let src = polyA, dst = polyB, n = faceB.length;
+    for (let e = 0; e < face.length; e++) {
+      const side = e < nConn ? connected[e] : -1;
+      planeN.copy(hullA.faceNormals[side]);
+      quatA.vmult(planeN, planeN);
+      n = clipPoly(src, n, dst, planeN, hullA.getPlaneConstantOfFace(side) - planeN.dot(posA));
+      const t = src; src = dst; dst = t;
+    }
+    // Every record shares planeN, as they shared one normal before.
+    planeN.copy(hullA.faceNormals[ref]);
+    quatA.vmult(planeN, planeN);
+    const constant = hullA.getPlaneConstantOfFace(ref) - planeN.dot(posA);
+    let nRec = 0;
+    for (let k = 0; k < n; k++) {
+      let depth = planeN.dot(src[k]) + constant;
+      if (depth <= minDist) {
+        console.log(`clamped: depth=${depth} to minDist=${minDist}`);
+        depth = minDist;
+      }
+      if (depth <= maxDist && depth <= 1e-6) {
+        const rec = records[nRec] || (records[nRec] = { point: null, normal: null, depth: 0 });
+        nRec++;
+        rec.point = src[k];
+        rec.normal = planeN;
+        rec.depth = depth;
+        result.push(rec);
+      }
+    }
+  };
+}
 
 const physWorld  = new CANNON.Material('world');
 const physProp   = new CANNON.Material('prop');

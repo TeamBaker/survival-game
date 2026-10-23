@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 238;
+window.GAME_VERSION = 239;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1769,6 +1769,11 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // caster has changed (see shadowCastersChanged) rather than every frame.
 renderer.shadowMap.autoUpdate = false;
 renderer.shadowMap.needsUpdate = true;
+// Paused or under the menu, the frame on screen is only drawn again once
+// something it shows has changed: the menu opening, a setting moved, a chunk
+// rebuilt, a piece made or dropped, the canvas resized. Whatever changes the
+// picture sets this; tick clears it as it draws.
+let menuRedraw = true;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -2322,6 +2327,41 @@ world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physDebris,{ fri
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
 const syncList = [];
+// The entries of syncList whose body is awake, which is all the per-frame piece
+// loops walk: a rubble heap is hundreds of sleeping pieces that cannot change
+// until something wakes them, and asking each of them every frame was most of
+// what those loops cost. Kept by cannon's own sleep and wakeup events, never by
+// polling. One that falls asleep stays listed until the top of the next tick
+// (pieceSleepPrune), so everything that runs in the frame it stopped in still
+// sees it that once, as when every loop asked every body. pieceListCheck holds
+// the list to a full walk now and then.
+const awakePieces = [];
+const pieceSlept = [];   // put to sleep since the last prune
+function pieceListed(s) {
+  if (s.awakeAt >= 0 || s.gone) return;
+  s.awakeAt = awakePieces.length;
+  awakePieces.push(s);
+}
+function pieceUnlist(s) {
+  const k = s.awakeAt;
+  if (k < 0) return;
+  const last = awakePieces.pop();
+  if (last !== s) { awakePieces[k] = last; last.awakeAt = k; }
+  s.awakeAt = -1;
+}
+function pieceSleepPrune() {
+  for (let k = 0; k < pieceSlept.length; k++) {
+    const s = pieceSlept[k];
+    if (s.body.sleepState === CANNON.Body.SLEEPING) pieceUnlist(s);
+  }
+  pieceSlept.length = 0;
+}
+// Out of the world for good: off every list, its ground let go.
+function pieceGone(s) {
+  s.gone = true;
+  pieceUnlist(s);
+  pieceKeepMark(s);
+}
 function linkBody(mesh, body) {
   // Body.addShape() computes the AABB while the body is still at the origin and
   // clears aabbNeedsUpdate. Only integrate() ever raises the flag again, and a
@@ -2331,7 +2371,25 @@ function linkBody(mesh, body) {
   body.updateAABB();
   world.addBody(body);
   mesh.userData.body = body;
-  if (body.type !== CANNON.Body.STATIC) syncList.push({ mesh, body });
+  menuRedraw = true;
+  if (body.type !== CANNON.Body.STATIC) {
+    const s = { mesh, body, awakeAt: -1, gone: false, chunk: null };
+    syncList.push(s);
+    mesh.userData.sync = s;
+    body.addEventListener('wakeup', () => {
+      pieceListed(s);
+      pieceKeepMark(s);
+      debrisWaitAdd(s);
+    });
+    body.addEventListener('sleep', () => {
+      if (s.gone) return;
+      pieceSlept.push(s);
+      pieceKeepMark(s);
+      debrisWaitAdd(s);
+      if (s.chunk) s.chunk.calm = 0;   // a freeze window never spans a sleep
+    });
+    if (body.sleepState !== CANNON.Body.SLEEPING) pieceListed(s);
+  }
   return body;
 }
 
@@ -3639,7 +3697,7 @@ function applyChunkView(c) {
   const ms = chunkMesh[c];
   if (!ms) return;
   const show = chunkInView(c);
-  for (const im of ms) im.visible = show;
+  for (const im of ms) if (im.visible !== show) { im.visible = show; menuRedraw = true; }
 }
 
 // How much darker a block is for sitting below the top of its own column. The
@@ -4097,6 +4155,7 @@ function unbatchChunk(c) {
 // corners copied as they are, each with its chunk's origin (the chunk mesh's
 // instance matrix) alongside, and the chunks' own meshes hidden.
 function mergeBatch(b) {
+  menuRedraw = true;
   const bi = b % BATCH_N, bj = (b / BATCH_N) | 0;
   const ci0 = bi * BATCH, cj0 = bj * BATCH;
   const ci1 = Math.min(ci0 + BATCH, CHUNK_N), cj1 = Math.min(cj0 + BATCH, CHUNK_N);
@@ -4206,6 +4265,7 @@ function chunkPalette(nv) {
 // and only the part in use goes up to the GPU. A mesh is made fresh only when
 // its buffer has run out of room or the chunk has run past the shared index.
 function rebuildChunk(c, r) {
+  menuRedraw = true;
   unbatchChunk(c);
   qN = 0;
   faceN = 0;
@@ -5065,22 +5125,104 @@ function keepChunkColliders(lo, hi, pad) {
     }
   }
 }
-// Sleeping and frozen pieces stay in this loop: the ground under them is kept
-// loaded, so one woken later never finds itself over a missing collider.
+// Sleeping and frozen pieces keep the ground under them loaded too, so one woken
+// later never finds itself over a missing collider. A sleeper cannot move, so
+// its chunks are counted into _sleepKeep once, when it falls asleep, and let go
+// when it wakes or goes — not walked every frame. The letting go waits for the
+// next call here, after the woken body has been through the awake walk: the
+// unload sweep in between still finds its ground held.
+const _sleepKeep = new Uint16Array(CHUNK_N * CHUNK_N);
+const pieceKeepQ = [];
+function pieceKeepMark(s) {
+  if (s.keepQ) return;
+  s.keepQ = true;
+  pieceKeepQ.push(s);
+}
+function sleepKeepAdd(r, d) {
+  for (let cj = r[2]; cj <= r[3]; cj++) {
+    for (let ci = r[0]; ci <= r[1]; ci++) {
+      const c = cj * CHUNK_N + ci;
+      _sleepKeep[c] += d;
+      if (d > 0 && !colliderBody[c]) buildChunkColliderSync(c);
+    }
+  }
+}
+// keepChunkColliders' chunk range for a body at rest (no speed to pad for).
+function sleepKeepRange(b, r) {
+  if (b.aabbNeedsUpdate) b.updateAABB();
+  const lo = b.aabb.lowerBound, hi = b.aabb.upperBound;
+  r[0] = Math.max(0, Math.floor(colI(lo.x - BLOCK) / CHUNK));
+  r[1] = Math.min(CHUNK_N - 1, Math.floor(colI(hi.x + BLOCK) / CHUNK));
+  r[2] = Math.max(0, Math.floor(colJ(lo.z - BLOCK) / CHUNK));
+  r[3] = Math.min(CHUNK_N - 1, Math.floor(colJ(hi.z + BLOCK) / CHUNK));
+  return r;
+}
 function ensurePhysicsObjectColliders(dt) {
   for (let k = 0; k < _physKeepList.length; k++) _physKeep[_physKeepList[k]] = 0;
   _physKeepList.length = 0;
   const simT = Math.min(dt + physStep, physStep * physMaxSubsteps());
-  for (let n = 0; n < syncList.length; n++) {
-    const b = syncList[n].body;
+  for (let n = 0; n < awakePieces.length; n++) {
+    const b = awakePieces[n].body;
     const v = b.velocity;
     if (b.aabbNeedsUpdate) b.updateAABB();
     keepChunkColliders(b.aabb.lowerBound, b.aabb.upperBound, BLOCK + Math.hypot(v.x, v.z) * simT);
   }
+  for (let k = 0; k < pieceKeepQ.length; k++) {
+    const s = pieceKeepQ[k];
+    s.keepQ = false;
+    if (s.keep) { sleepKeepAdd(s.keep, -1); s.keep = null; }
+    if (!s.gone && s.body.sleepState === CANNON.Body.SLEEPING) sleepKeepAdd(s.keep = sleepKeepRange(s.body, [0, 0, 0, 0]), 1);
+  }
+  pieceKeepQ.length = 0;
   const pv = playerBody.velocity;
   const pSpeed = Math.max(Math.hypot(pv.x, pv.z), PLAYER.walk * PLAYER.sprintMult);
   playerBody.updateAABB();
   keepChunkColliders(playerBody.aabb.lowerBound, playerBody.aabb.upperBound, BLOCK + 2 * pSpeed * simT);
+  if (frameCount % PIECE_CHECK_EVERY === 0) pieceListCheck(simT);
+}
+
+// The debug cross-check on awakePieces and _sleepKeep: a full walk of syncList,
+// the way every loop used to ask every body, against the incremental answer.
+// Run here, the one point in a frame where both are settled (pruned at the top
+// of the tick, sleepers counted just above). Every PIECE_CHECK_EVERY frames.
+const PIECE_CHECK_EVERY = 120;
+let pieceCheckFails = 0;
+const _pieceCheckKeep = new Uint8Array(CHUNK_N * CHUNK_N), _pieceCheckSleep = new Uint16Array(CHUNK_N * CHUNK_N);
+const _pieceCheckR = [0, 0, 0, 0];
+function pieceListCheck(simT) {
+  let bad = '', awake = 0;
+  for (let n = 0; n < syncList.length; n++) {
+    const s = syncList[n], b = s.body;
+    const on = b.sleepState !== CANNON.Body.SLEEPING;
+    if (on) awake++;
+    if (on !== (s.awakeAt >= 0) && !bad) bad = `body ${b.id} ${on ? 'awake but not listed' : 'asleep but listed'}`;
+    // The ground the old every-body walk kept for it this frame.
+    const v = b.velocity, pad = on ? BLOCK + Math.hypot(v.x, v.z) * simT : BLOCK;
+    if (b.aabbNeedsUpdate) b.updateAABB();
+    const lo = b.aabb.lowerBound, hi = b.aabb.upperBound;
+    const ci0 = Math.max(0, Math.floor(colI(lo.x - pad) / CHUNK)), ci1 = Math.min(CHUNK_N - 1, Math.floor(colI(hi.x + pad) / CHUNK));
+    const cj0 = Math.max(0, Math.floor(colJ(lo.z - pad) / CHUNK)), cj1 = Math.min(CHUNK_N - 1, Math.floor(colJ(hi.z + pad) / CHUNK));
+    for (let cj = cj0; cj <= cj1; cj++) for (let ci = ci0; ci <= ci1; ci++) _pieceCheckKeep[cj * CHUNK_N + ci] = 1;
+    if (on) continue;
+    // A sleeper's count went in where it lay when it fell asleep; it must lie there still.
+    const r = sleepKeepRange(b, _pieceCheckR), k = s.keep;
+    if (!bad && (!k || k[0] !== r[0] || k[1] !== r[1] || k[2] !== r[2] || k[3] !== r[3])) bad = `sleeping body ${b.id} holds the wrong ground`;
+    for (let cj = r[2]; cj <= r[3]; cj++) for (let ci = r[0]; ci <= r[1]; ci++) _pieceCheckSleep[cj * CHUNK_N + ci]++;
+  }
+  if (!bad && awake !== awakePieces.length) bad = `${awakePieces.length} listed, ${awake} awake`;
+  for (let k = 0; k < awakePieces.length && !bad; k++) {
+    const s = awakePieces[k];
+    if (s.awakeAt !== k || s.gone) bad = `list slot ${k} is stale`;
+  }
+  for (let c = 0; c < _pieceCheckKeep.length; c++) {
+    if (!bad && _pieceCheckSleep[c] !== _sleepKeep[c]) bad = `chunk ${c} sleep count ${_sleepKeep[c]}, sleepers ${_pieceCheckSleep[c]}`;
+    _pieceCheckSleep[c] = 0;
+    if (!_pieceCheckKeep[c]) continue;
+    _pieceCheckKeep[c] = 0;
+    if (!bad && !(_physKeep[c] || _sleepKeep[c])) bad = `chunk ${c} under a body is not held`;
+    if (!bad && !colliderBody[c]) bad = `chunk ${c} under a body has no collider`;
+  }
+  if (bad) { pieceCheckFails++; console.error('awakePieces disagrees with a full walk: ' + bad); }
 }
 
 function unloadChunkCollider(c) {
@@ -5666,7 +5808,12 @@ scene.add(playerMesh);
 // very same contact equations for a fraction of the work. The narrowphase
 // looks resolvers up through getters that return this.<name>, so instance
 // properties take over; sphereHeightfield and the like call sphereConvex
-// internally, hence the depth count so only the outermost call scans.
+// internally, hence the depth count so only the outermost call scans. Every
+// sphere pair in the world comes through here (a sphere prop on the terrain,
+// say), so a pair without the player goes straight through: a nested call is
+// for the same two bodies, so it never needs the count either. The arguments
+// are named and handed on with call() rather than apply(arguments), which
+// keeps the wrapper cheap for the engine to run.
 let groundNy = 0;
 let stepGroundNy = 0, sphereDepth = 0;
 {
@@ -5675,11 +5822,12 @@ let stepGroundNy = 0, sphereDepth = 0;
                       'sphereHeightfield', 'sphereParticle', 'sphereTrimesh']) {
     const resolve = np[name];
     if (typeof resolve !== 'function') continue;
-    np[name] = function () {
+    np[name] = function (si, sj, xi, xj, qi, qj, bi, bj, rsi, rsj, justTest) {
+      if (bi !== playerBody && bj !== playerBody) return resolve.call(this, si, sj, xi, xj, qi, qj, bi, bj, rsi, rsj, justTest);
       const res = this.result, n0 = res.length;
       sphereDepth++;
       let out;
-      try { out = resolve.apply(this, arguments); } finally { sphereDepth--; }
+      try { out = resolve.call(this, si, sj, xi, xj, qi, qj, bi, bj, rsi, rsj, justTest); } finally { sphereDepth--; }
       if (sphereDepth === 0) {
         for (let k = n0, n = res.length; k < n; k++) {
           const c = res[k];
@@ -6644,6 +6792,20 @@ function debrisUnbatch(r) {
   C.dirty = true;
   r.mesh.userData.batch = null;
   debrisSetLayer(r.mesh, 0);
+  // Still asleep (handed back for an edit), it is copied again: its count has
+  // run past the wait already, so straight away.
+  if (r.mesh.userData.sync) debrisWaitAdd(r.mesh.userData.sync);
+}
+// The bodies debrisBatchSync counts the sleep of: every one that has fallen
+// asleep or woken since it last looked, and stays until it is copied or seen
+// awake. A copied piece is off it, and back on when it wakes or is handed back.
+// The count is the frames it has been seen asleep, reset only when it is seen
+// awake, just as when every body was asked.
+const debrisWait = [];
+function debrisWaitAdd(s) {
+  if (s.waiting) return;
+  s.waiting = true;
+  debrisWait.push(s);
 }
 // Copy n instances of src (a piece's mesh or grain layer) into im from slot k
 // on: each block's matrix carried through the piece's pose to the cell's
@@ -6660,6 +6822,7 @@ function debrisCopy(im, k, src, pose) {
   return k + n;
 }
 function debrisCellBuild(C) {
+  menuRedraw = true;
   C.dirty = false;
   const want = new Map();   // material -> [instances, source geometry, depth material]
   const need = (o) => {
@@ -6731,15 +6894,19 @@ function debrisBatchSync() {
     debrisBatched.pop();
   }
   // Copy in whatever has been asleep long enough and is not copied yet, the
-  // pieces just handed back for an edit among them.
-  for (let n = 0; n < syncList.length; n++) {
-    const s = syncList[n];
-    if (s.body.sleepState !== CANNON.Body.SLEEPING) { s.slept = 0; continue; }
+  // pieces just handed back for an edit among them. Kept in place, so the
+  // pieces go in in the order they joined.
+  let w = 0;
+  for (let n = 0; n < debrisWait.length; n++) {
+    const s = debrisWait[n];
+    if (s.gone || s.body.sleepState !== CANNON.Body.SLEEPING) { s.slept = 0; s.waiting = false; continue; }
     s.slept = (s.slept || 0) + 1;
-    if (s.slept < DEBRIS_BATCH_WAIT || s.mesh.parent !== debris || s.mesh.userData.batch) continue;
-    if (s.mesh.count && !s.mesh.instanceColor) continue;   // would draw white as itself, coloured here
-    debrisBatch(s.mesh);
+    if (s.slept >= DEBRIS_BATCH_WAIT && !s.mesh.userData.batch && s.mesh.parent === debris
+     && !(s.mesh.count && !s.mesh.instanceColor)) debrisBatch(s.mesh);   // (that would draw white as itself, coloured here)
+    if (s.mesh.userData.batch) { s.waiting = false; continue; }
+    debrisWait[w++] = s;
   }
+  debrisWait.length = w;
   for (const C of debrisBatchCells.values()) if (C.dirty) debrisCellBuild(C);
 }
 // Every grain in the air is drawn by one InstancedMesh per material, so a sand
@@ -6809,14 +6976,35 @@ const powderQueue = [];  // { i, j, lvl }
 function restFallingChunk(n) {
   const f = fallingChunks[n];
   fallingChunks.splice(n, 1);
+  f.rested = true;
+  f.seq = ++chunkSeq;
   restedChunks.push(f);
+}
+// Both lists only ever grow at the end, so a piece's seq — taken as it joins
+// one — orders the list. What awakeChunks hands back is the awake pieces of one
+// list in that order, so a loop over it visits them as a walk of the whole list
+// would (the order sleeps, sheds and splits happen in is the order they always
+// did). One scratch array: done with before the next call.
+let chunkSeq = 0;
+const _awakeChunks = [];
+function awakeChunks(rested) {
+  const out = _awakeChunks;
+  out.length = 0;
+  for (let k = 0; k < awakePieces.length; k++) {
+    const f = awakePieces[k].chunk;
+    if (f && !!f.rested === rested) out.push(f);
+  }
+  if (out.length > 1) out.sort((a, b) => a.seq - b.seq);
+  return out;
 }
 
 // Take a piece away for good: body out of the world, mesh out of the scene.
 function dropChunk(f) {
   world.removeBody(f.body);
   const q = syncList.findIndex((e) => e.body === f.body);
-  if (q >= 0) syncList.splice(q, 1);
+  if (q >= 0) pieceGone(syncList.splice(q, 1)[0]);
+  f.gone = true;
+  menuRedraw = true;
   debris.remove(f.mesh);
   freeDebrisMesh(f.mesh);
   stressRev++;   // its blocks are gone from the world
@@ -6923,7 +7111,7 @@ function spawnFallingChunk(unit) {
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
   watchImpacts(body, mesh);
-  fallingChunks.push({ mesh, body, still: 0 });
+  fallingChunks.push(mesh.userData.sync.chunk = { mesh, body, still: 0, seq: ++chunkSeq });
 }
 
 // ----- powder in the ground -----
@@ -7084,9 +7272,11 @@ function updateFallingChunks() {
   // alone is not enough (a slow slide is still a slide), so the test is how far
   // it has moved and turned over the window. It sleeps like any other body: a
   // contact, a dig in its chunk or a tool on it wakes it.
-  for (let n = restedChunks.length - 1; n >= 0; n--) {
-    const f = restedChunks[n], b = f.body;
-    if (b.position.y < FALL_KILL_Y) { restedChunks.splice(n, 1); dropChunk(f); continue; }
+  // Only the awake ones: a sleeper cannot fall, and is not watched for calm.
+  const rested = awakeChunks(true);
+  for (let n = rested.length - 1; n >= 0; n--) {
+    const f = rested[n], b = f.body;
+    if (b.position.y < FALL_KILL_Y) { restedChunks.splice(restedChunks.indexOf(f), 1); dropChunk(f); continue; }
     if (b.sleepState === CANNON.Body.SLEEPING) { f.calm = 0; continue; }
     if (b.velocity.lengthSquared() >= FALL_REST_V * FALL_REST_V
      || b.angularVelocity.lengthSquared() >= FALL_REST_V * FALL_REST_V) { f.calm = 0; continue; }
@@ -7101,7 +7291,10 @@ function updateFallingChunks() {
     const p = b.position, a = f.calmPos, q = b.quaternion, aq = f.calmQuat;
     const dx = p.x - a.x, dy = p.y - a.y, dz = p.z - a.z;
     const dot = Math.abs(q.x * aq.x + q.y * aq.y + q.z * aq.z + q.w * aq.w);
-    if (dx * dx + dy * dy + dz * dz < FALL_FREEZE_D * FALL_FREEZE_D && dot > 1 - 1e-5 && restsOnStill(b)) b.sleep();
+    if (dx * dx + dy * dy + dz * dz < FALL_FREEZE_D * FALL_FREEZE_D && dot > 1 - 1e-5 && restsOnStill(b)) {
+      b.sleep();
+      b.dispatchEvent(CANNON.Body.sleepEvent);   // sleep() itself is silent; sleepTick is what announces one
+    }
   }
 }
 
@@ -7647,10 +7840,13 @@ const powderLocalDown = new CANNON.Vec3();
 const powderProbe = new THREE.Vector3(), powderZero = new THREE.Vector3();
 
 function shedPowder() {
+  // Awake pieces only: a sleeping one lies as it did when last looked at, and
+  // anything that changes its lattice wakes it (rebuildDebrisBody).
   for (let s = 0; s < 2; s++) {
-    const list = s ? fallingChunks : restedChunks;
+    const list = awakeChunks(!s);
     for (let n = list.length - 1; n >= 0; n--) {
       const f = list[n];
+      if (f.gone) continue;
       // A piece still travelling is mid-break: leave it, or it dissolves in the air.
       // Actually, shed powder always — it should fall when unsupported regardless.
       const mesh = f.mesh, lat = mesh.userData.blocks;
@@ -8123,7 +8319,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
   while (fallingChunks.length >= FALL_BODY_CAP) restFallingChunk(0);
   linkBody(mesh, body);  // adds the body to the world and the mesh to syncList
   watchImpacts(body, mesh);
-  fallingChunks.push({ mesh, body, still: 0 });
+  fallingChunks.push(mesh.userData.sync.chunk = { mesh, body, still: 0, seq: ++chunkSeq });
 }
 
 // Digging a loose piece takes off the one block under the crosshair and leaves
@@ -8791,7 +8987,7 @@ function flushDirtyChunks() {
   if (!dirtyChunks.size) return;
   for (const c of dirtyChunks) rebuildChunk(c);
   dirtyChunks.clear();
-  blocksHudEl.textContent = worldBlocks.toLocaleString();
+  hudBlocks();
 }
 
 function shovelPickUp() {
@@ -8878,6 +9074,21 @@ const placeBtn   = document.getElementById('btn-place');
 const heldPanel  = document.getElementById('shovel-held');
 const heldHudEl  = document.getElementById('held-hud');
 const blocksHudEl = document.getElementById('blocks-hud');
+// A HUD field is written only when its text changes. Setting textContent, even
+// to the string already there, swaps the text node and costs the page a style,
+// layout and paint pass, and these are set every frame a chunk is rebuilt and
+// ten times a second.
+function hudText(el, t) {
+  if (el.hudText === t) return;
+  el.hudText = t;
+  el.textContent = t;
+}
+let hudBlocksN = NaN;   // the count on show, so an unchanged one is not even formatted
+function hudBlocks() {
+  if (worldBlocks === hudBlocksN) return;
+  hudBlocksN = worldBlocks;
+  hudText(blocksHudEl, worldBlocks.toLocaleString());
+}
 
 function refreshShovelUI() {
   const n = shovel.held.length;
@@ -8886,7 +9097,7 @@ function refreshShovelUI() {
   const parts = [];
   for (let m = 0; m < MAT_IDS; m++) if (by[m]) parts.push(by[m] + ' ' + (MAT_NAMES[m] || '?'));
   heldPanel.textContent = 'Blocks held: ' + n + (parts.length ? '  —  ' + parts.join(', ') : '');
-  heldHudEl.textContent = String(n);
+  hudText(heldHudEl, String(n));
   shovelBtn.innerHTML = 'Shovel &mdash; ' + (shovel.on ? 'On' : 'Off');
   shovelBtn.classList.toggle('on', shovel.on);
 }
@@ -9481,6 +9692,7 @@ const menuBtn = document.getElementById('btn-menu');
 let menuOpen = false;
 function setMenuUI(on) {
   menuOpen = on;
+  menuRedraw = true;
   document.body.classList.toggle('menu-open', on);
   if (on && isLocked()) enterMouseMode();
 }
@@ -9491,6 +9703,10 @@ document.getElementById('menu-overlay').addEventListener('pointerdown', (e) => {
   if (e.target.id === 'menu-overlay') setMenuUI(false);
   e.stopPropagation();
 });
+// Anything done in the menu may show behind it: drawn again on the next paused frame.
+for (const type of ['input', 'change', 'click']) {
+  document.getElementById('menu-overlay').addEventListener(type, () => { menuRedraw = true; }, true);
+}
 
 // --- Settings ---
 let mouseSensitivity = MOUSE_SENSITIVITY;
@@ -9525,7 +9741,29 @@ if (shSlider) {
     renderer.shadowMap.type = v >= 2 ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
     renderer.shadowMap.needsUpdate = true;
     scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
+    menuRedraw = true;
+    shadowWarm();
   });
+}
+// Moving the slider changes the program every lit material needs. Left to the
+// first draw, the scene's would each be built mid-frame, and the first piece,
+// the first sand on a piece and the first look at tension would each stall one
+// more, as at startup before warmFirstUse. So both run again here, off the
+// frames: once per change, and once more after if the slider moved meanwhile.
+let shadowWarmBusy = false, shadowWarmAgain = false;
+async function shadowWarm() {
+  if (shadowWarmBusy) { shadowWarmAgain = true; return; }
+  shadowWarmBusy = true;
+  try {
+    do {
+      shadowWarmAgain = false;
+      try { await renderer.compileAsync(scene, camera); } catch (e) { console.warn('shader precompile failed', e); }
+      try { warmFirstUse(); } catch (e) { console.warn('shader warm-up failed', e); }
+    } while (shadowWarmAgain);
+  } finally {
+    shadowWarmBusy = false;
+  }
+  menuRedraw = true;
 }
 const lodOverrideSel = document.getElementById('sel-lod-override');
 if (lodOverrideSel) {
@@ -9736,7 +9974,7 @@ function updateColTest() {
     rebuildDebugCollision();
   }
 
-  colTestHud.textContent = `CHUNK: ${ci}, ${cj}\nLOADED: ${_colLoaded.length} chunks`;
+  hudText(colTestHud, `CHUNK: ${ci}, ${cj}\nLOADED: ${_colLoaded.length} chunks`);
 }
 
 // ---------------------------------------------------------------------------
@@ -11181,6 +11419,7 @@ function stressWorkerSource() {
 ${stressSolveJob}
 let mem = {}, idle = 0;
 onmessage = (e) => {
+  if (e.data.kind === 'free') { clearTimeout(idle); mem = {}; return; }
   try {
     clearTimeout(idle);
     const r = stressSolveJob(e.data, mem);
@@ -11454,12 +11693,13 @@ function stressRestCode(mesh, was = 0) {
 }
 // Every frame, stress on or off: a piece's rest changing means it lies
 // somewhere new, and its measured contacts only hold for as long as it sleeps.
+// Only the awake pieces: a sleeping one reads 2 and has since the frame it
+// stopped, which is still in the list.
 function stressWatchPieces() {
-  const pieces = debris.children;
-  for (let p = 0; p < pieces.length; p++) {
-    const ud = pieces[p].userData;
-    if (!ud.blocks) continue;
-    const code = stressRestCode(pieces[p], ud.stressRest);
+  for (let p = 0; p < awakePieces.length; p++) {
+    const mesh = awakePieces[p].mesh, ud = mesh.userData;
+    if (!ud.blocks || mesh.parent !== debris) continue;
+    const code = stressRestCode(mesh, ud.stressRest);
     if (code !== 2) ud.stressContacts = null;
     if (code !== ud.stressRest) { ud.stressRest = code; stressRev++; }
   }
@@ -12526,6 +12766,7 @@ try {
       if (e.data.error) { stressWorkerFail(e.data.error); return; }
       if (storeHold) stressHeld.push(e.data);
       else stressApply(e.data);
+      if (document.hidden) stressFreeHidden();   // the solve that was out when the tab went
     };
     stressWorker.onerror = (e) => { e.preventDefault(); stressWorkerFail(e.message); };
   }
@@ -12533,6 +12774,23 @@ try {
   console.warn('no stress worker; solving on the main thread', err);
   stressWorker = null;
 }
+
+// A hidden tab is the first one a phone throws away for memory, and the
+// solver's scratch — the worker's, and this thread's when there is no worker —
+// is the bulk of what this one holds and can do without: tens of MB, kept so
+// the next solve need not build it again. Let go as the tab is hidden; the next
+// solve after it is shown builds it again, as the first one after startup did.
+// A solve still out is left to finish, and its scratch goes when it is back.
+// Nothing the world needs is in it: answers and layouts live on this side.
+function stressFreeHidden() {
+  clearTimeout(stSolveIdle);
+  stSolveMem = {};
+  if (stressWorker && !stJob) stressWorker.postMessage({ kind: 'free' });
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stressFreeHidden();
+  else menuRedraw = true;   // a browser may have dropped the canvas while away
+});
 
 // The drawn window: built blocks and hanging ground with an open face within
 // STRESS_RADIUS of the player, nearest first past STRESS_MAX_DRAW, and every
@@ -12721,6 +12979,7 @@ function stressRecolor() {
 // Whether any cube written since the last stressRecolored() has a crack.
 let stCracked = false;
 function stressRecolored(im) {
+  menuRedraw = true;
   im.instanceColor.needsUpdate = true;
   im.geometry.attributes.instanceCrack.needsUpdate = true;
   im.visible = stressShown || (stressOn && stCracked);
@@ -12940,7 +13199,7 @@ function hideOverlay() {
   overlay.classList.add('hidden');
   if (!isTouchDevice) requestLock();
 }
-function showOverlay() { overlay.classList.remove('hidden'); }
+function showOverlay() { overlay.classList.remove('hidden'); menuRedraw = true; }
 
 overlay.addEventListener('pointerdown', (e) => { e.preventDefault(); hideOverlay(); }, { passive: false });
 overlay.addEventListener('touchstart', (e) => { e.preventDefault(); hideOverlay(); }, { passive: false });
@@ -12948,12 +13207,28 @@ overlay.addEventListener('touchstart', (e) => { e.preventDefault(); hideOverlay(
 // ---------------------------------------------------------------------------
 // Resize
 // ---------------------------------------------------------------------------
+// A phone's address bar sliding in and out fires resize after resize for as long
+// as the page scrolls, and setting the size reallocates the drawing buffer each
+// time (setPixelRatio did it once more on top), same size or not. So the events
+// only ask for one look on the next frame, and that look does nothing unless
+// the size or the ratio really changed — then sets both in one go.
+let resizeQueued = false;
+const _resizeV = new THREE.Vector2();
 function resize() {
+  if (resizeQueued) return;
+  resizeQueued = true;
+  requestAnimationFrame(resizeNow);
+}
+function resizeNow() {
+  resizeQueued = false;
   const w = window.innerWidth;
   const h = window.innerHeight;
+  const pr = renderPixelRatio();
+  const cur = renderer.getSize(_resizeV);
+  if (cur.x === w && cur.y === h && renderer.getPixelRatio() === pr && camera.aspect === w / Math.max(h, 1)) return;
   const aspect = w / Math.max(h, 1);
-  renderer.setPixelRatio(renderPixelRatio());
-  renderer.setSize(w, h, false);
+  renderer.setDrawingBufferSize(w, h, pr);
+  menuRedraw = true;
   camera.aspect = aspect;
   // Original used a 90-degree vertical FOV at 16:9. Here the horizontal FOV is
   // pinned near 90 degrees and the vertical is derived, so portrait phones keep
@@ -12966,7 +13241,7 @@ function resize() {
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
 if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
-resize();
+resizeNow();
 
 // ---------------------------------------------------------------------------
 // Main loop
@@ -12976,7 +13251,7 @@ const posEl = document.getElementById('pos');
 // Solid blocks in the world, from the store rather than from what is drawn. It
 // moves only when the shovel moves one, and always by exactly one: BLKS + HELD
 // is the same number for the whole session.
-blocksHudEl.textContent = worldBlocks.toLocaleString();
+hudBlocks();
 const clock = new THREE.Clock();
 let frames = 0, fpsAccum = 0, fps = 0, hudAccum = 0;
 
@@ -13043,10 +13318,16 @@ function shadowSigVisit(o) {
   shadowSigPut(o.customDepthMaterial);
 }
 // traverseVisible's walk, in its order, but past the terrain where none of it
-// casts: some 900 chunk meshes a frame that could never change the answer.
+// casts: some 900 chunk meshes a frame that could never change the answer. An
+// object off the shadow camera's layers is passed by as the shadow pass passes
+// it by (its children still walked, as there): a sleeping piece copied into its
+// cell's batch is on DEBRIS_BATCHED_LAYER, so a settled heap costs a layer test
+// a piece here rather than its whole pose and buffers. Its copy is what casts,
+// and a piece that changes is handed back to layer 0 before this runs.
+const shadowLayers = sun.shadow.camera.layers;
 function shadowSigWalk(o) {
   if (!o.visible) return;
-  shadowSigVisit(o);
+  if (o.layers.test(shadowLayers)) shadowSigVisit(o);
   const ch = o.children;
   for (let k = 0; k < ch.length; k++) if (TERRAIN_CASTS || ch[k] !== terrain) shadowSigWalk(ch[k]);
 }
@@ -13073,16 +13354,20 @@ function tick() {
     clock.getDelta();
     const now = performance.now();
     if (now < pausedFrameAt) return;
+    if (!pausedFrameAt) menuRedraw = true;   // just paused: the menu or overlay is new
     pausedFrameAt = now + PAUSED_FRAME_MS;
     flushDirtyColliders();
     flushDirtyChunks();
     updateLOD();
-    sky.position.copy(camera.position);
     debrisBatchSync();   // a load from the menu drops and remakes pieces
+    if (!menuRedraw && !renderer.shadowMap.needsUpdate) return;
+    menuRedraw = false;
+    sky.position.copy(camera.position);
     renderer.render(scene, camera);
     return;
   }
   pausedFrameAt = 0;
+  pieceSleepPrune();
   flushDirtyColliders();
   buildPendingColliders();
   const dt = Math.min(clock.getDelta(), 0.1);
@@ -13116,8 +13401,8 @@ function tick() {
   // A sleeping body does not integrate, so its pose only changes through code
   // that wakes it (rebuildDebrisBody, the collider rebuild, a contact) — one
   // copy after it falls asleep is the last it needs until it wakes again.
-  for (let i = 0; i < syncList.length; i++) {
-    const s = syncList[i];
+  for (let i = 0; i < awakePieces.length; i++) {
+    const s = awakePieces[i];
     if (s.body.sleepState === CANNON.Body.SLEEPING) {
       if (s.asleep) continue;
       s.asleep = true;
@@ -13162,7 +13447,7 @@ function tick() {
     // Walked backwards: a swap-remove only moves entries already visited.
     for (let k = _colLoaded.length - 1; k >= 0; k--) {
       const c = _colLoaded[k];
-      if (_physKeep[c] || (colTestOn && c === colTestChunk)) continue;
+      if (_physKeep[c] || _sleepKeep[c] || (colTestOn && c === colTestChunk)) continue;
       if (colliderFarFrom(c, px, pz)) unloadChunkCollider(c);
     }
     // A queued build the player has since walked away from (or teleported away
@@ -13212,14 +13497,14 @@ function tick() {
   }
   if (hudAccum >= 0.1) {
     hudAccum = 0;
-    fpsEl.textContent = fps.toFixed(0).padStart(3, ' ');
+    hudText(fpsEl, fps.toFixed(0).padStart(3, ' '));
     const p = camMode === CAM.FREE
       ? state.pos
       : { x: playerBody.position.x, y: playerBody.position.y - centerOffset(), z: playerBody.position.z };
-    posEl.textContent =
+    hudText(posEl,
       p.x.toFixed(1).padStart(6, ' ') + ',' +
       p.y.toFixed(1).padStart(6, ' ') + ',' +
-      p.z.toFixed(1).padStart(6, ' ');
+      p.z.toFixed(1).padStart(6, ' '));
   }
 
   updateLOD();
@@ -13227,6 +13512,7 @@ function tick() {
   else updateShadowFrustum(playerBody.position.x, playerBody.position.y, playerBody.position.z);
   debrisBatchSync();     // last, so nothing after it can change a piece it copied
   if (shadowCastersChanged()) renderer.shadowMap.needsUpdate = true;
+  menuRedraw = false;
   renderer.render(scene, camera);
 }
 
@@ -14122,7 +14408,7 @@ function applyWorldRebuild() {
   refreshHammerUI();
   refreshPlacerUI();
   refreshModeUI();
-  blocksHudEl.textContent = worldBlocks.toLocaleString();
+  hudBlocks();
 }
 
 // A save or load in flight; a second tap while one runs is refused rather than
@@ -14374,6 +14660,15 @@ function warmFirstUse() {
   renderer.shadowMap.needsUpdate = true;
 }
 try { warmFirstUse(); } catch (e) { console.warn('shader warm-up failed', e); }
+// A lost context comes back empty: three rebuilds its own state (its listener
+// runs first), but the column texture and the shadow map are only uploaded or
+// drawn when flagged, and the first-use programs would be built mid-frame again.
+canvas.addEventListener('webglcontextrestored', () => {
+  terrainCols.needsUpdate = true;
+  renderer.shadowMap.needsUpdate = true;
+  try { warmFirstUse(); } catch (e) { console.warn('shader warm-up failed', e); }
+  menuRedraw = true;
+});
 renderer.setAnimationLoop(tick);
 document.getElementById('loading').classList.add('hidden');
 document.body.classList.remove('gen-preview');

@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 241;
+window.GAME_VERSION = 242;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1828,15 +1828,26 @@ let sliceEnd = performance.now() + SLICE_MS;
 // never less than a quarter of a second.
 let loadPreview = false;
 let previewAt = 0, previewT0 = -1;
+// Whether the start-up chunk loop has written terrainColData since it was last
+// sent up whole; null once that loop is over (see rebuildChunk).
+let genColsDirty = false;
 const genDue = () => performance.now() > sliceEnd;
 function genProgress(phase, frac) {
   const [label, start, width] = GEN_PHASES[phase];
   loadLabel.textContent = label + '…';
   loadFill.style.width = ((start + width * Math.min(1, frac)) * 100).toFixed(1) + '%';
 }
-// Hand the browser a frame and resolve on the far side of it. requestAnimationFrame
-// is the normal path; a hidden tab gets none of those, so it falls back to a
-// message, which is not throttled, and a timeout covers any frame that never comes.
+// Hand the browser control and resolve on the far side of it. Waiting out a frame
+// on every slice left a third of each frame idle between the end of the slice and
+// the next vsync, so the normal path is a message, which comes straight back and
+// lets the browser paint in between whenever a frame is due — and a frame kept on
+// order (frameAsk) is what tells us it has. Only when none has come for
+// GEN_FRAME_MS does a pause wait for one, so the bar and the preview never stall.
+// A hidden tab gets no frames at all, so it only ever takes messages, and a
+// timeout covers any frame that never comes.
+const GEN_FRAME_MS = 50;
+let genFrameAt = -Infinity, genFrameAsked = false;
+const genFrameSeen = () => { genFrameAsked = false; genFrameAt = performance.now(); };
 function genPause(phase, frac) {
   genProgress(phase, frac);
   return new Promise((resolve) => {
@@ -1852,6 +1863,7 @@ function genPause(phase, frac) {
         }
         if (now >= previewAt) {
           previewT0 = now;
+          if (genColsDirty) { terrainCols.needsUpdate = true; genColsDirty = false; }
           renderer.shadowMap.needsUpdate = true;
           renderer.render(scene, camera);
         }
@@ -1859,14 +1871,18 @@ function genPause(phase, frac) {
       sliceEnd = performance.now() + SLICE_MS;
       resolve();
     };
-    if (document.hidden) {
+    if (document.hidden || performance.now() - genFrameAt < GEN_FRAME_MS) {
+      if (!genFrameAsked && !document.hidden) {
+        genFrameAsked = true;
+        requestAnimationFrame(genFrameSeen);
+      }
       const ch = new MessageChannel();
       ch.port1.onmessage = go;
       ch.port2.postMessage(0);
     } else {
-      requestAnimationFrame(go);
+      requestAnimationFrame(() => { genFrameSeen(); go(); });
+      setTimeout(go, 200);
     }
-    setTimeout(go, 200);
   });
 }
 // The page has had no chance to paint since the libraries were parsed; give it
@@ -1925,7 +1941,10 @@ scene.add(sky);
 // Environment map for PBR reflections (procedural equirect -> PMREM)
 // ---------------------------------------------------------------------------
 function buildEnvTexture() {
-  const W = 1024, H = 512;
+  // PMREM sizes its cube from this (W / 4 = a 128 cube). Nothing in the game is
+  // glossier than the water, and that reads a mip far below the top one, so a
+  // 256 cube only cost a texture four times the size for the same picture.
+  const W = 512, H = 256;
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const ctx = c.getContext('2d');
@@ -1941,7 +1960,7 @@ function buildEnvTexture() {
 
   const u = ((Math.atan2(SUN.x, SUN.z) / (2 * Math.PI)) + 0.5) * W;
   const v = (1 - (Math.asin(THREE.MathUtils.clamp(SUN.y, -1, 1)) / Math.PI + 0.5)) * H;
-  const rg = ctx.createRadialGradient(u, v, 0, u, v, 200);
+  const rg = ctx.createRadialGradient(u, v, 0, u, v, 200 * W / 1024);
   rg.addColorStop(0.00, 'rgba(255, 248, 226, 1)');
   rg.addColorStop(0.18, 'rgba(255, 240, 205, 0.60)');
   rg.addColorStop(1.00, 'rgba(255, 238, 200, 0)');
@@ -2527,18 +2546,37 @@ function nhash3(ix, iy, iz) {
 // below read the *slope* of this field, and a cubic fade leaves the lattice
 // visible in it as a grid of creases.
 const nfade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
-function vnoise2(x, y) {
+// A caller that passes a slot gets the corner hashes of the last lattice cell it
+// read in that slot back without hashing them again. The island's lattice cells
+// are tens of metres across, so pass 1 lands in the same cell column after
+// column and only pays for the hashes at a cell edge. The hashes are pure, so
+// the numbers are the same either way.
+const VN_SLOTS = 32;
+const vnCell = new Float64Array(VN_SLOTS * 6).fill(NaN);   // ix, iy, a, b, c, d
+function vnoise2(x, y, slot = -1) {
   const ix = Math.floor(x), iy = Math.floor(y);
   const fx = nfade(x - ix), fy = nfade(y - iy);
-  const a = nhash(ix, iy),     b = nhash(ix + 1, iy);
-  const c = nhash(ix, iy + 1), d = nhash(ix + 1, iy + 1);
+  let a, b, c, d;
+  if (slot < 0) {
+    a = nhash(ix, iy);     b = nhash(ix + 1, iy);
+    c = nhash(ix, iy + 1); d = nhash(ix + 1, iy + 1);
+  } else {
+    const q = slot * 6;
+    if (vnCell[q] !== ix || vnCell[q + 1] !== iy) {
+      vnCell[q] = ix; vnCell[q + 1] = iy;
+      vnCell[q + 2] = nhash(ix, iy);     vnCell[q + 3] = nhash(ix + 1, iy);
+      vnCell[q + 4] = nhash(ix, iy + 1); vnCell[q + 5] = nhash(ix + 1, iy + 1);
+    }
+    a = vnCell[q + 2]; b = vnCell[q + 3]; c = vnCell[q + 4]; d = vnCell[q + 5];
+  }
   const lo = a + (b - a) * fx;
   return lo + ((c + (d - c) * fx) - lo) * fy;
 }
-function fbm2(x, y, oct) {
+// `slot` (optional) is the first of `oct` vnoise2 slots, one per octave.
+function fbm2(x, y, oct, slot = -1) {
   let s = 0, a = 0.5, norm = 0;
   for (let i = 0; i < oct; i++) {
-    s += a * vnoise2(x, y);
+    s += a * vnoise2(x, y, slot < 0 ? -1 : slot + i);
     norm += a;
     x = x * 2.03 + 17.3;
     y = y * 2.03 - 9.1;
@@ -2584,14 +2622,14 @@ function islandHeight(x, z) {
   // crenellated edge, and the extra folding per metre would turn the whole
   // coast into cliff.
   const rr = r
-    + fbm2(x * WARP_F + 11.2, z * WARP_F - 4.7, 2) * (ISLAND_R * 0.26)
-    + fbm2(x * WARP_F * 2.6 - 3.3, z * WARP_F * 2.6 + 6.1, 2) * 2.6;
+    + fbm2(x * WARP_F + 11.2, z * WARP_F - 4.7, 2, 0) * (ISLAND_R * 0.26)
+    + fbm2(x * WARP_F * 2.6 - 3.3, z * WARP_F * 2.6 + 6.1, 2, 2) * 2.6;
   // How far the mask takes to run out varies along the coast, and that variation
   // is what decides what kind of coast it is: where it is wide the land shelves
   // gently into the water and the wash lays down a beach, where it is narrow the
   // ground runs out in a few metres and the shore is a bluff with rock in its
   // face. One width for the whole island gives one or the other, never both.
-  const cw = COAST_W * (1 + 0.55 * fbm2(x * WARP_F * 1.7 - 5.1, z * WARP_F * 1.7 + 8.3, 2));
+  const cw = COAST_W * (1 + 0.55 * fbm2(x * WARP_F * 1.7 - 5.1, z * WARP_F * 1.7 + 8.3, 2, 4));
   const m  = 1 - sstep(ISLAND_R * 1.02 - cw, ISLAND_R * 1.02, rr);
 
   // Relief in two broad bands, two octaves each. There used to be a third band at
@@ -2602,8 +2640,9 @@ function islandHeight(x, z) {
   // band) and the shape you notice while walking over it (the hills) — two
   // wavelengths, both tens of metres long, which is what makes the ground roll
   // instead of either stepping or fidgeting.
-  const broad = fbm2(x * 0.016 + 3.1, z * 0.016 - 2.4, 2) * 0.5 + 0.5;   // ~60 m
-  const hills = fbm2(x * 0.045 - 8.2, z * 0.045 + 5.6, 2) * 0.5 + 0.5;   // ~22 m
+  // (Out at sea the mask is 0 and multiplies the relief away, so it is not drawn.)
+  const broad = m === 0 ? 0.5 : fbm2(x * 0.016 + 3.1, z * 0.016 - 2.4, 2, 6) * 0.5 + 0.5;   // ~60 m
+  const hills = m === 0 ? 0.5 : fbm2(x * 0.045 - 8.2, z * 0.045 + 5.6, 2, 8) * 0.5 + 0.5;   // ~22 m
 
   // Summed octaves of value noise cluster hard around their mean — left as they
   // come, the two bands above vary by about a metre over the whole island and it
@@ -2615,7 +2654,8 @@ function islandHeight(x, z) {
   // Just under linear in the mask, so the interior is rolling ground the relief
   // can carve hills and valleys out of. Squaring it instead would make a cone,
   // and a cone has no flat anywhere to stand on.
-  let h = Math.pow(m, 0.90) * ISLAND_PEAK * (0.12 + 0.88 * relief);
+  // (Most of the field is all land or all sea, where the power is the mask itself.)
+  let h = (m === 1 || m === 0 ? m : Math.pow(m, 0.90)) * ISLAND_PEAK * (0.12 + 0.88 * relief);
   // The shore: a flat drop, plus one that bites hardest where the mask has
   // already faded, so the land runs out under the water rather than at a wall.
   h -= SHORE_DROP + SHELF_DROP * (1 - m) * (1 - m);
@@ -2630,9 +2670,14 @@ const colX = (i) => -GEN_R + (i + 0.5) * BLOCK;
 const colZ = (j) => -GEN_R + (j + 0.5) * BLOCK;
 
 const hRaw = new Float32Array(GEN_N * GEN_N);
-for (let j = 0; j < GEN_N; j++) {
+// A row at a time in a plain function, which the engine optimises far better
+// than a loop in the module body.
+function heightRow(j) {
   const z = colZ(j);
   for (let i = 0; i < GEN_N; i++) hRaw[j * GEN_N + i] = islandHeight(colX(i), z);
+}
+for (let j = 0; j < GEN_N; j++) {
+  heightRow(j);
   if (genDue()) await genPause('height', (j + 1) / GEN_N);
 }
 // Clamped at the rim, so the slope stencil below never falls off the field.
@@ -2920,29 +2965,44 @@ function voxAlloc(len) {
 // Solid blocks in the world. The shovel moves blocks between here and the
 // player's hands and never anywhere else, so this plus what is held is an
 // invariant of the whole session.
+// Bedrock everywhere in one go, and each column's bands over it a byte at a time:
+// they are a few bytes each, and over a quarter of a million columns the cost of
+// a fill() call per band was most of the pass. The bytes past a column's cap that
+// round it up to a multiple of eight are put back to the 0 they were. A row at a
+// time in a plain function, which the engine optimises far better than a loop in
+// the module body.
+const fillRun = (v, a, b) => { for (let p = a; p < b; p++) voxMat[p] = v; };
+function fillRow(j) {
+  let blocks = 0;
+  for (let k = j * GEN_N; k < (j + 1) * GEN_N; k++) {
+    const top = topLvl[k];
+    if (top === NO_COLUMN) continue;
+    const o = voxOff[k] - VOX_FLOOR, bed = bedLvl[k], surf = bedMat[k];
+    // Sand or dirt in a band under the surface, and bedrock under that whatever is
+    // on top — which is what gives a sand-capped headland its grey base.
+    const soilLo = Math.max(VOX_FLOOR, bed - SOIL_DEPTH);
+    // The soil band in two halves rather than one: the surface material on top,
+    // its DEEP_MAT variant under it, so a metre down the same hillside is packed
+    // earth or wet clay instead of more of the same.
+    const soilMid = Math.max(soilLo, bed - (SOIL_DEPTH >> 1));
+    fillRun(DEEP_MAT[surf], o + soilLo, o + soilMid);
+    fillRun(surf, o + soilMid, o + bed + 1);
+    // Everything the bed leaves between itself and sea level is water — solid
+    // blocks, so the sea is a flat plane of them and not a shader.
+    if (bed < top) fillRun(WATER, o + bed + 1, o + top + 1);
+    // The headroom is empty — and AIR is not the 0 a fresh Uint8Array is full
+    // of, so it has to be written rather than left alone.
+    fillRun(AIR, o + top + 1, o + voxCap(k) + 1);
+    fillRun(0, o + voxCap(k) + 1, voxOff[k] + voxSpan(voxLen(k)));
+    blocks += top - VOX_FLOOR + 1;
+  }
+  return blocks;
+}
+voxMat.fill(ROCK, 0, voxCount);
 let worldBlocks = 0;
-for (let k = 0; k < GEN_N * GEN_N; k++) {
-  const top = topLvl[k];
-  if (top === NO_COLUMN) continue;
-  const o = voxOff[k] - VOX_FLOOR, bed = bedLvl[k], surf = bedMat[k];
-  // Sand or dirt in a band under the surface, and bedrock under that whatever is
-  // on top — which is what gives a sand-capped headland its grey base.
-  const soilLo = Math.max(VOX_FLOOR, bed - SOIL_DEPTH);
-  // The soil band in two halves rather than one: the surface material on top,
-  // its DEEP_MAT variant under it, so a metre down the same hillside is packed
-  // earth or wet clay instead of more of the same.
-  const soilMid = Math.max(soilLo, bed - (SOIL_DEPTH >> 1));
-  voxMat.fill(ROCK, voxOff[k], o + soilLo);
-  voxMat.fill(DEEP_MAT[surf], o + soilLo, o + soilMid);
-  voxMat.fill(surf, o + soilMid, o + bed + 1);
-  // Everything the bed leaves between itself and sea level is water — solid
-  // blocks, so the sea is a flat plane of them and not a shader.
-  if (bed < top) voxMat.fill(WATER, o + bed + 1, o + top + 1);
-  // The headroom is empty — and AIR is not the 0 a fresh Uint8Array is full
-  // of, so it has to be written rather than left alone.
-  voxMat.fill(AIR, o + top + 1, o + voxCap(k) + 1);
-  worldBlocks += top - VOX_FLOOR + 1;
-  if (k % GEN_N === 0 && genDue()) await genPause('fill', k / (GEN_N * GEN_N));
+for (let j = 0; j < GEN_N; j++) {
+  worldBlocks += fillRow(j);
+  if (genDue()) await genPause('fill', (j + 1) / GEN_N);
 }
 
 // Post-generation swap pass: occasionally trades the surface material of two
@@ -2951,16 +3011,17 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
 for (let k = 0; k < GEN_N * GEN_N; k++) {
   if (topLvl[k] === NO_COLUMN) continue;
   const i = k % GEN_N, j = (k / GEN_N) | 0;
-  const neighbors = [];
-  if (i > 0) neighbors.push(k - 1);
-  if (i < GEN_N - 1) neighbors.push(k + 1);
-  if (j > 0) neighbors.push(k - GEN_N);
-  if (j < GEN_N - 1) neighbors.push(k + GEN_N);
-  for (const nb of neighbors) {
+  // The roll is the column's own, the same for all four sides, so a column that
+  // fails it has nothing to try.
+  const chance = nhash(i, j) * 0.5 + 0.5;
+  for (let d = 0; chance > 0.85 && d < 4; d++) {
+    const nb = d === 0 ? (i > 0 ? k - 1 : -1)
+             : d === 1 ? (i < GEN_N - 1 ? k + 1 : -1)
+             : d === 2 ? (j > 0 ? k - GEN_N : -1)
+             :           (j < GEN_N - 1 ? k + GEN_N : -1);
+    if (nb < 0) continue;
     if (topLvl[nb] === NO_COLUMN) continue;
     if (topMat[k] === topMat[nb]) continue;
-    const chance = nhash(i, j) * 0.5 + 0.5;
-    if (chance <= 0.85) continue;
     const idxK = voxOff[k] + topLvl[k] - VOX_FLOOR;
     const idxNb = voxOff[nb] + topLvl[nb] - VOX_FLOOR;
     const tmpMat = topMat[k];
@@ -3006,7 +3067,9 @@ function rescanAirLo(k) {
   airLo[k] = (p < 0 || p >= end ? end : p) - o + VOX_FLOOR;
 }
 const rescanAllAirLo = () => { for (let k = 0; k < GEN_N * GEN_N; k++) rescanAirLo(k); };
-rescanAllAirLo();
+// Fresh from pass 2b every column is solid from the floor to its top and air
+// from there to its cap, so the scan would only find top + 1.
+for (let k = 0; k < GEN_N * GEN_N; k++) if (topLvl[k] !== NO_COLUMN) airLo[k] = topLvl[k] + 1;
 
 // ----- reading and writing the store -----
 // Levels are the ones topLvl is in: level k is the block filling y from k*BLOCK
@@ -4312,7 +4375,10 @@ function rebuildChunk(c, r) {
     const r = (j - j0) * CHUNK * 8, d = (j * GEN_N + i0) * 8;
     for (let b = 0; b < rowBytes; b++) terrainColData[d + b] = colPatch[r + b];
   }
-  if (i1 - i0 === CHUNK && j1 - j0 === CHUNK) renderer.copyTextureToTexture(colPatchAt.set(i0 * 2, j0), terrainColPatch, terrainCols);
+  // While the island is first built, the whole texture goes up once at the end
+  // (and before each preview frame) rather than as nine hundred patches.
+  if (genColsDirty !== null) genColsDirty = true;
+  else if (i1 - i0 === CHUNK && j1 - j0 === CHUNK) renderer.copyTextureToTexture(colPatchAt.set(i0 * 2, j0), terrainColPatch, terrainCols);
   else terrainCols.needsUpdate = true;
 
   const meshes = chunkMesh[c] || (chunkMesh[c] = []);
@@ -4428,6 +4494,8 @@ for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
   rebuildChunk(c);
   if (genDue()) await genPause('chunks', (c + 1) / (CHUNK_N * CHUNK_N));
 }
+terrainCols.needsUpdate = true;
+genColsDirty = null;
 loadPreview = false;
 camera.rotation.set(0, 0, 0);
 genProgress('chunks', 1);

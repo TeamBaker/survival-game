@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 239;
+window.GAME_VERSION = 240;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -3202,6 +3202,7 @@ function setVoxel(i, j, lvl, m) {
   if ((was !== AIR && was !== WATER) || (m !== AIR && m !== WATER)) {
     const c = chunkOf(i, j);
     if (lvl < stressChunkLow[c]) stressChunkLow[c] = lvl;
+    stressChunkEdit[c] = ++stressEditSeq;
   }
   if (was === AIR) worldBlocks++;
   else if (m === AIR) worldBlocks--;
@@ -3270,6 +3271,11 @@ const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 // whose ground the stress solve lays out as nodes (stressRegion).
 // setVoxel keeps it; a loaded world gets it back from stressSeedCols.
 const stressChunkLow = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
+// When solid ground last came or went in each chunk (a stressEditSeq), so a
+// sleeping piece's measured supports (stressPieceSupports) are only trusted
+// while nothing solid changed within its reach — no matter what else changed.
+let stressEditSeq = 0;
+const stressChunkEdit = new Float64Array(CHUNK_N * CHUNK_N);
 
 // A separate, coarser grid overlay used for LOD — not the mesh chunk grid above.
 const CHUNK_GRID = 20;                          // blocks per grid chunk side
@@ -8019,6 +8025,7 @@ function recentreDebris(mesh, body) {
   }
   if (tw > 0) c.multiplyScalar(1 / tw);
   stressRev++;   // the stress overlay's cubes sit at these positions
+  stressLatEdit(mesh);
   const m4 = new THREE.Matrix4();
   for (let q = 0; q < lat.length; q++) {
     const b = lat[q];
@@ -8189,6 +8196,7 @@ function cutDebrisLat(mesh, q) {
   lat[hole] = lat[lat.length - 1];
   lat.pop();
   stressRev++;
+  stressLatEdit(mesh);
   debrisFaceMask(mesh);
 }
 
@@ -8453,6 +8461,7 @@ function placeOnDebris(mesh, local, m, rebuild = true) {
   const gi = Math.round((local.x - kx) / BLOCK), gj = Math.round((local.z - kz) / BLOCK), lvl = Math.round((local.y - ky) / BLOCK - 0.5);
   const e = { pos: local.clone(), mat: m, color: null, gi, gj, lvl };
   stressRev++;
+  stressLatEdit(mesh);
   if (MAT_STATS[m]?.powder) {
     // Powder gets grainGeo's speckle, the same as the piece's own powder blocks.
     lat.push(e);
@@ -11492,14 +11501,46 @@ let stECap = 0, stEA, stEB, stEAx, stEK;
 let stEG;
 // Each beam's settled axial force (stressSettledN): what it carried before anything changed.
 let stEN0;
-// Which columns have ground laid out as nodes (stColMark, 1; stColList to unmark
-// them by), which of their levels being found by key (stressIsNode); and the load
-// the solved nodes put into ground cells (column -> [lvl, downward force, ...]),
-// with the columns where some of that load comes from a structure not yet solved.
-const stColMark = new Uint8Array(GEN_N * GEN_N);
+// Columns this layout has ground nodes in or ground reactions on, each with a
+// slot: stColSlot[k] is the slot + 1 (0: none; stColList maps slots back to
+// columns, to unmark them by). A slot's nodes are a level range of stColIdx
+// (node or -1), so finding a column's node at a level is two compares and a
+// read rather than a hash probe — the beams, the ground walks and the overlay
+// ask it for every level of thousands of columns.
+const stColSlot = new Int32Array(GEN_N * GEN_N);
 let stColList = new Int32Array(1024), stColListN = 0;
-const stressIsNode = (k, l) => stKeyMap.has((l - VOX_FLOOR) * GEN_N * GEN_N + k);
-let stGroundR = new Map(), stGroundPend = new Set();
+let stColLo = new Int16Array(1024), stColHi = new Int16Array(1024), stColBase = new Int32Array(1024);
+let stColIdx = new Int32Array(1 << 16);
+// The load the solved nodes put into ground cells, per slot: stColRN entries
+// from stColRS in stGrLvl/stGrF (level, downward force), in the order the beams
+// were laid out; stGrOrd holds the same entries sorted by level (ties in that
+// order), for the walks down a column. stGrCols: the columns with any, in the
+// order first loaded; stColPend: some of it comes from a structure not yet solved.
+let stColRS = new Int32Array(1024), stColRN = new Int32Array(1024), stColPend = new Uint8Array(1024);
+let stGrCols = new Int32Array(1024), stGrColsN = 0;
+let stGrLvl = new Int16Array(4096), stGrF = new Float64Array(4096), stGrOrd = new Int32Array(4096);
+function stressNodeAt(k, l) {
+  const s = stColSlot[k] - 1;
+  if (s < 0 || l < stColLo[s] || l > stColHi[s]) return -1;
+  return stColIdx[stColBase[s] + l - stColLo[s]];
+}
+const stressIsNode = (k, l) => stressNodeAt(k, l) >= 0;
+function stressColSlot(k) {
+  const s = stColSlot[k] - 1;
+  if (s >= 0) return s;
+  if (stColListN === stColList.length) {
+    const n2 = stColListN * 2;
+    const grow = (a) => { const b = new a.constructor(n2); b.set(a); return b; };
+    stColList = grow(stColList); stColLo = grow(stColLo); stColHi = grow(stColHi); stColBase = grow(stColBase);
+    stColRS = grow(stColRS); stColRN = grow(stColRN); stColPend = grow(stColPend);
+  }
+  const t = stColListN++;
+  stColList[t] = k; stColSlot[k] = t + 1;
+  stColLo[t] = 1; stColHi[t] = 0;   // no nodes
+  stColRN[t] = 0; stColPend[t] = 0;
+  return t;
+}
+const stressHasGroundR = (k) => stColSlot[k] > 0 && stColRN[stColSlot[k] - 1] > 0;
 // What fallen pieces at rest put into ground cells: column, lvl, force, ...
 const stPieceGround = [];
 // The background sweep of the untouched world: next column, or GEN_N^2 when done.
@@ -11753,27 +11794,120 @@ function stressPiecePose(pc) {
   pc.r = Math.sqrt(r2) + HALF_BLOCK * Math.sqrt(3);   // + a cube's half-diagonal
 }
 
+// Each piece's record, kept from layout to layout (stPieces holds the ones laid
+// out now): what it was laid out as, and how it lay. ver goes up whenever it is
+// found lying differently, or with a different lattice, from the last layout —
+// what a neighbour's measured contacts with it are checked against.
+const stPieceRec = new WeakMap();
+const STRESS_NO_ON = Object.freeze([]);   // a piece not measured rests on nothing
+function stressLatEdit(mesh) { mesh.userData.stressLat = (mesh.userData.stressLat | 0) + 1; }
+function stressPieceVer(pc) {
+  const P = pc.mesh.position, Q = pc.mesh.quaternion, lat = pc.mesh.userData.blocks, rev = pc.mesh.userData.stressLat | 0;
+  if (pc.px === P.x && pc.py === P.y && pc.pz === P.z && pc.qx === Q.x && pc.qy === Q.y && pc.qz === Q.z && pc.qw === Q.w
+      && pc.lat === lat && pc.latN === lat.length && pc.latRev === rev) return;
+  pc.px = P.x; pc.py = P.y; pc.pz = P.z; pc.qx = Q.x; pc.qy = Q.y; pc.qz = Q.z; pc.qw = Q.w;
+  pc.lat = lat; pc.latN = lat.length; pc.latRev = rev;
+  pc.ver++;
+}
+// The pieces by where they reach, on a grid of STRESS_BUCKET cells, so the
+// pieces near one are found without measuring the distance to every other
+// one (O(pieces^2) in a rubble field). Each piece is in every cell its sphere's
+// box covers, so two whose spheres overlap share a cell; cells are hashed
+// into a Map, and a hash collision only adds a candidate the distance test
+// then drops. A piece too big (or too far out) to list cell by cell is a
+// candidate for everyone.
+const STRESS_BUCKET = 1;   // m
+const stBucket = new Map();
+let stBNext = new Int32Array(1024), stBPiece = new Int32Array(1024), stBMark = new Int32Array(256), stBStamp = 0;
+let stBCand = new Int32Array(256);
+const stBBig = [];
+const stOthers = [];
+const stBKey = (x, y, z) => ((x & 2047) * 2048 + (y & 2047)) * 2048 + (z & 2047);
+function stressBucketBox(P, r, f) {
+  const x0 = Math.floor((P.x - r) / STRESS_BUCKET), x1 = Math.floor((P.x + r) / STRESS_BUCKET);
+  const y0 = Math.floor((P.y - r) / STRESS_BUCKET), y1 = Math.floor((P.y + r) / STRESS_BUCKET);
+  const z0 = Math.floor((P.z - r) / STRESS_BUCKET), z1 = Math.floor((P.z + r) / STRESS_BUCKET);
+  if (!((x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) <= 512)) return false;   // NaN too
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) f(stBKey(x, y, z));
+  return true;
+}
+let _stBP = 0, _stBN = 0;
+const stBAdd = (key) => {
+  if (_stBN === stBNext.length) {
+    const n2 = _stBN * 2, a = new Int32Array(n2), b = new Int32Array(n2);
+    a.set(stBNext); b.set(stBPiece); stBNext = a; stBPiece = b;
+  }
+  const h = stBucket.get(key);
+  stBNext[_stBN] = h === undefined ? -1 : h; stBPiece[_stBN] = _stBP;
+  stBucket.set(key, _stBN++);
+};
+function stressPieceBuckets() {
+  stBucket.clear(); stBBig.length = 0;
+  _stBN = 0;
+  if (stBMark.length < stPieces.length) { stBMark = new Int32Array(stPieces.length * 2); stBCand = new Int32Array(stPieces.length * 2); stBStamp = 0; }
+  for (let p = 0; p < stPieces.length; p++) {
+    _stBP = p;
+    if (!stressBucketBox(stPieces[p].mesh.position, stPieces[p].r, stBAdd)) stBBig.push(p);
+  }
+}
+// The pieces whose reach overlaps piece p's (pc), in stPieces order, into stOthers.
+let _stBC = 0;
+const stBVisit = (key) => {
+  for (let e = stBucket.get(key) ?? -1; e >= 0; e = stBNext[e]) {
+    const q = stBPiece[e];
+    if (stBMark[q] !== stBStamp) { stBMark[q] = stBStamp; stBCand[_stBC++] = q; }
+  }
+};
+function stressPieceOthers(pc, p) {
+  const P = pc.mesh.position, eps = STRESS_CONTACT_EPS;
+  if (++stBStamp > 0x7fffffff) { stBMark.fill(0); stBStamp = 1; }
+  stBMark[p] = stBStamp;
+  _stBC = 0;
+  for (const q of stBBig) if (stBMark[q] !== stBStamp) { stBMark[q] = stBStamp; stBCand[_stBC++] = q; }
+  if (!stressBucketBox(P, pc.r + eps, stBVisit)) {
+    for (let q = 0; q < stPieces.length; q++) if (stBMark[q] !== stBStamp) { stBMark[q] = stBStamp; stBCand[_stBC++] = q; }
+  }
+  stBCand.subarray(0, _stBC).sort();
+  stOthers.length = 0;
+  for (let c = 0; c < _stBC; c++) {
+    const o = stPieces[stBCand[c]];
+    if (o.mesh.position.distanceTo(P) < pc.r + o.r + eps) stOthers.push(o);
+  }
+  return stOthers;
+}
+
 // Which of a piece's blocks hold it up: those that touch a solid cell of the
 // world, or a block of another piece, where the touch pushes them upward. A
 // block with all six of its neighbours in the piece has no outside to touch
-// with. Asleep and lying exactly where it was last measured, with the same
-// blocks, it still rests on the same things (a dig nearby wakes it).
-function stressPieceSupports(pc, S) {
-  const mesh = pc.mesh, ud = mesh.userData, lat = ud.blocks, n0 = pc.start, P = mesh.position, Q = mesh.quaternion;
+// with. Asleep and measured before, it still rests on the same things while it
+// lies exactly as it did, the pieces within its reach are the same ones lying
+// as they did, and no solid cell came or went in the chunks it reaches.
+function stressPieceSupports(pc, p, S) {
+  const mesh = pc.mesh, ud = mesh.userData, lat = ud.blocks, n0 = pc.start, P = mesh.position;
+  const others = stressPieceOthers(pc, p);
   const c = ud.stressContacts;
-  if (c && pc.rest === 2 && c.n === lat.length && c.px === P.x && c.py === P.y && c.pz === P.z
-      && c.qx === Q.x && c.qy === Q.y && c.qz === Q.z && c.qw === Q.w && c.others === debris.children.length) {
-    S.fixed.set(c.fixed, n0);
-    pc.on = c.on;
-    return;
+  if (c && pc.rest === 2 && c.ver === pc.ver && c.others.length === others.length) {
+    let same = true;
+    for (let k = 0; k < others.length && same; k++) same = c.others[k] === others[k] && c.oVer[k] === others[k].ver;
+    if (same) {
+      const reachW = pc.r + STRESS_CONTACT_EPS + BLOCK;
+      const c0i = Math.max(0, (colI(P.x - reachW) / CHUNK) | 0), c1i = Math.min(CHUNK_N - 1, (colI(P.x + reachW) / CHUNK) | 0);
+      const c0j = Math.max(0, (colJ(P.z - reachW) / CHUNK) | 0), c1j = Math.min(CHUNK_N - 1, (colJ(P.z + reachW) / CHUNK) | 0);
+      for (let cj = c0j; cj <= c1j && same; cj++) for (let ci = c0i; ci <= c1i; ci++) if (stressChunkEdit[cj * CHUNK_N + ci] > c.seq) { same = false; break; }
+    }
+    if (same) {
+      S.fixed.set(c.fixed, n0);
+      pc.on = c.on;
+      return;
+    }
   }
+  pc.on = [];
   const R = pc.R, h = HALF_BLOCK, eps = STRESS_CONTACT_EPS;
   // How far a turned cube reaches along each world axis from its centre.
   const ex = h * (Math.abs(R[0]) + Math.abs(R[1]) + Math.abs(R[2])) + eps;
   const ey = h * (Math.abs(R[3]) + Math.abs(R[4]) + Math.abs(R[5])) + eps;
   const ez = h * (Math.abs(R[6]) + Math.abs(R[7]) + Math.abs(R[8])) + eps;
   const reach = h * Math.sqrt(3) + eps;
-  const others = stPieces.filter((o) => o !== pc && o.mesh.position.distanceTo(P) < pc.r + o.r + eps);
   for (let q = 0; q < lat.length; q++) {
     const b = lat[q];
     let held = 0;
@@ -11828,8 +11962,8 @@ function stressPieceSupports(pc, S) {
     if (held) pc.on.push(on);
   }
   if (pc.rest === 2) {
-    ud.stressContacts = { n: lat.length, px: P.x, py: P.y, pz: P.z, qx: Q.x, qy: Q.y, qz: Q.z, qw: Q.w,
-                          others: debris.children.length, fixed: S.fixed.slice(n0, n0 + lat.length), on: pc.on };
+    ud.stressContacts = { ver: pc.ver, others: others.slice(), oVer: others.map((o) => o.ver), seq: stressEditSeq,
+                          fixed: S.fixed.slice(n0, n0 + lat.length), on: pc.on };
   }
 }
 // A piece at rest weighs on what holds it up: its load shared evenly between
@@ -11892,15 +12026,17 @@ function stressDropOverlay(mesh) {
 }
 
 function stressUnmarkCols() {
-  for (let q = 0; q < stColListN; q++) stColMark[stColList[q]] = 0;
+  for (let q = 0; q < stColListN; q++) stColSlot[stColList[q]] = 0;
   stColListN = 0;
+  stGrColsN = 0;
 }
 
 // Everything solved is forgotten: a new world is loading.
 function stressForget() {
   stKeyMap.clear(); stKeyMapPrev.clear();
   stSolved.clear();
-  stressUnmarkCols(); stGroundR.clear(); stGroundPend.clear();
+  stressUnmarkCols();
+  stressChunkEdit.fill(++stressEditSeq);   // no piece's measured supports carry over
   stSettledW.clear(); stressWeightCols.clear();
   stPieceGround.length = 0;
   stressGround.count = 0;
@@ -12126,8 +12262,9 @@ function stressEscalate(nodes) {
     if (stressLutIndex(S.pull[n], st.pull) < STRESS_CRACK_LV) continue;
     around(S.pos[n * 3], S.pos[n * 3 + 2], S.pos[n * 3 + 1]);
   }
-  for (const k of stGroundR.keys()) {
-    if (stGroundPend.has(k)) continue;
+  for (let q = 0; q < stGrColsN; q++) {
+    const k = stGrCols[q];
+    if (stColPend[stColSlot[k] - 1]) continue;
     const l = stressGroundPullAt(k);
     if (l !== NO_DIG) { const i = k % GEN_N; around(i, (k - i) / GEN_N, l); }
   }
@@ -12156,32 +12293,67 @@ function stressFixedLoad(e) {
 }
 // What every beam ending on ground puts into it, by column. Read off the
 // answers in hand; a structure not solved for the world as it is marks its
-// columns pending, which keeps them from breaking on a stale answer.
+// columns pending, which keeps them from breaking on a stale answer. Runs after
+// every layout and every solve, so it is counted, laid out and filled in the
+// same typed arrays each time rather than built as a Map of small arrays.
 function stressGroundReactions() {
-  stGroundR.clear(); stGroundPend.clear();
+  for (let q = 0; q < stGrColsN; q++) { const s = stColSlot[stGrCols[q]] - 1; stColRN[s] = 0; stColPend[s] = 0; }
+  stGrColsN = 0;
   const S = stCur;
+  const count = (k) => {
+    const s = stressColSlot(k);
+    if (!stColRN[s]++) {
+      if (stGrColsN === stGrCols.length) { const c2 = new Int32Array(stGrColsN * 2); c2.set(stGrCols); stGrCols = c2; }
+      stGrCols[stGrColsN++] = k;
+    }
+    return s;
+  };
   for (let e = 0; e < stNE; e++) {
     const g = stEG[e];
     if (g < 0) continue;
     const n = stEA[e] >= 0 ? stEA[e] : stEB[e];
-    const i = g % GEN_N, t = (g - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR, k = j * GEN_N + i;
-    if (!stSolved.has(stCompHash[S.comp[n]])) stGroundPend.add(k);
-    let r = stGroundR.get(k);
-    if (!r) stGroundR.set(k, r = []);
-    r.push(lvl, stressFixedLoad(e));
+    const i = g % GEN_N, t = (g - i) / GEN_N, j = t % GEN_N, s = count(j * GEN_N + i);
+    if (!stSolved.has(stCompHash[S.comp[n]])) stColPend[s] = 1;
+  }
+  for (let q = 0; q < stPieceGround.length; q += 3) count(stPieceGround[q]);
+  let total = 0;
+  for (let q = 0; q < stGrColsN; q++) {
+    const s = stColSlot[stGrCols[q]] - 1;
+    stColRS[s] = total; total += stColRN[s]; stColRN[s] = 0;   // a fill cursor until the fill is done
+  }
+  if (stGrLvl.length < total) {
+    const n2 = Math.max(total, stGrLvl.length * 2);
+    stGrLvl = new Int16Array(n2); stGrF = new Float64Array(n2); stGrOrd = new Int32Array(n2);
+  }
+  for (let e = 0; e < stNE; e++) {
+    const g = stEG[e];
+    if (g < 0) continue;
+    const i = g % GEN_N, t = (g - i) / GEN_N, j = t % GEN_N, s = stColSlot[j * GEN_N + i] - 1;
+    const x = stColRS[s] + stColRN[s]++;
+    stGrLvl[x] = (t - j) / GEN_N + VOX_FLOOR; stGrF[x] = stressFixedLoad(e);
   }
   for (let q = 0; q < stPieceGround.length; q += 3) {
-    const k = stPieceGround[q];
-    let r = stGroundR.get(k);
-    if (!r) stGroundR.set(k, r = []);
-    r.push(stPieceGround[q + 1], stPieceGround[q + 2]);
+    const s = stColSlot[stPieceGround[q]] - 1, x = stColRS[s] + stColRN[s]++;
+    stGrLvl[x] = stPieceGround[q + 1]; stGrF[x] = stPieceGround[q + 2];
+  }
+  // Sorted by level, stably: the walks add a level's loads in the order they
+  // were laid out, as a scan of the whole list would, so the sums are the same.
+  // The beams come mostly in level order, so this is about one pass.
+  for (let q = 0; q < stGrColsN; q++) {
+    const s = stColSlot[stGrCols[q]] - 1, a = stColRS[s], b = a + stColRN[s];
+    for (let x = a; x < b; x++) {
+      const l = stGrLvl[x];
+      let y = x;
+      while (y > a && stGrLvl[stGrOrd[y - 1]] > l) { stGrOrd[y] = stGrOrd[y - 1]; y--; }
+      stGrOrd[y] = x;
+    }
   }
 }
 // The force in the beam under ground cell (i, j, lvl): the weight of it and of
 // the solid run over it that is not a node (a node's weight comes in through
 // what it puts into the run), plus all that the nodes put into the run.
 function stressGroundLoad(i, j, lvl) {
-  const k = j * GEN_N + i, o = voxOff[k] - VOX_FLOOR, cap = voxCap(k), nodes = stColMark[k];
+  const k = j * GEN_N + i, o = voxOff[k] - VOX_FLOOR, cap = voxCap(k), nodes = stColSlot[k];
   let N = 0, top = lvl;
   for (let l = lvl; l <= cap; l++) {
     const m = voxMat[o + l];
@@ -12189,9 +12361,25 @@ function stressGroundLoad(i, j, lvl) {
     top = l;
     if (!nodes || !stressIsNode(k, l)) N += MAT_STATS[m].weight;
   }
-  const r = stGroundR.get(k);
-  if (r) for (let q = 0; q < r.length; q += 2) if (r[q] >= lvl && r[q] <= top) N += r[q + 1];
+  if (nodes) {
+    const s = nodes - 1;
+    for (let x = stColRS[s], e = x + stColRN[s]; x < e; x++) if (stGrLvl[x] >= lvl && stGrLvl[x] <= top) N += stGrF[x];
+  }
   return N;   // signed: above zero squeezes the cell, below pulls it
+}
+// Walking column k down from level l: what loads level l, added to N in the
+// order laid out. *p is the walk's place in the column's sorted loads (from its
+// last, the highest), left past level l; levels the walk skips are passed over.
+let _stGrAt = 0;
+function stressGroundRAt(s, l, N) {
+  const a = stColRS[s];
+  let p = _stGrAt;
+  while (p >= a && stGrLvl[stGrOrd[p]] > l) p--;
+  let g = p;
+  while (g >= a && stGrLvl[stGrOrd[g]] === l) g--;
+  for (let x = g + 1; x <= p; x++) N += stGrF[stGrOrd[x]];
+  _stGrAt = g;
+  return N;
 }
 // Every block of ground in column k at the top of the ramp, walked from the top
 // down with the load gathering block by block and starting over under each gap.
@@ -12199,13 +12387,14 @@ function stressGroundLoad(i, j, lvl) {
 function stressGroundRedIn(k, out) {
   if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) return 0;
   const o = voxOff[k] - VOX_FLOOR, i = k % GEN_N, j = (k - i) / GEN_N;
-  const nodes = stColMark[k], r = stGroundR.get(k), top = STRESS_LUT_N - 1;
+  const nodes = stColSlot[k], s = nodes - 1, r = nodes && stColRN[s] > 0, top = STRESS_LUT_N - 1;
+  if (r) _stGrAt = stColRS[s] + stColRN[s] - 1;
   let N = 0, found = 0;
   for (let l = voxCap(k); l >= VOX_FLOOR; l--) {
     const m = voxMat[o + l];
     if (!solidMat(m)) { N = 0; continue; }
     if (nodes && stressIsNode(k, l)) continue;
-    if (r) for (let q = 0; q < r.length; q += 2) if (r[q] === l) N += r[q + 1];
+    if (r) N = stressGroundRAt(s, l, N);
     const st = MAT_STATS[m];
     N += st.weight;
     // Powder is never broken by this, as for nodes (stressBreakSaturated).
@@ -12223,13 +12412,14 @@ function stressGroundRedIn(k, out) {
 // out ground far deeper than the change reaches.
 function stressGroundPullAt(k) {
   if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) return NO_DIG;
-  const o = voxOff[k] - VOX_FLOOR, nodes = stColMark[k], r = stGroundR.get(k);
+  const o = voxOff[k] - VOX_FLOOR, nodes = stColSlot[k], s = nodes - 1, r = nodes && stColRN[s] > 0;
+  if (r) _stGrAt = stColRS[s] + stColRN[s] - 1;
   let N = 0;
   for (let l = voxCap(k); l >= VOX_FLOOR; l--) {
     const m = voxMat[o + l];
     if (!solidMat(m)) { N = 0; continue; }
     if (nodes && stressIsNode(k, l)) continue;
-    if (r) for (let q = 0; q < r.length; q += 2) if (r[q] === l) N += r[q + 1];
+    if (r) N = stressGroundRAt(s, l, N);
     const st = MAT_STATS[m];
     N += st.weight;
     if (N < 0 && !st.powder && stressLutIndex(-N, st.pull) >= STRESS_CRACK_LV) return l;
@@ -12360,6 +12550,16 @@ function stressRebuild() {
   const S = stCur;
 
   // --- every built block ---
+  // Then the level range each column's nodes can take: built blocks, hanging
+  // ground and region ground, so the nodes after them are found by column.
+  stressUnmarkCols();
+  const span = (k, lo, hi) => {
+    if (lo > hi) return;
+    const s = stressColSlot(k);
+    if (stColLo[s] > stColHi[s]) { stColLo[s] = lo; stColHi[s] = hi; return; }
+    if (lo < stColLo[s]) stColLo[s] = lo;
+    if (hi > stColHi[s]) stColHi[s] = hi;
+  };
   for (const set of placedByChunk) {
     if (!set) continue;
     for (const key of set) {
@@ -12369,20 +12569,40 @@ function stressRebuild() {
       S.key[stN] = key; S.mat[stN] = m; S.fixed[stN] = 0;
       S.pos[stN * 3] = i; S.pos[stN * 3 + 1] = lvl; S.pos[stN * 3 + 2] = j;
       stKeyMap.set(key, stN++);
+      span(j * GEN_N + i, lvl, lvl);
     }
   }
   stNBuilt = stN;
+  for (let q = 0; q < stHangN; q++) span(stHangK[q], stHangLo[q], voxCap(stHangK[q]));
+  for (const c of stRegChunks) {
+    const floor = stRegFloor[c], ci = c % CHUNK_N, cj = (c - ci) / CHUNK_N;
+    for (let j = cj * CHUNK; j < Math.min(GEN_N, (cj + 1) * CHUNK); j++) {
+      for (let i = ci * CHUNK; i < Math.min(GEN_N, (ci + 1) * CHUNK); i++) {
+        const k = j * GEN_N + i;
+        if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) continue;
+        const t = Math.min(sTop[k], voxCap(k));
+        if (t >= floor) span(k, floor, t);
+      }
+    }
+  }
+  let idxN = 0;
+  for (let s = 0; s < stColListN; s++) { stColBase[s] = idxN; idxN += stColHi[s] - stColLo[s] + 1; }
+  if (stColIdx.length < idxN) stColIdx = new Int32Array(Math.max(idxN, stColIdx.length * 2));
+  stColIdx.fill(-1, 0, idxN);
+  const colAt = (k, lvl) => { const s = stColSlot[k] - 1; return stColBase[s] + lvl - stColLo[s]; };
+  for (let n = 0; n < stNBuilt; n++) stColIdx[colAt(S.pos[n * 3 + 2] * GEN_N + S.pos[n * 3], S.pos[n * 3 + 1])] = n;
 
   // --- every block of ground that hangs (what was built there already is in) ---
   for (let q = 0; q < stHangN; q++) {
     const k = stHangK[q], i = k % GEN_N, j = (k - i) / GEN_N, o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
+    const x0 = colAt(k, 0);
     for (let lvl = stHangLo[q]; lvl <= cap; lvl++) {
       const m = voxMat[o + lvl];
-      if (!solidMat(m)) continue;
+      if (!solidMat(m) || stColIdx[x0 + lvl] >= 0) continue;
       const key = gravCell(i, j, lvl);
-      if (stKeyMap.has(key)) continue;
       S.key[stN] = key; S.mat[stN] = m; S.fixed[stN] = 0;
       S.pos[stN * 3] = i; S.pos[stN * 3 + 1] = lvl; S.pos[stN * 3 + 2] = j;
+      stColIdx[x0 + lvl] = stN;
       stKeyMap.set(key, stN++);
     }
   }
@@ -12394,27 +12614,21 @@ function stressRebuild() {
         const k = j * GEN_N + i;
         if (topLvl[k] === NO_COLUMN || voxOff[k] < 0) continue;
         const o = voxOff[k] - VOX_FLOOR, t = Math.min(sTop[k], voxCap(k));
+        if (t < floor) continue;
+        const x0 = colAt(k, 0);
         for (let lvl = floor; lvl <= t; lvl++) {
           const m = voxMat[o + lvl];
-          if (!solidMat(m)) continue;
+          if (!solidMat(m) || stColIdx[x0 + lvl] >= 0) continue;
           const key = gravCell(i, j, lvl);
-          if (stKeyMap.has(key)) continue;
           S.key[stN] = key; S.mat[stN] = m; S.fixed[stN] = 0;
           S.pos[stN * 3] = i; S.pos[stN * 3 + 1] = lvl; S.pos[stN * 3 + 2] = j;
+          stColIdx[x0 + lvl] = stN;
           stKeyMap.set(key, stN++);
         }
       }
     }
   }
   stNTerr = stN;
-  stressUnmarkCols();
-  for (let n = 0; n < stNTerr; n++) {
-    const k = S.pos[n * 3 + 2] * GEN_N + S.pos[n * 3];
-    if (stColMark[k]) continue;
-    stColMark[k] = 1;
-    if (stColListN === stColList.length) { const l2 = new Int32Array(stColListN * 2); l2.set(stColList); stColList = l2; }
-    stColList[stColListN++] = k;
-  }
 
   // --- every fallen piece, as it lies now ---
   stPieces.length = 0;
@@ -12422,8 +12636,15 @@ function stressRebuild() {
     const mesh = pieces[p], lat = mesh.userData.blocks;
     if (!lat || !lat.length) continue;
     const rest = mesh.userData.stressRest ?? stressRestCode(mesh);
-    const pc = { mesh, start: stN, count: lat.length, rest, R: new Float64Array(9), kx: 0, ky: 0, kz: 0, r: 0, on: [], load: 0 };
+    let pc = stPieceRec.get(mesh);
+    if (!pc) {
+      pc = { mesh, start: 0, count: 0, rest: 0, R: new Float64Array(9), kx: 0, ky: 0, kz: 0, r: 0, on: STRESS_NO_ON, load: 0, fly: false,
+             ver: 0, px: NaN, py: 0, pz: 0, qx: 0, qy: 0, qz: 0, qw: 0, lat: null, latN: 0, latRev: 0 };
+      stPieceRec.set(mesh, pc);
+    }
+    pc.start = stN; pc.count = lat.length; pc.rest = rest; pc.on = STRESS_NO_ON; pc.load = 0; pc.fly = false;
     stressPiecePose(pc);
+    stressPieceVer(pc);
     stPieces.push(pc);
     for (const b of lat) {
       const key = stPieceKey(mesh, b.gi, b.gj, b.lvl);
@@ -12434,7 +12655,8 @@ function stressRebuild() {
     }
   }
   // What each piece at rest is held up by, now every piece's blocks can be found.
-  for (const pc of stPieces) if (pc.rest) stressPieceSupports(pc, S);
+  stressPieceBuckets();
+  for (let p = 0; p < stPieces.length; p++) if (stPieces[p].rest) stressPieceSupports(stPieces[p], p, S);
 
   // --- loads, beams ---
   S.f.fill(0, 0, stN * 6);
@@ -12446,8 +12668,8 @@ function stressRebuild() {
       const ax = d >> 1, sg = d & 1 ? -1 : 1;
       const ii = i + (ax === 0 ? sg : 0), ll = lvl + (ax === 1 ? sg : 0), jj = j + (ax === 2 ? sg : 0);
       if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N || ll < VOX_FLOOR) continue;
-      const nb = stKeyMap.get(gravCell(ii, jj, ll));
-      if (nb !== undefined) {
+      const nb = stressNodeAt(jj * GEN_N + ii, ll);
+      if (nb >= 0) {
         if (sg > 0) {
           stressAddEdge(n, nb, ax, m, S.mat[nb]);
           if (ax === 1) stEN0[stNE - 1] = stressSettledN(i, j, lvl);
@@ -12681,15 +12903,16 @@ function stressBreakSaturated() {
   // looked at. One with nothing red is let go; one still red stays until it is
   // not, and the ones not reached wait for the next pass.
   const gHit = [];
-  for (const k of stGroundR.keys()) {
-    if (stGroundPend.has(k)) continue;   // looked at once what loads it is solved
+  for (let q = 0; q < stGrColsN; q++) {
+    const k = stGrCols[q];
+    if (stColPend[stColSlot[k] - 1]) continue;   // looked at once what loads it is solved
     if (stressGroundRedIn(k, gHit)) stressGroundCols.add(k);
     else stressGroundCols.delete(k);
   }
   let walked = 0;
   for (const k of stressGroundCols) {
     if (walked >= STRESS_GROUND_WALK) break;
-    if (stGroundR.has(k) || stGroundPend.has(k)) continue;
+    if (stressHasGroundR(k)) continue;
     walked++;
     if (!stressGroundRedIn(k, gHit)) stressGroundCols.delete(k);
   }
@@ -12796,6 +13019,9 @@ document.addEventListener('visibilitychange', () => {
 // STRESS_RADIUS of the player, nearest first past STRESS_MAX_DRAW, and every
 // block of each piece within STRESS_DEBRIS_R. What they are coloured with was
 // solved for the world.
+// The pieces drawn this layout (mesh -> its stPieces entry, or a stand-in for
+// one with no nodes yet), in the order drawn, and the ones laid out; reused.
+const stNear = new Map(), stLaid = new Set();
 function stressLayout(cx, cy, cz) {
   const S = stCur;
   const ci = colI(cx), cj = colJ(cz), cl = lvlOfY(cy), R = STRESS_RADIUS;
@@ -12819,9 +13045,9 @@ function stressLayout(cx, cy, cz) {
       const set = placedByChunk[chj * CHUNK_N + chi];
       if (!set) continue;
       for (const key of set) {
-        const n = stKeyMap.get(key);
-        if (n === undefined || n >= stNBuilt) continue;   // placed since the layout: drawn once it is solved
         const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+        const n = stressNodeAt(j * GEN_N + i, lvl);
+        if (n < 0 || n >= stNBuilt) continue;   // placed since the layout: drawn once it is solved
         cand(n, i, j, lvl);
       }
     }
@@ -12858,25 +13084,23 @@ function stressLayout(cx, cy, cz) {
 
   // Overlays of pieces out of range or out of the world go; the rest are refitted.
   stDrawnPieces.length = 0;
-  const near = new Set(), laid = new Set();
+  const near = stNear, laid = stLaid;
+  near.clear(); laid.clear();
   for (const pc of stPieces) {
     if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
     laid.add(pc.mesh);
-    if (stressNearPiece(pc.mesh, cx, cy, cz)) near.add(pc);
+    if (stressNearPiece(pc.mesh, cx, cy, cz)) near.set(pc.mesh, pc);
   }
   // Pieces broken off or cut since the layout have no nodes yet: drawn with
   // the cracks they carry, if any (start -1).
   for (const mesh of debris.children) {
     const lat = mesh.userData.blocks;
     if (!lat?.length || laid.has(mesh) || !lat.some((b) => b.crack > 0) || !stressNearPiece(mesh, cx, cy, cz)) continue;
-    near.add({ mesh, start: -1, count: lat.length });
+    near.set(mesh, { mesh, start: -1, count: lat.length });
   }
-  for (const mesh of stOverlays.keys()) {
-    let keep = false;
-    for (const pc of near) if (pc.mesh === mesh) { keep = true; break; }
-    if (!keep) stressDropOverlay(mesh);
-  }
-  for (const pc of near) {
+  laid.clear();
+  for (const mesh of stOverlays.keys()) if (!near.has(mesh)) stressDropOverlay(mesh);
+  for (const pc of near.values()) {
     let ov = stOverlays.get(pc.mesh);
     if (ov && ov.instanceMatrix.count < pc.count) { stressDropOverlay(pc.mesh); ov = null; }
     if (!ov) {
@@ -12893,6 +13117,7 @@ function stressLayout(cx, cy, cz) {
     ov.boundingSphere = null;
     stDrawnPieces.push({ overlay: ov, start: pc.start, count: pc.count, lat });
   }
+  near.clear();   // not to keep pieces since gone alive until the next layout
   stressRecolor();
 }
 
@@ -12915,7 +13140,7 @@ function stressGroundLayout(ci, cj, cl) {
       lo = Math.max(lo - 1, cl - R, VOX_FLOOR);
       const hi = Math.min(sTop[k], cl + R);
       if (hi < lo) continue;
-      const o = voxOff[k] - VOX_FLOOR, nodes = stColMark[k];
+      const o = voxOff[k] - VOX_FLOOR, nodes = stColSlot[k];
       const placed = colDug[k] ? placedByChunk[chunkOf(i, j)] : null;
       for (let l = lo; l <= hi; l++) {
         if (!solidMat(voxMat[o + l]) || !isVisible(o + l)) continue;

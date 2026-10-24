@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 243;
+window.GAME_VERSION = 244;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -4985,20 +4985,21 @@ try {
   meshWorker = null;
 }
 
-// Every chunk's mesh, again from the store — a load swaps the whole store out.
-// With the worker the LOD queue does it, nearest first, over the next frames;
-// without one it is done here and now, as it always was.
-function remeshAllChunks() {
+// Every chunk's mesh, again from the store — a load swaps the whole store out —
+// or only those marked in changed (loadChangedChunks). With the worker the LOD
+// queue does it, nearest first, over the next frames; without one it is done
+// here and now, as it always was.
+function remeshAllChunks(changed) {
   if (!meshWorker) {
     for (let c = 0; c < chunkMesh.length; c++) {
-      if (chunkMesh[c]) rebuildChunk(c);
+      if (chunkMesh[c] && (!changed || changed[c])) rebuildChunk(c);
     }
     return;
   }
   for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
     chunkRev[c]++;
     meshJob[c] = 0;
-    if (chunkMesh[c]) chunkStep[c] = 0;
+    if (chunkMesh[c] && (!changed || changed[c])) chunkStep[c] = 0;
   }
   lodRequeue = true;
 }
@@ -10115,8 +10116,11 @@ document.getElementById('f2d-overlay').addEventListener('pointerdown', (e) => {
 // Menu overlay
 // ---------------------------------------------------------------------------
 const menuBtn = document.getElementById('btn-menu');
-let menuOpen = false;
+let menuOpen = false, menuCloseHeld = false;
+let storeHold = false;   // a save or load has the store (saveStoreToWorker)
 function setMenuUI(on) {
+  menuCloseHeld = !on && storeHold;
+  if (menuCloseHeld) return;   // until storeRelease
   menuOpen = on;
   menuRedraw = true;
   document.body.classList.toggle('menu-open', on);
@@ -13402,7 +13406,7 @@ function stressBreakSaturated() {
 }
 
 let stressWorker = null;
-// Answers that came in while a save was copying the store (snapshotVoxStore) or
+// Answers that came in while a save was sending the store (saveStoreToWorker) or
 // a load was putting a new one in (applyWorldState), which breaking under them
 // would have changed half-way; applied once that is done.
 const stressHeld = [];
@@ -14256,14 +14260,16 @@ async function idbDelete(key) {
 }
 
 // ----- encoding helpers -----
-// A growable byte buffer, with LEB128 varints for run lengths.
+// A growable byte buffer, with LEB128 varints for run lengths. A full buffer is
+// kept as it is and a fresh one started, rather than copied into one twice the
+// size, so bytes() is a list of parts once it has filled one.
 class ByteBuf {
-  constructor(n) { this.a = new Uint8Array(n); this.n = 0; }
+  constructor(n) { this.a = new Uint8Array(n); this.n = 0; this.full = []; }
   room(k) {
     if (this.n + k <= this.a.length) return;
-    const b = new Uint8Array(Math.max(this.a.length * 2, this.n + k));
-    b.set(this.a.subarray(0, this.n));
-    this.a = b;
+    this.full.push(this.a.subarray(0, this.n));
+    this.a = new Uint8Array(Math.max(this.a.length, k));
+    this.n = 0;
   }
   byte(x) { this.room(1); this.a[this.n++] = x; }
   uvar(x) {
@@ -14271,7 +14277,7 @@ class ByteBuf {
     while (x >= 0x80) { this.a[this.n++] = (x & 0x7f) | 0x80; x >>>= 7; }
     this.a[this.n++] = x;
   }
-  bytes() { return this.a.subarray(0, this.n); }
+  bytes() { return this.full.length ? [...this.full, this.a.subarray(0, this.n)] : this.a.subarray(0, this.n); }
 }
 function readUvar(r) {
   let x = 0, s = 0, c;
@@ -14404,6 +14410,9 @@ function collectWorldMeta() {
       return { i: powderQueue[o], j: powderQueue[o + 1], lvl: powderQueue[o + 2] };
     }),
     powderDirty: [...powderDirty, ...powderCarry],
+    // Every emptying path marks its column by now, so the above is all of it
+    // (applyWorldCore skips the old saves' sweep of every dug column).
+    powderMarked: true,
   };
 
   // World generation
@@ -14448,20 +14457,31 @@ function collectWorldMeta() {
 function encodeVoxStore() {
   const tintSeeded = tintMatchesSeed(worldSeed);
   const sections = encodeVoxColumns({ voxOff, colMaxCap, voxMat, visBits, topLvl, bedLvl, sTop, colDugLo,
-                                      bedMat, topMat, colDug, tint: tintSeeded ? null : tint });
+                                      // copies: packSaveFile reads its sections across turns of the page
+                                      bedMat: bedMat.slice(), topMat: topMat.slice(), colDug: colDug.slice(),
+                                      tint: tintSeeded ? null : tint });
   return { sections, store: { worldBlocks, tintSeeded } };
 }
-// The same, over arrays handed to it rather than the live ones, so the save
-// worker can run it on a copy (tint null when the seed reproduces it).
+// The same, over arrays handed to it rather than the live ones (tint null when
+// the seed reproduces it).
 function encodeVoxColumns(a) {
-  const N = GEN_N * GEN_N, voxOff = a.voxOff, voxMat = a.voxMat, visBits = a.visBits, colMaxCap = a.colMaxCap;
-  const present = new Uint8Array(N);
-  const mats = new ByteBuf(1 << 20), lens = new ByteBuf(1 << 20), vis = new ByteBuf(1 << 20);
-  for (let k = 0; k < N; k++) {
-    const o = voxOff[k];
+  const enc = voxRunsStart();
+  voxRunsAdd(enc, 0, GEN_N * GEN_N, a.voxOff, a.colMaxCap, a.voxMat, a.visBits);
+  return voxSections(enc, voxColumnSections(a), a.tint && packDelta(a.tint));
+}
+function voxRunsStart() {
+  return { present: new Uint8Array(GEN_N * GEN_N), mats: new ByteBuf(1 << 20), lens: new ByteBuf(1 << 20), vis: new ByteBuf(1 << 20) };
+}
+// Columns k0..k1 run-coded onto enc's streams: column k at off[k - k0] in
+// voxMat/visBits, its cap at colMaxCap[k - k0] — the whole store, or a batch of
+// columns the save worker was sent.
+function voxRunsAdd(enc, k0, k1, voxOff, colMaxCap, voxMat, visBits) {
+  const present = enc.present, mats = enc.mats, lens = enc.lens, vis = enc.vis;
+  for (let k = k0; k < k1; k++) {
+    const o = voxOff[k - k0];
     if (o < 0) continue;
     present[k] = 1;
-    const end = o + colMaxCap[k] - VOX_FLOOR + 1;
+    const end = o + colMaxCap[k - k0] - VOX_FLOOR + 1;
     for (let p = o; p < end;) {
       const m = voxMat[p];
       let q = p + 1;
@@ -14484,30 +14504,32 @@ function encodeVoxColumns(a) {
       p = q;
     }
   }
+}
+// The per-column sections in file order (packDelta'd or as they are), and the
+// whole file's in order around them.
+const SAVE_COLUMNS = [['topLvl', true], ['bedLvl', true], ['sTop', true], ['colDugLo', true], ['colMaxCap', true],
+                      ['bedMat', false], ['topMat', false], ['colDug', false]];
+function voxColumnSections(a) {
+  return SAVE_COLUMNS.map(([name, pack]) => [name, pack ? packDelta(a[name]) : a[name]]);
+}
+function voxSections(enc, columns, tintPacked) {
   const sections = [
-    ['present', present],
-    ['topLvl', packDelta(a.topLvl)],
-    ['bedLvl', packDelta(a.bedLvl)],
-    ['sTop', packDelta(a.sTop)],
-    ['colDugLo', packDelta(a.colDugLo)],
-    ['colMaxCap', packDelta(colMaxCap)],
-    ['bedMat', a.bedMat],
-    ['topMat', a.topMat],
-    ['colDug', a.colDug],
-    ['runMat', mats.bytes()],
-    ['runLen', lens.bytes()],
-    ['runVis', vis.bytes()],
+    ['present', enc.present],
+    ...columns,
+    ['runMat', enc.mats.bytes()],
+    ['runLen', enc.lens.bytes()],
+    ['runVis', enc.vis.bytes()],
   ];
-  if (a.tint) sections.push(['tint', packDelta(a.tint)]);
+  if (tintPacked) sections.push(['tint', tintPacked]);
   return sections;
 }
 
 // ----- the save worker -----
 // Run-coding the store and laying it out again took ~0.2 s each on the main
-// thread, in one block. The worker gets a copy of the store to save (taken in
-// the frame the save was asked for, so it is still one frame's world) and hands
-// back the sections; on load it gets the decompressed file and hands back the
-// arena. Without a worker both run here as they did.
+// thread, in one block. The worker is sent the store to save a batch of columns
+// at a time (saveStoreToWorker) and hands back the file; on load it gets the
+// decompressed file and hands back the arena. Without a worker both run here as
+// they did.
 let saveWorker = null, saveWorkerTried = false, saveJobSeq = 0;
 const saveJobs = new Map();
 function saveWorkerSource() {
@@ -14523,7 +14545,9 @@ ${rawBytes}
 ${mulberry32}
 ${tintMatchesSeed}
 ${tintFromSeed}
-${encodeVoxColumns}
+${voxRunsAdd}
+${voxRunsStart}
+${voxSections}
 ${decodeVoxRuns}
 ${decodeVoxSections}
 ${packSaveFile}
@@ -14534,15 +14558,25 @@ const bufsOf = (o) => {
   for (const v of Object.values(o)) if (v && v.buffer instanceof ArrayBuffer) out.add(v.buffer);
   return [...out];
 };
+let enc = null;
 onmessage = async (e) => {
   const d = e.data;
   try {
-    if (d.kind === 'encode') {
-      const a = d.arrays;
-      const tintSeeded = tintMatchesSeed(d.seed, a.tint);
-      if (tintSeeded) a.tint = null;
+    if (d.kind === 'encBegin') {
+      enc = voxRunsStart();
+      postMessage({ id: d.id });
+    } else if (d.kind === 'encCols') {
+      voxRunsAdd(enc, d.k0, d.k1, d.off, d.cap, d.mat, d.bits);
+      postMessage({ id: d.id, mat: d.mat, bits: d.bits }, [d.mat.buffer, d.bits.buffer]);   // back for the next batch
+    } else if (d.kind === 'encColumn') {
+      (enc.columns || (enc.columns = [])).push([d.name, d.pack ? packDelta(d.arr) : d.arr]);
+      postMessage({ id: d.id });
+    } else if (d.kind === 'encEnd') {
+      const runs = enc;
+      enc = null;
+      const tintSeeded = tintMatchesSeed(d.seed, d.tint);
       d.meta.voxelStore = { worldBlocks: d.worldBlocks, tintSeeded };
-      const file = await packSaveFile(d.meta, encodeVoxColumns(a));
+      const file = await packSaveFile(d.meta, voxSections(runs, runs.columns, tintSeeded ? null : packDelta(d.tint)));
       postMessage({ id: d.id, file }, [file.buffer]);
     } else {
       const body = await unpackSaveBody(d.file);
@@ -14594,70 +14628,121 @@ function saveWorkerRun(msg, transfer) {
   });
 }
 
-// The store copy the worker encodes. 36 MB in one copy held the page 40-85 ms,
-// so under the menu it is taken in slices with a turn for the page between
-// them. Nothing may write the store meanwhile: the world's step does not run
-// under the menu, and tension answers, the one writer that arrives on its own,
-// wait in stressHeld until the copy is done. Asked for anywhere else (the
-// console), the world is running and it is copied in one go.
-const SAVE_SLICE = 4 << 20;
-let storeHold = false;
+// The store goes to the worker in batches of columns, about SAVE_SLICE of the
+// arena each, copied off and handed over: a whole copy was 60 MB on top of the
+// live store, on the phones that close a tab for less. Under the menu at most
+// SAVE_INFLIGHT batches are out at once, with a turn for the page while the
+// worker catches up. Nothing may write the store meanwhile: the world's step
+// does not run under the menu, and tension answers, the one writer that arrives
+// on its own, wait in stressHeld until the last batch is off. Asked for anywhere
+// else (the console), the world is running and every batch goes in one go.
+const SAVE_SLICE = 4 << 20, SAVE_INFLIGHT = 2;
 const underMenu = () => menuOpen || !overlay.classList.contains('hidden');
 const nextTask = () => new Promise((r) => setTimeout(r, 0));
-async function copyStore(src, n, sliced) {
-  if (!sliced) return src.slice(0, n);
-  const out = new Uint8Array(n);
-  for (let p = 0; p < n; p += SAVE_SLICE) {
-    out.set(src.subarray(p, Math.min(n, p + SAVE_SLICE)), p);
-    if (p + SAVE_SLICE < n) await nextTask();
-  }
-  return out;
+// The menu is kept open while the store is held (setMenuUI), so no edit can land
+// in a save half sent; a close asked for meanwhile happens here.
+function storeRelease() {
+  storeHold = false;
+  stressReleaseHeld();
+  if (menuCloseHeld) setMenuUI(false);
 }
-async function snapshotVoxStore() {
-  const sliced = underMenu();
-  const arrays = {
-    voxOff: voxOff.slice(), colMaxCap: colMaxCap.slice(),
-    topLvl: topLvl.slice(), bedLvl: bedLvl.slice(), sTop: sTop.slice(), colDugLo: colDugLo.slice(),
-    bedMat: bedMat.slice(), topMat: topMat.slice(), colDug: colDug.slice(), tint: tint.slice(),
+// Columns k0 on, up to about SAVE_SLICE of the arena, laid end to end: a run of
+// columns that sit end to end in the store goes over in one copy. Into a pair
+// of buffers the worker has handed back (pool) when one is big enough.
+function saveBatch(k0, pool) {
+  const N = GEN_N * GEN_N;
+  let k1 = k0, total = 0;
+  for (; k1 < N && total < SAVE_SLICE; k1++) if (voxOff[k1] >= 0) total += voxSpan(voxLen(k1));
+  const off = new Int32Array(k1 - k0), cap = colMaxCap.slice(k0, k1);
+  const q = pool.findIndex((b) => b.mat.length >= total);
+  const { mat, bits } = q >= 0 ? pool.splice(q, 1)[0]
+    : { mat: new Uint8Array(Math.max(total, SAVE_SLICE)), bits: new Uint8Array(Math.max(total, SAVE_SLICE) >> 3) };
+  let at = 0, runO = -1, runAt = 0, runEnd = -1;
+  const flush = () => {
+    if (runO < 0) return;
+    mat.set(voxMat.subarray(runO, runEnd), runAt);
+    bits.set(visBits.subarray(runO >> 3, runEnd >> 3), runAt >> 3);
+    runO = -1;
   };
+  for (let k = k0; k < k1; k++) {
+    const o = voxOff[k];
+    if (o < 0) { off[k - k0] = -1; continue; }
+    const span = voxSpan(voxLen(k));
+    if (o !== runEnd) { flush(); runO = o; runAt = at; }
+    runEnd = o + span;
+    off[k - k0] = at;
+    at += span;
+  }
+  flush();
+  return { kind: 'encCols', k0, k1, off, cap, mat, bits };
+}
+async function saveStoreToWorker(meta) {
+  const sliced = underMenu();
+  const out = [], pool = [];
+  const send = (msg, transfer) => {
+    const p = saveWorkerRun(msg, transfer) || Promise.reject(new Error('save worker failed'));
+    p.catch(() => {});   // awaited below; a failure is reported once, from there
+    out.push(p);
+  };
+  let end;
   storeHold = sliced;
   try {
-    arrays.voxMat = await copyStore(voxMat, voxCount, sliced);
-    arrays.visBits = await copyStore(visBits, voxCount >> 3, sliced);
+    send({ kind: 'encBegin' });
+    for (let k = 0; k < GEN_N * GEN_N;) {
+      const b = saveBatch(k, pool);
+      k = b.k1;
+      send(b, [b.off.buffer, b.cap.buffer, b.mat.buffer, b.bits.buffer]);
+      if (sliced && out.length >= SAVE_INFLIGHT) {
+        const r = await out.shift();
+        if (r.mat) pool.push(r);
+      }
+    }
+    // The column arrays one at a time, packed there (packDelta is 10-70 ms an array).
+    const cols = { topLvl, bedLvl, sTop, colDugLo, colMaxCap, bedMat, topMat, colDug };
+    for (const [name, pack] of SAVE_COLUMNS) {
+      const arr = cols[name].slice();
+      send({ kind: 'encColumn', name, pack, arr }, [arr.buffer]);
+      if (sliced && out.length >= SAVE_INFLIGHT) await out.shift();
+    }
+    end = { kind: 'encEnd', tint: tint.slice(), meta, worldBlocks, seed: worldSeed };
   } finally {
-    storeHold = false;
-    stressReleaseHeld();
+    storeRelease();
   }
-  return arrays;
+  for (const p of out) await p;
+  const r = await saveWorkerRun(end, [end.tint.buffer]);
+  if (!r) throw new Error('save worker failed');
+  return r.file;
 }
 
-// Build the save file. The header is taken first and the store copied after it
+// Build the save file. The header is taken first and the store sent after it
 // with nothing changing between, so the file is one moment's world; with the
 // save worker, run-coding, packing and gzip all happen there.
-async function buildSaveBlob() {
+async function buildSaveFile() {
   const meta = collectWorldMeta();
-  if (saveWorkerGet()) {
-    const arrays = await snapshotVoxStore();
-    const r = await saveWorkerRun({ kind: 'encode', arrays, meta, worldBlocks, seed: worldSeed },
-                                  Object.values(arrays).map((x) => x.buffer));
-    if (r) return new Blob([r.file], { type: 'application/octet-stream' });
-  }
+  if (saveWorkerGet()) return saveStoreToWorker(meta);
   const { sections, store } = encodeVoxStore();
   meta.voxelStore = store;
-  return new Blob([await packSaveFile(meta, sections)], { type: 'application/octet-stream' });
+  return packSaveFile(meta, sections);
 }
 // Magic, flags, then the (gzipped) body [u32 header length][header JSON][sections…].
+// A section is its bytes, or a list of parts (ByteBuf.bytes).
 async function packSaveFile(meta, sections) {
-  meta.sections = sections.map(([name, b]) => [name, b.length]);
+  const size = (b) => Array.isArray(b) ? b.reduce((n, x) => n + x.length, 0) : b.length;
+  meta.sections = sections.map(([name, b]) => [name, size(b)]);
   const header = new TextEncoder().encode(JSON.stringify(meta));
   const len = new Uint8Array(4);
   new DataView(len.buffer).setUint32(0, header.length, true);
-  const body = new Blob([len, header, ...sections.map((x) => x[1])]);
-  let flags = 0, packed = body;
-  if (typeof CompressionStream === 'function' && body.stream) {
-    packed = await new Response(body.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+  const parts = [len, header, ...sections.flatMap((x) => x[1])];
+  let flags = 0, packed;
+  if (typeof CompressionStream === 'function') {
+    // Straight into gzip part by part, not through a Blob of the whole body first.
+    const gz = new CompressionStream('gzip'), w = gz.writable.getWriter();
+    const done = new Response(gz.readable).blob();
+    for (const x of parts) await w.write(x);
+    await w.close();
+    packed = await done;
     flags |= SAVE_GZIP;
-  }
+  } else packed = new Blob(parts);
   const head = new Uint8Array([...SAVE_MAGIC, flags, 0, 0, 0]);
   return new Uint8Array(await new Response(new Blob([head, packed])).arrayBuffer());
 }
@@ -14937,29 +15022,89 @@ function restoreSavedPiece(pc) {
   f.body.updateAABB();
   return f;
 }
+// The falling pieces, then the rested ones — under the menu RESTORE_BATCH at a
+// time with a turn for the page between, each being a mesh and a body. One that
+// was asleep when saved (cannon zeroes a sleeper's speed) goes back asleep.
+const RESTORE_BATCH = 50;
+async function restoreSavedPieces(ds, split) {
+  let n = 0;
+  for (const list of [ds.fallingChunks, ds.restedChunks]) {
+    for (const pc of list) {
+      const f = restoreSavedPiece(pc);
+      if (f) {
+        if (list === ds.fallingChunks) f.still = pc.still;
+        else restFallingChunk(fallingChunks.length - 1);
+        if (pc.vel.every((v) => v === 0) && pc.angVel.every((v) => v === 0)) {
+          f.body.sleep();
+          f.body.dispatchEvent(CANNON.Body.sleepEvent);
+        }
+      }
+      if (split && ++n % RESTORE_BATCH === 0) await nextTask();
+    }
+  }
+}
 
-// Under the menu nothing steps between tasks, so it is done in three with a
+// Under the menu nothing steps between tasks, so it is done in steps with a
 // turn for the page between, each well under the whole; tension answers for the
-// old world are held until restorePlaced has forgotten it, then dropped.
+// old world are held until restorePlaced has forgotten it, then dropped. The
+// pieces come back last, once the colliders they lie on are the new world's.
 async function applyWorldState(s) {
   if (!s || (s.version !== SAVE_VERSION && s.version !== LEGACY_SAVE_VERSION)) {
     console.warn('Save version mismatch or invalid save');
     return false;
   }
   const split = underMenu();
+  let changed;
   storeHold = split;
   try {
+    changed = await loadChangedChunks(s.voxelStore, split);
     applyWorldCore(s);
     if (split) await nextTask();
     // Stress overlay — absent from older saves, which load with nothing marked.
     restorePlaced(s.stressState);
   } finally {
-    storeHold = false;
-    stressReleaseHeld();
+    storeRelease();
   }
   if (split) await nextTask();
-  applyWorldRebuild();
+  await applyWorldRebuild(split, changed);
+  await restoreSavedPieces(s.debrisState, split);
   return true;
+}
+// The chunks a load changes: those with a column their mesh (or collider) reads
+// — their own and MESH_MARGIN round them, as far as any job looks — that is not
+// byte for byte the same in the save as in the world being left, and those
+// still waiting on a rebuild. The rest keep their mesh and collider. Null (all
+// of them) for a version 1 save, which is laid out only later.
+async function loadChangedChunks(vs, split) {
+  const laid = vs.laid;
+  if (!laid) return null;
+  const changed = new Uint8Array(CHUNK_N * CHUNK_N), M = MESH_MARGIN;
+  const a32 = new Int32Array(voxMat.buffer, 0, voxMat.length >> 2);
+  const b32 = new Int32Array(laid.mat.buffer, 0, laid.mat.length >> 2), bits = laid.bits;
+  const same = (k) => {
+    if (sTop[k] !== vs.sTop[k] || topLvl[k] !== vs.topLvl[k] || colMaxCap[k] !== vs.colMaxCap[k]
+     || airLo[k] !== laid.airLo[k] || tint[k] !== vs.tint[k]) return false;
+    const o = voxOff[k], p = laid.off[k];
+    if (o < 0 || p < 0) return o < 0 && p < 0;
+    const span = voxSpan(voxLen(k));
+    for (let x = o >> 2, y = p >> 2, x1 = (o + span) >> 2; x < x1; x++, y++) if (a32[x] !== b32[y]) return false;
+    for (let x = o >> 3, y = p >> 3, x1 = (o + span) >> 3; x < x1; x++, y++) if (visBits[x] !== bits[y]) return false;
+    return true;
+  };
+  for (let j = 0; j < GEN_N; j++) {
+    for (let i = 0, k = j * GEN_N; i < GEN_N; i++, k++) {
+      if (same(k)) continue;
+      const ci0 = Math.max(0, Math.ceil((i - M - CHUNK + 1) / CHUNK)), ci1 = Math.min(CHUNK_N - 1, Math.floor((i + M) / CHUNK));
+      const cj0 = Math.max(0, Math.ceil((j - M - CHUNK + 1) / CHUNK)), cj1 = Math.min(CHUNK_N - 1, Math.floor((j + M) / CHUNK));
+      for (let cj = cj0; cj <= cj1; cj++) for (let ci = ci0; ci <= ci1; ci++) changed[cj * CHUNK_N + ci] = 1;
+    }
+    if (split && (j & 63) === 63) await nextTask();
+  }
+  for (const c of dirtyChunks) changed[c] = 1;
+  for (const c of powderLateChunks) changed[c] = 1;
+  for (const c of dirtyColliders) changed[c] = 1;
+  for (const c of powderLateCols) changed[c] = 1;
+  return changed;
 }
 function applyWorldCore(s) {
   // Restore voxel store — a current save is laid out (and checked) first, so a
@@ -15034,14 +15179,7 @@ function applyWorldCore(s) {
   powderCarry.length = 0;
   impactPending.length = 0;   // a crater still being dug in the world that was left
 
-  // Restore falling chunks, then the rested ones
-  for (const fc of ds.fallingChunks) {
-    const f = restoreSavedPiece(fc);
-    if (f) f.still = fc.still;
-  }
-  for (const rc of ds.restedChunks) {
-    if (restoreSavedPiece(rc)) restFallingChunk(fallingChunks.length - 1);
-  }
+  // The pieces come back after the rebuild (restoreSavedPieces).
 
   // Restore powder falling
   for (const g of ds.powderFalling) {
@@ -15053,7 +15191,7 @@ function applyWorldCore(s) {
   // A save from before every emptying path marked its column may have left
   // powder hanging that only the old field sweep would have found. Only a dug
   // column can have air under anything, so one look at each of those settles it.
-  for (let c = 0; c < GEN_N * GEN_N; c++) if (colDug[c]) powderDirty.add(c);
+  if (!ds.powderMarked) for (let c = 0; c < GEN_N * GEN_N; c++) if (colDug[c]) powderDirty.add(c);
 
   // Restore settings
   const ss = s.settingsState;
@@ -15063,21 +15201,35 @@ function applyWorldCore(s) {
   debugChunks.visible = debugChunksOn;
   debugColOn = ss.debugColOn;
   debugCollision.visible = debugColOn;
-  colTestOn = ss.colTestOn;
-  updateColTestUI();
+  // There never was an updateColTestUI: the load threw here, before the rebuild.
+  if (!!ss.colTestOn !== colTestOn) toggleColTest();
+  btnColTest.textContent = colTestOn ? 'COL TEST: On' : 'COL TEST: Off';
 }
-// Rebuild all meshes and colliders from voxel store
-function applyWorldRebuild() {
-  remeshAllChunks();
+// Rebuild the meshes and colliders the load changed (all, for null) from the
+// voxel store. Under the menu the colliders are built by the worker, and the
+// load waits for them: the new bodies go in as they come back, and nothing
+// steps on the old ones meanwhile.
+async function applyWorldRebuild(split, changed) {
+  remeshAllChunks(changed);
+  const wait = [];
   for (let c = 0; c < colliderBody.length; c++) {
-    if (colliderBody[c]) rebuildChunkCollider(c);
+    if (!colliderBody[c] || (changed && !changed[c])) continue;
+    if (split && meshWorker) { markColliderDirty(c); wait.push(c); }
+    else rebuildChunkCollider(c);
+  }
+  if (wait.length) {
+    flushDirtyColliders();
+    const t0 = performance.now();
+    while (wait.some((c) => colJob[c]) && performance.now() - t0 < 10000) {
+      await new Promise((r) => setTimeout(r, 4));
+      buildPendingColliders();
+    }
   }
   dirtyColliders.clear();
 
   // Update UI
   refreshShovelUI();
-  refreshHammerUI();
-  refreshPlacerUI();
+  refreshHammerUI();   // setPlacer has done the placer's (there is no refreshPlacerUI)
   refreshModeUI();
   hudBlocks();
 }
@@ -15096,8 +15248,7 @@ async function exclusive(fn) {
 // Write the current world in the current format, then drop any version 1 save,
 // which it supersedes — only once the new one is safely stored.
 async function writeSave() {
-  const blob = await buildSaveBlob();
-  const bytes = await blobBytes(blob);
+  const bytes = await buildSaveFile();
   await idbSet(SAVE_KEY_BIN, bytes.buffer);
   try { await idbDelete(SAVE_KEY); } catch (e) { console.warn('Could not remove old save:', e); }
   return bytes.length;
@@ -15143,7 +15294,7 @@ function loadWorld() {
 
 function exportWorld() {
   return exclusive(async () => {
-    const blob = await buildSaveBlob();
+    const blob = new Blob([await buildSaveFile()], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

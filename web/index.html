@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 240;
+window.GAME_VERSION = 241;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -10959,6 +10959,12 @@ function stressSolveJob(job, mem = {}) {
   });
 
   // ----- block sparse rows of 6x6 blocks: { n, m, rs, ci, v } -----
+  // The structure's own matrix and the CG vectors are Float64, the answer is
+  // read from them. Everything the preconditioner holds (the coarse levels, the
+  // prolongators, the smoother's block inverses) is Float32: the preconditioner
+  // only has to be close and fixed, the Float64 CG corrects for the rest, and
+  // those arrays were most of a solve's memory and of its bandwidth. Sums are
+  // still taken in doubles, only the stored entries are rounded.
   // C += A * B, one 6x6 block each, row-major.
   function mm6(A, ao, B, bo, C, co) {
     for (let r = 0; r < 6; r++) {
@@ -10971,10 +10977,12 @@ function stressSolveJob(job, mem = {}) {
     }
   }
   // The product's blocks are counted first, so it is laid out once at its size
-  // rather than grown by doubling and trimmed by a copy.
+  // rather than grown by doubling and trimmed by a copy. It is a hierarchy
+  // matrix, so Float32; a row is summed in a Float64 scratch and rounded once
+  // on the way out, not at every one of its terms.
   function bsrMul(A, B) {
     const n = A.n, mark = take(Int32Array, B.m).fill(-1), rs = take(Int32Array, n + 1);
-    let nz = 0;
+    let nz = 0, wide = 0;
     for (let i = 0; i < n; i++) {
       const row0 = nz;
       for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
@@ -10982,9 +10990,10 @@ function stressSolveJob(job, mem = {}) {
         for (let q = B.rs[k]; q < B.rs[k + 1]; q++) if (mark[B.ci[q]] < row0) mark[B.ci[q]] = nz++;
       }
       rs[i + 1] = nz;
+      if (nz - row0 > wide) wide = nz - row0;
     }
     mark.fill(-1);
-    const ci = take(Int32Array, nz), v = take(Float64Array, nz * 36);
+    const ci = take(Int32Array, nz), v = take(Float32Array, nz * 36), row = take(Float64Array, wide * 36);
     nz = 0;
     for (let i = 0; i < n; i++) {
       const row0 = nz;
@@ -10994,18 +11003,21 @@ function stressSolveJob(job, mem = {}) {
           const j = B.ci[q];
           let at = mark[j];
           if (at < row0) { at = mark[j] = nz++; ci[at] = j; }
-          mm6(A.v, p * 36, B.v, q * 36, v, at * 36);
+          mm6(A.v, p * 36, B.v, q * 36, row, (at - row0) * 36);
         }
       }
+      const len = (nz - row0) * 36;
+      v.set(row.subarray(0, len), row0 * 36);
+      row.fill(0, 0, len);
     }
-    give(mark);
+    give(mark, row);
     return { n, m: B.m, rs, ci, v };
   }
   function bsrT(A) {
     const nz = A.rs[A.n], rs = take(Int32Array, A.m + 1);
     for (let p = 0; p < nz; p++) rs[A.ci[p] + 1]++;
     for (let j = 0; j < A.m; j++) rs[j + 1] += rs[j];
-    const cur = take(Int32Array, A.m), ci = take(Int32Array, nz), v = take(Float64Array, nz * 36);
+    const cur = take(Int32Array, A.m), ci = take(Int32Array, nz), v = take(A.v.constructor, nz * 36);
     cur.set(rs.subarray(0, A.m));
     for (let i = 0; i < A.n; i++) {
       for (let p = A.rs[i]; p < A.rs[i + 1]; p++) {
@@ -11078,7 +11090,7 @@ function stressSolveJob(job, mem = {}) {
     for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) out[oo + r * 6 + c] = gj[r * 12 + 6 + c];
   }
   function diagInverses(A) {
-    const D = take(Float64Array, A.n * 36);
+    const D = take(Float32Array, A.n * 36);
     for (let i = 0; i < A.n; i++) {
       for (let p = A.rs[i]; p < A.rs[i + 1]; p++) if (A.ci[p] === i) { inv6(A.v, p * 36, D, i * 36); break; }
     }
@@ -11130,7 +11142,7 @@ function stressSolveJob(job, mem = {}) {
       for (let a = 0; a < na; a++) { cpx[a * 3] /= cnt[a]; cpx[a * 3 + 1] /= cnt[a]; cpx[a * 3 + 2] /= cnt[a]; }
       // Tentative prolongator: each node moves with its aggregate rigidly,
       // u = t + w x r, theta = w, r from the aggregate's centre to the node.
-      const T = { n, m: na, rs: take(Int32Array, n + 1), ci: take(Int32Array, n), v: take(Float64Array, n * 36) };
+      const T = { n, m: na, rs: take(Int32Array, n + 1), ci: take(Int32Array, n), v: take(Float32Array, n * 36) };
       let nz = 0;
       for (let i = 0; i < n; i++) {
         const a = agg[i];
@@ -11149,20 +11161,24 @@ function stressSolveJob(job, mem = {}) {
       const AT = bsrMul(A, T);
       const rho = spectralRadius(L);
       const w = 4 / (3 * rho), blk = new Float64Array(36);
-      const P = { n, m: na, rs: AT.rs, ci: AT.ci, v: take(Float64Array, AT.v.length) };
+      const P = { n, m: na, rs: AT.rs, ci: AT.ci, v: take(Float32Array, AT.v.length) };
       for (let i = 0; i < n; i++) {
         const tq = T.rs[i] < T.rs[i + 1] ? T.rs[i] : -1;
         for (let p = AT.rs[i]; p < AT.rs[i + 1]; p++) {
           blk.fill(0);
           mm6(L.Dinv, i * 36, AT.v, p * 36, blk, 0);
-          for (let k = 0; k < 36; k++) P.v[p * 36 + k] = -w * blk[k];
-          if (tq >= 0 && AT.ci[p] === T.ci[tq]) for (let k = 0; k < 36; k++) P.v[p * 36 + k] += T.v[tq * 36 + k];
+          if (tq >= 0 && AT.ci[p] === T.ci[tq]) for (let k = 0; k < 36; k++) blk[k] = T.v[tq * 36 + k] - w * blk[k];
+          else for (let k = 0; k < 36; k++) blk[k] = -w * blk[k];
+          P.v.set(blk, p * 36);
         }
       }
       L.P = P;
+      // T and A T are done with: back to the pool before the two products,
+      // which can take their buffers instead of adding to the peak.
+      give(T.rs, T.ci, T.v, AT.v);
       const R = bsrT(P), AP = bsrMul(A, P);
       A = bsrMul(R, AP);
-      give(agg, cnt, T.rs, T.ci, T.v, AT.v); giveM(AP); giveM(R);
+      give(agg, cnt); giveM(AP); giveM(R);
       if (depth) give(px);   // a coarse level's centres; the finest level's are the caller's
       px = cpx;
       excluded = null;
@@ -11196,6 +11212,9 @@ function stressSolveJob(job, mem = {}) {
     give(x, y, z);
     return Math.max(rho, 1e-12);
   }
+  // The factor stays Float64 though its matrix is Float32: rounding every entry
+  // of a factorization compounds down the columns, and the bottom level is
+  // small (COARSEST nodes) except when coarsening stalls.
   function denseCholesky(A) {
     const N = A.n * 6, M = take(Float64Array, N * N);
     for (let i = 0; i < A.n; i++) {

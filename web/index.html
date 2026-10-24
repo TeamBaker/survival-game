@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 242;
+window.GAME_VERSION = 243;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2924,6 +2924,11 @@ let voxMat = new Uint8Array(voxSpan(voxCount + voxSlack(voxCount)));
 // not a pillar.
 let visBits = new Uint8Array(voxMat.length >> 3);
 const isVisible = (p) => (visBits[p >> 3] >> (p & 7)) & 1;
+// Column k's floor block (d = 0) and the one on it (d = 1), and whether the floor
+// block is visible: the mesh worker's snapshot of a column may not reach down to
+// them, so it carries them on their own and has its own of these.
+const voxFloorAt = (k, d) => voxMat[voxOff[k] + d];
+const voxFloorVis = (k) => isVisible(voxOff[k]);
 function setVisible(p, on) {
   if (on) visBits[p >> 3] |= 1 << (p & 7);
   else visBits[p >> 3] &= ~(1 << (p & 7));
@@ -3078,11 +3083,17 @@ const lvlOfY = (y) => Math.floor(y / BLOCK);
 const colI = (x) => Math.floor((x + GEN_R) / BLOCK);
 const colJ = (z) => Math.floor((z + GEN_R) / BLOCK);
 
+// Column (i, j)'s index into the per-column arrays, and the step between one
+// row's and the next's. The mesh worker holds only its job's window of those
+// arrays and has its own of both, so the functions it shares go through these.
+const COL_ROW = GEN_N;
+const colK = (i, j) => j * GEN_N + i;
+
 // The material at (i, j, lvl), or AIR for anything outside the solid volume —
 // so a caller can walk a column off either end without bounds-checking first.
 function voxelAt(i, j, lvl) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
-  const k = j * GEN_N + i;
+  const k = colK(i, j);
   if (topLvl[k] === NO_COLUMN || lvl < VOX_FLOOR || lvl > voxCap(k)) return AIR;
   return voxMat[voxOff[k] + lvl - VOX_FLOOR];
 }
@@ -3808,14 +3819,15 @@ const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
 const mergeMatCounts = new Uint32Array(MAT_IDS);
 
 // Scratch, reused by every rebuild. The first pass records each exposed face of
-// the chunk as a single number (see addFace): its direction, the plane it lies
-// in, where in that plane, and its material. Sorted, a plane's faces come out
-// together and row by row, and mergeFaces covers each plane with as few
-// rectangles as it can. Nothing else about a face matters to the merge — every
+// the chunk (see addFace): its direction, the plane it lies in, where in that
+// plane, and its material. Bucketed by direction and plane, a plane's faces come
+// out together, and mergeFaces covers each plane with as few rectangles as it
+// can. Nothing else about a face matters to the merge — every
 // block's own shade is worked out per pixel by TERRAIN_CHUNK_MAT — so a hillside
 // of one material is a handful of quads rather than one for every block in it.
-let faceKeys = new Float64Array(16384);
 let faceN = 0;
+let faceP = new Int32Array(16384), faceQ = new Int32Array(16384), faceM = new Uint8Array(16384);
+let faceB = new Int32Array(16384), faceOrd = new Int32Array(16384);
 let mergeMask = new Uint8Array(4096);
 // What the merge comes out as: four loose corners a quad — position in
 // half-blocks and m | f << 6 | (step - 1) << 9, which rebuildChunk packs into
@@ -3892,20 +3904,18 @@ function setColTexel(i, j, t, top, cx, cz) {
   }
 }
 
-// One face, as a key that sorts by direction, then plane, then row (v), then
-// along the row (u). Columns and rows count from the chunk's first (a LOD cube
-// may run a few past its last), levels up from VOX_FLOOR; 13 bits apiece, which
-// with the direction and the material is a 47-bit integer — exact in a double,
-// and every field but the material a power of two apart; all of them come back
-// apart exactly by floor and modulo.
+// One face: direction f and plane (faceP), row v and along the row u (faceQ),
+// and material. Columns and rows count from the chunk's first (a LOD cube may
+// run a few past its last), levels up from VOX_FLOOR; 13 bits apiece, so each
+// pair is a small integer that comes apart by a power of two.
 const FK = 8192;
 function addFace(f, plane, u, v, m) {
-  if (faceN === faceKeys.length) {
-    const grown = new Float64Array(faceN * 2);
-    grown.set(faceKeys);
-    faceKeys = grown;
+  if (faceN === faceP.length) {
+    const n = faceN * 2, grow = (a) => { const g = new a.constructor(n); g.set(a); return g; };
+    faceP = grow(faceP); faceQ = grow(faceQ); faceM = grow(faceM);
+    faceB = new Int32Array(n); faceOrd = new Int32Array(n);
   }
-  faceKeys[faceN++] = (((f * FK + plane) * FK + v) * FK + u) * MAT_IDS + m;
+  faceP[faceN] = f * FK + plane; faceQ[faceN] = v * FK + u; faceM[faceN++] = m;
 }
 
 // Face f of the box S blocks a side whose low corner is chunk-local column li,
@@ -3967,32 +3977,50 @@ function emitRect(f, plane, u, v, w, h, m) {
   pushQuad(f, m);
 }
 
-// Greedy merge: sort the keys so each plane's faces sit together, paint the
-// plane's faces into a mask of material ids, then sweep it row by row — at each
-// face not yet covered, run right as far as the material holds, then down for as
-// many rows as hold it all the way across, and emit that as one quad.
+// Greedy merge: bucket the faces by direction and plane, in that order (a
+// counting sort — each direction's planes from the lowest it has to the
+// highest), paint each plane's faces into a mask of material ids, then sweep it
+// row by row — at each face not yet covered, run right as far as the material
+// holds, then down for as many rows as hold it all the way across, and emit
+// that as one quad. Two faces in one cell keep the higher material id.
+const planeLo = new Int32Array(6), planeHi = new Int32Array(6), planeAt = new Int32Array(6);
+let planeEnd = new Int32Array(1024);
 function mergeFaces() {
-  const keys = faceKeys.subarray(0, faceN).sort();
-  const ROW = FK * MAT_IDS, PLANE = FK * ROW;
-  for (let g0 = 0; g0 < faceN; ) {
-    const fp = Math.floor(keys[g0] / PLANE);
-    let g1 = g0 + 1;
-    while (g1 < faceN && Math.floor(keys[g1] / PLANE) === fp) g1++;
-    const f = Math.floor(fp / FK), plane = fp % FK;
-    const vMin = Math.floor(keys[g0] / ROW) % FK, vMax = Math.floor(keys[g1 - 1] / ROW) % FK;
-    let uMin = FK, uMax = 0;
+  const P = faceP, Q = faceQ, Mt = faceM, B = faceB, ord = faceOrd;
+  planeLo.fill(FK); planeHi.fill(-1);
+  for (let g = 0; g < faceN; g++) {
+    const f = (P[g] / FK) | 0, pl = P[g] & (FK - 1);
+    if (pl < planeLo[f]) planeLo[f] = pl;
+    if (pl > planeHi[f]) planeHi[f] = pl;
+  }
+  let nb = 0;
+  // Bucket of fp = f * FK + plane: fp less its direction's base.
+  for (let f = 0; f < 6; f++) { planeAt[f] = nb - planeLo[f] - f * FK; if (planeHi[f] >= planeLo[f]) nb += planeHi[f] - planeLo[f] + 1; }
+  if (planeEnd.length < nb + 1) planeEnd = new Int32Array((nb + 1) * 2);
+  const E = planeEnd;
+  E.fill(0, 0, nb + 1);
+  for (let g = 0; g < faceN; g++) { const b = planeAt[(P[g] / FK) | 0] + P[g]; B[g] = b; E[b + 1]++; }
+  for (let b = 0; b < nb; b++) E[b + 1] += E[b];
+  // E[b] is where bucket b starts; filling moves it on to where b + 1 does.
+  for (let g = 0; g < faceN; g++) ord[E[B[g]]++] = g;
+  for (let f = 0; f < 6; f++) for (let plane = planeLo[f]; plane <= planeHi[f]; plane++) {
+    const b = planeAt[f] + f * FK + plane, g0 = b ? E[b - 1] : 0, g1 = E[b];
+    if (g0 === g1) continue;
+    let uMin = FK, uMax = 0, vMin = FK, vMax = 0;
     for (let g = g0; g < g1; g++) {
-      const u = Math.floor(keys[g] / MAT_IDS) % FK;
+      const uv = Q[ord[g]], u = uv & (FK - 1), v = uv >> 13;
       if (u < uMin) uMin = u;
       if (u > uMax) uMax = u;
+      if (v < vMin) vMin = v;
+      if (v > vMax) vMax = v;
     }
     const W = uMax - uMin + 1, H = vMax - vMin + 1;
     if (mergeMask.length < W * H) mergeMask = new Uint8Array(W * H * 2);
     const M = mergeMask;
     M.fill(0, 0, W * H);
     for (let g = g0; g < g1; g++) {
-      const k = keys[g];
-      M[(Math.floor(k / ROW) % FK - vMin) * W + Math.floor(k / MAT_IDS) % FK - uMin] = k % MAT_IDS + 1;
+      const q = ord[g], at = ((Q[q] >> 13) - vMin) * W + (Q[q] & (FK - 1)) - uMin;
+      if (Mt[q] + 1 > M[at]) M[at] = Mt[q] + 1;
     }
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
@@ -4011,7 +4039,6 @@ function mergeFaces() {
         x += w - 1;
       }
     }
-    g0 = g1;
   }
 }
 
@@ -4026,10 +4053,10 @@ function mergeFaces() {
 const lodCentre = [0, 0, 0];
 function collectColumn(i, j, step = 1) {
   if (step === 1) {
-    const k = j * GEN_N + i;
+    const k = colK(i, j);
     const top = sTop[k];
     if (top === NO_COLUMN || topLvl[k] === NO_COLUMN) return 0;
-    const o = voxOff[k] - VOX_FLOOR;
+    const o = voxOff[k] - VOX_FLOOR, cap = voxCap(k);
     // Everything the shader needs to shade any block in the column the way
     // terrainBlockColor does — its material, the column's tint, whether it is
     // still in the soil band, how far below the top it sits — is the material id
@@ -4042,19 +4069,41 @@ function collectColumn(i, j, step = 1) {
     // A neighbour off the field or missing is air from the floor up, which
     // leaves no core to skip.
     const side = i > 0 && i < GEN_N - 1 && j > 0 && j < GEN_N - 1
-      ? Math.min(airLo[k - 1], airLo[k + 1], airLo[k - GEN_N], airLo[k + GEN_N])
+      ? Math.min(airLo[k - 1], airLo[k + 1], airLo[k - COL_ROW], airLo[k + COL_ROW])
       : VOX_FLOOR;
     const coreTop = Math.min(side - 1, airLo[k] - 2);
+    // The four side neighbours' runs in the store (FACES order: +i, -i, +j, -j),
+    // looked up once for the column. One off the field or missing gets a cap
+    // under the floor, so every level of it reads as air, as voxelAt has it.
+    let cE = VOX_FLOOR - 1, cW = cE, cN = cE, cS = cE, oE = 0, oW = 0, oN = 0, oS = 0;
+    if (i + 1 < GEN_N && topLvl[k + 1] !== NO_COLUMN) { cE = voxCap(k + 1); oE = voxOff[k + 1] - VOX_FLOOR; }
+    if (i > 0 && topLvl[k - 1] !== NO_COLUMN) { cW = voxCap(k - 1); oW = voxOff[k - 1] - VOX_FLOOR; }
+    if (j + 1 < GEN_N && topLvl[k + COL_ROW] !== NO_COLUMN) { cN = voxCap(k + COL_ROW); oN = voxOff[k + COL_ROW] - VOX_FLOOR; }
+    if (j > 0 && topLvl[k - COL_ROW] !== NO_COLUMN) { cS = voxCap(k - COL_ROW); oS = voxOff[k - COL_ROW] - VOX_FLOOR; }
     let drawn = 0;
+    // Down to just above the core, then straight to the floor block — read
+    // through voxFloorAt, which the mesh worker's snapshot carries on its own.
+    // The block under each one above the floor is in the store; the floor's
+    // underside is always open. One bit a face that touches air (FACES order).
+    const lo = Math.max(coreTop + 1, VOX_FLOOR + 1);
     for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
-      if (lvl <= coreTop && lvl > VOX_FLOOR) lvl = VOX_FLOOR;
-      const m = voxMat[o + lvl];
-      if (m === AIR || !isVisible(o + lvl)) continue;
-      for (let f = 0; f < 6; f++) {
-        const F = FACES[f];
-        if (voxelAt(i + F.di, j + F.dj, lvl + F.dl) !== AIR) continue;
-        addBoxFace(f, li, lj, lvl - VOX_FLOOR, 1, m);
+      if (lvl < lo) lvl = VOX_FLOOR;
+      let m, open;
+      if (lvl > VOX_FLOOR) {
+        const p = o + lvl;
+        m = voxMat[p];
+        if (m === AIR || !isVisible(p)) continue;
+        open = (lvl > cE || voxMat[oE + lvl] === AIR ? 1 : 0) | (lvl > cW || voxMat[oW + lvl] === AIR ? 2 : 0)
+          | (lvl >= cap || voxMat[p + 1] === AIR ? 4 : 0) | (voxMat[p - 1] === AIR ? 8 : 0)
+          | (lvl > cN || voxMat[oN + lvl] === AIR ? 16 : 0) | (lvl > cS || voxMat[oS + lvl] === AIR ? 32 : 0);
+      } else {
+        m = voxFloorAt(k, 0);
+        if (m === AIR || !voxFloorVis(k)) continue;
+        open = (cE < VOX_FLOOR || voxFloorAt(k + 1, 0) === AIR ? 1 : 0) | (cW < VOX_FLOOR || voxFloorAt(k - 1, 0) === AIR ? 2 : 0)
+          | (VOX_FLOOR >= cap || voxFloorAt(k, 1) === AIR ? 4 : 0) | 8
+          | (cN < VOX_FLOOR || voxFloorAt(k + COL_ROW, 0) === AIR ? 16 : 0) | (cS < VOX_FLOOR || voxFloorAt(k - COL_ROW, 0) === AIR ? 32 : 0);
       }
+      for (let f = 0; f < 6; f++) if (open >> f & 1) addBoxFace(f, li, lj, lvl - VOX_FLOOR, 1, m);
       drawn++;
     }
     return drawn;
@@ -4067,17 +4116,16 @@ function collectColumn(i, j, step = 1) {
   // draws at.
   const S = mergeSizeFor(step);
   const iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
-  let top = NO_COLUMN, bestK = -1;
+  let top = NO_COLUMN, bestK = -1, bestI = 0, bestJ = 0;
   for (let jj = j; jj < jMax; jj++) {
     for (let ii = i; ii < iMax; ii++) {
-      const kk = jj * GEN_N + ii;
+      const kk = colK(ii, jj);
       const ct = sTop[kk];
       if (ct === NO_COLUMN || topLvl[kk] === NO_COLUMN) continue;
-      if (ct > top) { top = ct; bestK = kk; }
+      if (ct > top) { top = ct; bestK = kk; bestI = ii; bestJ = jj; }
     }
   }
   if (bestK < 0) return 0;
-  const bestI = bestK % GEN_N, bestJ = (bestK / GEN_N) | 0;
 
   const bandBottom = Math.max(VOX_FLOOR, top - S + 1);
 
@@ -4326,6 +4374,30 @@ function chunkPalette(nv) {
   return custom !== 0;
 }
 
+// The merge's nv corners packed into vb, relative to the chunk's origin: ox and
+// oz (its first column and row, in half-blocks) and the lowest corner it has,
+// which goes in packBox[0] with the top, x and z extents after it for the
+// mesh's bound. After chunkPalette, whose slots it packs. The mesh worker runs
+// it too, so the main thread only has to copy what it sends.
+const packBox = new Int32Array(4);
+function packCorners(vb, nv, ox, oz) {
+  let oy = Infinity, yMax = -Infinity, xMax = 0, zMax = 0;
+  for (let p = 1; p < nv * 3; p += 3) {
+    const y = qPos[p];
+    if (y < oy) oy = y;
+    if (y > yMax) yMax = y;
+  }
+  for (let v = 0, p = 0; v < nv; v++, p += 2) {
+    const x = qPos[v * 3] - ox, y = qPos[v * 3 + 1] - oy, z = qPos[v * 3 + 2] - oz;
+    const info = qInfo[v];
+    if (x > xMax) xMax = x;
+    if (z > zMax) zMax = z;
+    vb[p]     = x | z << 6 | palSlot[info & 63] << 12;
+    vb[p + 1] = y | (info >> 6) << 11;
+  }
+  packBox[0] = oy; packBox[1] = yMax; packBox[2] = xMax; packBox[3] = zMax;
+}
+
 // (Re)build one chunk's mesh from the store. Cheap enough to call from a tap:
 // the whole cost is one pass over the chunk's columns, a sort and merge of the
 // faces it found, and two small uploads — the mesh and the chunk's column patch.
@@ -4347,13 +4419,11 @@ function rebuildChunk(c, r) {
   const stride = mergeSizeFor(step);
   rbI0 = i0; rbJ0 = j0; rbStep = step;
   if (r) {
-    // The mesh worker already ran the passes below: its corners, and the texels
-    // it wrote (a slot it left alone still has the 255 it was primed with).
+    // The mesh worker already ran the passes below, and packed the corners: its
+    // vertices, and the texels it wrote (a slot it left alone still has the 255
+    // it was primed with).
     blocks = r.blocks;
     qN = r.nv;
-    if (qInfo.length < qN) { qPos = new Int32Array(qN * 3); qInfo = new Uint16Array(qN); }
-    qPos.set(r.pos);
-    qInfo.set(r.info);
     for (let p = 0; p < r.patch.length; p += 8) {
       if (r.patch[p + 4] !== 255) for (let b = 0; b < 7; b++) colPatch[p + b] = r.patch[p + b];
     }
@@ -4393,12 +4463,6 @@ function rebuildChunk(c, r) {
     // column and row, and the lowest corner it has. Every corner is packed
     // relative to it (see TERRAIN_CHUNK_MAT), and it is the instance matrix.
     const ox = 2 * i0, oz = 2 * j0;
-    let oy = Infinity, yMax = -Infinity, xMax = 0, zMax = 0;
-    for (let p = 1; p < nv * 3; p += 3) {
-      const y = qPos[p];
-      if (y < oy) oy = y;
-      if (y > yMax) yMax = y;
-    }
     // Two triangles a quad, over the four corners the quad already pushed: the
     // shared pattern up to as many quads as a Uint16 index can reach, which is
     // every chunk in practice, and a chunk's own past that — made to measure,
@@ -4438,18 +4502,13 @@ function rebuildChunk(c, r) {
       meshes.length = 0;
       meshes.push(me);
     }
-    chunkCustom[c] = chunkPalette(nv) ? 1 : 0;
-    const pal = me.geometry.attributes.terrainPal;
-    if (pal.array.some((x, w) => x !== palWords[w])) { pal.array.set(palWords); pal.needsUpdate = true; }
     const attr = me.geometry.attributes.position, vb = attr.array;
-    for (let v = 0, p = 0; v < nv; v++, p += 2) {
-      const x = qPos[v * 3] - ox, y = qPos[v * 3 + 1] - oy, z = qPos[v * 3 + 2] - oz;
-      const info = qInfo[v];
-      if (x > xMax) xMax = x;
-      if (z > zMax) zMax = z;
-      vb[p]     = x | z << 6 | palSlot[info & 63] << 12;
-      vb[p + 1] = y | (info >> 6) << 11;
-    }
+    if (r) { chunkCustom[c] = r.custom; vb.set(r.vb); }
+    else { chunkCustom[c] = chunkPalette(nv) ? 1 : 0; packCorners(vb, nv, ox, oz); }
+    const words = r ? r.pal : palWords, box = r ? r.box : packBox;
+    const pal = me.geometry.attributes.terrainPal;
+    if (pal.array.some((x, w) => x !== words[w])) { pal.array.set(words); pal.needsUpdate = true; }
+    const oy = box[0], yMax = box[1], xMax = box[2], zMax = box[3];
     // A fresh buffer goes up whole on its first draw; a reused one sends only
     // the corners this rebuild wrote — whatever lies past them is never drawn.
     if (!fresh) {
@@ -4603,16 +4662,26 @@ function meshWorkerSource() {
   return `'use strict';
 const GEN_N = ${GEN_N}, GEN_R = ${GEN_R}, BLOCK = ${BLOCK}, CHUNK = ${CHUNK}, CHUNK_N = ${CHUNK_N};
 const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, MAT_IDS = ${MAT_IDS}, FK = ${FK};
+const CUSTOM_MAT0 = ${CUSTOM_MAT0}, CUSTOM_MAT_MAX = ${CUSTOM_MAT_MAX}, DIRT = ${DIRT};
 const GRAIN_GRID = ${GRAIN_GRID}, HALF_BLOCK = ${HALF_BLOCK};
 const FACES = ${JSON.stringify(FACES)}, MERGE_SIZE = ${JSON.stringify(MERGE_SIZE)};
 const GRAIN_TINTS = ${JSON.stringify(GRAIN_TINTS)};
 const GRAIN_SIN_B = new Float64Array(${JSON.stringify(Array.from(GRAIN_SIN_B))});
 const GRAIN_COS_B = new Float64Array(${JSON.stringify(Array.from(GRAIN_COS_B))});
-const sTop = new Int16Array(GEN_N * GEN_N), topLvl = new Int16Array(GEN_N * GEN_N), airLo = new Int16Array(GEN_N * GEN_N);
-const tint = new Float32Array(GEN_N * GEN_N), colMaxCap = new Int32Array(GEN_N * GEN_N), voxOff = new Int32Array(GEN_N * GEN_N);
+// The job's window of the per-column arrays, as the snapshot brought them: rw
+// columns a row from (ri0, rj0), which colK translates (i, j) into.
+let sTop, topLvl, airLo, tint, colMaxCap, voxOff, voxFlr;
+let COL_ROW = 0, COL_K0 = 0;
+const colK = (i, j) => j * COL_ROW + i - COL_K0;
+const voxFloorAt = (k, d) => voxFlr[k * 3 + d], voxFloorVis = (k) => voxFlr[k * 3 + 2];
 let voxMat = new Uint8Array(0), visBits = new Uint8Array(0);
 const mergeMatCounts = new Uint32Array(MAT_IDS);
-let faceKeys = new Float64Array(16384), faceN = 0, mergeMask = new Uint8Array(4096);
+let faceN = 0, mergeMask = new Uint8Array(4096);
+let faceP = new Int32Array(16384), faceQ = new Int32Array(16384), faceM = new Uint8Array(16384);
+let faceB = new Int32Array(16384), faceOrd = new Int32Array(16384);
+const planeLo = new Int32Array(6), planeHi = new Int32Array(6), planeAt = new Int32Array(6);
+let planeEnd = new Int32Array(1024);
+const palSlot = new Uint8Array(MAT_IDS), palId = new Uint8Array(16), palWords = new Float32Array(4), packBox = new Int32Array(4);
 let qPos = new Int32Array(16384 * 3), qInfo = new Uint16Array(16384), qN = 0;
 let rbI0 = 0, rbJ0 = 0, rbStep = 1;
 const colPatch = new Uint8Array(CHUNK * CHUNK * 8);
@@ -4628,6 +4697,8 @@ ${pushQuad}
 ${emitRect}
 ${mergeFaces}
 ${collectColumn}
+${chunkPalette}
+${packCorners}
 const COL_CELLS = CHUNK * CHUNK;
 const colTop = new Int32Array(COL_CELLS), colFloor = new Int32Array(COL_CELLS), colConsumed = new Float64Array(COL_CELLS);
 const colSolid = new Uint8Array(COL_CELLS), colVisited = new Uint8Array(COL_CELLS);
@@ -4639,17 +4710,15 @@ ${buildChunkColliderBoxes}
 onmessage = (e) => {
   const d = e.data;
   try {
-    // The snapshot's columns over the mirrors; nothing outside it is ever read.
-    voxMat = d.vox; visBits = d.bits;
-    for (let jj = 0, n = 0; jj < d.rh; jj++) for (let ii = 0; ii < d.rw; ii++, n++) {
-      const k = (d.rj0 + jj) * GEN_N + d.ri0 + ii;
-      sTop[k] = d.sTop[n]; topLvl[k] = d.topLvl[n]; airLo[k] = d.airLo[n];
-      tint[k] = d.tint[n]; colMaxCap[k] = d.cap[n]; voxOff[k] = d.off[n];
-    }
+    // The snapshot's columns are all a job reads: nothing outside its window,
+    // and for a mesh nothing in a column under the band meshSnapshot sent.
+    voxMat = d.vox; visBits = d.bits; voxFlr = d.flr;
+    sTop = d.sTop; topLvl = d.topLvl; airLo = d.airLo; tint = d.tint; colMaxCap = d.cap; voxOff = d.off;
+    COL_ROW = d.rw; COL_K0 = d.rj0 * d.rw + d.ri0;
     const c = d.c;
     // The snapshot goes back with the answer, for the next job to fill.
-    const snap = { sTop: d.sTop, topLvl: d.topLvl, airLo: d.airLo, tint: d.tint, cap: d.cap, off: d.off, vox: d.vox, bits: d.bits };
-    const snapBufs = [d.sTop.buffer, d.topLvl.buffer, d.airLo.buffer, d.tint.buffer, d.cap.buffer, d.off.buffer, d.vox.buffer, d.bits.buffer];
+    const snap = { sTop: d.sTop, topLvl: d.topLvl, airLo: d.airLo, tint: d.tint, cap: d.cap, off: d.off, vox: d.vox, bits: d.bits, flr: d.flr };
+    const snapBufs = [d.sTop.buffer, d.topLvl.buffer, d.airLo.buffer, d.tint.buffer, d.cap.buffer, d.off.buffer, d.vox.buffer, d.bits.buffer, d.flr.buffer];
     if (d.kind === 'collider') {
       // Into the buffer the job brought, which goes back with the answer.
       const n = buildChunkColliderBoxes(c);
@@ -4668,9 +4737,12 @@ onmessage = (e) => {
     let blocks = 0;
     for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
     mergeFaces();
-    const pos = qPos.slice(0, qN * 3), info = qInfo.slice(0, qN), patch = colPatch.slice();
-    postMessage({ kind: 'mesh', id: d.id, c, rev: d.rev, step, blocks, nv: qN, pos, info, patch, snap },
-      [pos.buffer, info.buffer, patch.buffer, ...snapBufs]);
+    // Packed here, so the main thread copies the vertices straight in.
+    const vb = new Uint16Array(qN * 2), patch = colPatch.slice();
+    const custom = qN && chunkPalette(qN) ? 1 : 0;
+    if (qN) packCorners(vb, qN, 2 * i0, 2 * j0);
+    postMessage({ kind: 'mesh', id: d.id, c, rev: d.rev, step, blocks, nv: qN, vb, custom, pal: palWords.slice(), box: packBox.slice(), patch, snap },
+      [vb.buffer, patch.buffer, ...snapBufs]);
   } catch (err) {
     postMessage({ kind: 'error', msg: String(err && err.stack || err) });
   }
@@ -4695,7 +4767,8 @@ function meshSnapArrays(n, total) {
   // part grows to the biggest asked of it, with room over.
   const nc = Math.max(n, MESH_SNAP_N), vc = Math.ceil(total * 1.25 / 64) * 64;
   return { sTop: new Int16Array(nc), topLvl: new Int16Array(nc), airLo: new Int16Array(nc), tint: new Float32Array(nc),
-           cap: new Int32Array(nc), off: new Int32Array(nc), vox: new Uint8Array(vc), bits: new Uint8Array(vc >> 3) };
+           cap: new Int32Array(nc), off: new Int32Array(nc), vox: new Uint8Array(vc), bits: new Uint8Array(vc >> 3),
+           flr: new Uint8Array(nc * 3) };
 }
 function meshSnapRecycle(a) {
   if (a && meshSnapFree.length < MESH_SNAP_KEEP) meshSnapFree.push(a);
@@ -4707,10 +4780,16 @@ function meshSnapRecycle(a) {
 // Columns next to each other in a row usually sit end to end in the store too,
 // so a row goes over in as few copies as it has breaks. The arrays may be longer
 // than the region; the worker reads only the region's part.
-function meshSnapshot(c, margin) {
+//
+// A mesh job at `step` reads a column only from its band up (meshBands), so
+// only that much of it goes: from the band's lowest level, rounded down to a
+// multiple of eight in the column, to its cap — and its floor block on the side,
+// in flr. A collider job reads whole columns.
+function meshSnapshot(c, margin, step = 0) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const ri0 = Math.max(0, i0 - margin), rj0 = Math.max(0, j0 - margin);
   const rw = Math.min(GEN_N, i0 + CHUNK + margin) - ri0, rh = Math.min(GEN_N, j0 + CHUNK + margin) - rj0;
+  if (step) return meshSnapshotBands(c, i0, j0, ri0, rj0, rw, rh, step);
   let total = 0;
   for (let jj = 0; jj < rh; jj++) for (let ii = 0; ii < rw; ii++) {
     const k = (rj0 + jj) * GEN_N + ri0 + ii;
@@ -4742,12 +4821,96 @@ function meshSnapshot(c, margin) {
   return { c, ri0, rj0, rw, rh, ...a };
 }
 
+// The lowest level a mesh job at `step` reads of each column in the window
+// (ri0, rj0, rw, rh) — collectColumn's reads, worked out the way it works them
+// out: the window's columns from their floor up, into meshBand, or BAND_NONE
+// for a column nothing reads. Kept in step with collectColumn by the poisoned
+// snapshot test (anything read under a band would come out different).
+const BAND_NONE = 32767;
+const meshBand = new Int16Array(MESH_SNAP_N);
+function meshBands(i0, j0, ri0, rj0, rw, rh, step) {
+  meshBand.fill(BAND_NONE, 0, rw * rh);
+  const need = (i, j, lvl) => {
+    if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return;
+    const q = (j - rj0) * rw + i - ri0;
+    if (lvl < meshBand[q]) meshBand[q] = lvl;
+  };
+  const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+  if (step === 1) {
+    // Each column from the bottom of its walk (and the block under that) up,
+    // and its side neighbours from the bottom of the walk; the floor is in flr.
+    for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
+      const k = j * GEN_N + i;
+      if (sTop[k] === NO_COLUMN || topLvl[k] === NO_COLUMN) continue;
+      const side = i > 0 && i < GEN_N - 1 && j > 0 && j < GEN_N - 1
+        ? Math.min(airLo[k - 1], airLo[k + 1], airLo[k - GEN_N], airLo[k + GEN_N])
+        : VOX_FLOOR;
+      const lo = Math.max(Math.min(side - 1, airLo[k] - 2) + 1, VOX_FLOOR + 1);
+      need(i, j, lo - 1);
+      need(i + 1, j, lo); need(i - 1, j, lo); need(i, j + 1, lo); need(i, j - 1, lo);
+    }
+    return;
+  }
+  // A LOD cube: its footprint from under its band, and the four columns beside
+  // it at its top.
+  const S = mergeSizeFor(step);
+  for (let j = j0; j < j1; j += S) for (let i = i0; i < i1; i += S) {
+    const iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
+    let top = NO_COLUMN;
+    for (let jj = j; jj < jMax; jj++) for (let ii = i; ii < iMax; ii++) {
+      const kk = jj * GEN_N + ii, ct = sTop[kk];
+      if (ct !== NO_COLUMN && topLvl[kk] !== NO_COLUMN && ct > top) top = ct;
+    }
+    if (top === NO_COLUMN) continue;
+    const below = Math.max(VOX_FLOOR, top - S + 1) - 1;
+    for (let jj = j; jj < jMax; jj++) for (let ii = i; ii < iMax; ii++) need(ii, jj, below);
+    need(i + S, j, top); need(i - S, j, top); need(i, j + S, top); need(i, j - S, top);
+  }
+}
+let voxMat32 = new Int32Array(0);
+function meshSnapshotBands(c, i0, j0, ri0, rj0, rw, rh, step) {
+  meshBands(i0, j0, ri0, rj0, rw, rh, step);
+  // From is where in the column the copy starts: its band's lowest level, as a
+  // multiple of eight so its bits start on a byte, and the whole span for none.
+  let total = 0;
+  for (let jj = 0, q = 0; jj < rh; jj++) for (let ii = 0; ii < rw; ii++, q++) {
+    const k = (rj0 + jj) * GEN_N + ri0 + ii;
+    if (voxOff[k] < 0) continue;
+    const span = voxSpan(voxLen(k));
+    total += span - (Math.min(span, Math.max(0, meshBand[q] - VOX_FLOOR)) & ~7);
+  }
+  const a = meshSnapArrays(rw * rh, total), bits = a.bits, flr = a.flr;
+  // Runs start and end on multiples of eight, so the levels go over four at a time.
+  if (voxMat32.buffer !== voxMat.buffer) voxMat32 = new Int32Array(voxMat.buffer, 0, voxMat.length >> 2);
+  const vox32 = new Int32Array(a.vox.buffer, 0, a.vox.length >> 2), src32 = voxMat32;
+  let at = 0;
+  for (let jj = 0, q = 0; jj < rh; jj++) {
+    for (let ii = 0; ii < rw; ii++, q++) {
+      const k = (rj0 + jj) * GEN_N + ri0 + ii;
+      a.sTop[q] = sTop[k]; a.topLvl[q] = topLvl[k]; a.airLo[q] = airLo[k];
+      a.tint[q] = tint[k]; a.cap[q] = colMaxCap[k];
+      const o = voxOff[k];
+      if (o < 0) { a.off[q] = -1; continue; }
+      if (step === 1) { flr[q * 3] = voxMat[o]; flr[q * 3 + 1] = voxMat[o + 1]; flr[q * 3 + 2] = isVisible(o); }
+      const span = voxSpan(voxLen(k));
+      const from = Math.min(span, Math.max(0, meshBand[q] - VOX_FLOOR)) & ~7;
+      // Offset so the column's own levels index the copy as they do the store.
+      a.off[q] = at - from;
+      for (let x = (o + from) >> 3, y = at >> 3, x1 = (o + span) >> 3; x < x1; x++, y++) {
+        vox32[y * 2] = src32[x * 2]; vox32[y * 2 + 1] = src32[x * 2 + 1]; bits[y] = visBits[x];
+      }
+      at += span - from;
+    }
+  }
+  return { c, ri0, rj0, rw, rh, ...a };
+}
+
 // A job that cannot even be posted takes the worker down with it, and
 // meshWorkerFail builds what the job was for.
 function meshPost(s) {
   try {
     const bufs = [s.sTop.buffer, s.topLvl.buffer, s.airLo.buffer, s.tint.buffer,
-      s.cap.buffer, s.off.buffer, s.vox.buffer, s.bits.buffer];
+      s.cap.buffer, s.off.buffer, s.vox.buffer, s.bits.buffer, s.flr.buffer];
     if (s.box) bufs.push(s.box.buffer);
     meshWorker.postMessage(s, bufs);
   } catch (err) {
@@ -4757,11 +4920,12 @@ function meshPost(s) {
 
 // Chunk c's mesh, at its cell's current step, sent off to the worker.
 function meshDispatch(c) {
-  const s = meshSnapshot(c, MESH_MARGIN);
+  const step = gridStep[chunkGridIdx[c]];
+  const s = meshSnapshot(c, mergeSizeFor(step), step);
   s.kind = 'mesh';
   s.id = ++meshJobSeq;
   s.rev = chunkRev[c];
-  s.step = gridStep[chunkGridIdx[c]];
+  s.step = step;
   meshJob[c] = s.id;
   meshJobStep[c] = s.step;
   meshInflight++;
@@ -4866,7 +5030,7 @@ function colFootprintSolid(ii0, ii1, jj0, jj1, lvl, lo, w, i0, j0) {
     for (let ii = ii0; ii < ii1; ii++) {
       const idx = jj * w + ii;
       if (lvl < colFloor[idx]) return false;
-      const k = (j0 + jj) * GEN_N + (i0 + ii);
+      const k = colK(i0 + ii, j0 + jj);
       if (!colSolidAt(k, lvl)) return false;
     }
   }
@@ -4889,7 +5053,7 @@ function buildChunkColliderBoxes(c) {
   for (let jj = 0; jj < h; jj++) {
     for (let ii = 0; ii < w; ii++) {
       const i = i0 + ii, j = j0 + jj;
-      const k = j * GEN_N + i;
+      const k = colK(i, j);
       const t = sTop[k];
       if (t === NO_COLUMN) continue;
       // The lowest solid block, or the top if there is none under it. Looked for
@@ -4927,7 +5091,7 @@ function buildChunkColliderBoxes(c) {
         const nc = Math.min(t, consumedTo[idx] - 1, lvl - 1);
         if (nc >= floor[idx] && nc > next) next = nc;
         if (lvl > t || lvl < floor[idx]) continue;
-        const k = (j0 + jj) * GEN_N + (i0 + ii);
+        const k = colK(i0 + ii, j0 + jj);
         if (!colSolidAt(k, lvl)) continue;
         // 2 = still needs covering at this level; 1 = solid here but already
         // inside a box from higher up. A box may grow across 1s (overlap is free
@@ -4958,7 +5122,7 @@ function buildChunkColliderBoxes(c) {
         // has its floor there, which puts lo there too.)
         let runLo = Infinity;
         for (let y = jj0; y < jj1; y++) for (let x = ii0; x < ii1; x++) {
-          const a = airLo[(j0 + y) * GEN_N + (i0 + x)];
+          const a = airLo[colK(i0 + x, j0 + y)];
           if (a < runLo) runLo = a;
         }
         let botLvl = lvl;

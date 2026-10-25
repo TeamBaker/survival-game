@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 245;
+window.GAME_VERSION = 246;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2249,8 +2249,15 @@ world.defaultContactMaterial.restitution = 0.0;
   // which loses nothing; the pairs then go out in the order the old sweep would
   // have met them (list order), so wherever it found every pair the narrowphase
   // and the solver see exactly what they did before.
+  // Only a pair with a body in it that is awake and not static can collide
+  // (needBroadphaseCollision), so a heap of sleeping rubble need not sweep at
+  // all: each awake body sweeps forward as before, and back over the sleeping
+  // and static ones that start before it, as far as the furthest right edge
+  // among them (reach) gets to it. Every pair the old sweep tested still is,
+  // under the same test, and none twice, so the pairs that come out are the same.
   const bp = world.broadphase, sorted = [], pa = [], pb = [];
-  let keys = new Float64Array(256);
+  const STILL = (b) => (b.type & CANNON.Body.STATIC) || b.sleepState === CANNON.Body.SLEEPING;
+  let keys = new Float64Array(256), reach = new Float64Array(256);
   world.addEventListener('addBody', (e) => { sorted.push(e.body); });
   world.addEventListener('removeBody', (e) => { const k = sorted.indexOf(e.body); if (k >= 0) sorted.splice(k, 1); });
   for (const body of world.bodies) sorted.push(body);
@@ -2266,11 +2273,22 @@ world.defaultContactMaterial.restitution = 0.0;
     }
     pa.length = 0;
     pb.length = 0;
+    if (reach.length < n) reach = new Float64Array(n * 2);
+    for (let a = 0, r = -Infinity; a < n; a++) reach[a] = r = Math.max(r, sorted[a].aabb.upperBound.x);
     for (let a = 0; a < n; a++) {
-      const bi = sorted[a], ux = bi.aabb.upperBound.x + SKIN;
+      const bi = sorted[a];
+      if (STILL(bi)) continue;
+      const lx = bi.aabb.lowerBound.x, ux = bi.aabb.upperBound.x + SKIN;
       for (let c = a + 1; c < n; c++) {
         const bj = sorted[c];
         if (bj.aabb.lowerBound.x > ux) break;
+        if (!this.needBroadphaseCollision(bi, bj)) continue;
+        if (bi._sapAt < bj._sapAt) this.intersectionTest(bi, bj, pa, pb);
+        else this.intersectionTest(bj, bi, pa, pb);
+      }
+      for (let c = a - 1; c >= 0 && !(lx > reach[c] + SKIN); c--) {
+        const bj = sorted[c];
+        if (!STILL(bj) || lx > bj.aabb.upperBound.x + SKIN) continue;   // an awake one finds this pair itself
         if (!this.needBroadphaseCollision(bi, bj)) continue;
         if (bi._sapAt < bj._sapAt) this.intersectionTest(bi, bj, pa, pb);
         else this.intersectionTest(bj, bi, pa, pb);
@@ -2300,6 +2318,26 @@ for (const [keeper, begin, end] of [[world.bodyOverlapKeeper, 'beginContact', 'e
   const set = keeper.set;
   keeper.set = function (i, j) {
     if (world.hasAnyEventListener(begin) || world.hasAnyEventListener(end)) set.call(this, i, j);
+  };
+}
+// cannon zeroes both collision matrices, a cell for every pair of bodies in the
+// world, each substep: with a few hundred sleeping pieces lying about that was
+// the dearest single thing in the step, though only touching pairs are ever
+// set. Each matrix now notes the cells it sets and clears just those. A cell
+// never set reads as unset either way, so every get answers as before.
+for (const cm of [world.collisionMatrix, world.collisionMatrixPrevious]) {
+  const on = [];
+  cm.set = function (bi, bj, value) {
+    let i = bi.index, j = bj.index;
+    if (j > i) { const t = j; j = i; i = t; }
+    const k = (i * (i + 1) >> 1) + j - 1;
+    this.matrix[k] = value ? 1 : 0;
+    if (value) on.push(k);
+  };
+  cm.reset = function () {
+    const m = this.matrix, n = m.length;
+    for (let q = 0; q < on.length; q++) if (on[q] < n) m[on[q]] = 0;
+    on.length = 0;
   };
 }
 
@@ -8630,6 +8668,7 @@ function updatePowderBlocks(dt) {
 // Taking a whole loose piece away. Its blocks were cut out of the store when it
 // broke off, so nothing here is owed back to the world count.
 function removeDebrisMesh(mesh) {
+  if (mesh.userData.body) wakeDebrisNear(mesh.userData.body, BLOCK);
   const n = fallingChunks.findIndex((f) => f.mesh === mesh);
   if (n >= 0) { dropChunk(fallingChunks[n]); fallingChunks.splice(n, 1); return; }
   const q = restedChunks.findIndex((f) => f.mesh === mesh);
@@ -8783,6 +8822,12 @@ function rebuildDebrisBody(mesh, body) {
   // so the weight shift is felt immediately.  cannon.js only wakes a sleeping
   // body when the *other* body has speed >= sleepSpeedLimit * sqrt(2), which
   // fails when both are nearly still (the "scale" deadlock).
+  wakeDebrisNear(body, 4);
+}
+// Every sleeping piece within `pad` of touching `body`. Also for a piece dug or
+// shed away entirely (a block's reach): nothing tells a sleeper lying on it
+// that it has gone.
+function wakeDebrisNear(body, pad) {
   const _rr = body.boundingRadius;
   for (const _list of [fallingChunks, restedChunks]) {
     for (const _f of _list) {
@@ -8791,7 +8836,7 @@ function rebuildDebrisBody(mesh, body) {
       const _dx = _f.body.position.x - body.position.x,
             _dy = _f.body.position.y - body.position.y,
             _dz = _f.body.position.z - body.position.z;
-      if (_dx*_dx + _dy*_dy + _dz*_dz < (_rr + _f.body.boundingRadius + 4) ** 2) {
+      if (_dx*_dx + _dy*_dy + _dz*_dz < (_rr + _f.body.boundingRadius + pad) ** 2) {
         _f.body.wakeUp();
       }
     }

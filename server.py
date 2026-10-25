@@ -2,11 +2,14 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 import hashlib
 import os
+import re
 
 # Caching policy (matches server.js):
 #  - lib/*.js and lib/*.js.gz requested with ?v=<content hash> that matches the
 #    files on disk: cached for a year, immutable. A new library means a new hash
 #    in index.html, so a new URL.
+#  - game.<hash>.js whose name matches the first 8 hex of its sha256: cached
+#    for a year, immutable. An edit means a rename, so a new URL.
 #  - Everything else (index.html above all): no-cache. The browser keeps its
 #    copy but revalidates every load; an unchanged file costs a 304.
 #    The ETag uses the nanosecond mtime, so an edit is seen even within the
@@ -30,6 +33,22 @@ def lib_hash(path):
         _hashes[base] = (key, h.hexdigest()[:12])
     return _hashes[base][1]
 
+_game_ok = {}
+
+def game_hash_ok(path):
+    """True when game.<hash>.js's name matches its content, memoised on mtime."""
+    m = re.search(r'[\\/]game\.([0-9a-f]{8})\.js$', path)
+    if not m:
+        return False
+    key = os.stat(path).st_mtime_ns
+    if _game_ok.get(path, (None,))[0] != key:
+        with open(path, 'rb') as f:
+            ok = hashlib.sha256(f.read()).hexdigest().startswith(m.group(1))
+        if not ok:
+            print('%s: name does not match its sha256 - rename it' % os.path.basename(path))
+        _game_ok[path] = (key, ok)
+    return _game_ok[path][1]
+
 
 class CustomHandler(SimpleHTTPRequestHandler):
     def send_head(self):
@@ -42,7 +61,7 @@ class CustomHandler(SimpleHTTPRequestHandler):
             st = os.stat(path)
             self._etag = '"%x-%x"' % (st.st_mtime_ns, st.st_size)
             v = parse_qs(urlsplit(self.path).query).get('v', [None])[0]
-            if v and path.endswith(('.js', '.js.gz')) and v == lib_hash(path):
+            if (v and path.endswith(('.js', '.js.gz')) and v == lib_hash(path)) or game_hash_ok(path):
                 self._cache = IMMUTABLE
             if self._etag in self.headers.get('If-None-Match', ''):
                 self.send_response(304)

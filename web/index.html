@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 244;
+window.GAME_VERSION = 245;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1082,6 +1082,58 @@ window.GAME_VERSION = 244;
     padding: 4px 8px;
   }
 
+  /* Graphics page: replaces the menu's sections while open */
+  #gfx-page { display: none; }
+  body.gfx-open #menu-panel > .menu-section { display: none; }
+  body.gfx-open #menu-panel > #gfx-page { display: flex; }
+  #gfx-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .gfx-card {
+    padding: 8px 10px;
+    background: rgba(20, 34, 54, 0.45);
+    border: 1px solid rgba(140, 175, 230, 0.18);
+    border-radius: 8px;
+  }
+  .gfx-card.off { opacity: 0.45; }
+  .gfx-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .gfx-head label { font-size: 12px; color: #cfe6ff; }
+  .gfx-head select {
+    max-width: 160px;
+    background: rgba(20, 34, 54, 0.6);
+    border: 1px solid rgba(150, 195, 245, 0.3);
+    border-radius: 6px;
+    color: #cfe6ff;
+    font-family: inherit;
+    font-size: 11px;
+    padding: 4px 8px;
+  }
+  .gfx-head input[type="checkbox"] { width: 18px; height: 18px; accent-color: #54b0f0; }
+  .gfx-tag {
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #6f92bd;
+    border: 1px solid rgba(111, 146, 189, 0.5);
+    border-radius: 4px;
+    padding: 0 3px;
+  }
+  #btn-gfx, #gfx-back {
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cfe6ff;
+    background: rgba(20, 34, 54, 0.62);
+    border: 1px solid rgba(150, 195, 245, 0.4);
+    border-radius: 999px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #btn-gfx:active, #gfx-back:active { transform: translateY(1px); }
+  .gfx-gain { font-size: 11px; color: #8fd8a8; line-height: 1.35; }
+  .gfx-cost { font-size: 11px; color: #e0b48a; line-height: 1.35; }
+
   /* Save status */
   .save-status {
     width: 100%;
@@ -1548,6 +1600,16 @@ window.GAME_VERSION = 244;
     </div>
 
     <div class="menu-section">
+      <button id="btn-gfx" class="ui-el">Graphics</button>
+    </div>
+
+    <div class="menu-section" id="gfx-page">
+      <span class="menu-label">Graphics</span>
+      <div id="gfx-list"></div>
+      <button id="gfx-back" class="ui-el">Back</button>
+    </div>
+
+    <div class="menu-section">
       <span class="menu-label">World</span>
       <div class="menu-row">
         <button id="btn-save-world" class="ui-el">Save World</button>
@@ -1748,6 +1810,38 @@ const isTouchDevice = window.matchMedia
   : (('ontouchstart' in window) || navigator.maxTouchPoints > 0);
 
 // ---------------------------------------------------------------------------
+// Graphics settings (menu > Graphics). Read here, before anything they size is
+// made; each one's apply hook is with the thing it changes, and the page itself
+// is built beside the other menu settings (gfxPage).
+// ---------------------------------------------------------------------------
+const GFX_KEY = 'survival-gfx-v1';
+const GFX_OPTS = {
+  shadowFilter: ['basic', 'pcf4', 'full'],
+  adaptiveScale: [true, false],
+  shadowMapSize: [2048, 1536, 1024],
+  debrisLambert: [true, false],
+  blobShadow: [true, false],
+  grainCube: [true, false],
+  envRes: [512, 1024],
+};
+const gfx = {
+  shadowFilter: isTouchDevice ? 'pcf4' : 'full',
+  adaptiveScale: isTouchDevice,
+  shadowMapSize: 2048,
+  debrisLambert: isTouchDevice,
+  blobShadow: isTouchDevice,
+  grainCube: true,
+  envRes: 512,
+};
+try {
+  const saved = JSON.parse(localStorage.getItem(GFX_KEY) || '{}');
+  for (const k in GFX_OPTS) if (GFX_OPTS[k].includes(saved[k])) gfx[k] = saved[k];
+} catch (e) {}
+function gfxSave() {
+  try { localStorage.setItem(GFX_KEY, JSON.stringify(gfx)); } catch (e) {}
+}
+
+// ---------------------------------------------------------------------------
 // Renderer / scene / camera
 // ---------------------------------------------------------------------------
 const canvas = document.getElementById('view');
@@ -1755,7 +1849,12 @@ const canvas = document.getElementById('view');
 // the pixels) and skip MSAA on high-DPI phones, where the density already hides
 // edge aliasing. Desktop keeps 2x + MSAA.
 const MAX_PIXEL_RATIO = isTouchDevice ? 1.5 : 2;
-const renderPixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+// Adaptive render scale (gfx.adaptiveScale): a further cap, stepped by
+// gfxAdaptTick between these while the frame rate is short; never above the one above.
+const ADAPT_RATIOS = [Infinity, 1.5, 1.25, 1.0];
+let adaptLevel = 0;
+const renderPixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO,
+  gfx.adaptiveScale ? ADAPT_RATIOS[adaptLevel] : Infinity);
 const renderer = new THREE.WebGLRenderer({
   canvas,
   antialias: !(isTouchDevice && (window.devicePixelRatio || 1) >= 2),
@@ -1765,6 +1864,19 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setPixelRatio(renderPixelRatio());
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// gfx.shadowFilter 'pcf4': a 2x2 PCF, 4 taps against the 17 of three's PCF. It
+// rides on PCFShadowMap and is picked by a negative shadow radius (applyShadowType),
+// so no material needs a program of its own for it.
+THREE.ShaderChunk.shadowmap_pars_fragment = THREE.ShaderChunk.shadowmap_pars_fragment.replace(
+  '#if defined( SHADOWMAP_TYPE_PCF )\n', `#if defined( SHADOWMAP_TYPE_PCF )
+    if ( shadowRadius < 0.0 ) {
+      vec2 h = 0.5 / shadowMapSize;
+      return 0.25 * ( texture2DCompare( shadowMap, shadowCoord.xy + vec2( -h.x, -h.y ), shadowCoord.z ) +
+        texture2DCompare( shadowMap, shadowCoord.xy + vec2( h.x, -h.y ), shadowCoord.z ) +
+        texture2DCompare( shadowMap, shadowCoord.xy + vec2( -h.x, h.y ), shadowCoord.z ) +
+        texture2DCompare( shadowMap, shadowCoord.xy + vec2( h.x, h.y ), shadowCoord.z ) );
+    }
+`);
 // The sun never moves, so the shadow map is only redrawn on a frame where some
 // caster has changed (see shadowCastersChanged) rather than every frame.
 renderer.shadowMap.autoUpdate = false;
@@ -1944,7 +2056,8 @@ function buildEnvTexture() {
   // PMREM sizes its cube from this (W / 4 = a 128 cube). Nothing in the game is
   // glossier than the water, and that reads a mip far below the top one, so a
   // 256 cube only cost a texture four times the size for the same picture.
-  const W = 512, H = 256;
+  // gfx.envRes picks 1024 back; the terrain shader bakes the cube's size in, so on reload.
+  const W = gfx.envRes, H = W / 2;
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const ctx = c.getContext('2d');
@@ -1995,7 +2108,7 @@ const SUN_DIST      = 190;
 const sun = new THREE.DirectionalLight(0xfff4e0, 2.9);
 sun.position.copy(SUN).multiplyScalar(SUN_DIST).add(SHADOW_CENTER);
 sun.castShadow = true;
-sun.shadow.mapSize.set(isTouchDevice ? 2048 : 4096, isTouchDevice ? 2048 : 4096);
+sun.shadow.mapSize.setScalar(isTouchDevice ? gfx.shadowMapSize : 4096);   // gfx.shadowMapSize: phones only
 // near/far hug the actual depth range of the scene along the light direction.
 // The old 1..400 range meant one unit of depth bias was worth ~0.2 world units,
 // which is what detached shadows from the objects casting them and left a bright
@@ -2012,7 +2125,7 @@ sun.shadow.camera.bottom = -SHADOW_HALF;
 // a gap where an object meets the floor. Everything casting now is a box on a
 // flat deck, so a fraction of the old offset is plenty.
 sun.shadow.bias = -0.00008;
-sun.shadow.normalBias = isTouchDevice ? 0.06 : 0.04;
+sun.shadow.normalBias = isTouchDevice ? 0.06 * 2048 / gfx.shadowMapSize : 0.04;   // ~2 texels on a phone
 sun.shadow.radius = 2;
 sun.target.position.copy(SHADOW_CENTER);
 scene.add(sun);
@@ -2024,8 +2137,8 @@ scene.add(sun.target);
 // shadow texels: the texel grid then lands on the same world positions after a
 // move and edges do not crawl, and the map is redrawn once per step instead of
 // every frame the player walks.
-const SHADOW_TEXEL = (2 * SHADOW_HALF) / sun.shadow.mapSize.x;
-const SHADOW_STEP  = SHADOW_TEXEL * Math.round(4 / SHADOW_TEXEL);
+let SHADOW_TEXEL = (2 * SHADOW_HALF) / sun.shadow.mapSize.x;
+let SHADOW_STEP  = SHADOW_TEXEL * Math.round(4 / SHADOW_TEXEL);
 const shadowRight = new THREE.Vector3(), shadowUp = new THREE.Vector3();
 new THREE.Matrix4().lookAt(sun.position, SHADOW_CENTER, sun.shadow.camera.up)
   .extractBasis(shadowRight, shadowUp, new THREE.Vector3());
@@ -2043,6 +2156,29 @@ function updateShadowFrustum(x, y, z) {
   sun.position.copy(SUN).multiplyScalar(SUN_DIST).add(sun.target.position);
   renderer.shadowMap.needsUpdate = true;
 }
+// gfx.shadowMapSize, from the menu: a new map at the new size, and the step
+// grid that has to be whole texels of it (the next updateShadowFrustum moves onto it).
+function applyShadowMapSize() {
+  if (!isTouchDevice) return;
+  const n = gfx.shadowMapSize;
+  sun.shadow.mapSize.setScalar(n);
+  sun.shadow.normalBias = 0.06 * 2048 / n;
+  if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  SHADOW_TEXEL = (2 * SHADOW_HALF) / n;
+  SHADOW_STEP  = SHADOW_TEXEL * Math.round(4 / SHADOW_TEXEL);
+  shadowStepR = shadowStepU = NaN;
+  renderer.shadowMap.needsUpdate = true;
+}
+// gfx.shadowFilter over the Shadow Quality slider: Basic and the 4-tap PCF
+// replace whichever PCF the slider picked; Full is the slider's own.
+let shadowFullType = THREE.PCFSoftShadowMap;
+function applyShadowType() {
+  const f = gfx.shadowFilter;
+  renderer.shadowMap.type = f === 'basic' ? THREE.BasicShadowMap : f === 'pcf4' ? THREE.PCFShadowMap : shadowFullType;
+  sun.shadow.radius = f === 'pcf4' ? -1 : 2;
+  renderer.shadowMap.needsUpdate = true;
+}
+applyShadowType();
 
 // Named so the three stay together and a change to the key light is obvious
 // against the fill it is meant to sit above.
@@ -3625,7 +3761,13 @@ vec4 terrainTexel(ivec2 c, int k) {
     tSpec = vTerrSpec;
     tRad = vTerrRad;
     if (vPbr.x < 0.5) terrainSpec(normalize(vTerrN), normalize(cameraPosition - vTerrPos), vPbr.x, tSpec, tRad);
-  }`)
+  }`);
+  sh.fragmentShader = terrainLightsFrag(sh.fragmentShader, 'vPbr.z');
+};
+// The lighting half of the terrain's fragment shader, for any Lambert shader that
+// sets tF0, tSpec and tRad and has vTerrIrr; envK is its envMapIntensity.
+// The debris on gfx.debrisLambert is lit by it too (debrisLambertOf).
+const terrainLightsFrag = (fs, envK) => fs
     .replace('#include <lights_lambert_pars_fragment>', `#include <lights_lambert_pars_fragment>
 ${terrainSpecGlsl(scene.environment)}
 vec4 tSpec;
@@ -3639,19 +3781,18 @@ void RE_Direct_Terrain(const in IncidentLight directLight, const in vec3 geometr
 #define RE_Direct RE_Direct_Terrain`)
     .replace('#include <aomap_fragment>', `{
     // RE_IndirectSpecular_Physical and computeMultiscattering.
-    vec3 E = vTerrIrr * vPbr.z;
+    vec3 E = vTerrIrr * ${envK};
     vec3 fss = tF0 * tSpec.z + tSpec.w;
     float ems = 1.0 - tSpec.z - tSpec.w;
     vec3 favg = tF0 + (1.0 - tF0) * 0.047619;
     vec3 ms = fss * favg / (1.0 - ems * favg) * ems;
     vec3 tot = fss + ms;
-    reflectedLight.indirectSpecular += tRad * vPbr.z * fss + ms * E;
+    reflectedLight.indirectSpecular += tRad * ${envK} * fss + ms * E;
     reflectedLight.indirectDiffuse += material.diffuseColor * (1.0 - max(max(tot.r, tot.g), tot.b)) * E;
   }
   #include <aomap_fragment>`)
     .replace('vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
       'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + reflectedLight.directSpecular + reflectedLight.indirectSpecular + totalEmissiveRadiance;');
-};
 // A merged far group (see mergeBatch) is one mesh over many chunks, so its
 // instance matrix is the identity and each corner carries its own chunk's origin
 // beside it instead: added on in the same whole half-blocks, the sum is exactly
@@ -3731,6 +3872,18 @@ const fallingGrainGeos = new Map();
 function fallingGrainGeo(m) {
   let g = fallingGrainGeos.get(m);
   if (!g) fallingGrainGeos.set(m, g = grainGeo(m));
+  return g;
+}
+// gfx.grainCube: a far grain's plain 24-vertex cube in the material's own colour
+// (the speckle's average), kept under ~m beside the speckled ones.
+function fallingGrainCubeGeo(m) {
+  let g = fallingGrainGeos.get(~m);
+  if (g) return g;
+  g = new THREE.BoxGeometry(1, 1, 1);
+  const c = TERRAIN_MATS[m].color, col = new Float32Array(72);
+  for (let v = 0; v < 24; v++) c.toArray(col, v * 3);
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  fallingGrainGeos.set(~m, g);
   return g;
 }
 
@@ -6082,6 +6235,34 @@ const visor = new THREE.Mesh(
 visor.position.set(0, 0.42, -0.34);
 playerMesh.add(visor);
 scene.add(playerMesh);
+// gfx.blobShadow (phones): the player casts nothing and a soft dark disc under
+// the feet stands in, so walking alone never has the shadow map redrawn.
+const blobShadow = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d'), g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(0,0,0,0.55)');
+  g.addColorStop(0.6, 'rgba(0,0,0,0.3)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 1.1).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, fog: true }));
+  m.visible = false;
+  m.renderOrder = 1001;   // after the sky
+  scene.add(m);
+  return m;
+})();
+const blobShadowOn = () => isTouchDevice && gfx.blobShadow;
+function applyBlobShadow() {
+  playerMesh.castShadow = !blobShadowOn();
+  if (!blobShadowOn()) blobShadow.visible = false;
+  renderer.shadowMap.needsUpdate = true;
+}
+applyBlobShadow();
 
 // Steepest-upward contact normal touching the player, refreshed every substep.
 // A contact whose normal is within maxSlope of straight up is walkable ground.
@@ -6465,6 +6646,16 @@ function updateCamera(dt) {
   visor.position.y = crouched ? 0.10 : 0.42;
   playerMesh.position.set(p.x, p.y, p.z);
   playerMesh.rotation.y = playerYaw;
+  if (blobShadowOn()) {
+    // On the feet when standing on something (a piece too); in the air, on the
+    // column's top below, fading with the height.
+    const feet = p.y - (crouched ? PLAYER.crouchCenter : PLAYER.standCenter);
+    const top = solidTopAt(colI(p.x), colJ(p.z));
+    const gy = groundNy > GROUND_DOT || top === NO_COLUMN ? feet : Math.min(feet, (top + 1) * BLOCK);
+    blobShadow.visible = playerMesh.visible && feet - gy < 6;
+    blobShadow.position.set(p.x, gy + 0.01, p.z);
+    blobShadow.material.opacity = 1 - (feet - gy) / 6;
+  }
 }
 
 window.addEventListener('wheel', (e) => {
@@ -6784,7 +6975,7 @@ function freeGeo(g) {
 }
 // The mask is per instance, so each piece needs its own geometry to carry it;
 // the cube under it is fallGeo's.
-function debrisInstances(n, geo = fallGeo, material = fallMat) {
+function debrisInstances(n, geo = fallGeo, material = debrisMatFor(fallMat)) {
   const g = shareGeo(geo);
   g.setAttribute('faceHide', new THREE.InstancedBufferAttribute(new Float32Array(Math.max(n, 1)), 1));
   const m = new THREE.InstancedMesh(g, material, n);
@@ -6840,11 +7031,64 @@ function debrisGrainGeo(m) {
 const debrisGrainMats = new Map();
 function debrisGrainMat(m) {
   let mt = debrisGrainMats.get(m);
-  if (mt) return mt;
+  if (mt) return debrisMatFor(mt);
   mt = TERRAIN_FACE_MATS[m].clone();
   mt.onBeforeCompile = fallMat.onBeforeCompile;
   debrisGrainMats.set(m, mt);
+  return debrisMatFor(mt);
+}
+// gfx.debrisLambert: debris lit the terrain's way, Lambert with the sun's lobe
+// and the environment's terms worked out per vertex (terrainSpec), instead of
+// the standard shader's per pixel. A piece's faces are flat, so the per-vertex
+// terms hardly move across one. Each standard debris material has its stand-in
+// here, and the setting swaps every mesh between the two (applyDebrisLambert).
+const debrisLambertMats = new Map();   // standard -> Lambert
+function debrisLambertOf(src) {
+  let mt = debrisLambertMats.get(src);
+  if (mt) return mt;
+  mt = new THREE.MeshLambertMaterial({ vertexColors: src.vertexColors, shadowSide: src.shadowSide });
+  const pbr = new THREE.Vector3(src.roughness, src.metalness, src.envMapIntensity);
+  mt.onBeforeCompile = (sh) => {
+    fallMat.onBeforeCompile(sh);
+    sh.uniforms.terrainEnv    = { value: scene.environment };
+    sh.uniforms.terrainSunDir = { value: SUN };
+    sh.uniforms.debrisPbr     = { value: pbr };
+    const vary = 'uniform vec3 debrisPbr;\nvarying vec4 vTerrSpec;\nvarying vec3 vTerrRad;\nvarying vec3 vTerrIrr;\n';
+    sh.vertexShader = vary + sh.vertexShader
+      .replace('#include <common>', '#include <common>\n' + terrainSpecGlsl(scene.environment))
+      .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
+  {
+    mat4 dm = modelMatrix;
+  #ifdef USE_INSTANCING
+    dm = dm * instanceMatrix;
+  #endif
+    vec3 dn = normalize(mat3(dm) * objectNormal);
+    vec4 tSpec;
+    vec3 tRad;
+    terrainSpec(dn, normalize(cameraPosition - (dm * vec4(transformed, 1.0)).xyz), debrisPbr.x, tSpec, tRad);
+    vTerrSpec = tSpec;
+    vTerrRad = tRad;
+    vTerrIrr = textureCubeUV(terrainEnv, dn, 1.0).rgb;
+  }`);
+    sh.fragmentShader = terrainLightsFrag(vary + sh.fragmentShader
+      .replace('#include <color_fragment>', `#include <color_fragment>
+  tF0 = mix(vec3(0.04), diffuseColor.rgb, debrisPbr.y);
+  diffuseColor.rgb *= 1.0 - debrisPbr.y;
+  tSpec = vTerrSpec;
+  tRad = vTerrRad;`), 'debrisPbr.z');
+  };
+  debrisLambertMats.set(src, mt);
   return mt;
+}
+function debrisMatFor(src) { return gfx.debrisLambert ? debrisLambertOf(src) : src; }
+function applyDebrisLambert() {
+  const swap = new Map();
+  for (const [std, lam] of debrisLambertMats) swap.set(gfx.debrisLambert ? std : lam, gfx.debrisLambert ? lam : std);
+  if (gfx.debrisLambert) for (const std of [fallMat, ...debrisGrainMats.values()]) if (!swap.has(std)) swap.set(std, debrisLambertOf(std));
+  scene.traverse((o) => { const to = swap.get(o.material); if (to) o.material = to; });
+  // Each cell's batches are kept by material: remade under the new ones.
+  for (const C of debrisBatchCells.values()) C.dirty = true;
+  renderer.shadowMap.needsUpdate = true;
 }
 // The piece's layer for material m, made on first use. Its owners list maps an
 // instance back to the lattice entry it draws; the entry keeps its instance
@@ -7220,17 +7464,18 @@ function debrisBatchSync() {
 const fallingGrainLayers = new Map();   // mat -> InstancedMesh
 const fallingGrainM4 = new THREE.Matrix4();
 const LOD_RADIUS_SQ = LOD_SPHERES.map((s) => s.radius * s.radius);
-function fallingGrainLayer(m) {
-  let L = fallingGrainLayers.get(m);
+function fallingGrainLayer(m, cube = false) {
+  const key = cube ? ~m : m;   // gfx.grainCube's far layer under ~m
+  let L = fallingGrainLayers.get(key);
   if (L) return L;
-  L = new THREE.InstancedMesh(fallingGrainGeo(m), TERRAIN_FACE_MATS[m], 64);
+  L = new THREE.InstancedMesh(cube ? fallingGrainCubeGeo(m) : fallingGrainGeo(m), TERRAIN_FACE_MATS[m], 64);
   L.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   L.count = 0;
   // The grains are all over the place and move every frame: a bounding sphere
   // would be stale by the next one.
   L.frustumCulled = false;
   scene.add(L);
-  fallingGrainLayers.set(m, L);
+  fallingGrainLayers.set(key, L);
   return L;
 }
 function syncFallingGrains() {
@@ -7248,7 +7493,12 @@ function syncFallingGrains() {
   }
 }
 function fallingGrainDraw(p) {
-  const L = fallingGrainLayer(p.mat);
+  // LOD: a grain is drawn at the merge size of the terrain around it (lodStepFor,
+  // on squared distance).
+  const dx = p.pos.x - camera.position.x, dz = p.pos.z - camera.position.z, d2 = dx * dx + dz * dz;
+  let step = 1;
+  while (step <= LOD_RADIUS_SQ.length && d2 >= LOD_RADIUS_SQ[step - 1]) step++;
+  const L = fallingGrainLayer(p.mat, gfx.grainCube && step >= 2);
   const cap = L.instanceMatrix.count;
   if (L.count === cap) {
     // Full: swap in a buffer twice the size. Everything below `count` was
@@ -7260,11 +7510,6 @@ function fallingGrainDraw(p) {
     L.dispose();
     L.instanceMatrix = grown;
   }
-  // LOD: a grain is drawn at the merge size of the terrain around it (lodStepFor,
-  // on squared distance).
-  const dx = p.pos.x - camera.position.x, dz = p.pos.z - camera.position.z, d2 = dx * dx + dz * dz;
-  let step = 1;
-  while (step <= LOD_RADIUS_SQ.length && d2 >= LOD_RADIUS_SQ[step - 1]) step++;
   const s = mergeSizeFor(step) * BLOCK;
   L.setMatrixAt(L.count++, fallingGrainM4.makeScale(s, s, s).setPosition(p.pos));
 }
@@ -9804,11 +10049,12 @@ function customMatInstall(d) {
   TERRAIN_PBR[id].w = powder ? 1 : 0;
   // Grains of it were built in the old colour (an id freed by a delete, or
   // recoloured by a save's own copy).
-  const g = fallingGrainGeos.get(id);
-  if (g) {
-    fallingGrainGeos.delete(id);
-    const L = fallingGrainLayers.get(id);
-    if (L) L.geometry = fallingGrainGeo(id);
+  for (const key of [id, ~id]) {
+    const g = fallingGrainGeos.get(key);
+    if (!g) continue;
+    fallingGrainGeos.delete(key);
+    const L = fallingGrainLayers.get(key);
+    if (L) L.geometry = key < 0 ? fallingGrainCubeGeo(id) : fallingGrainGeo(id);
     g.dispose();
   }
 }
@@ -10118,9 +10364,11 @@ document.getElementById('f2d-overlay').addEventListener('pointerdown', (e) => {
 const menuBtn = document.getElementById('btn-menu');
 let menuOpen = false, menuCloseHeld = false;
 let storeHold = false;   // a save or load has the store (saveStoreToWorker)
+let gfxPageClose = () => {};
 function setMenuUI(on) {
   menuCloseHeld = !on && storeHold;
   if (menuCloseHeld) return;   // until storeRelease
+  if (!on) gfxPageClose();   // the menu opens on its front page
   menuOpen = on;
   menuRedraw = true;
   document.body.classList.toggle('menu-open', on);
@@ -10168,12 +10416,15 @@ if (shSlider) {
     const v = parseInt(shSlider.value);
     shVal.textContent = shLabels[v];
     renderer.shadowMap.enabled = v > 0;
-    renderer.shadowMap.type = v >= 2 ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
-    renderer.shadowMap.needsUpdate = true;
-    scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
-    menuRedraw = true;
-    shadowWarm();
+    shadowFullType = v >= 2 ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    applyShadowType();   // gfx.shadowFilter may be standing in for it
+    shadowProgramsChanged();
   });
+}
+function shadowProgramsChanged() {
+  scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
+  menuRedraw = true;
+  shadowWarm();
 }
 // Moving the slider changes the program every lit material needs. Left to the
 // first draw, the scene's would each be built mid-frame, and the first piece,
@@ -10201,6 +10452,77 @@ if (lodOverrideSel) {
     lodOverride = e.target.value === 'auto' ? null : Number(e.target.value);
   });
 }
+
+// --- Graphics page: one card per gfx setting, saved on every change ---
+// opts: [value, label] pairs (a select), or none for an on/off checkbox.
+// phone: only does anything on a touch device. reload: only read at start-up.
+const GFX_CARDS = [
+  { key: 'shadowFilter', name: 'Shadow filter', opts: [['basic', 'Basic (1 tap)'], ['pcf4', 'PCF (4 taps)'], ['full', 'Full (Shadow Quality)']],
+    gain: 'Basic / 4-tap: cheaper shading of every shadowed pixel (Full does 16-17 taps).',
+    cost: 'Harder, more jagged shadow edges on rubble and grains.',
+    apply: () => { applyShadowType(); shadowProgramsChanged(); } },
+  { key: 'adaptiveScale', name: 'Adaptive resolution',
+    gain: 'Drops render scale (1.5 > 1.25 > 1.0) when frames run long, back up when they recover.',
+    cost: 'Image goes softer while the game is under load.',
+    apply: () => { adaptLevel = 0; adaptT = adaptN = adaptCalm = 0; resizeNow(); } },
+  { key: 'shadowMapSize', name: 'Shadow map size', phone: true, opts: [[2048, '2048'], [1536, '1536'], [1024, '1024']],
+    gain: 'Smaller: less GPU memory (24 > 13 > 6 MB) and a cheaper shadow redraw.',
+    cost: 'Blurrier rubble shadows (~7 > 5 > 3.4 texels per block edge).',
+    apply: () => { applyShadowMapSize(); shadowProgramsChanged(); } },
+  { key: 'debrisLambert', name: 'Simple debris lighting',
+    gain: 'Debris lit like the terrain, per vertex: much cheaper when rubble fills the screen.',
+    cost: 'Reflections worked out per corner: the same look on rough rock and soil, a glossy custom material loses its sharp highlights.',
+    apply: () => { applyDebrisLambert(); shadowWarm(); } },
+  { key: 'blobShadow', name: 'Player blob shadow', phone: true,
+    gain: 'Walking no longer redraws the whole shadow map every frame.',
+    cost: 'The player gets a soft round blob instead of a real shadow.',
+    apply: applyBlobShadow },
+  { key: 'grainCube', name: 'Plain far grains',
+    gain: 'Distant falling grains drawn with 24 vertices instead of 216.',
+    cost: 'No speckle on far grains (too small to see in practice).',
+    apply: () => {} },
+  { key: 'envRes', name: 'Reflection map', reload: true, opts: [[512, '512x256'], [1024, '1024x512']],
+    gain: '512: 1.6 MB of GPU memory instead of 6.3 MB, faster start-up.',
+    cost: 'A slightly softer sky in the water (the only glossy surface).',
+    apply: () => {} },
+];
+(function gfxPage() {
+  const list = document.getElementById('gfx-list');
+  for (const c of GFX_CARDS) {
+    const card = document.createElement('div');
+    card.className = 'gfx-card';
+    const off = c.phone && !isTouchDevice;
+    const tags = (c.phone ? ' <span class="gfx-tag">phone</span>' : '') + (c.reload ? ' <span class="gfx-tag">reload</span>' : '');
+    card.innerHTML = `<div class="gfx-head"><label for="gfx-${c.key}">${c.name}${tags}</label></div>`
+      + `<div class="gfx-gain">+ ${c.gain}</div><div class="gfx-cost">&minus; ${c.cost}</div>`;
+    let ctl;
+    if (c.opts) {
+      ctl = document.createElement('select');
+      for (const [v, label] of c.opts) ctl.add(new Option(label, String(v)));
+      ctl.value = String(gfx[c.key]);
+    } else {
+      ctl = document.createElement('input');
+      ctl.type = 'checkbox';
+      ctl.checked = gfx[c.key];
+    }
+    ctl.id = 'gfx-' + c.key;
+    ctl.disabled = off;
+    if (off) card.classList.add('off');
+    ctl.addEventListener('change', () => {
+      gfx[c.key] = c.opts ? c.opts.find(([v]) => String(v) === ctl.value)[0] : ctl.checked;
+      gfxSave();
+      if (c.reload) showToast('Reload the page to apply ' + c.name.toLowerCase(), 'warning');
+      else c.apply();
+      menuRedraw = true;
+    });
+    card.firstChild.appendChild(ctl);
+    list.appendChild(card);
+  }
+  const setPage = (on) => document.body.classList.toggle('gfx-open', on);
+  bindTap(document.getElementById('btn-gfx'), () => setPage(true));
+  bindTap(document.getElementById('gfx-back'), () => setPage(false));
+  gfxPageClose = () => setPage(false);
+})();
 
 // ---------------------------------------------------------------------------
 // Debug visualisations — the chunk grid, and the collider's own greedy-merged
@@ -14014,8 +14336,41 @@ let frameCount = 0;
 // settings change made from the menu still shows behind it.
 const PAUSED_FRAME_MS = 250;
 let pausedFrameAt = 0;
+// gfx.adaptiveScale: frame time averaged over 2 s windows of play. Over 25 ms
+// steps the render scale down a notch; under 18 ms for long enough steps it back
+// up. At most one change per 4 s (each reallocates the drawing buffer), and a
+// step up that is undone within 10 s doubles the wait before the next (to 60 s),
+// so a phone that can only just hold a scale does not flap across it.
+const ADAPT_WIN = 2, ADAPT_DOWN = 0.025, ADAPT_UP = 0.018;
+let adaptT = 0, adaptN = 0, adaptCalm = 0, adaptAt = 0, adaptUpAt = -1e9, adaptUpWait = 6;
+function gfxAdaptTick(dt) {
+  if (!gfx.adaptiveScale) return;
+  adaptT += dt; adaptN++;
+  if (adaptT < ADAPT_WIN) return;
+  const avg = adaptT / adaptN;
+  adaptT = adaptN = 0;
+  const now = elapsed;
+  adaptCalm = avg < ADAPT_UP ? adaptCalm + ADAPT_WIN : 0;
+  if (now - adaptAt < 4) return;
+  const ratio = renderPixelRatio();
+  let to = adaptLevel;
+  if (avg > ADAPT_DOWN) {
+    while (++to < ADAPT_RATIOS.length && ADAPT_RATIOS[to] >= ratio);   // notches at or over the cap change nothing
+    if (to === ADAPT_RATIOS.length) return;
+    if (to !== adaptLevel && now - adaptUpAt < 10) adaptUpWait = Math.min(adaptUpWait * 2, 60);
+  } else if (adaptLevel > 0 && adaptCalm >= adaptUpWait) {
+    to = adaptLevel - 1;
+    adaptUpAt = now;
+  }
+  if (to === adaptLevel) return;
+  adaptLevel = to;
+  adaptAt = now;
+  adaptCalm = 0;
+  resizeNow();
+}
 function tick() {
   if (menuOpen || !overlay.classList.contains('hidden')) {
+    adaptT = adaptN = 0;   // a paused stretch is no measure of play
     clock.getDelta();
     const now = performance.now();
     if (now < pausedFrameAt) return;
@@ -14059,6 +14414,7 @@ function tick() {
   // either way. On a switch the remainder is parked mid-step, so frame-time
   // jitter does not flip the step count between frames.
   physFrameAvg += (dt - physFrameAvg) * 0.05;
+  gfxAdaptTick(dt);
   const physWant = physFrameAvg > (physStep === PHYS_STEP ? 1 / 45 : 1 / 55) ? PHYS_STEP_SLOW : PHYS_STEP;
   if (physWant !== physStep) { physStep = physWant; world.accumulator = physStep * 0.5; }
   flushDirtyColliders();

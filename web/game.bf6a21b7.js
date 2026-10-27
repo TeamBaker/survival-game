@@ -11,6 +11,7 @@ const TOUCH_LOOK_MULT   = 1.6;    // finger drags cover fewer pixels than a mous
 const START_POS         = new THREE.Vector3(0, 21, -62);
 const START_YAW         = 180;    // degrees — looks back at the island
 const START_PITCH       = -14;    // degrees
+const SPEC_EASE         = 12;     // 1/s — how fast the spectator view catches up with the finger
 
 // ----- character controller -----
 // Filled in once the island exists: the top of the block column at the origin,
@@ -39,7 +40,6 @@ const PLAYER = {
 // A contact counts as walkable ground when its normal is within maxSlope of up.
 // The threshold is nudged 1 degree past 45 so the 45-degree lane is climbable.
 const GROUND_DOT = Math.cos((PLAYER.maxSlope + 1) * Math.PI / 180);
-const THIRD_DIST = 5.0;           // third-person boom length
 
 // ----- sea level -----
 // The datum every height in the world is measured from. The sea is blocks now,
@@ -1499,7 +1499,7 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
 
 // The highest solid level in each column, cached rather than searched for. It
 // starts equal to topLvl and only setVoxel moves it. Everything that asks where
-// the ground is — the camera boom, the collider patch, the mesh rebuild, the
+// the ground is — the collider patch, the mesh rebuild, the
 // player's feet — asks several times a frame, and a scan down the column each
 // time is a scan nobody needs to pay for.
 const sTop = new Int16Array(GEN_N * GEN_N);
@@ -4190,12 +4190,13 @@ window.addEventListener('keydown', (e) => {
   if (TRACKED.has(e.code)) { keys.add(e.code); e.preventDefault(); }
   if (e.code === 'KeyV') cycleCamera();
   else if (e.code === 'KeyG') toggleGameMode();
-  else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
-  else if (e.code === 'KeyF') setShovel(!shovel.on);
-  else if (e.code === 'KeyH') setHammer(!hammer.on);
+  else if (e.code === 'KeyR' && camMode === CAM.FIRST) respawn();
+  else if (e.code === 'KeyU') setNoUI(!noUI);
+  else if (e.code === 'KeyF' && camMode !== CAM.SPEC) setShovel(!shovel.on);
+  else if (e.code === 'KeyH' && camMode !== CAM.SPEC) setHammer(!hammer.on);
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
-  else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
+  else if (e.code === 'Space' && camMode === CAM.FIRST) state.jumpQueued = true;
   else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
   else if (e.code === 'KeyT') toggleChart();
 }, { passive: false });
@@ -4340,7 +4341,7 @@ function onTouchStart(e) {
       role = 'look';
       lookId = t.identifier;
     }
-    touches.set(t.identifier, { zone, role, x: t.clientX, y: t.clientY });
+    touches.set(t.identifier, { zone, role, x: t.clientX, y: t.clientY, x0: t.clientX, y0: t.clientY, t0: e.timeStamp });
   }
   updateSprint();
 }
@@ -4389,6 +4390,14 @@ function onTouchEnd(e) {
     const rec = touches.get(t.identifier);
     if (!rec) continue;
     touches.delete(t.identifier);
+    // A short touch that did not travel is a tap; two of them close together
+    // while the UI is hidden bring it back.
+    // Generous on time, since a slow frame can hold a touchend back.
+    if (noUI && e.type === 'touchend' && e.timeStamp - rec.t0 < 300
+        && Math.abs(t.clientX - rec.x0) + Math.abs(t.clientY - rec.y0) < 16) {
+      if (e.timeStamp - noUITapAt < 450) setNoUI(false);
+      else noUITapAt = e.timeStamp;
+    }
     if (t.identifier === moveId) { moveId = null; resetStick(); }
     if (t.identifier === lookId) { lookId = null; }
   }
@@ -4466,7 +4475,7 @@ function bindTap(el, fn) {
   el.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
 }
 
-// ----- on-screen action buttons (first / third person) -----
+// ----- on-screen action buttons (first person) -----
 const btnJump   = document.getElementById('btn-jump');
 const btnCrouch = document.getElementById('btn-crouch');
 const btnSprint = document.getElementById('btn-sprint');
@@ -4706,26 +4715,14 @@ function updatePlayer(dt) {
 
   // --- wish direction ---
   const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
-  wishDir.set(0, 0, 0);
-  if (camMode === CAM.TOP) {
-    // Top-down drives the world axes directly — the camera has no heading to be
-    // relative to, so W is north rather than "forward".
-    if (keys.has('KeyW') || keys.has('ArrowUp'))    wishDir.z -= 1;
-    if (keys.has('KeyS') || keys.has('ArrowDown'))  wishDir.z += 1;
-    if (keys.has('KeyA') || keys.has('ArrowLeft'))  wishDir.x -= 1;
-    if (keys.has('KeyD') || keys.has('ArrowRight')) wishDir.x += 1;
-    wishDir.x += state.joyX;
-    wishDir.z += state.joyY;
-  } else {
-    let fwd = 0, str = 0;
-    if (keys.has('KeyW') || keys.has('ArrowUp'))    fwd += 1;
-    if (keys.has('KeyS') || keys.has('ArrowDown'))  fwd -= 1;   // backpedal
-    if (keys.has('KeyD') || keys.has('ArrowRight')) str += 1;
-    if (keys.has('KeyA') || keys.has('ArrowLeft'))  str -= 1;
-    fwd -= state.joyY;                                          // stick up = forward
-    str += state.joyX;
-    wishDir.set(-sy * fwd + cy * str, 0, -cy * fwd - sy * str);
-  }
+  let fwd = 0, str = 0;
+  if (keys.has('KeyW') || keys.has('ArrowUp'))    fwd += 1;
+  if (keys.has('KeyS') || keys.has('ArrowDown'))  fwd -= 1;   // backpedal
+  if (keys.has('KeyD') || keys.has('ArrowRight')) str += 1;
+  if (keys.has('KeyA') || keys.has('ArrowLeft'))  str -= 1;
+  fwd -= state.joyY;                                          // stick up = forward
+  str += state.joyX;
+  wishDir.set(-sy * fwd + cy * str, 0, -cy * fwd - sy * str);
   const wl = wishDir.length();
   if (wl > 1) wishDir.divideScalar(wl);
 
@@ -4735,17 +4732,14 @@ function updatePlayer(dt) {
 
   // Sprint drives forward and strafe only: whatever part of the target velocity
   // points behind the camera is trimmed back to the walk speed, so you can back
-  // up but never backpedal at a sprint. Top-down has no camera heading to be
-  // behind, so it keeps driving the world axes as before.
+  // up but never backpedal at a sprint.
   let tx = wishDir.x * speed, tz = wishDir.z * speed;
-  if (camMode !== CAM.TOP) {
-    const backCap = Math.min(speed, PLAYER.walk);
-    const along = tx * -sy + tz * -cy;      // + ahead of the camera, - behind it
-    if (along < -backCap) {
-      const over = along + backCap;         // negative — the excess to take out
-      tx += sy * over;                      // i.e. t -= over * forward
-      tz += cy * over;
-    }
+  const backCap = Math.min(speed, PLAYER.walk);
+  const along = tx * -sy + tz * -cy;        // + ahead of the camera, - behind it
+  if (along < -backCap) {
+    const over = along + backCap;           // negative — the excess to take out
+    tx += sy * over;                        // i.e. t -= over * forward
+    tz += cy * over;
   }
 
   if (grounded) {
@@ -4783,178 +4777,88 @@ function updatePlayer(dt) {
   const targetEye = crouched ? PLAYER.crouchEye : PLAYER.standEye;
   eyeH += (targetEye - eyeH) * (1 - Math.exp(-14 * dt));
 
-  if (camMode === CAM.TOP) {
-    if (Math.hypot(v.x, v.z) > 0.4) playerYaw = Math.atan2(-v.x, -v.z);
-  } else {
-    playerYaw = state.yaw;
-  }
-
-  // In top-down the fly pad and E/Q become zoom controls.
-  if (camMode === CAM.TOP) {
-    const out = state.flyUp   || keys.has('KeyE');
-    const inn = state.flyDown || keys.has('KeyQ');
-    if (out) topZoom = Math.min(90, topZoom + 22 * dt);
-    if (inn) topZoom = Math.max(8, topZoom - 22 * dt);
-  }
+  playerYaw = state.yaw;
 }
 
 // ---------------------------------------------------------------------------
 // Camera modes
 // ---------------------------------------------------------------------------
-const CAM = { FIRST: 0, THIRD: 1, TOP: 2, FREE: 3 };
-const CAM_NAMES = ['First Person', 'Third Person', 'Top Down', 'Free Camera'];
+const CAM = { FIRST: 0, FREE: 1, SPEC: 2 };
+const CAM_NAMES = ['First Person', 'Free Camera', 'Spectator'];
 let camMode = CAM.FREE;               // start exactly as the old build did
-let lastGameCam = CAM.FIRST;
-let topZoom = 26;
-let blendT = 1;                        // 1 = settled, <1 = mid transition
-const BLEND_DUR = 0.42;
-const blendPos = new THREE.Vector3();
-const blendQuat = new THREE.Quaternion();
+
+// Every mode keeps its own view. state.pos/yaw/pitch are the live pose of
+// whichever mode is up; leaving a mode files them here, entering one takes its
+// copy back, so a spectator shot set up an hour ago is still framed when you
+// return and first person still faces the way you left it. A mode never visited
+// starts from the view on screen, so the first switch into it is not a cut.
+// First person's position is the body's, so only its look is kept.
+const camPose = CAM_NAMES.map(() => ({ set: false, pos: new THREE.Vector3(), yaw: 0, pitch: 0 }));
+let camSnap = true;                    // next frame lands on the pose, no easing
 
 function setCamMode(next) {
   if (next === camMode) return;
-  let snap = false;
-
-  if (next === CAM.FREE) {
-    lastGameCam = camMode;
-    // Hand the flying camera the transform we are already looking through so
-    // detaching from physics is seamless; yaw/pitch are shared already.
-    state.pos.copy(camera.position);
-  } else if (camMode === CAM.FREE) {
-    snap = true;                       // re-attaching jumps straight to the body
-    playerBody.wakeUp();
-  }
-
-  camMode = next;
-  if (snap) {
-    blendT = 1;
+  const out = camPose[camMode], into = camPose[next];
+  out.set = true;
+  out.pos.copy(state.pos);
+  out.yaw = state.yaw;
+  out.pitch = state.pitch;
+  if (into.set) {
+    state.pos.copy(into.pos);
+    state.yaw = into.yaw;
+    state.pitch = into.pitch;
   } else {
-    blendPos.copy(camera.position);
-    blendQuat.copy(camera.quaternion);
-    blendT = 0;
+    state.pos.copy(camera.position);
   }
+  if (next === CAM.FIRST) playerBody.wakeUp();
+  // A spectator holds nothing: its picture is for watching, and a tool's cages
+  // and ghosts would be in every frame of it.
+  if (next === CAM.SPEC) {
+    if (shovel.on) setShovel(false);
+    if (hammer.on) setHammer(false);
+    if (placerOn) setPlacer(false);
+    if (volumeOn) setVolume(false);
+  }
+  camMode = next;
+  camSnap = true;
   refreshModeUI();
 }
-function cycleCamera()   { setCamMode((camMode + 1) % 4); }
-function toggleGameMode() { setCamMode(camMode === CAM.FREE ? lastGameCam : CAM.FREE); }
+function cycleCamera()   { setCamMode((camMode + 1) % CAM_NAMES.length); }
+function toggleGameMode() { setCamMode(camMode === CAM.FIRST ? CAM.FREE : CAM.FIRST); }
 
 const desiredPos  = new THREE.Vector3();
 const desiredQuat = new THREE.Quaternion();
 const camEuler    = new THREE.Euler(0, 0, 0, 'YXZ');
-const camTarget   = new THREE.Vector3();
-const camBack     = new THREE.Vector3();
-const boomRay     = new THREE.Raycaster();
-
-// Does a block stop the third-person camera? Water does only while the head is
-// out of it, so the camera stays above the surface on land and follows you in
-// when you wade under.
-let boomWaterBlocks = true;
-const boomBlocks = (m) => m !== AIR && (m !== WATER || boomWaterBlocks);
-
-// How far along a ray from `o` in unit direction `d` the first blocking block
-// starts, or Infinity if there is none within `maxT`. A grid walk (Amanatides &
-// Woo) in block coordinates, so it never steps over a block however thin.
-function boomBlockHit(o, d, maxT) {
-  boomWaterBlocks = voxelAtWorld(o.x, o.y, o.z) !== WATER;
-  const gx = (o.x + GEN_R) / BLOCK, gy = o.y / BLOCK, gz = (o.z + GEN_R) / BLOCK;
-  let i = Math.floor(gx), l = Math.floor(gy), j = Math.floor(gz);
-  const si = d.x > 0 ? 1 : -1, sl = d.y > 0 ? 1 : -1, sj = d.z > 0 ? 1 : -1;
-  const di = d.x !== 0 ? Math.abs(BLOCK / d.x) : Infinity;
-  const dl = d.y !== 0 ? Math.abs(BLOCK / d.y) : Infinity;
-  const dj = d.z !== 0 ? Math.abs(BLOCK / d.z) : Infinity;
-  let ti = d.x !== 0 ? ((d.x > 0 ? i + 1 - gx : gx - i) * di) : Infinity;
-  let tl = d.y !== 0 ? ((d.y > 0 ? l + 1 - gy : gy - l) * dl) : Infinity;
-  let tj = d.z !== 0 ? ((d.z > 0 ? j + 1 - gz : gz - j) * dj) : Infinity;
-  let t = 0;
-  while (t <= maxT) {
-    if (boomBlocks(voxelAt(i, j, l))) return t;
-    if (ti <= tl && ti <= tj) { t = ti; ti += di; i += si; }
-    else if (tl <= tj)        { t = tl; tl += dl; l += sl; }
-    else                      { t = tj; tj += dj; j += sj; }
-  }
-  return Infinity;
-}
-
-// The boom only keeps the camera's centre out of the blocks; the near plane is a
-// little in front of it and would still cut into a floor or roof it runs along.
-// Ease it off either one vertically, but only into air that the head can see,
-// and if it is squeezed between both settle it halfway rather than pass through.
-const BOOM_PAD = 0.3;
-function boomClearance(c, head) {
-  const solid = (y) => boomBlocks(voxelAtWorld(c.x, y, c.z));
-  if (solid(c.y)) { c.copy(head); return; }          // nowhere safe on the boom
-  const below = solid(c.y - BOOM_PAD), above = solid(c.y + BOOM_PAD);
-  if (below && above) {
-    const floor = (lvlOfY(c.y - BOOM_PAD) + 1) * BLOCK, roof = lvlOfY(c.y + BOOM_PAD) * BLOCK;
-    const y = (floor + roof) / 2;
-    if (!solid(y)) c.y = y;
-  } else if (below) {
-    const y = (lvlOfY(c.y - BOOM_PAD) + 1) * BLOCK + BOOM_PAD;
-    if (!solid(y + BOOM_PAD) && !solid(y)) c.y = y;
-  } else if (above) {
-    const y = lvlOfY(c.y + BOOM_PAD) * BLOCK - BOOM_PAD;
-    if (!solid(y - BOOM_PAD) && !solid(y)) c.y = y;
-  }
-}
 
 function updateCamera(dt) {
   const p = playerBody.position;
   const feetY = p.y - centerOffset();
 
-  if (camMode === CAM.FREE) {
-    desiredPos.copy(state.pos);
-    camEuler.set(state.pitch, state.yaw, 0);
-  } else if (camMode === CAM.TOP) {
-    desiredPos.set(p.x, feetY + topZoom, p.z);
-    camEuler.set(-Math.PI / 2, 0, 0);
+  if (camMode === CAM.FIRST) {
+    desiredPos.set(p.x, feetY + eyeH, p.z);
   } else {
-    camEuler.set(state.pitch, state.yaw, 0);
-    if (camMode === CAM.FIRST) {
-      desiredPos.set(p.x, feetY + eyeH, p.z);
-    } else {
-      camTarget.set(p.x, feetY + eyeH * 0.86, p.z);
-      camBack.set(0, 0, 1).applyEuler(camEuler);      // straight back along view
-      let dist = THIRD_DIST;
-      boomRay.set(camTarget, camBack);
-      boomRay.far = dist + 0.5;
-      const hit = boomRay.intersectObjects(objects.children, false)[0];
-      if (hit) dist = Math.max(1.1, hit.distance - 0.35);   // pull in past props
-      // The boom ray only knows about the props, so the terrain is handled
-      // separately: walk the blocks from the head back along the boom and pull
-      // the camera in in front of the first one, whichever way it is facing —
-      // floor, wall or a ceiling overhead. It used to be lifted to the top of the
-      // column instead, which under a roof meant up through it and out on top.
-      const tHit = boomBlockHit(camTarget, camBack, dist + 0.35);
-      if (tHit < dist + 0.35) dist = Math.min(dist, Math.max(0.05, tHit - 0.35));
-      desiredPos.copy(camTarget).addScaledVector(camBack, dist);
-      boomClearance(desiredPos, camTarget);
-      // Off the field there are no blocks to walk, only the sea floor, and
-      // nothing overhead to push through.
-      const ci = colI(desiredPos.x), cj = colJ(desiredPos.z);
-      if (ci < 0 || cj < 0 || ci >= GEN_N || cj >= GEN_N || topLvl[cj * GEN_N + ci] === NO_COLUMN) {
-        const floorY = groundHeightAt(desiredPos.x, desiredPos.z) + 0.6;
-        if (desiredPos.y < floorY) desiredPos.y = floorY;
-      }
-    }
-    // First person needs no guard: the eye is inside the body, and the body is
-    // kept out of the ground by the physics. (Top-down needs none either — it
-    // sits straight above the player, and flat ground has nothing overhead.)
+    desiredPos.copy(state.pos);
   }
+  // First person needs no guard: the eye is inside the body, and the body is
+  // kept out of the ground by the physics.
+  camEuler.set(state.pitch, state.yaw, 0);
   desiredQuat.setFromEuler(camEuler);
 
-  if (blendT < 1) {
-    blendT = Math.min(1, blendT + dt / BLEND_DUR);
-    const s = blendT * blendT * (3 - 2 * blendT);       // smoothstep
-    camera.position.lerpVectors(blendPos, desiredPos, s);
-    camera.quaternion.slerpQuaternions(blendQuat, desiredQuat, s);
+  if (camMode === CAM.SPEC && !camSnap) {
+    // Eased a little so a thumb on the glass films as a glide rather than a
+    // shudder. Fast enough that it still feels attached to the finger.
+    const k = 1 - Math.exp(-SPEC_EASE * dt);
+    camera.position.lerp(desiredPos, k);
+    camera.quaternion.slerp(desiredQuat, k);
   } else {
     camera.position.copy(desiredPos);
     camera.quaternion.copy(desiredQuat);
   }
+  camSnap = false;
   // A hard hit (impactJolt) drops the view as the knees take it and shakes it,
-  // both wearing off together. The free camera is not attached to anything.
+  // both wearing off together. The flying cameras are not attached to anything.
   if (impactJolt > 0) {
-    if (camMode !== CAM.FREE) {
+    if (camMode === CAM.FIRST) {
       const j = impactJolt, sh = PLAYER_JOLT_SHAKE * j;
       camera.position.x += (Math.random() - 0.5) * 2 * sh;
       camera.position.y += (Math.random() - 0.5) * 2 * sh - PLAYER_JOLT_DIP * j * j;
@@ -4979,12 +4883,6 @@ function updateCamera(dt) {
     blobShadow.material.opacity = 1 - (feet - gy) / 6;
   }
 }
-
-window.addEventListener('wheel', (e) => {
-  if (camMode !== CAM.TOP) return;
-  topZoom = THREE.MathUtils.clamp(topZoom + e.deltaY * 0.03, 8, 90);
-  e.preventDefault();
-}, { passive: false });
 
 // ---------------------------------------------------------------------------
 // The shovel — a temporary tool for picking blocks up and putting them down.
@@ -5075,7 +4973,7 @@ function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
 // Would a block at this cell be inside the player? Placing one there would leave
 // them stuck in the ground, so the tool refuses.
 function spotBlocked(i, j, lvl) {
-  if (camMode === CAM.FREE) return false;          // nobody is standing anywhere
+  if (camMode !== CAM.FIRST) return false;         // nobody is standing anywhere
   const p = playerBody.position;
   const r = PLAYER.radius, half = centerOffset();
   const x0 = -GEN_R + i * BLOCK, z0 = -GEN_R + j * BLOCK, y0 = lvl * BLOCK;
@@ -5166,11 +5064,10 @@ function shovelAim() {
 
   camera.getWorldDirection(aimDir);
   let ox, oy, oz;
-  if (camMode === CAM.FREE) {
+  if (camMode !== CAM.FIRST) {
     ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
   } else {
-    // From the player's eye, not the camera: in third person the camera is five
-    // metres behind their head and would reach through the hill they stand on.
+    // From the player's eye, not the camera, which shakes on a hard landing.
     const p = playerBody.position;
     ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
   }
@@ -5189,7 +5086,7 @@ function shovelAim() {
     // Which block that is, as an index into the piece's lattice. Its position is
     // in the piece's frame, which is what the highlight and the dig both want.
     shovel.debris = setDebrisSel(shovelDebrisSel, dHit);
-  } else if (camMode !== CAM.FREE) {
+  } else if (camMode === CAM.FIRST) {
     // Nothing under the crosshair. Fall back to what you are standing on, and to
     // the ground a stride ahead of you for the other half — looking at the sky
     // should not make the tool useless.
@@ -5543,9 +5440,7 @@ function freeDebrisMesh(mesh) {
   freeGeo(mesh.geometry);
 }
 
-// Its own group rather than `objects`: the camera boom raycasts that one to pull
-// itself in past props, and rubble lying around the player should not be tugging
-// the camera about.
+// Its own group rather than `objects`, so the pieces can be walked on their own.
 const debris = new THREE.Group();
 scene.add(debris);
 const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
@@ -5859,6 +5754,56 @@ function restFallingChunk(n) {
   f.seq = ++chunkSeq;
   restedChunks.push(f);
 }
+// A piece one block big that settles is not left lying about on its own: it
+// joins what it came to rest on, as a grain does (catchPowder) — the piece
+// under it, or the ground. Only once it is still, and only where it already
+// sits within a quarter block of the cell it goes into, so nothing is seen to
+// jump; a cube propped on an edge or a corner sits higher than that. Anything
+// it cannot be sure of (a piece under it still on the move, no ground under
+// the cell, the cell taken) leaves it to rest as a piece, which loses nothing.
+// True if it went. A piece retired by FALL_BODY_CAP is not settled, and stays.
+const _loneAt = new THREE.Vector3(), _loneDown = new THREE.Vector3(), _loneW = new THREE.Vector3();
+function mergeLoneBlock(f) {
+  const lat = f.mesh.userData.blocks;
+  if (lat.length !== 1) return false;
+  const m = lat[0].mat, p = f.body.position;
+  const at = _loneAt.set(p.x, p.y, p.z), down = _loneDown.set(p.x, p.y - BLOCK, p.z);
+  const i = colI(at.x), j = colJ(at.z), lvl = lvlOfY(at.y);
+  const cx = colX(i), cy = (lvl + 0.5) * BLOCK, cz = colZ(j);
+  const h = BLOCK * 0.5, still = FALL_REST_V * FALL_REST_V;
+  let under = null, crowded = false;
+  for (const list of [restedChunks, fallingChunks]) {
+    for (const g of list) {
+      if (g === f) continue;
+      g.mesh.updateWorldMatrix(true, false);
+      for (const b of g.mesh.userData.blocks) {
+        const w = _loneW.copy(b.pos).applyMatrix4(g.mesh.matrixWorld);
+        if (Math.abs(w.x - down.x) < h && Math.abs(w.y - down.y) < h && Math.abs(w.z - down.z) < h) under = g;
+        if (Math.abs(w.x - cx) < BLOCK * 0.9 && Math.abs(w.y - cy) < BLOCK * 0.9 && Math.abs(w.z - cz) < BLOCK * 0.9) crowded = true;
+      }
+    }
+  }
+  if (under) {
+    const ub = under.body;
+    if (!under.rested || (ub.sleepState !== CANNON.Body.SLEEPING
+        && (ub.velocity.lengthSquared() >= still || ub.angularVelocity.lengthSquared() >= still))) return false;
+    // Snapped to that piece's lattice, which is what placeOnDebris keys it by.
+    const local = debrisSpot(under.mesh, at, powderZero);
+    if (!local || under.mesh.localToWorld(_loneW.copy(local)).distanceTo(at) > BLOCK * 0.25) return false;
+    placeOnDebris(under.mesh, local, m);
+    removeDebrisMesh(f.mesh);   // its block lives on in the lattice: no world count owed either way
+    return true;
+  }
+  if (Math.abs(at.y - cy) > BLOCK * 0.25 || crowded || !canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR) return false;
+  const below = voxelAt(i, j, lvl - 1);
+  if (below === AIR || below === WATER || spotBlocked(i, j, lvl)) return false;
+  // Out of the world first, so its collider is gone before the ground fills
+  // the cell. Its block was cut from the store when it broke off; this puts it back.
+  removeDebrisMesh(f.mesh);
+  editBlock(i, j, lvl, m);
+  markPlaced(i, j, lvl);
+  return true;
+}
 // Both lists only ever grow at the end, so a piece's seq — taken as it joins
 // one — orders the list. What awakeChunks hands back is the awake pieces of one
 // list in that order, so a loop over it visits them as a walk of the whole list
@@ -6151,7 +6096,8 @@ function updateFallingChunks() {
     const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
               && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
     f.still = slow ? f.still + 1 : 0;
-    if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) restFallingChunk(n);
+    if ((f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING)
+        && !mergeLoneBlock(f)) restFallingChunk(n);
   }
   // A settled piece cannon keeps awake — jittering against the terrain or a
   // neighbour, never quiet for the full sleepTimeLimit — is put to sleep by
@@ -8170,7 +8116,7 @@ function hammerAim() {
 
   camera.getWorldDirection(aimDir);
   let ox, oy, oz;
-  if (camMode === CAM.FREE) {
+  if (camMode !== CAM.FIRST) {
     ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
   } else {
     const p = playerBody.position;
@@ -8256,19 +8202,13 @@ const HELP_DESKTOP = {
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
-  [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'], ['T', 'Material chart'],
-                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
-                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
-                ['Click view', 'Capture mouse'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
-  [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'],
-                ['T', 'Material chart'], ['F', 'Shovel on / off'],
-                ['H', 'Hammer on / off'], ['M', 'Terrain skin / cubes'],
-                ['V', 'Next camera'], ['G', 'Free camera'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
                 ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
+                ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
+  [CAM.SPEC]:  [['W / S', 'Fly where you look'], ['A / D', 'Strafe'], ['E / Q', 'Up / down'],
+                ['Shift', 'Sprint (3&times;)'], ['Mouse', 'Look'], ['U', 'Hide / show UI'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
 };
@@ -8276,14 +8216,12 @@ const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump'],
                 ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
                 ['Shovel / Hammer / Chart', 'Buttons, top left']],
-  [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
-                ['Shovel / Hammer / Chart', 'Buttons, top left']],
-  [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in'],
-                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
                 ['MATS / CHART', 'Panels, top left']],
+  [CAM.SPEC]:  [['Left half', 'Fly where you look'], ['Right half', 'Drag to look'],
+                ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
+                ['NO UI', 'Hide everything'], ['Double-tap', 'Bring it back']],
 };
 // Appended while the shovel is out, in whichever camera you are in.
 const HELP_SHOVEL_DESKTOP = [['LMB / Z', 'Pick up block'], ['RMB / X', 'Place block']];
@@ -8293,10 +8231,10 @@ const HELP_HAMMER_DESKTOP = [['LMB', 'Knock the lit block loose']];
 const HELP_HAMMER_TOUCH   = [['STRIKE', 'Knock the lit block loose']];
 
 function refreshModeUI() {
-  const inGame = camMode !== CAM.FREE;
+  const inGame = camMode === CAM.FIRST;
   camModeEl.innerHTML = 'Cam &mdash; ' + CAM_NAMES[camMode];
   modeBtn.textContent = inGame ? 'Free Camera' : 'Game Mode';
-  camToggle.textContent = inGame ? CAM_NAMES[camMode] : 'First Person';
+  camToggle.textContent = CAM_NAMES[camMode];
   modeBtn.classList.toggle('game', inGame);
 
   let rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
@@ -8306,15 +8244,30 @@ function refreshModeUI() {
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
 
   document.body.classList.toggle('free-cam', camMode === CAM.FREE);
+  // The spectator has no tools, so their buttons and the crosshair go with them.
+  document.body.classList.toggle('spectator', camMode === CAM.SPEC);
+  if (camMode !== CAM.SPEC) setNoUI(false);
 
-  // Fly pad doubles as the top-down zoom pad; action pad is for on-foot modes.
-  document.body.classList.toggle('pad-fly', camMode === CAM.FREE || camMode === CAM.TOP);
-  document.body.classList.toggle('pad-act', camMode === CAM.FIRST || camMode === CAM.THIRD);
-  // Third person normally has nothing to aim, but with the shovel out the
-  // crosshair is what picks the block — so it comes back for that.
-  const noCross = (camMode === CAM.THIRD && !shovel.on && !hammer.on) || camMode === CAM.TOP;
-  document.getElementById('crosshair').style.display = noCross ? 'none' : '';
+  // Fly pad for the flying cameras; action pad for on foot.
+  document.body.classList.toggle('pad-fly', camMode !== CAM.FIRST);
+  document.body.classList.toggle('pad-act', camMode === CAM.FIRST);
 }
+
+// The spectator's clean view: every element on the page goes but the picture
+// (and the pause screen, which has to be able to come up). The NO UI button
+// stays where it was, invisible but still live, so the same tap that hid it
+// brings it back; a double-tap anywhere on the view does too, for whoever has
+// forgotten where it was, and U on a keyboard.
+let noUI = false, noUITapAt = 0;
+const noUIBtn = document.getElementById('btn-noui');
+const noUIHint = document.getElementById('noui-hint');
+function setNoUI(on) {
+  noUI = on && camMode === CAM.SPEC;
+  document.body.classList.toggle('no-ui', noUI);
+  noUIHint.textContent = state.touchActive ? 'Double-tap to bring the UI back' : 'Press U to bring the UI back';
+  noUITapAt = 0;
+}
+bindTap(noUIBtn, () => setNoUI(!noUI));
 
 // Deliberately does NOT grab the pointer on the way into game mode. While the
 // pointer is locked the browser routes every mouse event to the locked element,
@@ -9288,7 +9241,7 @@ const clampSpan = (from, to) => from + THREE.MathUtils.clamp(to - from, -(VOLUME
 
 // The eye the aim is taken from — the free camera, or the player's head in game mode.
 function volumeEye() {
-  if (camMode === CAM.FREE) return camera.position;
+  if (camMode !== CAM.FIRST) return camera.position;
   const p = playerBody.position;
   return _volEye.set(p.x, p.y - centerOffset() + eyeH, p.z);
 }
@@ -12349,13 +12302,11 @@ function stressCrackAt(i, j, lvl) {
   return lv >= STRESS_CRACK_LV ? lv / (STRESS_LUT_N - 1) : 0;
 }
 
-// Where the drawn window is centred: on the player, not the camera, which in
-// top-down hangs 8-90 m overhead and in third person 5 m back — far enough that
-// blocks right beside the player could fall outside it. Flying free, nobody is
-// anywhere, and the camera is all there is.
+// Where the drawn window is centred: on the player's eye when on foot. Flying,
+// nobody is anywhere, and the camera is all there is.
 const _stFocus = new THREE.Vector3();
 function stressFocus() {
-  if (camMode === CAM.FREE) return _stFocus.copy(camera.position);
+  if (camMode !== CAM.FIRST) return _stFocus.copy(camera.position);
   const p = playerBody.position;
   return _stFocus.set(p.x, p.y - centerOffset() + eyeH, p.z);
 }
@@ -12577,9 +12528,16 @@ const move = new THREE.Vector3();
 let elapsed = 0;
 
 // The original flying camera, untouched apart from living in its own function.
+// The spectator flies the same way except that forward is where it looks, pitch
+// and all: with the UI hidden there is no up/down pad, and diving at what you
+// are filming is the shot anyway.
 function updateFreeCam(dt) {
   const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
   forward.set(-sy, 0, -cy);   // camera looks down -Z at yaw 0
+  if (camMode === CAM.SPEC) {
+    const cp = Math.cos(state.pitch);
+    forward.set(-sy * cp, Math.sin(state.pitch), -cy * cp);
+  }
   right.set(cy, 0, -sy);
 
   move.set(0, 0, 0);
@@ -12724,7 +12682,7 @@ function tick() {
   elapsed += dt;
   frameCount++;
 
-  if (camMode === CAM.FREE) {
+  if (camMode !== CAM.FIRST) {
     updateFreeCam(dt);
     // Nobody is driving the character — park it so it does not creep away.
     playerBody.velocity.x = 0;
@@ -12836,7 +12794,7 @@ function tick() {
   flushDirtyChunks();
   updateStress(dt);   // after the edits above, so a rebuild sees this frame's world
   sky.position.copy(camera.position);
-  sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
+  sprintEl.classList.toggle('on', isSprinting());
 
   // --- HUD ---
   frames++;
@@ -12850,7 +12808,7 @@ function tick() {
   if (hudAccum >= 0.1) {
     hudAccum = 0;
     hudText(fpsEl, fps.toFixed(0).padStart(3, ' '));
-    const p = camMode === CAM.FREE
+    const p = camMode !== CAM.FIRST
       ? state.pos
       : { x: playerBody.position.x, y: playerBody.position.y - centerOffset(), z: playerBody.position.z };
     hudText(posEl,
@@ -12860,7 +12818,7 @@ function tick() {
   }
 
   updateLOD();
-  if (camMode === CAM.FREE) updateShadowFrustum(state.pos.x, state.pos.y, state.pos.z);
+  if (camMode !== CAM.FIRST) updateShadowFrustum(state.pos.x, state.pos.y, state.pos.z);
   else updateShadowFrustum(playerBody.position.x, playerBody.position.y, playerBody.position.z);
   debrisBatchSync();     // last, so nothing after it can change a piece it copied
   if (shadowCastersChanged()) renderer.shadowMap.needsUpdate = true;
@@ -13043,9 +13001,9 @@ function collectWorldMeta() {
   // Camera state
   const cameraState = {
     camMode,
-    lastGameCam,
-    topZoom,
-    blendT,
+    pose: camPose.map((c, m) => m === camMode
+      ? { set: true, pos: state.pos.toArray(), yaw: state.yaw, pitch: state.pitch }
+      : { set: c.set, pos: c.pos.toArray(), yaw: c.yaw, pitch: c.pitch }),
   };
 
   // Tools state
@@ -13827,11 +13785,26 @@ function applyWorldCore(s) {
   setPlayerShape(crouched);
 
   // Restore camera state
+  // Saves from before the spectator numbered four modes (free was 3) and kept
+  // no poses; third person and top-down come back as first person.
   const cs = s.cameraState;
-  camMode = cs.camMode;
-  lastGameCam = cs.lastGameCam;
-  topZoom = cs.topZoom;
-  blendT = cs.blendT;
+  if (cs.pose) {
+    camMode = cs.camMode;
+    cs.pose.forEach((c, m) => {
+      if (!camPose[m]) return;
+      camPose[m].set = c.set;
+      camPose[m].pos.fromArray(c.pos);
+      camPose[m].yaw = c.yaw;
+      camPose[m].pitch = c.pitch;
+    });
+    const live = camPose[camMode];
+    state.pos.copy(live.pos);
+    state.yaw = live.yaw;
+    state.pitch = live.pitch;
+  } else {
+    camMode = cs.camMode === 3 ? CAM.FREE : CAM.FIRST;
+  }
+  camSnap = true;
 
   // Restore tools state
   const ts = s.toolsState;

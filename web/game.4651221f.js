@@ -5756,53 +5756,226 @@ function restFallingChunk(n) {
 }
 // A piece one block big that settles is not left lying about on its own: it
 // joins what it came to rest on, as a grain does (catchPowder) — the piece
-// under it, or the ground. Only once it is still, and only where it already
-// sits within a quarter block of the cell it goes into, so nothing is seen to
-// jump; a cube propped on an edge or a corner sits higher than that. Anything
-// it cannot be sure of (a piece under it still on the move, no ground under
-// the cell, the cell taken) leaves it to rest as a piece, which loses nothing.
-// True if it went. A piece retired by FALL_BODY_CAP is not settled, and stays.
-const _loneAt = new THREE.Vector3(), _loneDown = new THREE.Vector3(), _loneW = new THREE.Vector3();
+// under it, or the ground. What it is on is read from where it lies: a block
+// of another piece under its middle (or near it, with no ground there), else
+// the ground cell under it. The cell it goes into is the nearest one of that
+// lattice (or of the world grid) to where it lies, and it has to be lying
+// near enough — within LONE_REACH of the cell, and flat on a face to within
+// LONE_TILT — to be resting in it: a cube propped on an edge or a corner is
+// not. It does not jump there: it glides into the cell and squares up over
+// LONE_GLIDE_T, with the body held kinematic so it still holds up whatever is
+// on it, and only then becomes a block of the piece or the ground.
+// Anything it cannot be sure of — the piece under it still moving, no ground
+// under the cell, the cell taken by the ground, another piece or the player —
+// leaves it to rest as a piece, which loses nothing, and it is tried again
+// (mergeLoneRetry) once it and what it is on are still, backing off from
+// LONE_RETRY_MIN to LONE_RETRY_MAX while it keeps being turned down: a piece
+// under it that was still moving at the settle has stopped by then, the
+// player has stepped off. A cube the hammer knocked out is not put back in
+// the hole it left (knockedAt).
+// True if it went or is on its way. A piece retired by FALL_BODY_CAP is not
+// settled, and waits for the retry like any other.
+const LONE_REACH = 0.75 * BLOCK;   // how far off its cell a settled cube may lie: anywhere over it
+const LONE_TILT = Math.cos(30 * Math.PI / 180);   // and how far off square
+const LONE_GLIDE_T = 0.25;   // s of sim time to glide into the cell
+const LONE_RETRY_MIN = 0.5;  // s between tries of a lone piece turned down, doubling
+const LONE_RETRY_MAX = 4;    // up to this
+const loneGlides = [];       // pieces gliding into their cell: { f.glide }
+let loneScanAt = 0;          // world.time of the next retry sweep
+const _loneAt = new THREE.Vector3(), _loneW = new THREE.Vector3(), _loneQ = new THREE.Quaternion(), _loneQ2 = new THREE.Quaternion();
+const _loneM = new THREE.Matrix4(), _loneS = new THREE.Matrix4();
 function mergeLoneBlock(f) {
+  if (f.gone || f.glide) return !!f.glide;
   const lat = f.mesh.userData.blocks;
-  if (lat.length !== 1) return false;
-  const m = lat[0].mat, p = f.body.position;
-  const at = _loneAt.set(p.x, p.y, p.z), down = _loneDown.set(p.x, p.y - BLOCK, p.z);
-  const i = colI(at.x), j = colJ(at.z), lvl = lvlOfY(at.y);
-  const cx = colX(i), cy = (lvl + 0.5) * BLOCK, cz = colZ(j);
-  const h = BLOCK * 0.5, still = FALL_REST_V * FALL_REST_V;
-  let under = null, crowded = false;
+  if (!lat || lat.length !== 1 || MAT_STATS[lat[0].mat]?.powder) return false;
+  const p = f.body.position;
+  if (f.knockedAt && f.knockedAt.distanceToSquared(_loneAt.set(p.x, p.y, p.z)) < (0.6 * BLOCK) ** 2) return false;
+  const t = loneTarget(f);
+  if (!t) return false;
+  const b = f.body;
+  f.glide = { t0: world.time, p0: new THREE.Vector3(p.x, p.y, p.z),
+              q0: new THREE.Quaternion(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w), t };
+  b.type = CANNON.Body.KINEMATIC;
+  b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
+  b.updateSolveMassProperties();
+  loneGlides.push(f);
+  return true;
+}
+// Where lone piece `f` would go, as it lies now, or null. { under, local, pos,
+// quat, snap } for a cell of the piece `under` (local in its frame), or
+// { i, j, lvl, pos, quat } for the ground; pos and quat are the pose it ends
+// in, in the world.
+function loneTarget(f) {
+  const p = f.body.position, at = _loneAt.set(p.x, p.y, p.z);
+  const r = BLOCK * 0.75, still = FALL_REST_V * FALL_REST_V;
+  let under = null, ud = Infinity;
   for (const list of [restedChunks, fallingChunks]) {
     for (const g of list) {
-      if (g === f) continue;
+      if (g === f || g.gone) continue;
+      const gp = g.body.position, rr = g.body.boundingRadius + 2 * BLOCK;
+      if ((gp.x - at.x) ** 2 + (gp.y - at.y) ** 2 + (gp.z - at.z) ** 2 > rr * rr) continue;
       g.mesh.updateWorldMatrix(true, false);
-      for (const b of g.mesh.userData.blocks) {
-        const w = _loneW.copy(b.pos).applyMatrix4(g.mesh.matrixWorld);
-        if (Math.abs(w.x - down.x) < h && Math.abs(w.y - down.y) < h && Math.abs(w.z - down.z) < h) under = g;
-        if (Math.abs(w.x - cx) < BLOCK * 0.9 && Math.abs(w.y - cy) < BLOCK * 0.9 && Math.abs(w.z - cz) < BLOCK * 0.9) crowded = true;
+      for (const bl of g.mesh.userData.blocks) {
+        const w = _loneW.copy(bl.pos).applyMatrix4(g.mesh.matrixWorld);
+        const dx = w.x - at.x, dy = w.y - (at.y - BLOCK), dz = w.z - at.z;
+        if (Math.abs(dy) >= HALF_BLOCK || Math.abs(dx) >= r || Math.abs(dz) >= r) continue;
+        if (dx * dx + dz * dz < ud) { ud = dx * dx + dz * dz; under = g; }
       }
     }
   }
-  if (under) {
+  const i = colI(at.x), j = colJ(at.z), lvl = lvlOfY(at.y), below = voxelAt(i, j, lvl - 1);
+  const ground = below !== AIR && below !== WATER;
+  let t;
+  if (under && (ud < HALF_BLOCK * HALF_BLOCK || !ground)) {
     const ub = under.body;
-    if (!under.rested || (ub.sleepState !== CANNON.Body.SLEEPING
-        && (ub.velocity.lengthSquared() >= still || ub.angularVelocity.lengthSquared() >= still))) return false;
-    // Snapped to that piece's lattice, which is what placeOnDebris keys it by.
-    const local = debrisSpot(under.mesh, at, powderZero);
-    if (!local || under.mesh.localToWorld(_loneW.copy(local)).distanceTo(at) > BLOCK * 0.25) return false;
-    placeOnDebris(under.mesh, local, m);
-    removeDebrisMesh(f.mesh);   // its block lives on in the lattice: no world count owed either way
-    return true;
+    if (ub.sleepState !== CANNON.Body.SLEEPING
+        && (ub.velocity.lengthSquared() >= still || ub.angularVelocity.lengthSquared() >= still)) return null;
+    const ulat = under.mesh.userData.blocks, ref = ulat[0].pos;
+    under.mesh.updateWorldMatrix(true, false);
+    // The nearest cell of its lattice, which is what placeOnDebris keys it by:
+    // empty, and sharing a face with a block of it.
+    const local = under.mesh.worldToLocal(_loneW.copy(at));
+    local.set(ref.x + Math.round((local.x - ref.x) / BLOCK) * BLOCK,
+              ref.y + Math.round((local.y - ref.y) / BLOCK) * BLOCK,
+              ref.z + Math.round((local.z - ref.z) / BLOCK) * BLOCK);
+    let face = false;
+    for (const bl of ulat) {
+      const d = Math.abs(bl.pos.x - local.x) + Math.abs(bl.pos.y - local.y) + Math.abs(bl.pos.z - local.z);
+      if (d < BLOCK * 0.25) return null;
+      if (Math.abs(d - BLOCK) < BLOCK * 0.25) face = true;
+    }
+    if (!face) return null;
+    t = { under, local: local.clone(), pos: under.mesh.localToWorld(local.clone()),
+          quat: under.mesh.getWorldQuaternion(new THREE.Quaternion()) };
+    if (voxelAtWorld(t.pos.x, t.pos.y, t.pos.z) !== AIR) return null;
+  } else {
+    if (!ground || !canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) return null;
+    t = { i, j, lvl, pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), quat: new THREE.Quaternion() };
   }
-  if (Math.abs(at.y - cy) > BLOCK * 0.25 || crowded || !canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR) return false;
-  const below = voxelAt(i, j, lvl - 1);
-  if (below === AIR || below === WATER || spotBlocked(i, j, lvl)) return false;
-  // Out of the world first, so its collider is gone before the ground fills
-  // the cell. Its block was cut from the store when it broke off; this puts it back.
-  removeDebrisMesh(f.mesh);
-  editBlock(i, j, lvl, m);
-  markPlaced(i, j, lvl);
-  return true;
+  if (t.pos.distanceTo(at) > LONE_REACH) return null;
+  // Lying on a face of the frame it goes into: one of its axes within
+  // LONE_TILT of one of the frame's — the one through the face it lies on.
+  // Turned about that axis it may be any way round, as a cube that tumbled to
+  // a stop is: it is squared up to the nearest quarter turn on the way in.
+  const bq = f.body.quaternion;   // cannon's: copied over by hand, not multiplied in as it is
+  const q = _loneQ.copy(t.quat).invert().multiply(_loneQ2.set(bq.x, bq.y, bq.z, bq.w)), e = _loneM.makeRotationFromQuaternion(q).elements;
+  // The face it lies on is the frame's axis nearest straight up.
+  const up = _loneW.set(0, 1, 0).applyQuaternion(_loneQ2.copy(t.quat).invert());
+  const ku = Math.abs(up.x) > Math.abs(up.y) ? (Math.abs(up.x) > Math.abs(up.z) ? 0 : 2) : (Math.abs(up.y) > Math.abs(up.z) ? 1 : 2);
+  let cu = 0;
+  for (let c = 1; c < 3; c++) if (Math.abs(e[c * 4 + ku]) > Math.abs(e[cu * 4 + ku])) cu = c;
+  if (Math.abs(e[cu * 4 + ku]) < LONE_TILT) return null;
+  const ca = (cu + 1) % 3, cb = (cu + 2) % 3;
+  let ka = ku === 0 ? 1 : 0;
+  for (let a = 0; a < 3; a++) if (a !== ku && Math.abs(e[ca * 4 + a]) > Math.abs(e[ca * 4 + ka])) ka = a;
+  const se = _loneS.identity().elements;
+  for (let a = 0; a < 3; a++) {
+    se[cu * 4 + a] = a === ku ? Math.sign(e[cu * 4 + ku]) : 0;
+    se[ca * 4 + a] = a === ka ? Math.sign(e[ca * 4 + ka]) : 0;
+  }
+  // The third the cross of the two, so it stays a turn and not a mirror.
+  const u = cu * 4, v = ca * 4, w = cb * 4;
+  se[w] = se[u + 1] * se[v + 2] - se[u + 2] * se[v + 1];
+  se[w + 1] = se[u + 2] * se[v] - se[u] * se[v + 2];
+  se[w + 2] = se[u] * se[v + 1] - se[u + 1] * se[v];
+  t.snap = new THREE.Quaternion().setFromRotationMatrix(_loneS);
+  t.quat.multiply(t.snap);
+  // Nothing else in the cell: no block of another piece within most of a block.
+  const h = BLOCK * 0.9;
+  for (const list of [restedChunks, fallingChunks]) {
+    for (const g of list) {
+      if (g === f || g === t.under || g.gone) continue;
+      const gp = g.body.position, rr = g.body.boundingRadius + 2 * BLOCK;
+      if ((gp.x - t.pos.x) ** 2 + (gp.y - t.pos.y) ** 2 + (gp.z - t.pos.z) ** 2 > rr * rr) continue;
+      g.mesh.updateWorldMatrix(true, false);
+      for (const bl of g.mesh.userData.blocks) {
+        const w = _loneW.copy(bl.pos).applyMatrix4(g.mesh.matrixWorld);
+        if (Math.abs(w.x - t.pos.x) < h && Math.abs(w.y - t.pos.y) < h && Math.abs(w.z - t.pos.z) < h) return null;
+      }
+    }
+  }
+  return t;
+}
+// A frame of every glide: the cube eased toward its cell, following the piece
+// it goes onto if that shifts, and at the end checked once more and merged.
+// Anything that turns it down on the way lets it go back to being a piece.
+function updateLoneGlides() {
+  for (let n = loneGlides.length - 1; n >= 0; n--) {
+    const f = loneGlides[n], g = f.glide, b = f.body;
+    let t = g.t;
+    const lat = f.mesh.userData.blocks;
+    let ok = !f.gone && lat && lat.length === 1;
+    if (ok && t.under) {
+      const u = t.under, ub = u.body, still = FALL_REST_V * FALL_REST_V;
+      ok = !u.gone && (ub.sleepState === CANNON.Body.SLEEPING
+        || (ub.velocity.lengthSquared() < still && ub.angularVelocity.lengthSquared() < still));
+      if (ok) {
+        u.mesh.updateWorldMatrix(true, false);
+        u.mesh.localToWorld(t.pos.copy(t.local));
+        u.mesh.getWorldQuaternion(t.quat).multiply(t.snap);
+      }
+    }
+    if (ok) {
+      const s = Math.min(1, (world.time - g.t0) / LONE_GLIDE_T), e = s * s * (3 - 2 * s);
+      const at = _loneAt.copy(g.p0).lerp(t.pos, e), q = _loneQ.copy(g.q0).slerp(t.quat, e);
+      b.position.set(at.x, at.y, at.z); b.quaternion.set(q.x, q.y, q.z, q.w);
+      b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
+      b.aabbNeedsUpdate = true;
+      f.mesh.position.copy(at); f.mesh.quaternion.copy(q);
+      if (s < 1) continue;
+      // There: what it goes into is asked again from where it now lies.
+      t = loneTarget(f);
+      ok = !!t && (t.under ? t.under === g.t.under : t.i === g.t.i && t.j === g.t.j && t.lvl === g.t.lvl);
+    }
+    loneGlides.splice(n, 1);
+    f.glide = null;
+    if (f.gone) continue;
+    if (!ok) {
+      b.type = CANNON.Body.DYNAMIC;
+      b.updateSolveMassProperties();
+      b.wakeUp();
+      loneBackoff(f);
+      continue;
+    }
+    const m = lat[0].mat;
+    if (t.under) {
+      placeOnDebris(t.under.mesh, t.local, m);
+      removeDebrisMesh(f.mesh);   // its block lives on in the lattice: no world count owed either way
+    } else {
+      // Out of the world first, so its collider is gone before the ground fills
+      // the cell. Its block was cut from the store when it broke off; this puts it back.
+      removeDebrisMesh(f.mesh);
+      editBlock(t.i, t.j, t.lvl, m);
+      markPlaced(t.i, t.j, t.lvl);
+    }
+  }
+}
+function loneBackoff(f) {
+  f.loneTries = (f.loneTries || 0) + 1;
+  f.loneNext = world.time + Math.min(LONE_RETRY_MAX, LONE_RETRY_MIN * 2 ** (f.loneTries - 1));
+}
+// The lone pieces lying about, every LONE_RETRY_MIN, tried again once due:
+// asleep, or awake but slow and where it was at the last look. One still
+// moving is looked at again soon after it stops.
+function mergeLoneRetry() {
+  if (world.time < loneScanAt) return;
+  loneScanAt = world.time + LONE_RETRY_MIN;
+  const still = FALL_REST_V * FALL_REST_V;
+  for (let n = restedChunks.length - 1; n >= 0; n--) {
+    const f = restedChunks[n];
+    if (f.glide || f.mesh.userData.blocks.length !== 1) continue;
+    const b = f.body, p = b.position;
+    if (b.sleepState !== CANNON.Body.SLEEPING) {
+      const moved = !f.lonePos || f.lonePos.distanceToSquared(_loneW.set(p.x, p.y, p.z)) > (0.05 * BLOCK) ** 2;
+      (f.lonePos ||= new THREE.Vector3()).set(p.x, p.y, p.z);
+      if (moved || b.velocity.lengthSquared() >= still || b.angularVelocity.lengthSquared() >= still) {
+        f.loneTries = 0; f.loneNext = 0;
+        continue;
+      }
+    }
+    if (world.time < (f.loneNext || 0)) continue;
+    if (!mergeLoneBlock(f)) loneBackoff(f);
+  }
 }
 // Both lists only ever grow at the end, so a piece's seq — taken as it joins
 // one — orders the list. What awakeChunks hands back is the awake pieces of one
@@ -6096,9 +6269,13 @@ function updateFallingChunks() {
     const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
               && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
     f.still = slow ? f.still + 1 : 0;
-    if ((f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING)
-        && !mergeLoneBlock(f)) restFallingChunk(n);
+    if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) {
+      restFallingChunk(n);
+      if (f.mesh.userData.blocks.length === 1 && !mergeLoneBlock(f)) loneBackoff(f);
+    }
   }
+  updateLoneGlides();
+  mergeLoneRetry();
   // A settled piece cannon keeps awake — jittering against the terrain or a
   // neighbour, never quiet for the full sleepTimeLimit — is put to sleep by
   // hand once it has gone FALL_FREEZE_TICKS without getting anywhere. Slowness
@@ -6242,13 +6419,6 @@ const IMPACT_LOAD_MAX = 64;   // hits held for the next check at once; past it, 
 // the leading face along the line of the hit are the face: a slab landing all
 // but flat lands on all of it.
 const IMPACT_FACE_TOL = 0.3;
-// The hammer is a hit like any other: its blow goes on the block it struck,
-// along the aim, and what gives way is what the solve says. A 4 kg head at
-// 10 m/s stopped in 0.02 s, in block weights (FALL_KG_PER_WEIGHT, g): it snaps
-// a dirt block standing out on its own, or a strained dirt span, and a block
-// set in ground or bearing straight down takes it. A rock span has to be close
-// to its limit already.
-const HAMMER_F = 4 * 10 / (FALL_KG_PER_WEIGHT * 9.82 * 0.02);
 const IMPACT_LOAD_WAIT = 1.0; // s of sim time the check waits on a crater still being dug, so the hit lands on the hole it made
 // The player. The controller drives the body's speed, so a sprint (9.2 m/s)
 // into a wall or a jump (6.2 m/s) landing must never register; past that a hit
@@ -7801,41 +7971,97 @@ function resolveBreakMat(m) {
   return m;
 }
 
-// A strike lands on the block under the crosshair as a force along the aim
-// (HAMMER_F), and the next tension check says what it brings down: a strained
-// span sheds, a block set in the ground takes it. What the check has nothing
-// to say about is knocked straight out, as a block the solver finds past its
-// strength is — through breakBlock / breakDebrisBlocks — and leaves the grid
-// as a one-cube piece of rubble: anything with the check off, a lone cube, a
-// piece in the air, ground hanging off nothing, and in the sandbox ground the
-// check never lays out.
+// A strike breaks the block under the crosshair, every time: it leaves the grid
+// as rubble, as a block the tension check finds past its strength does
+// (breakBlock / breakDebrisBlocks). It used to go on the block as a force for
+// the next check to weigh, and a block set in the ground, a piece the check
+// had not laid out or a check that never came took it and nothing happened.
+// What the hole leaves hanging is the next check's, which a blow hurries
+// (impactStruck). The cube is thrown up and back out of the face it was struck
+// on, toward the striker, slow enough to land without doing damage of its own:
+// left where it was it would settle in its own hole and go straight back in
+// as the lone block it is (mergeLoneBlock), so it is barred from the cell it
+// left (knockedAt). Ground that breaks to a powder is thrown onto the rim as a
+// grain for the same reason, as a crater throws it. A lone cube has nowhere to
+// be knocked out of, so it is crushed to its powder, or — one with none, like
+// mud — knocked along the blow.
+const HAMMER_EJECT_UP = 2.6;     // m/s: clears the rim of its own hole (~1.7 blocks)
+const HAMMER_EJECT_BACK = 0.9;   // m/s toward the striker
 function hammerStrike() {
-  if (!hammer.on || !hammer.hit) return false;
+  if (!hammer.on) return false;
+  // Not last frame's aim if what it had is gone: a strike since, a cut
+  // renumbering the piece, the piece shed or merged.
+  if (!hammerTargetLive()) hammerAim();
+  if (!hammer.hit) return false;
   camera.getWorldDirection(aimDir);
-  const L = { by: 0, F: HAMMER_F, dx: aimDir.x, dy: aimDir.y, dz: aimDir.z, i: 0, j: 0, lvl: 0, mesh: null, fly: false };
-  let ok;
+  const hd = Math.hypot(aimDir.x, aimDir.z) || 1, bx = -aimDir.x / hd, bz = -aimDir.z / hd;
+  let ok = false, born, at;
   if (hammer.debris) {
     const { mesh, idx } = hammer.debris, lat = mesh.userData.blocks;
-    if (!stressOn || lat.length < 2 || !mesh.userData.stressRest) ok = breakDebrisBlock(mesh, idx);
+    if (lat.length === 1) ok = hammerCrush(mesh);
     else {
-      const b = lat[idx];
-      L.mesh = mesh; L.i = b.gi; L.j = b.gj; L.lvl = b.lvl;
-      L.by = -1 - stPieceKey(mesh, b.gi, b.gj, b.lvl);
+      mesh.updateWorldMatrix(true, false);
+      at = lat[idx].pos.clone().applyMatrix4(mesh.matrixWorld);
+      born = impactCollect(() => { ok = breakDebrisBlock(mesh, idx); });
     }
   } else {
-    const { i, j, lvl } = hammer.hit, key = gravCell(i, j, lvl), n = stKeyMap.get(key);
-    if (!stressOn || (n === undefined && sandboxMode) || (n !== undefined && stCur.stress[n] === Infinity)) ok = breakBlock(i, j, lvl);
-    else {
-      L.i = i; L.j = j; L.lvl = lvl; L.by = -1 - key;
-      // Ground not laid out is solved for real from now on, as a dig would
-      // have it, so the blow has a node to land on.
-      const c = chunkOf(i, j);
-      if (n === undefined && lvl < stressChunkLow[c]) stressChunkLow[c] = lvl;
+    const { i, j, lvl } = hammer.hit;
+    at = new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j));
+    born = impactCollect(() => { ok = breakBlock(i, j, lvl); });
+  }
+  // The struck block's own cube: the one born where it stood (a split off a
+  // piece is born too, and is left to fall as it would).
+  const body = born && born.find((b) => b.impactMesh.userData.blocks.length === 1
+    && Math.abs(b.position.x - at.x) < HALF_BLOCK && Math.abs(b.position.y - at.y) < HALF_BLOCK
+    && Math.abs(b.position.z - at.z) < HALF_BLOCK);
+  if (body) {
+    const mesh = body.impactMesh, m = mesh.userData.blocks[0].mat;
+    if (MAT_STATS[m]?.powder) {
+      const r = (1 + Math.random()) * BLOCK;
+      powderGrain(at.x + bx * r, at.y + BLOCK, at.z + bz * r, m, null);
+      removeDebrisMesh(mesh);
+    } else {
+      body.velocity.x += bx * HAMMER_EJECT_BACK; body.velocity.y += HAMMER_EJECT_UP; body.velocity.z += bz * HAMMER_EJECT_BACK;
+      const f = chunkOfMesh(mesh);
+      if (f) f.knockedAt = at;
     }
   }
-  if (L.by) { impactLoadPush(L); impactStruck = true; ok = true; }
-  if (ok) { hammer.hit = null; hammer.debris = null; }
+  if (ok) { hammer.hit = null; hammer.debris = null; impactStruck = true; }
   return ok;
+}
+// Whether what the aim last found is still there to strike.
+function hammerTargetLive() {
+  if (!hammer.hit) return false;
+  if (hammer.debris) {
+    const { mesh, idx, blk } = hammer.debris, lat = mesh.userData.blocks;
+    return mesh.parent === debris && !!lat && idx >= 0 && idx < lat.length && lat[idx] === blk;
+  }
+  const m = voxelAt(hammer.hit.i, hammer.hit.j, hammer.hit.lvl);
+  return m !== AIR && m !== WATER;
+}
+// A lone cube struck: crushed to its powder where it lies, or, one that has
+// none, knocked along the blow.
+function hammerCrush(mesh) {
+  const lat = mesh.userData.blocks, f = chunkOfMesh(mesh);
+  const c = impactCrushMat(lat[0].mat);
+  if (c >= 0) {
+    mesh.updateWorldMatrix(true, false);
+    powderGrain(0, 0, 0, c, null).pos.copy(lat[0].pos).applyMatrix4(mesh.matrixWorld);
+    removeDebrisMesh(mesh);
+    return true;
+  }
+  if (!f) return false;
+  if (f.glide) {   // knocked out of its glide: a piece again, that the retry may try later
+    loneGlides.splice(loneGlides.indexOf(f), 1);
+    f.glide = null;
+    f.body.type = CANNON.Body.DYNAMIC;
+    f.body.updateSolveMassProperties();
+  }
+  const v = f.body.velocity;
+  v.x += aimDir.x * HAMMER_EJECT_UP; v.y += HAMMER_EJECT_UP * 0.5; v.z += aimDir.z * HAMMER_EJECT_UP;
+  f.body.wakeUp();
+  f.still = 0;
+  return true;
 }
 
 // Debris block — knock it off the piece as its own physics object (splits if needed).
@@ -8107,7 +8333,7 @@ refreshShovelUI();
 // to fill and rubble is already loose, so a piece of it in the way just shortens
 // the reach rather than becoming a target.
 const hammerHitCell = { i: 0, j: 0, lvl: 0 };
-const hammerDebrisSel = { mesh: null, idx: -1 };
+const hammerDebrisSel = { mesh: null, idx: -1, blk: null };
 const hammerWp = new THREE.Vector3();
 function hammerAim() {
   hammer.hit = null;
@@ -8137,7 +8363,7 @@ function hammerAim() {
     const lat = dm.userData.blocks;
     const idx = debrisHitBlock(dHit);
     if (idx >= 0) {
-      hammerDebrisSel.mesh = dm; hammerDebrisSel.idx = idx;
+      hammerDebrisSel.mesh = dm; hammerDebrisSel.idx = idx; hammerDebrisSel.blk = lat[idx];
       hammer.debris = hammerDebrisSel;
       // Store the actual world position for the highlight.
       hammer.debrisWp = hammerWp.copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);
@@ -13836,6 +14062,7 @@ function applyWorldCore(s) {
   powderDirty.clear();
   powderCarry.length = 0;
   impactPending.length = 0;   // a crater still being dug in the world that was left
+  loneGlides.length = 0; loneScanAt = 0;   // its pieces are gone, and this world's clock starts over
 
   // The pieces come back after the rebuild (restoreSavedPieces).
 

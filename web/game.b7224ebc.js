@@ -5765,8 +5765,9 @@ function restFallingChunk(n) {
 // not. It does not jump there: it glides into the cell and squares up over
 // LONE_GLIDE_T, with the body held kinematic so it still holds up whatever is
 // on it, and only then becomes a block of the piece or the ground.
-// Anything it cannot be sure of — the piece under it still moving, no ground
-// under the cell, the cell taken by the ground, another piece or the player —
+// Anything it cannot be sure of — the piece under it still moving or holding
+// any block not of its material, no ground under the cell, the cell taken by
+// the ground, another piece or the player —
 // leaves it to rest as a piece, which loses nothing, and it is tried again
 // (mergeLoneRetry) once it and what it is on are still, backing off from
 // LONE_RETRY_MIN to LONE_RETRY_MAX while it keeps being turned down: a piece
@@ -5831,6 +5832,9 @@ function loneTarget(f) {
     if (ub.sleepState !== CANNON.Body.SLEEPING
         && (ub.velocity.lengthSquared() >= still || ub.angularVelocity.lengthSquared() >= still)) return null;
     const ulat = under.mesh.userData.blocks, ref = ulat[0].pos;
+    // Only into a piece all of its own stuff: one with any other in it is turned down.
+    const m = f.mesh.userData.blocks[0].mat;
+    for (const bl of ulat) if (bl.mat !== m) return null;
     under.mesh.updateWorldMatrix(true, false);
     // The nearest cell of its lattice, which is what placeOnDebris keys it by:
     // empty, and sharing a face with a block of it.

@@ -5826,36 +5826,31 @@ function loneTarget(f) {
   }
   const i = colI(at.x), j = colJ(at.z), lvl = lvlOfY(at.y), below = voxelAt(i, j, lvl - 1);
   const ground = below !== AIR && below !== WATER;
-  let t;
-  if (under && (ud < HALF_BLOCK * HALF_BLOCK || !ground)) {
-    const ub = under.body;
-    if (ub.sleepState !== CANNON.Body.SLEEPING
-        && (ub.velocity.lengthSquared() >= still || ub.angularVelocity.lengthSquared() >= still)) return null;
-    const ulat = under.mesh.userData.blocks, ref = ulat[0].pos;
-    // Only into a piece all of its own stuff: one with any other in it is turned down.
-    const m = f.mesh.userData.blocks[0].mat;
-    for (const bl of ulat) if (bl.mat !== m) return null;
-    under.mesh.updateWorldMatrix(true, false);
-    // The nearest cell of its lattice, which is what placeOnDebris keys it by:
-    // empty, and sharing a face with a block of it.
-    const local = under.mesh.worldToLocal(_loneW.copy(at));
-    local.set(ref.x + Math.round((local.x - ref.x) / BLOCK) * BLOCK,
-              ref.y + Math.round((local.y - ref.y) / BLOCK) * BLOCK,
-              ref.z + Math.round((local.z - ref.z) / BLOCK) * BLOCK);
-    let face = false;
-    for (const bl of ulat) {
-      const d = Math.abs(bl.pos.x - local.x) + Math.abs(bl.pos.y - local.y) + Math.abs(bl.pos.z - local.z);
-      if (d < BLOCK * 0.25) return null;
-      if (Math.abs(d - BLOCK) < BLOCK * 0.25) face = true;
-    }
-    if (!face) return null;
-    t = { under, local: local.clone(), pos: under.mesh.localToWorld(local.clone()),
-          quat: under.mesh.getWorldQuaternion(new THREE.Quaternion()) };
-    if (voxelAtWorld(t.pos.x, t.pos.y, t.pos.z) !== AIR) return null;
-  } else {
-    if (!ground || !canBuildAt(i, j, lvl) || voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) return null;
-    t = { i, j, lvl, pos: new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j)), quat: new THREE.Quaternion() };
+  if (!under) return null;  // only physics objects, never world mesh
+  const ub = under.body;
+  if (ub.sleepState !== CANNON.Body.SLEEPING
+      && (ub.velocity.lengthSquared() >= still || ub.angularVelocity.lengthSquared() >= still)) return null;
+  const ulat = under.mesh.userData.blocks, ref = ulat[0].pos;
+  // Only into a piece all of its own stuff: one with any other in it is turned down.
+  const m = f.mesh.userData.blocks[0].mat;
+  for (const bl of ulat) if (bl.mat !== m) return null;
+  under.mesh.updateWorldMatrix(true, false);
+  // The nearest cell of its lattice, which is what placeOnDebris keys it by:
+  // empty, and sharing a face with a block of it.
+  const local = under.mesh.worldToLocal(_loneW.copy(at));
+  local.set(ref.x + Math.round((local.x - ref.x) / BLOCK) * BLOCK,
+            ref.y + Math.round((local.y - ref.y) / BLOCK) * BLOCK,
+            ref.z + Math.round((local.z - ref.z) / BLOCK) * BLOCK);
+  let face = false;
+  for (const bl of ulat) {
+    const d = Math.abs(bl.pos.x - local.x) + Math.abs(bl.pos.y - local.y) + Math.abs(bl.pos.z - local.z);
+    if (d < BLOCK * 0.25) return null;
+    if (Math.abs(d - BLOCK) < BLOCK * 0.25) face = true;
   }
+  if (!face) return null;
+  const t = { under, local: local.clone(), pos: under.mesh.localToWorld(local.clone()),
+              quat: under.mesh.getWorldQuaternion(new THREE.Quaternion()) };
+  if (voxelAtWorld(t.pos.x, t.pos.y, t.pos.z) !== AIR) return null;
   if (t.pos.distanceTo(at) > LONE_REACH) return null;
   // Lying on a face of the frame it goes into: one of its axes within
   // LONE_TILT of one of the frame's — the one through the face it lies on.

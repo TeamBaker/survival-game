@@ -5776,8 +5776,8 @@ function restFallingChunk(n) {
 // the hole it left (knockedAt).
 // True if it went or is on its way. A piece retired by FALL_BODY_CAP is not
 // settled, and waits for the retry like any other.
-const LONE_REACH = 0.75 * BLOCK;   // how far off its cell a settled cube may lie: anywhere over it
-const LONE_TILT = Math.cos(30 * Math.PI / 180);   // and how far off square
+const LONE_REACH = 1.25 * BLOCK;   // how far off its cell a settled piece may lie: more willingness to move
+const LONE_TILT = Math.cos(45 * Math.PI / 180);   // more permissive tilt (45° vs 30°)
 const LONE_GLIDE_T = 0.25;   // s of sim time to glide into the cell
 const LONE_RETRY_MIN = 0.5;  // s between tries of a lone piece turned down, doubling
 const LONE_RETRY_MAX = 4;    // up to this
@@ -5788,7 +5788,10 @@ const _loneM = new THREE.Matrix4(), _loneS = new THREE.Matrix4();
 function mergeLoneBlock(f) {
   if (f.gone || f.glide) return !!f.glide;
   const lat = f.mesh.userData.blocks;
-  if (!lat || lat.length !== 1 || MAT_STATS[lat[0].mat]?.powder) return false;
+  if (!lat || lat.length > 2 || lat.length === 0 || MAT_STATS[lat[0].mat]?.powder) return false;
+  // All blocks in the piece must be the same material to merge
+  const m = lat[0].mat;
+  for (const bl of lat) if (bl.mat !== m) return false;
   const p = f.body.position;
   if (f.knockedAt && f.knockedAt.distanceToSquared(_loneAt.set(p.x, p.y, p.z)) < (0.6 * BLOCK) ** 2) return false;
   const t = loneTarget(f);
@@ -5833,6 +5836,7 @@ function loneTarget(f) {
   const ulat = under.mesh.userData.blocks, ref = ulat[0].pos;
   // Only into a piece all of its own stuff: one with any other in it is turned down.
   const m = f.mesh.userData.blocks[0].mat;
+  for (const bl of f.mesh.userData.blocks) if (bl.mat !== m) return false;
   for (const bl of ulat) if (bl.mat !== m) return null;
   under.mesh.updateWorldMatrix(true, false);
   // The nearest cell of its lattice, which is what placeOnDebris keys it by:
@@ -5938,13 +5942,18 @@ function updateLoneGlides() {
     }
     const m = lat[0].mat;
     if (t.under) {
-      placeOnDebris(t.under.mesh, t.local, m);
-      removeDebrisMesh(f.mesh);   // its block lives on in the lattice: no world count owed either way
+      // Merge each block of this piece onto the target piece
+      for (const bl of lat) {
+        placeOnDebris(t.under.mesh, bl.pos, m);
+      }
+      removeDebrisMesh(f.mesh);   // its blocks live on in the lattice: no world count owed either way
     } else {
       // Out of the world first, so its collider is gone before the ground fills
-      // the cell. Its block was cut from the store when it broke off; this puts it back.
+      // the cell. Its blocks were cut from the store when it broke off; this puts them back.
       removeDebrisMesh(f.mesh);
-      editBlock(t.i, t.j, t.lvl, m);
+      for (const bl of lat) {
+        editBlock(t.i, t.j, t.lvl, m);
+      }
       markPlaced(t.i, t.j, t.lvl);
     }
   }
@@ -5962,7 +5971,7 @@ function mergeLoneRetry() {
   const still = FALL_REST_V * FALL_REST_V;
   for (let n = restedChunks.length - 1; n >= 0; n--) {
     const f = restedChunks[n];
-    if (f.glide || f.mesh.userData.blocks.length !== 1) continue;
+    if (f.glide || f.mesh.userData.blocks.length > 2 || f.mesh.userData.blocks.length === 0) continue;
     const b = f.body, p = b.position;
     if (b.sleepState !== CANNON.Body.SLEEPING) {
       const moved = !f.lonePos || f.lonePos.distanceToSquared(_loneW.set(p.x, p.y, p.z)) > (0.05 * BLOCK) ** 2;

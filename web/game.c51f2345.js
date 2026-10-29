@@ -5812,6 +5812,9 @@ function mergeLoneBlock(f) {
 function loneTarget(f) {
   const p = f.body.position, at = _loneAt.set(p.x, p.y, p.z);
   const r = BLOCK * 0.75, still = FALL_REST_V * FALL_REST_V;
+  // Where each of its blocks lies: what it is on is under any of them.
+  const fq = _loneQ2.set(f.body.quaternion.x, f.body.quaternion.y, f.body.quaternion.z, f.body.quaternion.w);
+  const fw = f.mesh.userData.blocks.map((bl) => bl.pos.clone().applyQuaternion(fq).add(at));
   let under = null, ud = Infinity;
   for (const list of [restedChunks, fallingChunks]) {
     for (const g of list) {
@@ -5821,9 +5824,11 @@ function loneTarget(f) {
       g.mesh.updateWorldMatrix(true, false);
       for (const bl of g.mesh.userData.blocks) {
         const w = _loneW.copy(bl.pos).applyMatrix4(g.mesh.matrixWorld);
-        const dx = w.x - at.x, dy = w.y - (at.y - BLOCK), dz = w.z - at.z;
-        if (Math.abs(dy) >= HALF_BLOCK || Math.abs(dx) >= r || Math.abs(dz) >= r) continue;
-        if (dx * dx + dz * dz < ud) { ud = dx * dx + dz * dz; under = g; }
+        for (const a of fw) {
+          const dx = w.x - a.x, dy = w.y - (a.y - BLOCK), dz = w.z - a.z;
+          if (Math.abs(dy) >= HALF_BLOCK || Math.abs(dx) >= r || Math.abs(dz) >= r) continue;
+          if (dx * dx + dz * dz < ud) { ud = dx * dx + dz * dz; under = g; }
+        }
       }
     }
   }
@@ -5839,23 +5844,7 @@ function loneTarget(f) {
   for (const bl of f.mesh.userData.blocks) if (bl.mat !== m) return false;
   for (const bl of ulat) if (bl.mat !== m) return null;
   under.mesh.updateWorldMatrix(true, false);
-  // The nearest cell of its lattice, which is what placeOnDebris keys it by:
-  // empty, and sharing a face with a block of it.
-  const local = under.mesh.worldToLocal(_loneW.copy(at));
-  local.set(ref.x + Math.round((local.x - ref.x) / BLOCK) * BLOCK,
-            ref.y + Math.round((local.y - ref.y) / BLOCK) * BLOCK,
-            ref.z + Math.round((local.z - ref.z) / BLOCK) * BLOCK);
-  let face = false;
-  for (const bl of ulat) {
-    const d = Math.abs(bl.pos.x - local.x) + Math.abs(bl.pos.y - local.y) + Math.abs(bl.pos.z - local.z);
-    if (d < BLOCK * 0.25) return null;
-    if (Math.abs(d - BLOCK) < BLOCK * 0.25) face = true;
-  }
-  if (!face) return null;
-  const t = { under, local: local.clone(), pos: under.mesh.localToWorld(local.clone()),
-              quat: under.mesh.getWorldQuaternion(new THREE.Quaternion()) };
-  if (voxelAtWorld(t.pos.x, t.pos.y, t.pos.z) !== AIR) return null;
-  if (t.pos.distanceTo(at) > LONE_REACH) return null;
+  const t = { under, quat: under.mesh.getWorldQuaternion(new THREE.Quaternion()) };
   // Lying on a face of the frame it goes into: one of its axes within
   // LONE_TILT of one of the frame's — the one through the face it lies on.
   // Turned about that axis it may be any way round, as a cube that tumbled to
@@ -5883,17 +5872,49 @@ function loneTarget(f) {
   se[w + 2] = se[u] * se[v + 1] - se[u + 1] * se[v];
   t.snap = new THREE.Quaternion().setFromRotationMatrix(_loneS);
   t.quat.multiply(t.snap);
-  // Nothing else in the cell: no block of another piece within most of a block.
+  // The cells of its lattice its blocks go into, which is what placeOnDebris
+  // keys them by: the one nearest where its first block lies, squared up, and
+  // the rest where the piece's own shape puts them from there. Each empty, and
+  // one at least sharing a face with a block of it. t.local is where its
+  // middle ends up, in the same frame.
+  const lc = under.mesh.worldToLocal(at.clone());
+  const off = f.mesh.userData.blocks.map((bl) => bl.pos.clone().applyQuaternion(t.snap));
+  const c0 = lc.clone().add(off[0]);
+  c0.set(ref.x + Math.round((c0.x - ref.x) / BLOCK) * BLOCK,
+         ref.y + Math.round((c0.y - ref.y) / BLOCK) * BLOCK,
+         ref.z + Math.round((c0.z - ref.z) / BLOCK) * BLOCK);
+  t.local = c0.clone().sub(off[0]);
+  t.cells = off.map((o) => { const c = t.local.clone().add(o);
+    return c.set(ref.x + Math.round((c.x - ref.x) / BLOCK) * BLOCK,
+                 ref.y + Math.round((c.y - ref.y) / BLOCK) * BLOCK,
+                 ref.z + Math.round((c.z - ref.z) / BLOCK) * BLOCK); });
+  let face = false;
+  for (const c of t.cells) {
+    for (const bl of ulat) {
+      const d = Math.abs(bl.pos.x - c.x) + Math.abs(bl.pos.y - c.y) + Math.abs(bl.pos.z - c.z);
+      if (d < BLOCK * 0.25) return null;
+      if (Math.abs(d - BLOCK) < BLOCK * 0.25) face = true;
+    }
+  }
+  if (!face) return null;
+  t.pos = under.mesh.localToWorld(t.local.clone());
+  if (t.pos.distanceTo(at) > LONE_REACH) return null;
+  // Nothing else in the cells: not the ground, and no block of another piece
+  // within most of a block.
   const h = BLOCK * 0.9;
-  for (const list of [restedChunks, fallingChunks]) {
-    for (const g of list) {
-      if (g === f || g === t.under || g.gone) continue;
-      const gp = g.body.position, rr = g.body.boundingRadius + 2 * BLOCK;
-      if ((gp.x - t.pos.x) ** 2 + (gp.y - t.pos.y) ** 2 + (gp.z - t.pos.z) ** 2 > rr * rr) continue;
-      g.mesh.updateWorldMatrix(true, false);
-      for (const bl of g.mesh.userData.blocks) {
-        const w = _loneW.copy(bl.pos).applyMatrix4(g.mesh.matrixWorld);
-        if (Math.abs(w.x - t.pos.x) < h && Math.abs(w.y - t.pos.y) < h && Math.abs(w.z - t.pos.z) < h) return null;
+  for (const c of t.cells) {
+    const cw = under.mesh.localToWorld(c.clone());
+    if (voxelAtWorld(cw.x, cw.y, cw.z) !== AIR) return null;
+    for (const list of [restedChunks, fallingChunks]) {
+      for (const g of list) {
+        if (g === f || g === t.under || g.gone) continue;
+        const gp = g.body.position, rr = g.body.boundingRadius + 2 * BLOCK;
+        if ((gp.x - cw.x) ** 2 + (gp.y - cw.y) ** 2 + (gp.z - cw.z) ** 2 > rr * rr) continue;
+        g.mesh.updateWorldMatrix(true, false);
+        for (const bl of g.mesh.userData.blocks) {
+          const w = _loneW.copy(bl.pos).applyMatrix4(g.mesh.matrixWorld);
+          if (Math.abs(w.x - cw.x) < h && Math.abs(w.y - cw.y) < h && Math.abs(w.z - cw.z) < h) return null;
+        }
       }
     }
   }
@@ -5907,7 +5928,7 @@ function updateLoneGlides() {
     const f = loneGlides[n], g = f.glide, b = f.body;
     let t = g.t;
     const lat = f.mesh.userData.blocks;
-    let ok = !f.gone && lat && lat.length === 1;
+    let ok = !f.gone && lat && lat.length > 0 && lat.length <= 2;
     if (ok && t.under) {
       const u = t.under, ub = u.body, still = FALL_REST_V * FALL_REST_V;
       ok = !u.gone && (ub.sleepState === CANNON.Body.SLEEPING
@@ -5942,10 +5963,8 @@ function updateLoneGlides() {
     }
     const m = lat[0].mat;
     if (t.under) {
-      // Merge each block of this piece onto the target piece
-      for (const bl of lat) {
-        placeOnDebris(t.under.mesh, bl.pos, m);
-      }
+      // Each block into its own cell of the piece, the body rebuilt once at the last.
+      t.cells.forEach((c, q) => placeOnDebris(t.under.mesh, c, m, q === t.cells.length - 1));
       removeDebrisMesh(f.mesh);   // its blocks live on in the lattice: no world count owed either way
     } else {
       // Out of the world first, so its collider is gone before the ground fills
@@ -6279,7 +6298,7 @@ function updateFallingChunks() {
     f.still = slow ? f.still + 1 : 0;
     if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) {
       restFallingChunk(n);
-      if (f.mesh.userData.blocks.length === 1 && !mergeLoneBlock(f)) loneBackoff(f);
+      if (f.mesh.userData.blocks.length <= 2 && !mergeLoneBlock(f)) loneBackoff(f);
     }
   }
   updateLoneGlides();

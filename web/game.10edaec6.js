@@ -8154,7 +8154,9 @@ function breakDebrisBlocks(mesh, idxs) {
 
 // Terrain block. The housekeeping is editBlock's, done by hand because the
 // falling piece has to be spawned from the material before it is overwritten.
-function breakBlock(i, j, lvl) {
+// gravity false: the caller is taking more blocks out and asks what hangs once
+// they are all gone (stressBreakSaturated).
+function breakBlock(i, j, lvl, gravity = true) {
   if (!inVoxelRange(i, j, lvl)) return false;
   const m = voxelAt(i, j, lvl);
   if (m === AIR || m === WATER) return false;
@@ -8186,7 +8188,7 @@ function breakBlock(i, j, lvl) {
   // A group of one — the same path a broken-off cliff takes, just smaller.
   spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat), crack }]]));
   // And whatever the hole left hanging comes down after it.
-  applyGravity(i, j, lvl);
+  if (gravity) applyGravity(i, j, lvl);
   return true;
 }
 
@@ -10049,11 +10051,9 @@ const STRESS_TERRAIN_MAX = 20000; // ground nodes at most, hanging and solved fo
 // other side of yellow at 8; deeper buys little, and every level is 256 nodes a
 // chunk.
 const STRESS_SOLVE_DEPTH = 8;
-const STRESS_BREAK_MAX  = 64;    // blocks broken per solve, worst first; the rest go on the next one
 const STRESS_GROUND_R   = 40;    // blocks (8 m) around the player whose ground gets an overlay
 const STRESS_GROUND_DRAW = 3000; // ground overlay cubes, nearest first past this (as many again as built blocks get)
 const STRESS_GEN_SLICE  = 16384; // untouched columns swept per tick for ground a strength edit turned red
-const STRESS_GROUND_WALK = 512;  // flagged columns walked per break pass at most (a whole world turned red is thousands)
 
 // Cells the player has built, by chunk, as gravCell keys. Pruned lazily: a key
 // whose cell is no longer solid is dropped the next time the world is laid out.
@@ -12096,8 +12096,8 @@ function stressRebuild() {
   stressGroundReactions();
   stressDrawSig = NaN;   // the drawn window is laid out again on this tick
   if (dirty.length) stressPost(dirty, hits > 0);
-  // Nothing to solve, but answers in hand may still be red — what a pass capped
-  // at STRESS_BREAK_MAX left standing.
+  // Nothing to solve, but answers in hand may still be red: ground the sweep
+  // turned up while a solve was out, or columns that waited on one.
   else stressBreakSaturated();
 }
 
@@ -12192,14 +12192,21 @@ function stressApply(r) {
 // but not yet solved still shows its old colour and is left alone, and one
 // hanging off nothing (Infinity) is gravity's to bring down, not this. What
 // comes down bumps stressRev, and what is left is laid out and solved again.
-// Built and hanging ground alike. At most STRESS_BREAK_MAX go in one pass, the
-// most overloaded (stress over strength) first: an undercut hill can be
-// hundreds of red blocks at once, each one a physics body, and a phone cannot
-// take them all in a frame. The rest are still red in the next solve if what
-// went did not relieve them.
+// Built and hanging ground alike, and all of it in this one pass: what is left
+// standing is what the answer says carries its load, and any further collapse
+// is the next solve's, started by these breaks. Held back to a budget, the
+// rest stayed red for solve after solve and a collapse crept down a few dozen
+// blocks at a time.
 function stressBreakSaturated() {
   if (!stressOn) return;   // not solving, so nothing reads red
-  const S = stCur, top = STRESS_LUT_N - 1, hit = [];
+  const S = stCur, top = STRESS_LUT_N - 1;
+  // Ground goes in as i, j, lvl, material: nodes and settled ground alike.
+  const cells = [];
+  // A fallen piece's red blocks are gathered here and broken together after
+  // the ground, piece by piece: knocking one off renumbers the rest and can
+  // split the piece, so none of its node numbers would hold past the first.
+  const pieceHits = new Map();   // stPieces entry -> lattice slots
+  let pi = 0;   // nodes come in order, and so do the pieces' runs of them
   for (let n = 0; n < stN; n++) {
     const s = S.stress[n];
     if (s === Infinity || stressLevel(n) !== top || !stSolved.has(stCompHash[S.comp[n]])) continue;
@@ -12209,12 +12216,30 @@ function stressBreakSaturated() {
     // something holding it up, it would shed as a grain, land back in the very
     // cell it left, read red again and be broken again, forever.
     if (MAT_STATS[S.mat[n]]?.powder) continue;
-    hit.push(n);
+    if (n < stNTerr) {
+      const key = S.key[n];
+      const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+      cells.push(i, j, lvl, S.mat[n]);
+      continue;
+    }
+    while (pi < stPieces.length && stPieces[pi].start + stPieces[pi].count <= n) pi++;
+    const pc = stPieces[pi];
+    // A lone cube is never broken: it would only be swapped for another the
+    // same, lying under the same load.
+    if (!pc || n < pc.start || pc.count < 2) continue;
+    let qs = pieceHits.get(pc);
+    if (!qs) {
+      if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
+      // Moved since: laid out again first. A piece solved for a hit in the
+      // air is solved in its own frame, wherever it has got to since.
+      if (!pc.fly && pc.mesh.userData.stressRest !== pc.rest) continue;
+      pieceHits.set(pc, qs = []);
+    }
+    qs.push(n - pc.start);
   }
-  // Ground standing on bedrock: every column a node puts load into, and up to
-  // STRESS_GROUND_WALK of those written to or flagged since they were last
-  // looked at. One with nothing red is let go; one still red stays until it is
-  // not, and the ones not reached wait for the next pass.
+  // Ground standing on bedrock: every column a node puts load into, and every
+  // one written to or flagged since it was last looked at. One with nothing
+  // red is let go; one still red stays until it is not.
   const gHit = [];
   for (let q = 0; q < stGrColsN; q++) {
     const k = stGrCols[q];
@@ -12222,54 +12247,27 @@ function stressBreakSaturated() {
     if (stressGroundRedIn(k, gHit)) stressGroundCols.add(k);
     else stressGroundCols.delete(k);
   }
-  let walked = 0;
   for (const k of stressGroundCols) {
-    if (walked >= STRESS_GROUND_WALK) break;
     if (stressHasGroundR(k)) continue;
-    walked++;
     if (!stressGroundRedIn(k, gHit)) stressGroundCols.delete(k);
   }
-  // Ground goes in as -1 - its place in gHit, after the nodes.
-  for (let q = 0; q < gHit.length; q += 5) hit.push(-1 - q);
-  if (!hit.length) return;
-  if (hit.length > STRESS_BREAK_MAX) {
-    const over = new Map();
-    for (const n of hit) over.set(n, n < 0 ? gHit[-1 - n] : stressOver(n));
-    hit.sort((a, b) => over.get(b) - over.get(a));
+  for (let q = 0; q < gHit.length; q += 5) cells.push(gHit[q + 1], gHit[q + 2], gHit[q + 3], gHit[q + 4]);
+  // Every red cell leaves the grid before anything is asked whether it still
+  // hangs on: broken one at a time with gravity after each, the first break
+  // could cut loose a group holding red blocks still to come, and they fell
+  // whole inside it rather than breaking. Lowest first, so a block taken from
+  // the top of a column does not reshade the ones under it still to go
+  // (terrainBlockColor reads the column's top).
+  const ord = [];
+  for (let q = 0; q < cells.length; q += 4) ord.push(q);
+  ord.sort((a, b) => cells[a + 2] - cells[b + 2]);
+  const gone = [];
+  for (const q of ord) {
+    const i = cells[q], j = cells[q + 1], lvl = cells[q + 2];
+    if (voxelAt(i, j, lvl) !== cells[q + 3]) continue;   // gone or changed since the layout
+    if (breakBlock(i, j, lvl, false)) gone.push(i, j, lvl);
   }
-  // A fallen piece's red blocks are gathered here and broken together after
-  // the walk, piece by piece: knocking one off renumbers the rest and can split
-  // the piece, so none of its node numbers would hold past the first.
-  const pieceHits = new Map();   // stPieces entry -> lattice slots
-  let broken = 0;
-  for (const n of hit) {
-    if (broken >= STRESS_BREAK_MAX) break;
-    if (n < 0) {
-      const q = -1 - n, i = gHit[q + 1], j = gHit[q + 2], lvl = gHit[q + 3];
-      if (voxelAt(i, j, lvl) !== gHit[q + 4]) continue;   // gone or changed since
-      if (breakBlock(i, j, lvl)) broken++;
-    } else if (n < stNTerr) {
-      const key = S.key[n];
-      const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
-      if (voxelAt(i, j, lvl) !== S.mat[n]) continue;   // gone or changed since the layout
-      if (breakBlock(i, j, lvl)) broken++;
-    } else {
-      const pc = stPieces.find((p) => n >= p.start && n < p.start + p.count);
-      // A lone cube is never broken: it would only be swapped for another the
-      // same, lying under the same load.
-      if (!pc || pc.count < 2) continue;
-      let qs = pieceHits.get(pc);
-      if (!qs) {
-        if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
-        // Moved since: laid out again first. A piece solved for a hit in the
-        // air is solved in its own frame, wherever it has got to since.
-        if (!pc.fly && pc.mesh.userData.stressRest !== pc.rest) continue;
-        pieceHits.set(pc, qs = []);
-      }
-      qs.push(n - pc.start);
-      broken++;
-    }
-  }
+  for (let q = 0; q < gone.length; q += 3) applyGravity(gone[q], gone[q + 1], gone[q + 2]);
   for (const [pc, qs] of pieceHits) {
     // What each block shows now goes with it, broken off or left on the piece.
     const lat = pc.mesh.userData.blocks;

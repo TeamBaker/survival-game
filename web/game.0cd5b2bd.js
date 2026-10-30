@@ -11,6 +11,7 @@ const TOUCH_LOOK_MULT   = 1.6;    // finger drags cover fewer pixels than a mous
 const START_POS         = new THREE.Vector3(0, 21, -62);
 const START_YAW         = 180;    // degrees — looks back at the island
 const START_PITCH       = -14;    // degrees
+const SPEC_EASE         = 12;     // 1/s — how fast the spectator view catches up with the finger
 
 // ----- character controller -----
 // Filled in once the island exists: the top of the block column at the origin,
@@ -39,7 +40,6 @@ const PLAYER = {
 // A contact counts as walkable ground when its normal is within maxSlope of up.
 // The threshold is nudged 1 degree past 45 so the 45-degree lane is climbable.
 const GROUND_DOT = Math.cos((PLAYER.maxSlope + 1) * Math.PI / 180);
-const THIRD_DIST = 5.0;           // third-person boom length
 
 // ----- sea level -----
 // The datum every height in the world is measured from. The sea is blocks now,
@@ -1160,13 +1160,14 @@ const N_MATS = 16;
 // is not there. It sorts after the built-in ones.
 const AIR = N_MATS;
 // Materials the player creates in the Materials panel take the ids after AIR, so
-// the built-in ids, AIR and every old save keep the values they always had. The
-// store is bytes and has room; it is the chunk vertex, with 4 bits for the
-// material, that sets the limit — a chunk may name 16 materials at once (see
-// chunkPalette) — so the cap is kept well under that. MAT_IDS bounds every id a
-// voxel can hold, AIR included.
-const CUSTOM_MAT0 = AIR + 1, CUSTOM_MAT_MAX = 8;
-const MAT_IDS = CUSTOM_MAT0 + CUSTOM_MAT_MAX;
+// the built-in ids, AIR and every old save keep the values they always had. There
+// is no cap on how many, only on the id: the store is bytes, but the mesher
+// carries a block's material in 6 bits (qInfo, and each terrainPal slot), so no
+// id can reach MAT_ID_LIMIT — that is what the New material form refuses at.
+// The per-material tables are only as long as the highest id in use
+// (matTablesGrow); scratch indexed by id is MAT_ID_LIMIT long, which is every id
+// a voxel can hold, so it never has to follow them.
+const CUSTOM_MAT0 = AIR + 1, MAT_ID_LIMIT = 64;
 
 // The numbers are the material's own properties, indexed by material id: weight
 // is how much a block of it drags on you, and is read as-is by the sim — the
@@ -1203,8 +1204,8 @@ const MAT_STATS = [
   { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
 ];
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
-// AIR's row and the created materials' (filled in by customMatInstall).
-while (MAT_STATS.length < MAT_IDS) MAT_STATS.push(null);
+// AIR's row; the created materials' are added by matTablesGrow.
+MAT_STATS.push(null);
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -1499,7 +1500,7 @@ for (let k = 0; k < GEN_N * GEN_N; k++) {
 
 // The highest solid level in each column, cached rather than searched for. It
 // starts equal to topLvl and only setVoxel moves it. Everything that asks where
-// the ground is — the camera boom, the collider patch, the mesh rebuild, the
+// the ground is — the collider patch, the mesh rebuild, the
 // player's feet — asks several times a frame, and a scan down the column each
 // time is a scan nobody needs to pay for.
 const sTop = new Int16Array(GEN_N * GEN_N);
@@ -1846,19 +1847,21 @@ const TERRAIN_MATS = [
   mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
   mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
 ];
-// AIR's slot (never drawn) and the created materials', recoloured by
-// customMatInstall — every table below is indexed by the same ids.
-while (TERRAIN_MATS.length < MAT_IDS) TERRAIN_MATS.push(mat(0x808080, 0.92, 0.00, { envMapIntensity: 0.40 }));
+// AIR's slot (never drawn); a created material's is added by matTablesGrow and
+// recoloured by customMatInstall — every table below is indexed by the same ids.
+const customTerrainMat = () => mat(0x808080, 0.92, 0.00, { envMapIntensity: 0.40 });
+TERRAIN_MATS.push(customTerrainMat());
 // The same materials again, white and vertex-coloured, for what carries its
 // colour on its own vertices — falling grains and broken-off pieces, which bake
 // in the shade the block had in the ground — so what the shader multiplies that
 // by has to be plain white.
-const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
+const faceMatOf = (src) => {
   const f = src.clone();
   f.color.setRGB(1, 1, 1);
   f.vertexColors = true;
   return f;
-});
+};
+const TERRAIN_FACE_MATS = TERRAIN_MATS.map(faceMatOf);
 
 // The one material every terrain chunk is drawn with, so a chunk is one draw
 // call however many materials it holds. Faces are greedy-merged (see
@@ -1900,9 +1903,27 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 // terrainPal, one vec4 per instance (so per chunk, and no bigger a vertex), holds
 // the material id of each of the 16 slots, 6 bits apiece, four to a float. A
 // chunk of built-in materials only has the identity palette; see chunkPalette.
-const TERRAIN_PBR = TERRAIN_MATS.map((m, i) =>
-  new THREE.Vector4(m.roughness, m.metalness, m.envMapIntensity, MAT_STATS[i]?.powder ? 1 : 0));
-const TERRAIN_BASE = TERRAIN_MATS.map((m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b));
+const pbrOf = (m, i) => new THREE.Vector4(m.roughness, m.metalness, m.envMapIntensity, MAT_STATS[i]?.powder ? 1 : 0);
+const baseOf = (m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b);
+const TERRAIN_PBR = TERRAIN_MATS.map(pbrOf);
+const TERRAIN_BASE = TERRAIN_MATS.map(baseOf);
+// Every per-material table out to id n - 1, for a created material about to be
+// installed there. The terrain shaders declare terrainPbr / terrainBase at the
+// length they were compiled with, so a longer table means a new program; the
+// length is in their cache key, or three would hand back the old one.
+function matTablesGrow(n) {
+  if (TERRAIN_MATS.length >= n) return;
+  while (MAT_STATS.length < n) MAT_STATS.push(null);
+  while (MAT_NAMES.length < n) MAT_NAMES.push(undefined);
+  while (TERRAIN_MATS.length < n) {
+    const m = customTerrainMat(), id = TERRAIN_MATS.length;
+    TERRAIN_MATS.push(m);
+    TERRAIN_FACE_MATS.push(faceMatOf(m));
+    TERRAIN_PBR.push(pbrOf(m, id));
+    TERRAIN_BASE.push(baseOf(m));
+  }
+  TERRAIN_CHUNK_MAT.needsUpdate = TERRAIN_BATCH_MAT.needsUpdate = true;
+}
 
 // Per column, two RGBA8 texels side by side: (2i, j) is the tint as a 16-bit
 // fraction of 1/32768 then the top level above VOX_FLOOR as 16 bits; (2i+1, j)
@@ -2130,6 +2151,8 @@ const TERRAIN_BATCH_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RG
 TERRAIN_BATCH_DEPTH.onBeforeCompile = (sh) => { terrainVertex(sh); terrainBatchVertex(sh); };
 const TERRAIN_BATCH_MAT = TERRAIN_CHUNK_MAT.clone();
 TERRAIN_BATCH_MAT.onBeforeCompile = (sh) => { TERRAIN_CHUNK_MAT.onBeforeCompile(sh); terrainBatchVertex(sh); };
+for (const m of [TERRAIN_CHUNK_MAT, TERRAIN_BATCH_MAT])
+  m.customProgramCacheKey = function () { return this.onBeforeCompile.toString() + TERRAIN_PBR.length; };
 
 // A falling powder grain's own box, vertex-coloured like a tiny slice of
 // terrain instead of one flat material colour: each of the cube's 6 faces is
@@ -2291,7 +2314,7 @@ function lodStepFor(dist) {
 const MERGE_SIZE = [1, 2, 4, 5];
 const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
 
-const mergeMatCounts = new Uint32Array(MAT_IDS);
+const mergeMatCounts = new Uint32Array(MAT_ID_LIMIT);
 
 // Scratch, reused by every rebuild. The first pass records each exposed face of
 // the chunk (see addFace): its direction, the plane it lies in, where in that
@@ -2612,7 +2635,7 @@ function collectColumn(i, j, step = 1) {
         if (mm !== AIR) mergeMatCounts[mm]++;
       }
   let m = -1, best = 0;
-  for (let mm = 0; mm < MAT_IDS; mm++) {
+  for (let mm = 0; mm < MAT_ID_LIMIT; mm++) {
     if (mergeMatCounts[mm] > best) { best = mergeMatCounts[mm]; m = mm; }
   }
   if (m < 0) return 0;
@@ -2825,28 +2848,31 @@ function applyRenderDist() {
 // chunkCustom marks a chunk whose palette is not the identity, which keeps it
 // out of mergeBatch (a merged group has no per-chunk palette to carry).
 const chunkCustom = new Uint8Array(CHUNK_N * CHUNK_N);
-const palSlot = new Uint8Array(MAT_IDS), palId = new Uint8Array(16);
+const palSlot = new Uint8Array(MAT_ID_LIMIT), palId = new Uint8Array(16), palSeen = new Uint8Array(MAT_ID_LIMIT);
 const palWords = new Float32Array(4);
+// Created ids are too many for a bitmask, so palSeen marks them; they still
+// take free slots lowest id first, which is how the slots were always handed out.
 function chunkPalette(nv) {
-  let used = 0, custom = 0;
+  let used = 0, custom = false;
   for (let v = 0; v < nv; v += 4) {
     const m = qInfo[v] & 63;
     if (m < N_MATS) used |= 1 << m;
-    else if (m >= CUSTOM_MAT0) custom |= 1 << (m - CUSTOM_MAT0);
+    else if (m >= CUSTOM_MAT0) { palSeen[m] = 1; custom = true; }
   }
   for (let m = 0; m < 16; m++) palSlot[m] = palId[m] = m;
-  for (let c = 0, free = 0; c < CUSTOM_MAT_MAX; c++) {
-    if (!(custom >> c & 1)) continue;
+  for (let m = CUSTOM_MAT0, free = 0; custom && m < MAT_ID_LIMIT; m++) {
+    if (!palSeen[m]) continue;
+    palSeen[m] = 0;
     while (free < 16 && used >> free & 1) free++;
-    if (free === 16) { palSlot[CUSTOM_MAT0 + c] = DIRT; continue; }
-    palSlot[CUSTOM_MAT0 + c] = free;
-    palId[free] = CUSTOM_MAT0 + c;
+    if (free === 16) { palSlot[m] = DIRT; continue; }
+    palSlot[m] = free;
+    palId[free] = m;
     used |= 1 << free;
   }
   for (let w = 0; w < 4; w++) {
     palWords[w] = palId[w * 4] + palId[w * 4 + 1] * 64 + palId[w * 4 + 2] * 4096 + palId[w * 4 + 3] * 262144;
   }
-  return custom !== 0;
+  return custom;
 }
 
 // The merge's nv corners packed into vb, relative to the chunk's origin: ox and
@@ -3136,8 +3162,8 @@ let meshWorker = null, meshInflight = 0, meshJobSeq = 0;
 function meshWorkerSource() {
   return `'use strict';
 const GEN_N = ${GEN_N}, GEN_R = ${GEN_R}, BLOCK = ${BLOCK}, CHUNK = ${CHUNK}, CHUNK_N = ${CHUNK_N};
-const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, MAT_IDS = ${MAT_IDS}, FK = ${FK};
-const CUSTOM_MAT0 = ${CUSTOM_MAT0}, CUSTOM_MAT_MAX = ${CUSTOM_MAT_MAX}, DIRT = ${DIRT};
+const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, MAT_ID_LIMIT = ${MAT_ID_LIMIT}, FK = ${FK};
+const CUSTOM_MAT0 = ${CUSTOM_MAT0}, DIRT = ${DIRT};
 const GRAIN_GRID = ${GRAIN_GRID}, HALF_BLOCK = ${HALF_BLOCK};
 const FACES = ${JSON.stringify(FACES)}, MERGE_SIZE = ${JSON.stringify(MERGE_SIZE)};
 const GRAIN_TINTS = ${JSON.stringify(GRAIN_TINTS)};
@@ -3150,13 +3176,13 @@ let COL_ROW = 0, COL_K0 = 0;
 const colK = (i, j) => j * COL_ROW + i - COL_K0;
 const voxFloorAt = (k, d) => voxFlr[k * 3 + d], voxFloorVis = (k) => voxFlr[k * 3 + 2];
 let voxMat = new Uint8Array(0), visBits = new Uint8Array(0);
-const mergeMatCounts = new Uint32Array(MAT_IDS);
+const mergeMatCounts = new Uint32Array(MAT_ID_LIMIT);
 let faceN = 0, mergeMask = new Uint8Array(4096);
 let faceP = new Int32Array(16384), faceQ = new Int32Array(16384), faceM = new Uint8Array(16384);
 let faceB = new Int32Array(16384), faceOrd = new Int32Array(16384);
 const planeLo = new Int32Array(6), planeHi = new Int32Array(6), planeAt = new Int32Array(6);
 let planeEnd = new Int32Array(1024);
-const palSlot = new Uint8Array(MAT_IDS), palId = new Uint8Array(16), palWords = new Float32Array(4), packBox = new Int32Array(4);
+const palSlot = new Uint8Array(MAT_ID_LIMIT), palId = new Uint8Array(16), palSeen = new Uint8Array(MAT_ID_LIMIT), palWords = new Float32Array(4), packBox = new Int32Array(4);
 let qPos = new Int32Array(16384 * 3), qInfo = new Uint16Array(16384), qN = 0;
 let rbI0 = 0, rbJ0 = 0, rbStep = 1;
 const colPatch = new Uint8Array(CHUNK * CHUNK * 8);
@@ -4190,12 +4216,13 @@ window.addEventListener('keydown', (e) => {
   if (TRACKED.has(e.code)) { keys.add(e.code); e.preventDefault(); }
   if (e.code === 'KeyV') cycleCamera();
   else if (e.code === 'KeyG') toggleGameMode();
-  else if (e.code === 'KeyR' && camMode !== CAM.FREE) respawn();
-  else if (e.code === 'KeyF') setShovel(!shovel.on);
-  else if (e.code === 'KeyH') setHammer(!hammer.on);
+  else if (e.code === 'KeyR' && camMode === CAM.FIRST) respawn();
+  else if (e.code === 'KeyU') setNoUI(!noUI);
+  else if (e.code === 'KeyF' && camMode !== CAM.SPEC) setShovel(!shovel.on);
+  else if (e.code === 'KeyH' && camMode !== CAM.SPEC) setHammer(!hammer.on);
   else if (e.code === 'KeyZ') shovelPickUp();
   else if (e.code === 'KeyX') shovelPlace();
-  else if (e.code === 'Space' && camMode !== CAM.FREE) state.jumpQueued = true;
+  else if (e.code === 'Space' && camMode === CAM.FIRST) state.jumpQueued = true;
   else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
   else if (e.code === 'KeyT') toggleChart();
 }, { passive: false });
@@ -4340,7 +4367,7 @@ function onTouchStart(e) {
       role = 'look';
       lookId = t.identifier;
     }
-    touches.set(t.identifier, { zone, role, x: t.clientX, y: t.clientY });
+    touches.set(t.identifier, { zone, role, x: t.clientX, y: t.clientY, x0: t.clientX, y0: t.clientY, t0: e.timeStamp });
   }
   updateSprint();
 }
@@ -4389,6 +4416,14 @@ function onTouchEnd(e) {
     const rec = touches.get(t.identifier);
     if (!rec) continue;
     touches.delete(t.identifier);
+    // A short touch that did not travel is a tap; two of them close together
+    // while the UI is hidden bring it back.
+    // Generous on time, since a slow frame can hold a touchend back.
+    if (noUI && e.type === 'touchend' && e.timeStamp - rec.t0 < 300
+        && Math.abs(t.clientX - rec.x0) + Math.abs(t.clientY - rec.y0) < 16) {
+      if (e.timeStamp - noUITapAt < 450) setNoUI(false);
+      else noUITapAt = e.timeStamp;
+    }
     if (t.identifier === moveId) { moveId = null; resetStick(); }
     if (t.identifier === lookId) { lookId = null; }
   }
@@ -4466,7 +4501,7 @@ function bindTap(el, fn) {
   el.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
 }
 
-// ----- on-screen action buttons (first / third person) -----
+// ----- on-screen action buttons (first person) -----
 const btnJump   = document.getElementById('btn-jump');
 const btnCrouch = document.getElementById('btn-crouch');
 const btnSprint = document.getElementById('btn-sprint');
@@ -4706,26 +4741,14 @@ function updatePlayer(dt) {
 
   // --- wish direction ---
   const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
-  wishDir.set(0, 0, 0);
-  if (camMode === CAM.TOP) {
-    // Top-down drives the world axes directly — the camera has no heading to be
-    // relative to, so W is north rather than "forward".
-    if (keys.has('KeyW') || keys.has('ArrowUp'))    wishDir.z -= 1;
-    if (keys.has('KeyS') || keys.has('ArrowDown'))  wishDir.z += 1;
-    if (keys.has('KeyA') || keys.has('ArrowLeft'))  wishDir.x -= 1;
-    if (keys.has('KeyD') || keys.has('ArrowRight')) wishDir.x += 1;
-    wishDir.x += state.joyX;
-    wishDir.z += state.joyY;
-  } else {
-    let fwd = 0, str = 0;
-    if (keys.has('KeyW') || keys.has('ArrowUp'))    fwd += 1;
-    if (keys.has('KeyS') || keys.has('ArrowDown'))  fwd -= 1;   // backpedal
-    if (keys.has('KeyD') || keys.has('ArrowRight')) str += 1;
-    if (keys.has('KeyA') || keys.has('ArrowLeft'))  str -= 1;
-    fwd -= state.joyY;                                          // stick up = forward
-    str += state.joyX;
-    wishDir.set(-sy * fwd + cy * str, 0, -cy * fwd - sy * str);
-  }
+  let fwd = 0, str = 0;
+  if (keys.has('KeyW') || keys.has('ArrowUp'))    fwd += 1;
+  if (keys.has('KeyS') || keys.has('ArrowDown'))  fwd -= 1;   // backpedal
+  if (keys.has('KeyD') || keys.has('ArrowRight')) str += 1;
+  if (keys.has('KeyA') || keys.has('ArrowLeft'))  str -= 1;
+  fwd -= state.joyY;                                          // stick up = forward
+  str += state.joyX;
+  wishDir.set(-sy * fwd + cy * str, 0, -cy * fwd - sy * str);
   const wl = wishDir.length();
   if (wl > 1) wishDir.divideScalar(wl);
 
@@ -4735,17 +4758,14 @@ function updatePlayer(dt) {
 
   // Sprint drives forward and strafe only: whatever part of the target velocity
   // points behind the camera is trimmed back to the walk speed, so you can back
-  // up but never backpedal at a sprint. Top-down has no camera heading to be
-  // behind, so it keeps driving the world axes as before.
+  // up but never backpedal at a sprint.
   let tx = wishDir.x * speed, tz = wishDir.z * speed;
-  if (camMode !== CAM.TOP) {
-    const backCap = Math.min(speed, PLAYER.walk);
-    const along = tx * -sy + tz * -cy;      // + ahead of the camera, - behind it
-    if (along < -backCap) {
-      const over = along + backCap;         // negative — the excess to take out
-      tx += sy * over;                      // i.e. t -= over * forward
-      tz += cy * over;
-    }
+  const backCap = Math.min(speed, PLAYER.walk);
+  const along = tx * -sy + tz * -cy;        // + ahead of the camera, - behind it
+  if (along < -backCap) {
+    const over = along + backCap;           // negative — the excess to take out
+    tx += sy * over;                        // i.e. t -= over * forward
+    tz += cy * over;
   }
 
   if (grounded) {
@@ -4783,178 +4803,88 @@ function updatePlayer(dt) {
   const targetEye = crouched ? PLAYER.crouchEye : PLAYER.standEye;
   eyeH += (targetEye - eyeH) * (1 - Math.exp(-14 * dt));
 
-  if (camMode === CAM.TOP) {
-    if (Math.hypot(v.x, v.z) > 0.4) playerYaw = Math.atan2(-v.x, -v.z);
-  } else {
-    playerYaw = state.yaw;
-  }
-
-  // In top-down the fly pad and E/Q become zoom controls.
-  if (camMode === CAM.TOP) {
-    const out = state.flyUp   || keys.has('KeyE');
-    const inn = state.flyDown || keys.has('KeyQ');
-    if (out) topZoom = Math.min(90, topZoom + 22 * dt);
-    if (inn) topZoom = Math.max(8, topZoom - 22 * dt);
-  }
+  playerYaw = state.yaw;
 }
 
 // ---------------------------------------------------------------------------
 // Camera modes
 // ---------------------------------------------------------------------------
-const CAM = { FIRST: 0, THIRD: 1, TOP: 2, FREE: 3 };
-const CAM_NAMES = ['First Person', 'Third Person', 'Top Down', 'Free Camera'];
+const CAM = { FIRST: 0, FREE: 1, SPEC: 2 };
+const CAM_NAMES = ['First Person', 'Free Camera', 'Spectator'];
 let camMode = CAM.FREE;               // start exactly as the old build did
-let lastGameCam = CAM.FIRST;
-let topZoom = 26;
-let blendT = 1;                        // 1 = settled, <1 = mid transition
-const BLEND_DUR = 0.42;
-const blendPos = new THREE.Vector3();
-const blendQuat = new THREE.Quaternion();
+
+// Every mode keeps its own view. state.pos/yaw/pitch are the live pose of
+// whichever mode is up; leaving a mode files them here, entering one takes its
+// copy back, so a spectator shot set up an hour ago is still framed when you
+// return and first person still faces the way you left it. A mode never visited
+// starts from the view on screen, so the first switch into it is not a cut.
+// First person's position is the body's, so only its look is kept.
+const camPose = CAM_NAMES.map(() => ({ set: false, pos: new THREE.Vector3(), yaw: 0, pitch: 0 }));
+let camSnap = true;                    // next frame lands on the pose, no easing
 
 function setCamMode(next) {
   if (next === camMode) return;
-  let snap = false;
-
-  if (next === CAM.FREE) {
-    lastGameCam = camMode;
-    // Hand the flying camera the transform we are already looking through so
-    // detaching from physics is seamless; yaw/pitch are shared already.
-    state.pos.copy(camera.position);
-  } else if (camMode === CAM.FREE) {
-    snap = true;                       // re-attaching jumps straight to the body
-    playerBody.wakeUp();
-  }
-
-  camMode = next;
-  if (snap) {
-    blendT = 1;
+  const out = camPose[camMode], into = camPose[next];
+  out.set = true;
+  out.pos.copy(state.pos);
+  out.yaw = state.yaw;
+  out.pitch = state.pitch;
+  if (into.set) {
+    state.pos.copy(into.pos);
+    state.yaw = into.yaw;
+    state.pitch = into.pitch;
   } else {
-    blendPos.copy(camera.position);
-    blendQuat.copy(camera.quaternion);
-    blendT = 0;
+    state.pos.copy(camera.position);
   }
+  if (next === CAM.FIRST) playerBody.wakeUp();
+  // A spectator holds nothing: its picture is for watching, and a tool's cages
+  // and ghosts would be in every frame of it.
+  if (next === CAM.SPEC) {
+    if (shovel.on) setShovel(false);
+    if (hammer.on) setHammer(false);
+    if (placerOn) setPlacer(false);
+    if (volumeOn) setVolume(false);
+  }
+  camMode = next;
+  camSnap = true;
   refreshModeUI();
 }
-function cycleCamera()   { setCamMode((camMode + 1) % 4); }
-function toggleGameMode() { setCamMode(camMode === CAM.FREE ? lastGameCam : CAM.FREE); }
+function cycleCamera()   { setCamMode((camMode + 1) % CAM_NAMES.length); }
+function toggleGameMode() { setCamMode(camMode === CAM.FIRST ? CAM.FREE : CAM.FIRST); }
 
 const desiredPos  = new THREE.Vector3();
 const desiredQuat = new THREE.Quaternion();
 const camEuler    = new THREE.Euler(0, 0, 0, 'YXZ');
-const camTarget   = new THREE.Vector3();
-const camBack     = new THREE.Vector3();
-const boomRay     = new THREE.Raycaster();
-
-// Does a block stop the third-person camera? Water does only while the head is
-// out of it, so the camera stays above the surface on land and follows you in
-// when you wade under.
-let boomWaterBlocks = true;
-const boomBlocks = (m) => m !== AIR && (m !== WATER || boomWaterBlocks);
-
-// How far along a ray from `o` in unit direction `d` the first blocking block
-// starts, or Infinity if there is none within `maxT`. A grid walk (Amanatides &
-// Woo) in block coordinates, so it never steps over a block however thin.
-function boomBlockHit(o, d, maxT) {
-  boomWaterBlocks = voxelAtWorld(o.x, o.y, o.z) !== WATER;
-  const gx = (o.x + GEN_R) / BLOCK, gy = o.y / BLOCK, gz = (o.z + GEN_R) / BLOCK;
-  let i = Math.floor(gx), l = Math.floor(gy), j = Math.floor(gz);
-  const si = d.x > 0 ? 1 : -1, sl = d.y > 0 ? 1 : -1, sj = d.z > 0 ? 1 : -1;
-  const di = d.x !== 0 ? Math.abs(BLOCK / d.x) : Infinity;
-  const dl = d.y !== 0 ? Math.abs(BLOCK / d.y) : Infinity;
-  const dj = d.z !== 0 ? Math.abs(BLOCK / d.z) : Infinity;
-  let ti = d.x !== 0 ? ((d.x > 0 ? i + 1 - gx : gx - i) * di) : Infinity;
-  let tl = d.y !== 0 ? ((d.y > 0 ? l + 1 - gy : gy - l) * dl) : Infinity;
-  let tj = d.z !== 0 ? ((d.z > 0 ? j + 1 - gz : gz - j) * dj) : Infinity;
-  let t = 0;
-  while (t <= maxT) {
-    if (boomBlocks(voxelAt(i, j, l))) return t;
-    if (ti <= tl && ti <= tj) { t = ti; ti += di; i += si; }
-    else if (tl <= tj)        { t = tl; tl += dl; l += sl; }
-    else                      { t = tj; tj += dj; j += sj; }
-  }
-  return Infinity;
-}
-
-// The boom only keeps the camera's centre out of the blocks; the near plane is a
-// little in front of it and would still cut into a floor or roof it runs along.
-// Ease it off either one vertically, but only into air that the head can see,
-// and if it is squeezed between both settle it halfway rather than pass through.
-const BOOM_PAD = 0.3;
-function boomClearance(c, head) {
-  const solid = (y) => boomBlocks(voxelAtWorld(c.x, y, c.z));
-  if (solid(c.y)) { c.copy(head); return; }          // nowhere safe on the boom
-  const below = solid(c.y - BOOM_PAD), above = solid(c.y + BOOM_PAD);
-  if (below && above) {
-    const floor = (lvlOfY(c.y - BOOM_PAD) + 1) * BLOCK, roof = lvlOfY(c.y + BOOM_PAD) * BLOCK;
-    const y = (floor + roof) / 2;
-    if (!solid(y)) c.y = y;
-  } else if (below) {
-    const y = (lvlOfY(c.y - BOOM_PAD) + 1) * BLOCK + BOOM_PAD;
-    if (!solid(y + BOOM_PAD) && !solid(y)) c.y = y;
-  } else if (above) {
-    const y = lvlOfY(c.y + BOOM_PAD) * BLOCK - BOOM_PAD;
-    if (!solid(y - BOOM_PAD) && !solid(y)) c.y = y;
-  }
-}
 
 function updateCamera(dt) {
   const p = playerBody.position;
   const feetY = p.y - centerOffset();
 
-  if (camMode === CAM.FREE) {
-    desiredPos.copy(state.pos);
-    camEuler.set(state.pitch, state.yaw, 0);
-  } else if (camMode === CAM.TOP) {
-    desiredPos.set(p.x, feetY + topZoom, p.z);
-    camEuler.set(-Math.PI / 2, 0, 0);
+  if (camMode === CAM.FIRST) {
+    desiredPos.set(p.x, feetY + eyeH, p.z);
   } else {
-    camEuler.set(state.pitch, state.yaw, 0);
-    if (camMode === CAM.FIRST) {
-      desiredPos.set(p.x, feetY + eyeH, p.z);
-    } else {
-      camTarget.set(p.x, feetY + eyeH * 0.86, p.z);
-      camBack.set(0, 0, 1).applyEuler(camEuler);      // straight back along view
-      let dist = THIRD_DIST;
-      boomRay.set(camTarget, camBack);
-      boomRay.far = dist + 0.5;
-      const hit = boomRay.intersectObjects(objects.children, false)[0];
-      if (hit) dist = Math.max(1.1, hit.distance - 0.35);   // pull in past props
-      // The boom ray only knows about the props, so the terrain is handled
-      // separately: walk the blocks from the head back along the boom and pull
-      // the camera in in front of the first one, whichever way it is facing —
-      // floor, wall or a ceiling overhead. It used to be lifted to the top of the
-      // column instead, which under a roof meant up through it and out on top.
-      const tHit = boomBlockHit(camTarget, camBack, dist + 0.35);
-      if (tHit < dist + 0.35) dist = Math.min(dist, Math.max(0.05, tHit - 0.35));
-      desiredPos.copy(camTarget).addScaledVector(camBack, dist);
-      boomClearance(desiredPos, camTarget);
-      // Off the field there are no blocks to walk, only the sea floor, and
-      // nothing overhead to push through.
-      const ci = colI(desiredPos.x), cj = colJ(desiredPos.z);
-      if (ci < 0 || cj < 0 || ci >= GEN_N || cj >= GEN_N || topLvl[cj * GEN_N + ci] === NO_COLUMN) {
-        const floorY = groundHeightAt(desiredPos.x, desiredPos.z) + 0.6;
-        if (desiredPos.y < floorY) desiredPos.y = floorY;
-      }
-    }
-    // First person needs no guard: the eye is inside the body, and the body is
-    // kept out of the ground by the physics. (Top-down needs none either — it
-    // sits straight above the player, and flat ground has nothing overhead.)
+    desiredPos.copy(state.pos);
   }
+  // First person needs no guard: the eye is inside the body, and the body is
+  // kept out of the ground by the physics.
+  camEuler.set(state.pitch, state.yaw, 0);
   desiredQuat.setFromEuler(camEuler);
 
-  if (blendT < 1) {
-    blendT = Math.min(1, blendT + dt / BLEND_DUR);
-    const s = blendT * blendT * (3 - 2 * blendT);       // smoothstep
-    camera.position.lerpVectors(blendPos, desiredPos, s);
-    camera.quaternion.slerpQuaternions(blendQuat, desiredQuat, s);
+  if (camMode === CAM.SPEC && !camSnap) {
+    // Eased a little so a thumb on the glass films as a glide rather than a
+    // shudder. Fast enough that it still feels attached to the finger.
+    const k = 1 - Math.exp(-SPEC_EASE * dt);
+    camera.position.lerp(desiredPos, k);
+    camera.quaternion.slerp(desiredQuat, k);
   } else {
     camera.position.copy(desiredPos);
     camera.quaternion.copy(desiredQuat);
   }
+  camSnap = false;
   // A hard hit (impactJolt) drops the view as the knees take it and shakes it,
-  // both wearing off together. The free camera is not attached to anything.
+  // both wearing off together. The flying cameras are not attached to anything.
   if (impactJolt > 0) {
-    if (camMode !== CAM.FREE) {
+    if (camMode === CAM.FIRST) {
       const j = impactJolt, sh = PLAYER_JOLT_SHAKE * j;
       camera.position.x += (Math.random() - 0.5) * 2 * sh;
       camera.position.y += (Math.random() - 0.5) * 2 * sh - PLAYER_JOLT_DIP * j * j;
@@ -4979,12 +4909,6 @@ function updateCamera(dt) {
     blobShadow.material.opacity = 1 - (feet - gy) / 6;
   }
 }
-
-window.addEventListener('wheel', (e) => {
-  if (camMode !== CAM.TOP) return;
-  topZoom = THREE.MathUtils.clamp(topZoom + e.deltaY * 0.03, 8, 90);
-  e.preventDefault();
-}, { passive: false });
 
 // ---------------------------------------------------------------------------
 // The shovel — a temporary tool for picking blocks up and putting them down.
@@ -5075,7 +4999,7 @@ function voxelRay(ox, oy, oz, dx, dy, dz, reach) {
 // Would a block at this cell be inside the player? Placing one there would leave
 // them stuck in the ground, so the tool refuses.
 function spotBlocked(i, j, lvl) {
-  if (camMode === CAM.FREE) return false;          // nobody is standing anywhere
+  if (camMode !== CAM.FIRST) return false;         // nobody is standing anywhere
   const p = playerBody.position;
   const r = PLAYER.radius, half = centerOffset();
   const x0 = -GEN_R + i * BLOCK, z0 = -GEN_R + j * BLOCK, y0 = lvl * BLOCK;
@@ -5166,11 +5090,10 @@ function shovelAim() {
 
   camera.getWorldDirection(aimDir);
   let ox, oy, oz;
-  if (camMode === CAM.FREE) {
+  if (camMode !== CAM.FIRST) {
     ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
   } else {
-    // From the player's eye, not the camera: in third person the camera is five
-    // metres behind their head and would reach through the hill they stand on.
+    // From the player's eye, not the camera, which shakes on a hard landing.
     const p = playerBody.position;
     ox = p.x; oy = p.y - centerOffset() + eyeH; oz = p.z;
   }
@@ -5189,7 +5112,7 @@ function shovelAim() {
     // Which block that is, as an index into the piece's lattice. Its position is
     // in the piece's frame, which is what the highlight and the dig both want.
     shovel.debris = setDebrisSel(shovelDebrisSel, dHit);
-  } else if (camMode !== CAM.FREE) {
+  } else if (camMode === CAM.FIRST) {
     // Nothing under the crosshair. Fall back to what you are standing on, and to
     // the ground a stride ahead of you for the other half — looking at the sky
     // should not make the tool useless.
@@ -5543,9 +5466,7 @@ function freeDebrisMesh(mesh) {
   freeGeo(mesh.geometry);
 }
 
-// Its own group rather than `objects`: the camera boom raycasts that one to pull
-// itself in past props, and rubble lying around the player should not be tugging
-// the camera about.
+// Its own group rather than `objects`, so the pieces can be walked on their own.
 const debris = new THREE.Group();
 scene.add(debris);
 const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
@@ -5859,6 +5780,272 @@ function restFallingChunk(n) {
   f.seq = ++chunkSeq;
   restedChunks.push(f);
 }
+// A piece one block big that settles is not left lying about on its own: it
+// joins a piece of its own material it came to rest on or beside, as a grain
+// does (catchPowder). The cell it goes into is the nearest open one of that
+// lattice sharing a face with the piece, and it has to be lying
+// near enough — within LONE_REACH of the cell, and flat on a face to within
+// LONE_TILT — to be resting in it: a cube propped on an edge or a corner is
+// not. It does not jump there: it glides into the cell and squares up over
+// LONE_GLIDE_T, with the body held kinematic so it still holds up whatever is
+// on it, and only then becomes a block of the piece or the ground.
+// Anything it cannot be sure of — the piece still moving or holding
+// any block not of its material, the cell taken by
+// the ground, another piece or the player —
+// leaves it to rest as a piece, which loses nothing, and it is tried again
+// (mergeLoneRetry) once it and what it is on are still, backing off from
+// LONE_RETRY_MIN to LONE_RETRY_MAX while it keeps being turned down: a piece
+// that was still moving at the settle has stopped by then, the
+// player has stepped off. A cube the hammer knocked out is not put back in
+// the hole it left (knockedAt).
+// True if it went or is on its way. A piece retired by FALL_BODY_CAP is not
+// settled, and waits for the retry like any other.
+const LONE_REACH = 1.25 * BLOCK;   // how far off its cell a settled piece may lie: more willingness to move
+const LONE_TILT = Math.cos(45 * Math.PI / 180);   // more permissive tilt (45° vs 30°)
+const LONE_GLIDE_T = 0.25;   // s of sim time to glide into the cell
+const LONE_RETRY_MIN = 0.5;  // s between tries of a lone piece turned down, doubling
+const LONE_RETRY_MAX = 4;    // up to this
+const loneGlides = [];       // pieces gliding into their cell: { f.glide }
+let loneScanAt = 0;          // world.time of the next retry sweep
+const _loneAt = new THREE.Vector3(), _loneW = new THREE.Vector3(), _loneQ = new THREE.Quaternion(), _loneQ2 = new THREE.Quaternion();
+const _loneM = new THREE.Matrix4(), _loneS = new THREE.Matrix4();
+function mergeLoneBlock(f) {
+  if (f.gone || f.glide) return !!f.glide;
+  const lat = f.mesh.userData.blocks;
+  if (!lat || lat.length > 2 || lat.length === 0 || MAT_STATS[lat[0].mat]?.powder) return false;
+  // All blocks in the piece must be the same material to merge
+  const m = lat[0].mat;
+  for (const bl of lat) if (bl.mat !== m) return false;
+  const p = f.body.position;
+  if (f.knockedAt && f.knockedAt.distanceToSquared(_loneAt.set(p.x, p.y, p.z)) < (0.6 * BLOCK) ** 2) return false;
+  const t = loneTarget(f);
+  if (!t) return false;
+  const b = f.body;
+  f.glide = { t0: world.time, p0: new THREE.Vector3(p.x, p.y, p.z),
+              q0: new THREE.Quaternion(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w), t };
+  b.type = CANNON.Body.KINEMATIC;
+  b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
+  b.updateSolveMassProperties();
+  loneGlides.push(f);
+  return true;
+}
+// Where lone piece `f` would go, as it lies now, or null: { under, local, pos,
+// quat, snap, cells } for cells of the piece `under` (local and cells in its
+// frame); pos and quat are the pose it ends in, in the world.
+// Any still piece all of its material may take it, not only one it lies on: a
+// cube that came to rest beside one would otherwise lie loose for good. Of
+// every open placement against such a piece within LONE_REACH, the shortest
+// glide wins, so one lying on a piece still goes into the cell it lies in.
+function loneTarget(f) {
+  const p = f.body.position, at = new THREE.Vector3(p.x, p.y, p.z);
+  const still = FALL_REST_V * FALL_REST_V, lat = f.mesh.userData.blocks, m = lat[0].mat;
+  for (const bl of lat) if (bl.mat !== m) return null;
+  const bq = f.body.quaternion;   // cannon's: copied over by hand, not multiplied in as it is
+  const fq = new THREE.Quaternion(bq.x, bq.y, bq.z, bq.w);
+  let best = null;
+  for (const list of [restedChunks, fallingChunks]) {
+    for (const g of list) {
+      if (g === f || g.gone || g.glide) continue;
+      // A cell it can reach is within LONE_REACH of its middle, plus its own
+      // half-extent, and shares a face with a block of g.
+      const gp = g.body.position, rr = g.body.boundingRadius + LONE_REACH + 2 * BLOCK;
+      if ((gp.x - at.x) ** 2 + (gp.y - at.y) ** 2 + (gp.z - at.z) ** 2 > rr * rr) continue;
+      const ub = g.body;
+      if (ub.sleepState !== CANNON.Body.SLEEPING
+          && (ub.velocity.lengthSquared() >= still || ub.angularVelocity.lengthSquared() >= still)) continue;
+      const ulat = g.mesh.userData.blocks;
+      if (!ulat || !ulat.length || ulat.some((bl) => bl.mat !== m)) continue;
+      const t = loneCell(f, g, at, fq, best ? best.d : LONE_REACH);
+      if (t) best = t;
+    }
+  }
+  return best;
+}
+// The nearest placement of f against piece g closer than `reach`, or null.
+function loneCell(f, g, at, fq, reach) {
+  const ulat = g.mesh.userData.blocks, ref = ulat[0].pos;
+  g.mesh.updateWorldMatrix(true, false);
+  const t = { under: g, quat: g.mesh.getWorldQuaternion(new THREE.Quaternion()) };
+  // Lying on a face of the frame it goes into: one of its axes within
+  // LONE_TILT of one of the frame's — the one through the face it lies on.
+  // Turned about that axis it may be any way round, as a cube that tumbled to
+  // a stop is: it is squared up to the nearest quarter turn on the way in.
+  const q = _loneQ.copy(t.quat).invert().multiply(fq), e = _loneM.makeRotationFromQuaternion(q).elements;
+  // The face it lies on is the frame's axis nearest straight up.
+  const up = _loneW.set(0, 1, 0).applyQuaternion(_loneQ2.copy(t.quat).invert());
+  const ku = Math.abs(up.x) > Math.abs(up.y) ? (Math.abs(up.x) > Math.abs(up.z) ? 0 : 2) : (Math.abs(up.y) > Math.abs(up.z) ? 1 : 2);
+  let cu = 0;
+  for (let c = 1; c < 3; c++) if (Math.abs(e[c * 4 + ku]) > Math.abs(e[cu * 4 + ku])) cu = c;
+  if (Math.abs(e[cu * 4 + ku]) < LONE_TILT) return null;
+  const ca = (cu + 1) % 3, cb = (cu + 2) % 3;
+  let ka = ku === 0 ? 1 : 0;
+  for (let a = 0; a < 3; a++) if (a !== ku && Math.abs(e[ca * 4 + a]) > Math.abs(e[ca * 4 + ka])) ka = a;
+  const se = _loneS.identity().elements;
+  for (let a = 0; a < 3; a++) {
+    se[cu * 4 + a] = a === ku ? Math.sign(e[cu * 4 + ku]) : 0;
+    se[ca * 4 + a] = a === ka ? Math.sign(e[ca * 4 + ka]) : 0;
+  }
+  // The third the cross of the two, so it stays a turn and not a mirror.
+  const u = cu * 4, v = ca * 4, w = cb * 4;
+  se[w] = se[u + 1] * se[v + 2] - se[u + 2] * se[v + 1];
+  se[w + 1] = se[u + 2] * se[v] - se[u] * se[v + 2];
+  se[w + 2] = se[u] * se[v + 1] - se[u + 1] * se[v];
+  t.snap = new THREE.Quaternion().setFromRotationMatrix(_loneS);
+  t.quat.multiply(t.snap);
+  // The cells of its lattice its blocks go into, which is what placeOnDebris
+  // keys them by: its first block in the cell nearest where it lies, squared
+  // up, or one of that cell's 26 neighbours — with LONE_REACH under a block
+  // and a half nothing further is in reach — and the rest where the piece's own shape
+  // puts them from there. Each empty, and one at least sharing a face with a
+  // block of g. t.local is where its middle ends up, in the same frame.
+  const lc = g.mesh.worldToLocal(at.clone());
+  const off = f.mesh.userData.blocks.map((bl) => bl.pos.clone().applyQuaternion(t.snap));
+  const c0 = lc.clone().add(off[0]);
+  c0.set(ref.x + Math.round((c0.x - ref.x) / BLOCK) * BLOCK,
+         ref.y + Math.round((c0.y - ref.y) / BLOCK) * BLOCK,
+         ref.z + Math.round((c0.z - ref.z) / BLOCK) * BLOCK);
+  const tries = [];
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+    const local = new THREE.Vector3(c0.x + dx * BLOCK, c0.y + dy * BLOCK, c0.z + dz * BLOCK).sub(off[0]);
+    const pos = g.mesh.localToWorld(local.clone()), d = pos.distanceTo(at);
+    // Not lifted up into a neighbouring cell: a cube at the foot of a piece
+    // up on a ledge would rise to hang off its side, against gravity. The
+    // cell it lies in takes it whatever the frame's tilt, as it always has.
+    if (d < reach && (pos.y - at.y < HALF_BLOCK || (dx | dy | dz) === 0)) tries.push({ local, pos, d });
+  }
+  if (!tries.length) return null;
+  tries.sort((a, b) => a.d - b.d);
+  // Cells by lattice index packed in one number: a piece spans far fewer than 1024 blocks a side.
+  const key = (x, y, z) => ((Math.round((x - ref.x) / BLOCK) + 512) * 1024 + Math.round((y - ref.y) / BLOCK) + 512) * 1024 + Math.round((z - ref.z) / BLOCK) + 512;
+  const occ = new Set(ulat.map((bl) => key(bl.pos.x, bl.pos.y, bl.pos.z)));
+  const h = BLOCK * 0.9;
+  next: for (const c of tries) {
+    const cells = off.map((o) => { const x = c.local.clone().add(o);
+      return x.set(ref.x + Math.round((x.x - ref.x) / BLOCK) * BLOCK,
+                   ref.y + Math.round((x.y - ref.y) / BLOCK) * BLOCK,
+                   ref.z + Math.round((x.z - ref.z) / BLOCK) * BLOCK); });
+    let face = false;
+    for (const x of cells) {
+      if (occ.has(key(x.x, x.y, x.z))) continue next;
+      if (occ.has(key(x.x + BLOCK, x.y, x.z)) || occ.has(key(x.x - BLOCK, x.y, x.z))
+       || occ.has(key(x.x, x.y + BLOCK, x.z)) || occ.has(key(x.x, x.y - BLOCK, x.z))
+       || occ.has(key(x.x, x.y, x.z + BLOCK)) || occ.has(key(x.x, x.y, x.z - BLOCK))) face = true;
+    }
+    if (!face) continue;
+    // Nothing else in the cells: not the ground, and no block of another piece
+    // within most of a block.
+    for (const x of cells) {
+      const cw = g.mesh.localToWorld(x.clone());
+      if (voxelAtWorld(cw.x, cw.y, cw.z) !== AIR) continue next;
+      for (const list of [restedChunks, fallingChunks]) {
+        for (const o of list) {
+          if (o === f || o === g || o.gone) continue;
+          // One gliding takes the cells it is headed for, not only where it is
+          // on the way: two cubes lying either side of a cell would both go in.
+          const og = o.glide && o.glide.t;
+          if (og && og.under) for (const oc of og.cells) {
+            const wb = og.under.mesh.localToWorld(_loneW.copy(oc));
+            if (Math.abs(wb.x - cw.x) < h && Math.abs(wb.y - cw.y) < h && Math.abs(wb.z - cw.z) < h) continue next;
+          }
+          const op = o.body.position, rr = o.body.boundingRadius + 2 * BLOCK;
+          if ((op.x - cw.x) ** 2 + (op.y - cw.y) ** 2 + (op.z - cw.z) ** 2 > rr * rr) continue;
+          o.mesh.updateWorldMatrix(true, false);
+          for (const bl of o.mesh.userData.blocks) {
+            const wb = _loneW.copy(bl.pos).applyMatrix4(o.mesh.matrixWorld);
+            if (Math.abs(wb.x - cw.x) < h && Math.abs(wb.y - cw.y) < h && Math.abs(wb.z - cw.z) < h) continue next;
+          }
+        }
+      }
+    }
+    t.local = c.local; t.pos = c.pos; t.d = c.d; t.cells = cells;
+    return t;
+  }
+  return null;
+}
+// A frame of every glide: the cube eased toward its cell, following the piece
+// it goes onto if that shifts, and at the end checked once more and merged.
+// Anything that turns it down on the way lets it go back to being a piece.
+function updateLoneGlides() {
+  for (let n = loneGlides.length - 1; n >= 0; n--) {
+    const f = loneGlides[n], g = f.glide, b = f.body;
+    let t = g.t;
+    const lat = f.mesh.userData.blocks;
+    let ok = !f.gone && lat && lat.length > 0 && lat.length <= 2;
+    if (ok && t.under) {
+      const u = t.under, ub = u.body, still = FALL_REST_V * FALL_REST_V;
+      ok = !u.gone && (ub.sleepState === CANNON.Body.SLEEPING
+        || (ub.velocity.lengthSquared() < still && ub.angularVelocity.lengthSquared() < still));
+      if (ok) {
+        u.mesh.updateWorldMatrix(true, false);
+        u.mesh.localToWorld(t.pos.copy(t.local));
+        u.mesh.getWorldQuaternion(t.quat).multiply(t.snap);
+      }
+    }
+    if (ok) {
+      const s = Math.min(1, (world.time - g.t0) / LONE_GLIDE_T), e = s * s * (3 - 2 * s);
+      const at = _loneAt.copy(g.p0).lerp(t.pos, e), q = _loneQ.copy(g.q0).slerp(t.quat, e);
+      b.position.set(at.x, at.y, at.z); b.quaternion.set(q.x, q.y, q.z, q.w);
+      b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
+      b.aabbNeedsUpdate = true;
+      f.mesh.position.copy(at); f.mesh.quaternion.copy(q);
+      if (s < 1) continue;
+      // There: what it goes into is asked again from where it now lies.
+      t = loneTarget(f);
+      ok = !!t && (t.under ? t.under === g.t.under : t.i === g.t.i && t.j === g.t.j && t.lvl === g.t.lvl);
+    }
+    loneGlides.splice(n, 1);
+    f.glide = null;
+    if (f.gone) continue;
+    if (!ok) {
+      b.type = CANNON.Body.DYNAMIC;
+      b.updateSolveMassProperties();
+      b.wakeUp();
+      loneBackoff(f);
+      continue;
+    }
+    const m = lat[0].mat;
+    if (t.under) {
+      // Each block into its own cell of the piece, the body rebuilt once at the last.
+      t.cells.forEach((c, q) => placeOnDebris(t.under.mesh, c, m, q === t.cells.length - 1));
+      removeDebrisMesh(f.mesh);   // its blocks live on in the lattice: no world count owed either way
+    } else {
+      // Out of the world first, so its collider is gone before the ground fills
+      // the cell. Its blocks were cut from the store when it broke off; this puts them back.
+      removeDebrisMesh(f.mesh);
+      for (const bl of lat) {
+        editBlock(t.i, t.j, t.lvl, m);
+      }
+      markPlaced(t.i, t.j, t.lvl);
+    }
+  }
+}
+function loneBackoff(f) {
+  f.loneTries = (f.loneTries || 0) + 1;
+  f.loneNext = world.time + Math.min(LONE_RETRY_MAX, LONE_RETRY_MIN * 2 ** (f.loneTries - 1));
+}
+// The lone pieces lying about, every LONE_RETRY_MIN, tried again once due:
+// asleep, or awake but slow and where it was at the last look. One still
+// moving is looked at again soon after it stops.
+function mergeLoneRetry() {
+  if (world.time < loneScanAt) return;
+  loneScanAt = world.time + LONE_RETRY_MIN;
+  const still = FALL_REST_V * FALL_REST_V;
+  for (let n = restedChunks.length - 1; n >= 0; n--) {
+    const f = restedChunks[n];
+    if (f.glide || f.mesh.userData.blocks.length > 2 || f.mesh.userData.blocks.length === 0) continue;
+    const b = f.body, p = b.position;
+    if (b.sleepState !== CANNON.Body.SLEEPING) {
+      const moved = !f.lonePos || f.lonePos.distanceToSquared(_loneW.set(p.x, p.y, p.z)) > (0.05 * BLOCK) ** 2;
+      (f.lonePos ||= new THREE.Vector3()).set(p.x, p.y, p.z);
+      if (moved || b.velocity.lengthSquared() >= still || b.angularVelocity.lengthSquared() >= still) {
+        f.loneTries = 0; f.loneNext = 0;
+        continue;
+      }
+    }
+    if (world.time < (f.loneNext || 0)) continue;
+    if (!mergeLoneBlock(f)) loneBackoff(f);
+  }
+}
 // Both lists only ever grow at the end, so a piece's seq — taken as it joins
 // one — orders the list. What awakeChunks hands back is the awake pieces of one
 // list in that order, so a loop over it visits them as a walk of the whole list
@@ -6151,8 +6338,13 @@ function updateFallingChunks() {
     const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
               && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
     f.still = slow ? f.still + 1 : 0;
-    if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) restFallingChunk(n);
+    if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) {
+      restFallingChunk(n);
+      if (f.mesh.userData.blocks.length <= 2 && !mergeLoneBlock(f)) loneBackoff(f);
+    }
   }
+  updateLoneGlides();
+  mergeLoneRetry();
   // A settled piece cannon keeps awake — jittering against the terrain or a
   // neighbour, never quiet for the full sleepTimeLimit — is put to sleep by
   // hand once it has gone FALL_FREEZE_TICKS without getting anywhere. Slowness
@@ -6296,13 +6488,6 @@ const IMPACT_LOAD_MAX = 64;   // hits held for the next check at once; past it, 
 // the leading face along the line of the hit are the face: a slab landing all
 // but flat lands on all of it.
 const IMPACT_FACE_TOL = 0.3;
-// The hammer is a hit like any other: its blow goes on the block it struck,
-// along the aim, and what gives way is what the solve says. A 4 kg head at
-// 10 m/s stopped in 0.02 s, in block weights (FALL_KG_PER_WEIGHT, g): it snaps
-// a dirt block standing out on its own, or a strained dirt span, and a block
-// set in ground or bearing straight down takes it. A rock span has to be close
-// to its limit already.
-const HAMMER_F = 4 * 10 / (FALL_KG_PER_WEIGHT * 9.82 * 0.02);
 const IMPACT_LOAD_WAIT = 1.0; // s of sim time the check waits on a crater still being dug, so the hit lands on the hole it made
 // The player. The controller drives the body's speed, so a sprint (9.2 m/s)
 // into a wall or a jump (6.2 m/s) landing must never register; past that a hit
@@ -6553,14 +6738,13 @@ function craterGround(s, E, vn) {
     }
     const m = voxelAt(c.i, c.j, c.lvl);
     if (m === AIR || m === WATER) continue;
-    // Thrown out of the crater, up and away from the middle. The cube is the
-    // first body breakBlock spawns; whatever the hole then brings down after
-    // it is left to fall as it would.
-    const bodies = impactCollect(() => breakBlock(c.i, c.j, c.lvl));
-    if (!bodies.length) continue;
-    born++;
+    // Thrown out of the crater, up and away from the middle, in the chunk
+    // processImpacts' breakBatch puts it in; whatever the hole then brings
+    // down after it is left to fall as it would. Counted a block at a time,
+    // as when every block was a body of its own.
     const u = vn * IMPACT_EJECT;
-    bodies[0].velocity.set(hx * u * 0.7, u, hz * u * 0.7);
+    if (!breakBlock(c.i, c.j, c.lvl, true, { x: hx * u * 0.7, y: u, z: hz * u * 0.7 })) continue;
+    born++;
   }
   return born;
 }
@@ -6693,7 +6877,7 @@ function processImpacts() {
   // of its contacts that frame pass (the cooldown stamp below says it was).
   impactQueue.sort((x, y) => y.vn - x.vn);
   const reduced = (x, y) => !x ? y : !y ? x : x * y / (x + y);
-  for (const h of impactQueue) {
+  breakBatch(() => { for (const h of impactQueue) {
     if (impactSolidLeft <= 0 && impactPending.length >= IMPACT_PENDING_MAX) break;
     const { a, b } = h;
     if (!a.world || !b.world) continue;   // gone with an earlier hit this frame
@@ -6729,7 +6913,7 @@ function processImpacts() {
       if (!bites) continue;
       impactSolidLeft -= s.cell ? craterGround(s, Es, h.vn) : chipPiece(s, Es, h.vn);
     }
-  }
+  } });
   impactQueue.length = 0;
   digImpactPending();
 }
@@ -7855,41 +8039,97 @@ function resolveBreakMat(m) {
   return m;
 }
 
-// A strike lands on the block under the crosshair as a force along the aim
-// (HAMMER_F), and the next tension check says what it brings down: a strained
-// span sheds, a block set in the ground takes it. What the check has nothing
-// to say about is knocked straight out, as a block the solver finds past its
-// strength is — through breakBlock / breakDebrisBlocks — and leaves the grid
-// as a one-cube piece of rubble: anything with the check off, a lone cube, a
-// piece in the air, ground hanging off nothing, and in the sandbox ground the
-// check never lays out.
+// A strike breaks the block under the crosshair, every time: it leaves the grid
+// as rubble, as a block the tension check finds past its strength does
+// (breakBlock / breakDebrisBlocks). It used to go on the block as a force for
+// the next check to weigh, and a block set in the ground, a piece the check
+// had not laid out or a check that never came took it and nothing happened.
+// What the hole leaves hanging is the next check's, which a blow hurries
+// (impactStruck). The cube is thrown up and back out of the face it was struck
+// on, toward the striker, slow enough to land without doing damage of its own:
+// left where it was it would settle in its own hole and go straight back in
+// as the lone block it is (mergeLoneBlock), so it is barred from the cell it
+// left (knockedAt). Ground that breaks to a powder is thrown onto the rim as a
+// grain for the same reason, as a crater throws it. A lone cube has nowhere to
+// be knocked out of, so it is crushed to its powder, or — one with none, like
+// mud — knocked along the blow.
+const HAMMER_EJECT_UP = 2.6;     // m/s: clears the rim of its own hole (~1.7 blocks)
+const HAMMER_EJECT_BACK = 0.9;   // m/s toward the striker
 function hammerStrike() {
-  if (!hammer.on || !hammer.hit) return false;
+  if (!hammer.on) return false;
+  // Not last frame's aim if what it had is gone: a strike since, a cut
+  // renumbering the piece, the piece shed or merged.
+  if (!hammerTargetLive()) hammerAim();
+  if (!hammer.hit) return false;
   camera.getWorldDirection(aimDir);
-  const L = { by: 0, F: HAMMER_F, dx: aimDir.x, dy: aimDir.y, dz: aimDir.z, i: 0, j: 0, lvl: 0, mesh: null, fly: false };
-  let ok;
+  const hd = Math.hypot(aimDir.x, aimDir.z) || 1, bx = -aimDir.x / hd, bz = -aimDir.z / hd;
+  let ok = false, born, at;
   if (hammer.debris) {
     const { mesh, idx } = hammer.debris, lat = mesh.userData.blocks;
-    if (!stressOn || lat.length < 2 || !mesh.userData.stressRest) ok = breakDebrisBlock(mesh, idx);
+    if (lat.length === 1) ok = hammerCrush(mesh);
     else {
-      const b = lat[idx];
-      L.mesh = mesh; L.i = b.gi; L.j = b.gj; L.lvl = b.lvl;
-      L.by = -1 - stPieceKey(mesh, b.gi, b.gj, b.lvl);
+      mesh.updateWorldMatrix(true, false);
+      at = lat[idx].pos.clone().applyMatrix4(mesh.matrixWorld);
+      born = impactCollect(() => { ok = breakDebrisBlock(mesh, idx); });
     }
   } else {
-    const { i, j, lvl } = hammer.hit, key = gravCell(i, j, lvl), n = stKeyMap.get(key);
-    if (!stressOn || (n === undefined && sandboxMode) || (n !== undefined && stCur.stress[n] === Infinity)) ok = breakBlock(i, j, lvl);
-    else {
-      L.i = i; L.j = j; L.lvl = lvl; L.by = -1 - key;
-      // Ground not laid out is solved for real from now on, as a dig would
-      // have it, so the blow has a node to land on.
-      const c = chunkOf(i, j);
-      if (n === undefined && lvl < stressChunkLow[c]) stressChunkLow[c] = lvl;
+    const { i, j, lvl } = hammer.hit;
+    at = new THREE.Vector3(colX(i), (lvl + 0.5) * BLOCK, colZ(j));
+    born = impactCollect(() => { ok = breakBlock(i, j, lvl); });
+  }
+  // The struck block's own cube: the one born where it stood (a split off a
+  // piece is born too, and is left to fall as it would).
+  const body = born && born.find((b) => b.impactMesh.userData.blocks.length === 1
+    && Math.abs(b.position.x - at.x) < HALF_BLOCK && Math.abs(b.position.y - at.y) < HALF_BLOCK
+    && Math.abs(b.position.z - at.z) < HALF_BLOCK);
+  if (body) {
+    const mesh = body.impactMesh, m = mesh.userData.blocks[0].mat;
+    if (MAT_STATS[m]?.powder) {
+      const r = (1 + Math.random()) * BLOCK;
+      powderGrain(at.x + bx * r, at.y + BLOCK, at.z + bz * r, m, null);
+      removeDebrisMesh(mesh);
+    } else {
+      body.velocity.x += bx * HAMMER_EJECT_BACK; body.velocity.y += HAMMER_EJECT_UP; body.velocity.z += bz * HAMMER_EJECT_BACK;
+      const f = chunkOfMesh(mesh);
+      if (f) f.knockedAt = at;
     }
   }
-  if (L.by) { impactLoadPush(L); impactStruck = true; ok = true; }
-  if (ok) { hammer.hit = null; hammer.debris = null; }
+  if (ok) { hammer.hit = null; hammer.debris = null; impactStruck = true; }
   return ok;
+}
+// Whether what the aim last found is still there to strike.
+function hammerTargetLive() {
+  if (!hammer.hit) return false;
+  if (hammer.debris) {
+    const { mesh, idx, blk } = hammer.debris, lat = mesh.userData.blocks;
+    return mesh.parent === debris && !!lat && idx >= 0 && idx < lat.length && lat[idx] === blk;
+  }
+  const m = voxelAt(hammer.hit.i, hammer.hit.j, hammer.hit.lvl);
+  return m !== AIR && m !== WATER;
+}
+// A lone cube struck: crushed to its powder where it lies, or, one that has
+// none, knocked along the blow.
+function hammerCrush(mesh) {
+  const lat = mesh.userData.blocks, f = chunkOfMesh(mesh);
+  const c = impactCrushMat(lat[0].mat);
+  if (c >= 0) {
+    mesh.updateWorldMatrix(true, false);
+    powderGrain(0, 0, 0, c, null).pos.copy(lat[0].pos).applyMatrix4(mesh.matrixWorld);
+    removeDebrisMesh(mesh);
+    return true;
+  }
+  if (!f) return false;
+  if (f.glide) {   // knocked out of its glide: a piece again, that the retry may try later
+    loneGlides.splice(loneGlides.indexOf(f), 1);
+    f.glide = null;
+    f.body.type = CANNON.Body.DYNAMIC;
+    f.body.updateSolveMassProperties();
+  }
+  const v = f.body.velocity;
+  v.x += aimDir.x * HAMMER_EJECT_UP; v.y += HAMMER_EJECT_UP * 0.5; v.z += aimDir.z * HAMMER_EJECT_UP;
+  f.body.wakeUp();
+  f.still = 0;
+  return true;
 }
 
 // Debris block — knock it off the piece as its own physics object (splits if needed).
@@ -7898,21 +8138,22 @@ function breakDebrisBlock(mesh, idx) {
 }
 
 // Knock blocks `idxs` (lattice slots) off a piece in one go, and return how many
-// went. The tension break takes every red block of a piece at once, so a
-// heavily overloaded piece comes apart in one pass instead of shedding a block
-// per solve while the rest stays red. All of them are read before any is cut:
+// went. The tension break takes a piece's red blocks a wave at a time
+// (STRESS_BREAK_PER), not a block per solve. All of them are read before any is cut:
 // cutting renumbers the slots behind it, and a split hands blocks to new pieces.
-// Each solid block leaves as a one-cube piece sitting exactly where it was —
+// The solid blocks leave in chunks (breakChunks) sitting exactly where they were —
 // built in the piece's frame, turned with it, moving with it (spawnDebrisPart)
-// — rather than snapped to the world grid, where it would overlap the blocks
-// beside it and kick the piece away.
+// — rather than snapped to the world grid, where they would overlap the blocks
+// beside them and kick the piece away. A chunk is always smaller than the piece
+// it came off: a piece all of whose blocks read red would otherwise come back
+// as itself, under the same load, to be broken again on every solve.
 function breakDebrisBlocks(mesh, idxs) {
   const lat = mesh.userData.blocks;
   if (!lat) return 0;
   const f = chunkOfMesh(mesh);
   mesh.updateWorldMatrix(true, false);
   const qs = [...new Set(idxs)].filter((q) => q >= 0 && q < lat.length).sort((x, y) => y - x);
-  const cubes = [];
+  const cubes = [], cap = Math.min(BREAK_CHUNK_MAX, lat.length - 1);
   // From the back, so a cut never moves a block still to be cut.
   for (const q of qs) {
     const b = lat[q], dropMat = resolveBreakMat(b.mat);
@@ -7930,7 +8171,13 @@ function breakDebrisBlocks(mesh, idxs) {
   if (!qs.length) return 0;
   // Spawned while the piece still lies in the frame the cubes were read in:
   // the rebuild below re-centres it.
-  for (const c of cubes) spawnDebrisPart(mesh, [c], f && f.body);
+  // Lattice cells as whole blocks from the first cube: the piece's own
+  // positions are centre-relative and sit on half-blocks.
+  const p0 = cubes[0]?.pos;
+  for (const c of cubes) {
+    c.x = Math.round((c.pos.x - p0.x) / BLOCK); c.y = Math.round((c.pos.y - p0.y) / BLOCK); c.z = Math.round((c.pos.z - p0.z) / BLOCK);
+  }
+  for (const part of breakChunks(cubes, cap)) spawnDebrisPart(mesh, part, f && f.body);
   if (!lat.length) { removeDebrisMesh(mesh); return qs.length; }
   splitDebrisIfNeeded(mesh);
   if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }   // lighter, and disturbed
@@ -7939,7 +8186,10 @@ function breakDebrisBlocks(mesh, idxs) {
 
 // Terrain block. The housekeeping is editBlock's, done by hand because the
 // falling piece has to be spawned from the material before it is overwritten.
-function breakBlock(i, j, lvl) {
+// gravity false: the caller is taking more blocks out and asks what hangs once
+// they are all gone (stressBreakSaturated). eject: the velocity its cube is
+// thrown with — shared out over the chunk it leaves in, under breakBatch.
+function breakBlock(i, j, lvl, gravity = true, eject = null) {
   if (!inVoxelRange(i, j, lvl)) return false;
   const m = voxelAt(i, j, lvl);
   if (m === AIR || m === WATER) return false;
@@ -7968,11 +8218,71 @@ function breakBlock(i, j, lvl) {
     }
   }
 
-  // A group of one — the same path a broken-off cliff takes, just smaller.
-  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat), crack }]]));
+  // A group of one — the same path a broken-off cliff takes, just smaller —
+  // or, held back by breakBatch, part of a chunk of the ones broken with it.
+  const u = { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat), crack, eject };
+  if (breakHeld && !MAT_STATS[dropMat]?.powder) breakHeld.push(u);
+  else {
+    spawnFallingChunk(new Map([[gravKey(i, j, lvl), u]]));
+    if (eject) fallingChunks[fallingChunks.length - 1].body.velocity.set(eject.x, eject.y, eject.z);
+  }
   // And whatever the hole left hanging comes down after it.
-  applyGravity(i, j, lvl);
+  if (gravity) applyGravity(i, j, lvl);
   return true;
+}
+
+// Blocks broken together off the world leave as chunks rather than a body
+// each: a collapse breaking hundreds of blocks at once was hundreds of bodies,
+// and those bodies were the lag. breakBatch(fn) holds back the cubes
+// breakBlock spawns while fn runs, then spawns them in chunks of one material,
+// each touching face to face and at most BREAK_CHUNK_MAX blocks (breakChunks).
+// Nothing else is held: a block whose break roll gave powder, and whatever a
+// hole leaves hanging (applyGravity), come down as they always did.
+const BREAK_CHUNK_MAX = 7;
+let breakHeld = null;
+function breakBatch(fn) {
+  if (breakHeld) return fn();
+  breakHeld = [];
+  // Spawned even if fn throws: the blocks have already left the grid.
+  try { return fn(); } finally {
+    const held = breakHeld;
+    breakHeld = null;
+    for (const u of held) { u.x = u.i; u.y = u.lvl; u.z = u.j; u.mat = u.m; }
+    for (const part of breakChunks(held, BREAK_CHUNK_MAX)) {
+      spawnFallingChunk(new Map(part.map((u) => [gravKey(u.i, u.j, u.lvl), u])));
+      // Thrown blocks share what they were thrown with, as one body would.
+      if (!part.some((u) => u.eject)) continue;
+      let vx = 0, vy = 0, vz = 0;
+      for (const u of part) if (u.eject) { vx += u.eject.x; vy += u.eject.y; vz += u.eject.z; }
+      fallingChunks[fallingChunks.length - 1].body.velocity.set(vx / part.length, vy / part.length, vz / part.length);
+    }
+  }
+}
+// `items` ({ x, y, z, mat }, on one lattice) cut into chunks of at most `cap`
+// of one material, every chunk face-connected. Each is grown breadth-first
+// from the first block not yet taken, so it comes out compact and whole.
+const BREAK_NB = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+function breakChunks(items, cap) {
+  const at = new Map();
+  for (const it of items) at.set(it.x + ',' + it.y + ',' + it.z, it);
+  const taken = new Set(), out = [];
+  for (const seed of items) {
+    if (taken.has(seed)) continue;
+    taken.add(seed);
+    const part = [seed];
+    for (let q = 0; q < part.length && part.length < cap; q++) {
+      const c = part[q];
+      for (const [dx, dy, dz] of BREAK_NB) {
+        const nb = at.get((c.x + dx) + ',' + (c.y + dy) + ',' + (c.z + dz));
+        if (!nb || taken.has(nb) || nb.mat !== seed.mat) continue;
+        taken.add(nb);
+        part.push(nb);
+        if (part.length === cap) break;
+      }
+    }
+    out.push(part);
+  }
+  return out;
 }
 
 function flushDirtyChunks() {
@@ -8093,10 +8403,10 @@ function hudBlocks() {
 
 function refreshShovelUI() {
   const n = shovel.held.length;
-  const by = new Array(MAT_IDS).fill(0);
+  const by = new Array(MAT_STATS.length).fill(0);
   for (const m of shovel.held) by[m]++;
   const parts = [];
-  for (let m = 0; m < MAT_IDS; m++) if (by[m]) parts.push(by[m] + ' ' + (MAT_NAMES[m] || '?'));
+  for (let m = 0; m < by.length; m++) if (by[m]) parts.push(by[m] + ' ' + (MAT_NAMES[m] || '?'));
   heldPanel.textContent = 'Blocks held: ' + n + (parts.length ? '  —  ' + parts.join(', ') : '');
   hudText(heldHudEl, String(n));
   shovelBtn.innerHTML = 'Shovel &mdash; ' + (shovel.on ? 'On' : 'Off');
@@ -8161,7 +8471,7 @@ refreshShovelUI();
 // to fill and rubble is already loose, so a piece of it in the way just shortens
 // the reach rather than becoming a target.
 const hammerHitCell = { i: 0, j: 0, lvl: 0 };
-const hammerDebrisSel = { mesh: null, idx: -1 };
+const hammerDebrisSel = { mesh: null, idx: -1, blk: null };
 const hammerWp = new THREE.Vector3();
 function hammerAim() {
   hammer.hit = null;
@@ -8170,7 +8480,7 @@ function hammerAim() {
 
   camera.getWorldDirection(aimDir);
   let ox, oy, oz;
-  if (camMode === CAM.FREE) {
+  if (camMode !== CAM.FIRST) {
     ox = camera.position.x; oy = camera.position.y; oz = camera.position.z;
   } else {
     const p = playerBody.position;
@@ -8191,7 +8501,7 @@ function hammerAim() {
     const lat = dm.userData.blocks;
     const idx = debrisHitBlock(dHit);
     if (idx >= 0) {
-      hammerDebrisSel.mesh = dm; hammerDebrisSel.idx = idx;
+      hammerDebrisSel.mesh = dm; hammerDebrisSel.idx = idx; hammerDebrisSel.blk = lat[idx];
       hammer.debris = hammerDebrisSel;
       // Store the actual world position for the highlight.
       hammer.debrisWp = hammerWp.copy(lat[idx].pos).applyMatrix4(dm.matrixWorld);
@@ -8256,19 +8566,13 @@ const HELP_DESKTOP = {
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
-  [CAM.THIRD]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Orbit'], ['5', 'Materials'], ['T', 'Material chart'],
-                ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
-                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
-                ['Click view', 'Capture mouse'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
-  [CAM.TOP]:   [['W A S D', 'Move (world axes)'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint (2&times;)'], ['Wheel / E Q', 'Zoom'],
-                ['T', 'Material chart'], ['F', 'Shovel on / off'],
-                ['H', 'Hammer on / off'], ['M', 'Terrain skin / cubes'],
-                ['V', 'Next camera'], ['G', 'Free camera'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
                 ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
+                ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
+                ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
+  [CAM.SPEC]:  [['W / S', 'Fly where you look'], ['A / D', 'Strafe'], ['E / Q', 'Up / down'],
+                ['Shift', 'Sprint (3&times;)'], ['Mouse', 'Look'], ['U', 'Hide / show UI'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
 };
@@ -8276,14 +8580,12 @@ const HELP_TOUCH = {
   [CAM.FIRST]: [['Left stick', 'Move (back too)'], ['Right drag', 'Look'], ['JUMP', 'Jump'],
                 ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
                 ['Shovel / Hammer / Chart', 'Buttons, top left']],
-  [CAM.THIRD]: [['Left stick', 'Move (back too)'], ['Right drag', 'Orbit'], ['JUMP', 'Jump'],
-                ['CROUCH', 'Crouch'], ['SPRINT', 'Toggle sprint'],
-                ['Shovel / Hammer / Chart', 'Buttons, top left']],
-  [CAM.TOP]:   [['Left stick', 'Move (world axes)'], ['&#9650; / &#9660;', 'Zoom out / in'],
-                ['Shovel / Hammer / Chart', 'Buttons, top left']],
   [CAM.FREE]:  [['Left half', 'Joystick &mdash; fly'], ['Right half', 'Drag to look'],
                 ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
                 ['MATS / CHART', 'Panels, top left']],
+  [CAM.SPEC]:  [['Left half', 'Fly where you look'], ['Right half', 'Drag to look'],
+                ['&#9650; / &#9660;', 'Up / down'], ['2 fingers', 'Sprint (3&times;)'],
+                ['NO UI', 'Hide everything'], ['Double-tap', 'Bring it back']],
 };
 // Appended while the shovel is out, in whichever camera you are in.
 const HELP_SHOVEL_DESKTOP = [['LMB / Z', 'Pick up block'], ['RMB / X', 'Place block']];
@@ -8293,10 +8595,10 @@ const HELP_HAMMER_DESKTOP = [['LMB', 'Knock the lit block loose']];
 const HELP_HAMMER_TOUCH   = [['STRIKE', 'Knock the lit block loose']];
 
 function refreshModeUI() {
-  const inGame = camMode !== CAM.FREE;
+  const inGame = camMode === CAM.FIRST;
   camModeEl.innerHTML = 'Cam &mdash; ' + CAM_NAMES[camMode];
   modeBtn.textContent = inGame ? 'Free Camera' : 'Game Mode';
-  camToggle.textContent = inGame ? CAM_NAMES[camMode] : 'First Person';
+  camToggle.textContent = CAM_NAMES[camMode];
   modeBtn.classList.toggle('game', inGame);
 
   let rows = (isTouchDevice ? HELP_TOUCH : HELP_DESKTOP)[camMode];
@@ -8306,15 +8608,30 @@ function refreshModeUI() {
     rows.map(([k, v]) => `<div class="row"><b>${k}</b><span>${v}</span></div>`).join('');
 
   document.body.classList.toggle('free-cam', camMode === CAM.FREE);
+  // The spectator has no tools, so their buttons and the crosshair go with them.
+  document.body.classList.toggle('spectator', camMode === CAM.SPEC);
+  if (camMode !== CAM.SPEC) setNoUI(false);
 
-  // Fly pad doubles as the top-down zoom pad; action pad is for on-foot modes.
-  document.body.classList.toggle('pad-fly', camMode === CAM.FREE || camMode === CAM.TOP);
-  document.body.classList.toggle('pad-act', camMode === CAM.FIRST || camMode === CAM.THIRD);
-  // Third person normally has nothing to aim, but with the shovel out the
-  // crosshair is what picks the block — so it comes back for that.
-  const noCross = (camMode === CAM.THIRD && !shovel.on && !hammer.on) || camMode === CAM.TOP;
-  document.getElementById('crosshair').style.display = noCross ? 'none' : '';
+  // Fly pad for the flying cameras; action pad for on foot.
+  document.body.classList.toggle('pad-fly', camMode !== CAM.FIRST);
+  document.body.classList.toggle('pad-act', camMode === CAM.FIRST);
 }
+
+// The spectator's clean view: every element on the page goes but the picture
+// (and the pause screen, which has to be able to come up). The NO UI button
+// stays where it was, invisible but still live, so the same tap that hid it
+// brings it back; a double-tap anywhere on the view does too, for whoever has
+// forgotten where it was, and U on a keyboard.
+let noUI = false, noUITapAt = 0;
+const noUIBtn = document.getElementById('btn-noui');
+const noUIHint = document.getElementById('noui-hint');
+function setNoUI(on) {
+  noUI = on && camMode === CAM.SPEC;
+  document.body.classList.toggle('no-ui', noUI);
+  noUIHint.textContent = state.touchActive ? 'Double-tap to bring the UI back' : 'Press U to bring the UI back';
+  noUITapAt = 0;
+}
+bindTap(noUIBtn, () => setNoUI(!noUI));
 
 // Deliberately does NOT grab the pointer on the way into game mode. While the
 // pointer is locked the browser routes every mouse event to the locked element,
@@ -8347,10 +8664,10 @@ const titleCase = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
 // id — placing, the stress solver, powder, debris — takes them as they are.
 // Kept in localStorage, and carried in every save beside the blocks made of them.
 const CUSTOM_MATS_KEY = 'hermes.customMats';
-const isCustomMat = (m) => m >= CUSTOM_MAT0 && m < MAT_IDS && !!MAT_STATS[m];
+const isCustomMat = (m) => m >= CUSTOM_MAT0 && !!MAT_STATS[m];
 const customMatIds = () => {
   const ids = [];
-  for (let m = CUSTOM_MAT0; m < MAT_IDS; m++) if (MAT_STATS[m]) ids.push(m);
+  for (let m = CUSTOM_MAT0; m < MAT_STATS.length; m++) if (MAT_STATS[m]) ids.push(m);
   return ids;
 };
 // A definition as stored, or null if it is not one.
@@ -8364,13 +8681,14 @@ function customMatDef(d) {
     weight: num(d.weight, 0), buoyancy: num(d.buoyancy, 0),
     strength: num(d.strength, 1e-6), pull: num(d.pull, 1e-6), powder: !!d.powder,
   };
-  if (def.id < CUSTOM_MAT0 || def.id >= MAT_IDS || !def.name || !def.color) return null;
+  if (def.id < CUSTOM_MAT0 || def.id >= MAT_ID_LIMIT || !def.name || !def.color) return null;
   if ([def.weight, def.buoyancy, def.strength, def.pull].some(Number.isNaN)) return null;
   return def;
 }
 const customMatDefs = () => customMatIds().map((m) => ({ id: m, ...MAT_STATS[m] }));
 function customMatInstall(d) {
   const { id, name, color, weight, buoyancy, strength, pull, powder } = d;
+  matTablesGrow(id + 1);
   MAT_STATS[id] = { name, weight, buoyancy, strength, pull, powder, color };
   MAT_NAMES[id] = name.toLowerCase();
   const c = TERRAIN_MATS[id].color.set(color);
@@ -8437,8 +8755,8 @@ function customMatsAdopt(list) {
   for (const d of mine) {
     if (names.has(d.name.toLowerCase()) || !defs.some((s) => s.id === d.id)) continue;
     let id = CUSTOM_MAT0;
-    while (id < MAT_IDS && MAT_STATS[id]) id++;
-    if (id === MAT_IDS) { console.warn('no free id for created material', d.name); continue; }
+    while (id < MAT_ID_LIMIT && MAT_STATS[id]) id++;
+    if (id === MAT_ID_LIMIT) { console.warn('no free id for created material', d.name); continue; }
     customMatInstall({ ...d, id });
   }
   customMatsStore();
@@ -8517,16 +8835,15 @@ for (const el of matNewEl.querySelectorAll('input[type=text]')) {
 bindTap(document.getElementById('mn-add'), () => {
   const val = (id) => parseFloat(document.getElementById(id).value.replace(',', '.'));
   const name = document.getElementById('mn-name').value.trim();
-  const ids = customMatIds();
   let id = CUSTOM_MAT0;
-  while (id < MAT_IDS && MAT_STATS[id]) id++;
+  while (id < MAT_ID_LIMIT && MAT_STATS[id]) id++;
   const def = customMatDef({
     id, name, color: document.getElementById('mn-color').value,
     weight: val('mn-weight'), buoyancy: val('mn-buoy'), strength: val('mn-str'), pull: val('mn-pull'),
     powder: document.getElementById('mn-powder').checked,
   });
   let msg = '';
-  if (ids.length >= CUSTOM_MAT_MAX) msg = `At most ${CUSTOM_MAT_MAX} created materials — delete one first`;
+  if (id === MAT_ID_LIMIT) msg = `The game can hold ${MAT_ID_LIMIT - CUSTOM_MAT0} created materials and has them all — delete one first`;
   else if (!name) msg = 'Give it a name';
   else if (MAT_NAMES.some((n) => n === name.toLowerCase().slice(0, 20))) msg = 'That name is taken';
   else if (!def) msg = 'Weight and buoyancy need a number of 0 or more, compression and pull above 0';
@@ -9196,7 +9513,7 @@ function creativeAim() {
 // Rebuilt by customMatsChanged when a material is made or deleted.
 function buildPlacerMatGrid() {
   placerMatGrid.textContent = '';
-  for (let m = 0; m < MAT_IDS; m++) {
+  for (let m = 0; m < MAT_STATS.length; m++) {
     if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;
@@ -9288,7 +9605,7 @@ const clampSpan = (from, to) => from + THREE.MathUtils.clamp(to - from, -(VOLUME
 
 // The eye the aim is taken from — the free camera, or the player's head in game mode.
 function volumeEye() {
-  if (camMode === CAM.FREE) return camera.position;
+  if (camMode !== CAM.FIRST) return camera.position;
   const p = playerBody.position;
   return _volEye.set(p.x, p.y - centerOffset() + eyeH, p.z);
 }
@@ -9827,11 +10144,10 @@ const STRESS_TERRAIN_MAX = 20000; // ground nodes at most, hanging and solved fo
 // other side of yellow at 8; deeper buys little, and every level is 256 nodes a
 // chunk.
 const STRESS_SOLVE_DEPTH = 8;
-const STRESS_BREAK_MAX  = 64;    // blocks broken per solve, worst first; the rest go on the next one
 const STRESS_GROUND_R   = 40;    // blocks (8 m) around the player whose ground gets an overlay
 const STRESS_GROUND_DRAW = 3000; // ground overlay cubes, nearest first past this (as many again as built blocks get)
 const STRESS_GEN_SLICE  = 16384; // untouched columns swept per tick for ground a strength edit turned red
-const STRESS_GROUND_WALK = 512;  // flagged columns walked per break pass at most (a whole world turned red is thousands)
+const STRESS_BREAK_PER  = 20;    // blocks one source (the ground, or one piece) breaks per pass; the rest wait their turn
 
 // Cells the player has built, by chunk, as gravCell keys. Pruned lazily: a key
 // whose cell is no longer solid is dropped the next time the world is laid out.
@@ -10805,6 +11121,12 @@ camera.layers.enable(STRESS_LAYER);
 // Independent: shown with the solver off draws the last answers in hand.
 let stressOn = true, stressShown = false;
 let stressTimer = 0, stressLastRebuild = -Infinity, stressDrawSig = NaN;
+// A break pass held some of its red back (STRESS_BREAK_PER): the next wave comes
+// from the same answers on the next tick, before the world is laid out again.
+// A piece's held blocks are kept as the blocks themselves, farthest first:
+// cutting the wave off it renumbered its slots, so its nodes no longer find them.
+let stressDrain = false;
+const stHeldPieces = new Map();   // mesh -> its red blocks still to go
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
 
 const solidMat = (m) => m !== AIR && m !== WATER && !!MAT_STATS[m];
@@ -11138,6 +11460,7 @@ function stressForget() {
   stPieces.length = 0;
   stJob = null;   // whatever the worker sends back for it is dropped
   impactLoads.length = 0; impactStruck = false;
+  stressDrain = false; stHeldPieces.clear();
   stBuiltRev = -1;
   stressDrawSig = NaN;
 }
@@ -11622,6 +11945,7 @@ function stressHitFly(S, pc, L) {
 // keep their answer; the rest go off to be solved.
 function stressRebuild() {
   stBuildSeq++;
+  stHeldPieces.clear();   // what a wave held back is read from the new answers
   const old = stCur; stCur = stOld; stOld = old; stOldN = stN;
   const prevMap = stKeyMap; stKeyMap = stKeyMapPrev; stKeyMapPrev = prevMap;
   stKeyMap.clear();
@@ -11874,8 +12198,9 @@ function stressRebuild() {
   stressGroundReactions();
   stressDrawSig = NaN;   // the drawn window is laid out again on this tick
   if (dirty.length) stressPost(dirty, hits > 0);
-  // Nothing to solve, but answers in hand may still be red — what a pass capped
-  // at STRESS_BREAK_MAX left standing.
+  // Nothing to solve, but answers in hand may still be red: ground the sweep
+  // turned up while a solve was out, columns that waited on one, or blocks a
+  // wave held back (STRESS_BREAK_PER).
   else stressBreakSaturated();
 }
 
@@ -11942,6 +12267,13 @@ function stressPost(dirty, hit) {
 function stressApply(r) {
   if (!stJob || r.seq !== stJob.seq) return;   // for a world since forgotten
   const S = stCur, nodes = stJob.nodes, hit = stJob.hit;
+  // What was red before the hit was felt (the answers carried over into this
+  // layout): the hit's pass breaks those a wave at a time like any other.
+  let wasRed = null;
+  if (hit) {
+    wasRed = new Uint8Array(stN);
+    for (let n = 0; n < stN; n++) if (stressLevel(n) === STRESS_LUT_N - 1) wasRed[n] = 1;
+  }
   for (let x = 0; x < nodes.length; x++) {
     const n = nodes[x];
     S.u.set(r.u.subarray(x * 6, x * 6 + 6), n * 6);
@@ -11960,7 +12292,7 @@ function stressApply(r) {
   // on that answer, and the colours settle back to what the world carries. It
   // never grows the solve: a hard landing would otherwise bring chunks in for
   // good, every one paid for on every check after, for a force long gone.
-  if (hit) { stressBreakSaturated(); stressRev++; }
+  if (hit) { stressBreakSaturated(wasRed); stressRev++; }
   else if (!stressEscalate(nodes)) stressBreakSaturated();
 }
 
@@ -11970,14 +12302,37 @@ function stressApply(r) {
 // but not yet solved still shows its old colour and is left alone, and one
 // hanging off nothing (Infinity) is gravity's to bring down, not this. What
 // comes down bumps stressRev, and what is left is laid out and solved again.
-// Built and hanging ground alike. At most STRESS_BREAK_MAX go in one pass, the
-// most overloaded (stress over strength) first: an undercut hill can be
-// hundreds of red blocks at once, each one a physics body, and a phone cannot
-// take them all in a frame. The rest are still red in the next solve if what
-// went did not relieve them.
-function stressBreakSaturated() {
+// Built and hanging ground alike. Each source — the ground, and every fallen
+// piece on its own — breaks at most STRESS_BREAK_PER of its red blocks in a
+// pass: a collapse of hundreds at once was one frame of hundreds of bodies,
+// and comes down instead as a crumble of waves. Farthest from what holds it up
+// goes first (stressHops), so a wave never cuts the rest of the red loose: a
+// red block always has a way down through blocks nearer the support, none of
+// which went before it. Taken worst first, a wave took the roots of a slab and
+// the rest of it, red and all, fell whole as one piece.
+// What waits stays red and goes in the next wave, a tick later, from these same
+// answers (stressDrain); once a pass holds nothing back the world, changed by
+// all the waves, is laid out and solved again, and what is red then goes the
+// same way. Every pass that holds something back breaks something, so the
+// waves run out.
+// wasRed: on a hit's answer, the nodes red before the hit. That answer is
+// solved once and then forgotten for the world without the hit (stressApply),
+// so a node only the hit turned red, held back, would never read red again:
+// those all break now, as an impact is not held back either, and only the
+// rest count towards the waves.
+function stressBreakSaturated(wasRed = null) {
   if (!stressOn) return;   // not solving, so nothing reads red
-  const S = stCur, top = STRESS_LUT_N - 1, hit = [];
+  const S = stCur, top = STRESS_LUT_N - 1, per = STRESS_BREAK_PER;
+  const hitOnly = (n) => wasRed !== null && n >= 0 && !wasRed[n];
+  // Ground goes in as node (-1 for settled ground), over, i, j, lvl, material.
+  const cells = [];
+  // A fallen piece's red blocks are gathered here and broken together after
+  // the ground, piece by piece: knocking one off renumbers the rest and can
+  // split the piece, so none of its node numbers would hold past the first.
+  const pieceHits = new Map();   // stPieces entry -> lattice slots
+  const held0 = [...stHeldPieces];
+  stHeldPieces.clear();
+  let pi = 0;   // nodes come in order, and so do the pieces' runs of them
   for (let n = 0; n < stN; n++) {
     const s = S.stress[n];
     if (s === Infinity || stressLevel(n) !== top || !stSolved.has(stCompHash[S.comp[n]])) continue;
@@ -11987,12 +12342,31 @@ function stressBreakSaturated() {
     // something holding it up, it would shed as a grain, land back in the very
     // cell it left, read red again and be broken again, forever.
     if (MAT_STATS[S.mat[n]]?.powder) continue;
-    hit.push(n);
+    if (n < stNTerr) {
+      const key = S.key[n];
+      const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
+      cells.push(n, stressOver(n), i, j, lvl, S.mat[n]);
+      continue;
+    }
+    while (pi < stPieces.length && stPieces[pi].start + stPieces[pi].count <= n) pi++;
+    const pc = stPieces[pi];
+    // A lone cube is never broken: it would only be swapped for another the
+    // same, lying under the same load.
+    if (!pc || n < pc.start || pc.count < 2) continue;
+    let qs = pieceHits.get(pc);
+    if (!qs) {
+      if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count
+          || (pc.mesh.userData.stressLat | 0) !== pc.latRev) continue;
+      // Moved since: laid out again first. A piece solved for a hit in the
+      // air is solved in its own frame, wherever it has got to since.
+      if (!pc.fly && pc.mesh.userData.stressRest !== pc.rest) continue;
+      pieceHits.set(pc, qs = []);
+    }
+    qs.push(n - pc.start);
   }
-  // Ground standing on bedrock: every column a node puts load into, and up to
-  // STRESS_GROUND_WALK of those written to or flagged since they were last
-  // looked at. One with nothing red is let go; one still red stays until it is
-  // not, and the ones not reached wait for the next pass.
+  // Ground standing on bedrock: every column a node puts load into, and every
+  // one written to or flagged since it was last looked at. One with nothing
+  // red is let go; one still red stays until it is not.
   const gHit = [];
   for (let q = 0; q < stGrColsN; q++) {
     const k = stGrCols[q];
@@ -12000,60 +12374,100 @@ function stressBreakSaturated() {
     if (stressGroundRedIn(k, gHit)) stressGroundCols.add(k);
     else stressGroundCols.delete(k);
   }
-  let walked = 0;
   for (const k of stressGroundCols) {
-    if (walked >= STRESS_GROUND_WALK) break;
     if (stressHasGroundR(k)) continue;
-    walked++;
     if (!stressGroundRedIn(k, gHit)) stressGroundCols.delete(k);
   }
-  // Ground goes in as -1 - its place in gHit, after the nodes.
-  for (let q = 0; q < gHit.length; q += 5) hit.push(-1 - q);
-  if (!hit.length) return;
-  if (hit.length > STRESS_BREAK_MAX) {
-    const over = new Map();
-    for (const n of hit) over.set(n, n < 0 ? gHit[-1 - n] : stressOver(n));
-    hit.sort((a, b) => over.get(b) - over.get(a));
+  for (let q = 0; q < gHit.length; q += 5) cells.push(-1, gHit[q], gHit[q + 1], gHit[q + 2], gHit[q + 3], gHit[q + 4]);
+  // The ground's wave: only cells still as laid out count towards it, or a
+  // wave of stale ones would break nothing and the rest would wait for good.
+  const ord = [], hitOrd = [];
+  for (let q = 0; q < cells.length; q += 6) {
+    if (voxelAt(cells[q + 2], cells[q + 3], cells[q + 4]) === cells[q + 5]) (hitOnly(cells[q]) ? hitOrd : ord).push(q);
   }
-  // A fallen piece's red blocks are gathered here and broken together after
-  // the walk, piece by piece: knocking one off renumbers the rest and can split
-  // the piece, so none of its node numbers would hold past the first.
-  const pieceHits = new Map();   // stPieces entry -> lattice slots
-  let broken = 0;
-  for (const n of hit) {
-    if (broken >= STRESS_BREAK_MAX) break;
-    if (n < 0) {
-      const q = -1 - n, i = gHit[q + 1], j = gHit[q + 2], lvl = gHit[q + 3];
-      if (voxelAt(i, j, lvl) !== gHit[q + 4]) continue;   // gone or changed since
-      if (breakBlock(i, j, lvl)) broken++;
-    } else if (n < stNTerr) {
-      const key = S.key[n];
-      const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
-      if (voxelAt(i, j, lvl) !== S.mat[n]) continue;   // gone or changed since the layout
-      if (breakBlock(i, j, lvl)) broken++;
-    } else {
-      const pc = stPieces.find((p) => n >= p.start && n < p.start + p.count);
-      // A lone cube is never broken: it would only be swapped for another the
-      // same, lying under the same load.
-      if (!pc || pc.count < 2) continue;
-      let qs = pieceHits.get(pc);
-      if (!qs) {
-        if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
-        // Moved since: laid out again first. A piece solved for a hit in the
-        // air is solved in its own frame, wherever it has got to since.
-        if (!pc.fly && pc.mesh.userData.stressRest !== pc.rest) continue;
-        pieceHits.set(pc, qs = []);
-      }
-      qs.push(n - pc.start);
-      broken++;
+  let held = false, hops = null;
+  if (ord.length > per) {
+    hops = stressHops();
+    // Settled ground lies on bedrock, under every node: last, from the top
+    // of its column down. Ties go to the more overloaded.
+    const far = (q) => cells[q] >= 0 ? hops[cells[q]] : -1;
+    ord.sort((a, b) => far(b) - far(a) || (cells[a] < 0 ? cells[b + 4] - cells[a + 4] : 0) || cells[b + 1] - cells[a + 1]);
+    ord.length = per;
+    held = true;
+  }
+  for (const q of hitOrd) ord.push(q);
+  // Every red cell leaves the grid before anything is asked whether it still
+  // hangs on: broken one at a time with gravity after each, the first break
+  // could cut loose a group holding red blocks still to come, and they fell
+  // whole inside it rather than breaking. Lowest first, so a block taken from
+  // the top of a column does not reshade the ones under it still to go
+  // (terrainBlockColor reads the column's top).
+  ord.sort((a, b) => cells[a + 4] - cells[b + 4]);
+  const gone = [];
+  let broke = 0;
+  breakBatch(() => {
+    for (const q of ord) {
+      const i = cells[q + 2], j = cells[q + 3], lvl = cells[q + 4];
+      if (voxelAt(i, j, lvl) !== cells[q + 5]) continue;   // gone or changed since the layout
+      if (breakBlock(i, j, lvl, false)) gone.push(i, j, lvl);
     }
-  }
+  });
+  for (let q = 0; q < gone.length; q += 3) applyGravity(gone[q], gone[q + 1], gone[q + 2]);
+  broke += gone.length;
   for (const [pc, qs] of pieceHits) {
     // What each block shows now goes with it, broken off or left on the piece.
     const lat = pc.mesh.userData.blocks;
     for (let q = 0; q < pc.count; q++) { const k = stressCrackOf(pc.start + q); if (k >= 0) lat[q].crack = k; }
-    breakDebrisBlocks(pc.mesh, qs);
+    let wave = qs.filter((q) => !hitOnly(pc.start + q));
+    if (wave.length > per) {
+      hops ||= stressHops();
+      const h = (q) => hops[pc.start + q];
+      wave.sort((a, b) => h(b) - h(a) || stressOver(pc.start + b) - stressOver(pc.start + a) || a - b);
+      stHeldPieces.set(pc.mesh, wave.slice(per).map((q) => lat[q]));
+      wave.length = per;
+      for (const q of qs) if (hitOnly(pc.start + q)) wave.push(q);
+      held = true;
+    } else wave = qs;
+    broke += breakDebrisBlocks(pc.mesh, wave);
   }
+  // Pieces a wave was held back on by an earlier pass of these answers: the
+  // next of their blocks, while the piece still lies at rest. One moving again
+  // is not where it was solved, and waits for the next layout.
+  for (const [mesh, bl] of held0) {
+    const lat = mesh.userData.blocks;
+    if (mesh.parent !== debris || !lat || lat.length < 2 || !mesh.userData.stressRest) continue;
+    const at = new Map();
+    for (let q = 0; q < lat.length; q++) at.set(lat[q], q);
+    const left = bl.filter((b) => at.has(b));
+    if (!left.length) continue;
+    if (left.length > per) { stHeldPieces.set(mesh, left.slice(per)); held = true; }
+    broke += breakDebrisBlocks(mesh, left.slice(0, per).map((b) => at.get(b)));
+  }
+  // The next wave is asked for outright, not left to the breaks to ask: they
+  // always do today, but a wave that waits on nothing would wait for good.
+  // It comes from these answers (updateStress) while each pass breaks
+  // something; one that broke nothing has the world laid out and solved again.
+  if (held) { stressRev++; stressDrain = broke > 0; }
+}
+
+// Each node's count of beams from the nearest support (a fixed node, or one
+// with a beam to the ground), over the layout in hand; -1 for one held by
+// nothing. Asked only by a wave that has more than it may take.
+function stressHops() {
+  const S = stCur, hop = new Int32Array(stN).fill(-1), q = [];
+  for (let n = 0; n < stN; n++) if (S.fixed[n]) { hop[n] = 0; q.push(n); }
+  for (let e = 0; e < stNE; e++) {
+    const n = stEA[e] < 0 ? stEB[e] : stEB[e] < 0 ? stEA[e] : -1;
+    if (n >= 0 && hop[n] < 0) { hop[n] = 0; q.push(n); }
+  }
+  for (let x = 0; x < q.length; x++) {
+    const n = q[x];
+    for (let k = stAdjStart[n]; k < stAdjStart[n + 1]; k++) {
+      const m = stAdj[k];
+      if (hop[m] < 0) { hop[m] = hop[n] + 1; q.push(m); }
+    }
+  }
+  return hop;
 }
 
 let stressWorker = null;
@@ -12349,13 +12763,11 @@ function stressCrackAt(i, j, lvl) {
   return lv >= STRESS_CRACK_LV ? lv / (STRESS_LUT_N - 1) : 0;
 }
 
-// Where the drawn window is centred: on the player, not the camera, which in
-// top-down hangs 8-90 m overhead and in third person 5 m back — far enough that
-// blocks right beside the player could fall outside it. Flying free, nobody is
-// anywhere, and the camera is all there is.
+// Where the drawn window is centred: on the player's eye when on foot. Flying,
+// nobody is anywhere, and the camera is all there is.
 const _stFocus = new THREE.Vector3();
 function stressFocus() {
-  if (camMode === CAM.FREE) return _stFocus.copy(camera.position);
+  if (camMode !== CAM.FIRST) return _stFocus.copy(camera.position);
   const p = playerBody.position;
   return _stFocus.set(p.x, p.y - centerOffset() + eyeH, p.z);
 }
@@ -12383,7 +12795,16 @@ function updateStress(dt) {
   // A hit waits for its crater to be dug, so it is felt by the ground the hole
   // left rather than by the block it took away.
   const digging = impactLoads.length && impactPending.length && world.time - impactLoadsAt < IMPACT_LOAD_WAIT;
-  if (stressOn && stressRev !== stBuiltRev && !stJob && !digging
+  // The rest of a held wave, from the answers in hand. Laid out and solved again
+  // between waves, every wave waited on a solve of all the structure it is part
+  // of — the solved ground under it too, ~20k nodes, seconds each on a phone —
+  // and a collapse of a few hundred red blocks read as stopped after the first
+  // twenty. A hammer blow, which the player stands waiting on, is laid out now.
+  if (stressDrain) {
+    stressDrain = false;
+    if (stressOn && !stJob && !impactStruck) stressBreakSaturated();
+  }
+  if (stressOn && stressRev !== stBuiltRev && !stJob && !digging && !stressDrain
       && elapsed - stressLastRebuild >= (impactStruck ? STRESS_HIT_REBUILD : STRESS_REBUILD)) {
     stBuiltRev = stressRev;
     stressLastRebuild = elapsed;
@@ -12436,7 +12857,7 @@ bindTap(stressShowBtn, () => setStress(stressOn, !stressShown));
 const matBar = document.getElementById('mat-bar');
 function buildMatBar() {
   matBar.textContent = '';
-  for (let m = 0; m < MAT_IDS; m++) {
+  for (let m = 0; m < MAT_STATS.length; m++) {
     if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;
@@ -12577,9 +12998,16 @@ const move = new THREE.Vector3();
 let elapsed = 0;
 
 // The original flying camera, untouched apart from living in its own function.
+// The spectator flies the same way except that forward is where it looks, pitch
+// and all: with the UI hidden there is no up/down pad, and diving at what you
+// are filming is the shot anyway.
 function updateFreeCam(dt) {
   const sy = Math.sin(state.yaw), cy = Math.cos(state.yaw);
   forward.set(-sy, 0, -cy);   // camera looks down -Z at yaw 0
+  if (camMode === CAM.SPEC) {
+    const cp = Math.cos(state.pitch);
+    forward.set(-sy * cp, Math.sin(state.pitch), -cy * cp);
+  }
   right.set(cy, 0, -sy);
 
   move.set(0, 0, 0);
@@ -12724,7 +13152,7 @@ function tick() {
   elapsed += dt;
   frameCount++;
 
-  if (camMode === CAM.FREE) {
+  if (camMode !== CAM.FIRST) {
     updateFreeCam(dt);
     // Nobody is driving the character — park it so it does not creep away.
     playerBody.velocity.x = 0;
@@ -12836,7 +13264,7 @@ function tick() {
   flushDirtyChunks();
   updateStress(dt);   // after the edits above, so a rebuild sees this frame's world
   sky.position.copy(camera.position);
-  sprintEl.classList.toggle('on', isSprinting() && camMode !== CAM.TOP);
+  sprintEl.classList.toggle('on', isSprinting());
 
   // --- HUD ---
   frames++;
@@ -12850,7 +13278,7 @@ function tick() {
   if (hudAccum >= 0.1) {
     hudAccum = 0;
     hudText(fpsEl, fps.toFixed(0).padStart(3, ' '));
-    const p = camMode === CAM.FREE
+    const p = camMode !== CAM.FIRST
       ? state.pos
       : { x: playerBody.position.x, y: playerBody.position.y - centerOffset(), z: playerBody.position.z };
     hudText(posEl,
@@ -12860,7 +13288,7 @@ function tick() {
   }
 
   updateLOD();
-  if (camMode === CAM.FREE) updateShadowFrustum(state.pos.x, state.pos.y, state.pos.z);
+  if (camMode !== CAM.FIRST) updateShadowFrustum(state.pos.x, state.pos.y, state.pos.z);
   else updateShadowFrustum(playerBody.position.x, playerBody.position.y, playerBody.position.z);
   debrisBatchSync();     // last, so nothing after it can change a piece it copied
   if (shadowCastersChanged()) renderer.shadowMap.needsUpdate = true;
@@ -13043,9 +13471,9 @@ function collectWorldMeta() {
   // Camera state
   const cameraState = {
     camMode,
-    lastGameCam,
-    topZoom,
-    blendT,
+    pose: camPose.map((c, m) => m === camMode
+      ? { set: true, pos: state.pos.toArray(), yaw: state.yaw, pitch: state.pitch }
+      : { set: c.set, pos: c.pos.toArray(), yaw: c.yaw, pitch: c.pitch }),
   };
 
   // Tools state
@@ -13827,11 +14255,26 @@ function applyWorldCore(s) {
   setPlayerShape(crouched);
 
   // Restore camera state
+  // Saves from before the spectator numbered four modes (free was 3) and kept
+  // no poses; third person and top-down come back as first person.
   const cs = s.cameraState;
-  camMode = cs.camMode;
-  lastGameCam = cs.lastGameCam;
-  topZoom = cs.topZoom;
-  blendT = cs.blendT;
+  if (cs.pose) {
+    camMode = cs.camMode;
+    cs.pose.forEach((c, m) => {
+      if (!camPose[m]) return;
+      camPose[m].set = c.set;
+      camPose[m].pos.fromArray(c.pos);
+      camPose[m].yaw = c.yaw;
+      camPose[m].pitch = c.pitch;
+    });
+    const live = camPose[camMode];
+    state.pos.copy(live.pos);
+    state.yaw = live.yaw;
+    state.pitch = live.pitch;
+  } else {
+    camMode = cs.camMode === 3 ? CAM.FREE : CAM.FIRST;
+  }
+  camSnap = true;
 
   // Restore tools state
   const ts = s.toolsState;
@@ -13863,6 +14306,7 @@ function applyWorldCore(s) {
   powderDirty.clear();
   powderCarry.length = 0;
   impactPending.length = 0;   // a crater still being dug in the world that was left
+  loneGlides.length = 0; loneScanAt = 0;   // its pieces are gone, and this world's clock starts over
 
   // The pieces come back after the rebuild (restoreSavedPieces).
 

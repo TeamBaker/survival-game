@@ -11121,6 +11121,12 @@ camera.layers.enable(STRESS_LAYER);
 // Independent: shown with the solver off draws the last answers in hand.
 let stressOn = true, stressShown = false;
 let stressTimer = 0, stressLastRebuild = -Infinity, stressDrawSig = NaN;
+// A break pass held some of its red back (STRESS_BREAK_PER): the next wave comes
+// from the same answers on the next tick, before the world is laid out again.
+// A piece's held blocks are kept as the blocks themselves, farthest first:
+// cutting the wave off it renumbered its slots, so its nodes no longer find them.
+let stressDrain = false;
+const stHeldPieces = new Map();   // mesh -> its red blocks still to go
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
 
 const solidMat = (m) => m !== AIR && m !== WATER && !!MAT_STATS[m];
@@ -11454,6 +11460,7 @@ function stressForget() {
   stPieces.length = 0;
   stJob = null;   // whatever the worker sends back for it is dropped
   impactLoads.length = 0; impactStruck = false;
+  stressDrain = false; stHeldPieces.clear();
   stBuiltRev = -1;
   stressDrawSig = NaN;
 }
@@ -11938,6 +11945,7 @@ function stressHitFly(S, pc, L) {
 // keep their answer; the rest go off to be solved.
 function stressRebuild() {
   stBuildSeq++;
+  stHeldPieces.clear();   // what a wave held back is read from the new answers
   const old = stCur; stCur = stOld; stOld = old; stOldN = stN;
   const prevMap = stKeyMap; stKeyMap = stKeyMapPrev; stKeyMapPrev = prevMap;
   stKeyMap.clear();
@@ -12302,10 +12310,11 @@ function stressApply(r) {
 // red block always has a way down through blocks nearer the support, none of
 // which went before it. Taken worst first, a wave took the roots of a slab and
 // the rest of it, red and all, fell whole as one piece.
-// What waits stays red; the breaks are world edits, so the world is laid out
-// and solved again, and what is still red then goes in the next wave (from
-// answers in hand if nothing needed solving — stressRebuild's else). Every
-// pass that holds something back breaks something, so the waves run out.
+// What waits stays red and goes in the next wave, a tick later, from these same
+// answers (stressDrain); once a pass holds nothing back the world, changed by
+// all the waves, is laid out and solved again, and what is red then goes the
+// same way. Every pass that holds something back breaks something, so the
+// waves run out.
 // wasRed: on a hit's answer, the nodes red before the hit. That answer is
 // solved once and then forgotten for the world without the hit (stressApply),
 // so a node only the hit turned red, held back, would never read red again:
@@ -12321,6 +12330,8 @@ function stressBreakSaturated(wasRed = null) {
   // the ground, piece by piece: knocking one off renumbers the rest and can
   // split the piece, so none of its node numbers would hold past the first.
   const pieceHits = new Map();   // stPieces entry -> lattice slots
+  const held0 = [...stHeldPieces];
+  stHeldPieces.clear();
   let pi = 0;   // nodes come in order, and so do the pieces' runs of them
   for (let n = 0; n < stN; n++) {
     const s = S.stress[n];
@@ -12344,7 +12355,8 @@ function stressBreakSaturated(wasRed = null) {
     if (!pc || n < pc.start || pc.count < 2) continue;
     let qs = pieceHits.get(pc);
     if (!qs) {
-      if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count) continue;
+      if (pc.mesh.parent !== debris || pc.mesh.userData.blocks?.length !== pc.count
+          || (pc.mesh.userData.stressLat | 0) !== pc.latRev) continue;
       // Moved since: laid out again first. A piece solved for a hit in the
       // air is solved in its own frame, wherever it has got to since.
       if (!pc.fly && pc.mesh.userData.stressRest !== pc.rest) continue;
@@ -12392,6 +12404,7 @@ function stressBreakSaturated(wasRed = null) {
   // (terrainBlockColor reads the column's top).
   ord.sort((a, b) => cells[a + 4] - cells[b + 4]);
   const gone = [];
+  let broke = 0;
   breakBatch(() => {
     for (const q of ord) {
       const i = cells[q + 2], j = cells[q + 3], lvl = cells[q + 4];
@@ -12400,6 +12413,7 @@ function stressBreakSaturated(wasRed = null) {
     }
   });
   for (let q = 0; q < gone.length; q += 3) applyGravity(gone[q], gone[q + 1], gone[q + 2]);
+  broke += gone.length;
   for (const [pc, qs] of pieceHits) {
     // What each block shows now goes with it, broken off or left on the piece.
     const lat = pc.mesh.userData.blocks;
@@ -12409,15 +12423,31 @@ function stressBreakSaturated(wasRed = null) {
       hops ||= stressHops();
       const h = (q) => hops[pc.start + q];
       wave.sort((a, b) => h(b) - h(a) || stressOver(pc.start + b) - stressOver(pc.start + a) || a - b);
+      stHeldPieces.set(pc.mesh, wave.slice(per).map((q) => lat[q]));
       wave.length = per;
       for (const q of qs) if (hitOnly(pc.start + q)) wave.push(q);
       held = true;
     } else wave = qs;
-    breakDebrisBlocks(pc.mesh, wave);
+    broke += breakDebrisBlocks(pc.mesh, wave);
+  }
+  // Pieces a wave was held back on by an earlier pass of these answers: the
+  // next of their blocks, while the piece still lies at rest. One moving again
+  // is not where it was solved, and waits for the next layout.
+  for (const [mesh, bl] of held0) {
+    const lat = mesh.userData.blocks;
+    if (mesh.parent !== debris || !lat || lat.length < 2 || !mesh.userData.stressRest) continue;
+    const at = new Map();
+    for (let q = 0; q < lat.length; q++) at.set(lat[q], q);
+    const left = bl.filter((b) => at.has(b));
+    if (!left.length) continue;
+    if (left.length > per) { stHeldPieces.set(mesh, left.slice(per)); held = true; }
+    broke += breakDebrisBlocks(mesh, left.slice(0, per).map((b) => at.get(b)));
   }
   // The next wave is asked for outright, not left to the breaks to ask: they
   // always do today, but a wave that waits on nothing would wait for good.
-  if (held) stressRev++;
+  // It comes from these answers (updateStress) while each pass breaks
+  // something; one that broke nothing has the world laid out and solved again.
+  if (held) { stressRev++; stressDrain = broke > 0; }
 }
 
 // Each node's count of beams from the nearest support (a fixed node, or one
@@ -12765,7 +12795,16 @@ function updateStress(dt) {
   // A hit waits for its crater to be dug, so it is felt by the ground the hole
   // left rather than by the block it took away.
   const digging = impactLoads.length && impactPending.length && world.time - impactLoadsAt < IMPACT_LOAD_WAIT;
-  if (stressOn && stressRev !== stBuiltRev && !stJob && !digging
+  // The rest of a held wave, from the answers in hand. Laid out and solved again
+  // between waves, every wave waited on a solve of all the structure it is part
+  // of — the solved ground under it too, ~20k nodes, seconds each on a phone —
+  // and a collapse of a few hundred red blocks read as stopped after the first
+  // twenty. A hammer blow, which the player stands waiting on, is laid out now.
+  if (stressDrain) {
+    stressDrain = false;
+    if (stressOn && !stJob && !impactStruck) stressBreakSaturated();
+  }
+  if (stressOn && stressRev !== stBuiltRev && !stJob && !digging && !stressDrain
       && elapsed - stressLastRebuild >= (impactStruck ? STRESS_HIT_REBUILD : STRESS_REBUILD)) {
     stBuiltRev = stressRev;
     stressLastRebuild = elapsed;

@@ -1160,13 +1160,14 @@ const N_MATS = 16;
 // is not there. It sorts after the built-in ones.
 const AIR = N_MATS;
 // Materials the player creates in the Materials panel take the ids after AIR, so
-// the built-in ids, AIR and every old save keep the values they always had. The
-// store is bytes and has room; it is the chunk vertex, with 4 bits for the
-// material, that sets the limit — a chunk may name 16 materials at once (see
-// chunkPalette) — so the cap is kept well under that. MAT_IDS bounds every id a
-// voxel can hold, AIR included.
-const CUSTOM_MAT0 = AIR + 1, CUSTOM_MAT_MAX = 8;
-const MAT_IDS = CUSTOM_MAT0 + CUSTOM_MAT_MAX;
+// the built-in ids, AIR and every old save keep the values they always had. There
+// is no cap on how many, only on the id: the store is bytes, but the mesher
+// carries a block's material in 6 bits (qInfo, and each terrainPal slot), so no
+// id can reach MAT_ID_LIMIT — that is what the New material form refuses at.
+// The per-material tables are only as long as the highest id in use
+// (matTablesGrow); scratch indexed by id is MAT_ID_LIMIT long, which is every id
+// a voxel can hold, so it never has to follow them.
+const CUSTOM_MAT0 = AIR + 1, MAT_ID_LIMIT = 64;
 
 // The numbers are the material's own properties, indexed by material id: weight
 // is how much a block of it drags on you, and is read as-is by the sim — the
@@ -1203,8 +1204,8 @@ const MAT_STATS = [
   { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
 ];
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
-// AIR's row and the created materials' (filled in by customMatInstall).
-while (MAT_STATS.length < MAT_IDS) MAT_STATS.push(null);
+// AIR's row; the created materials' are added by matTablesGrow.
+MAT_STATS.push(null);
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -1846,19 +1847,21 @@ const TERRAIN_MATS = [
   mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
   mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
 ];
-// AIR's slot (never drawn) and the created materials', recoloured by
-// customMatInstall — every table below is indexed by the same ids.
-while (TERRAIN_MATS.length < MAT_IDS) TERRAIN_MATS.push(mat(0x808080, 0.92, 0.00, { envMapIntensity: 0.40 }));
+// AIR's slot (never drawn); a created material's is added by matTablesGrow and
+// recoloured by customMatInstall — every table below is indexed by the same ids.
+const customTerrainMat = () => mat(0x808080, 0.92, 0.00, { envMapIntensity: 0.40 });
+TERRAIN_MATS.push(customTerrainMat());
 // The same materials again, white and vertex-coloured, for what carries its
 // colour on its own vertices — falling grains and broken-off pieces, which bake
 // in the shade the block had in the ground — so what the shader multiplies that
 // by has to be plain white.
-const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
+const faceMatOf = (src) => {
   const f = src.clone();
   f.color.setRGB(1, 1, 1);
   f.vertexColors = true;
   return f;
-});
+};
+const TERRAIN_FACE_MATS = TERRAIN_MATS.map(faceMatOf);
 
 // The one material every terrain chunk is drawn with, so a chunk is one draw
 // call however many materials it holds. Faces are greedy-merged (see
@@ -1900,9 +1903,27 @@ const TERRAIN_FACE_MATS = TERRAIN_MATS.map((src) => {
 // terrainPal, one vec4 per instance (so per chunk, and no bigger a vertex), holds
 // the material id of each of the 16 slots, 6 bits apiece, four to a float. A
 // chunk of built-in materials only has the identity palette; see chunkPalette.
-const TERRAIN_PBR = TERRAIN_MATS.map((m, i) =>
-  new THREE.Vector4(m.roughness, m.metalness, m.envMapIntensity, MAT_STATS[i]?.powder ? 1 : 0));
-const TERRAIN_BASE = TERRAIN_MATS.map((m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b));
+const pbrOf = (m, i) => new THREE.Vector4(m.roughness, m.metalness, m.envMapIntensity, MAT_STATS[i]?.powder ? 1 : 0);
+const baseOf = (m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b);
+const TERRAIN_PBR = TERRAIN_MATS.map(pbrOf);
+const TERRAIN_BASE = TERRAIN_MATS.map(baseOf);
+// Every per-material table out to id n - 1, for a created material about to be
+// installed there. The terrain shaders declare terrainPbr / terrainBase at the
+// length they were compiled with, so a longer table means a new program; the
+// length is in their cache key, or three would hand back the old one.
+function matTablesGrow(n) {
+  if (TERRAIN_MATS.length >= n) return;
+  while (MAT_STATS.length < n) MAT_STATS.push(null);
+  while (MAT_NAMES.length < n) MAT_NAMES.push(undefined);
+  while (TERRAIN_MATS.length < n) {
+    const m = customTerrainMat(), id = TERRAIN_MATS.length;
+    TERRAIN_MATS.push(m);
+    TERRAIN_FACE_MATS.push(faceMatOf(m));
+    TERRAIN_PBR.push(pbrOf(m, id));
+    TERRAIN_BASE.push(baseOf(m));
+  }
+  TERRAIN_CHUNK_MAT.needsUpdate = TERRAIN_BATCH_MAT.needsUpdate = true;
+}
 
 // Per column, two RGBA8 texels side by side: (2i, j) is the tint as a 16-bit
 // fraction of 1/32768 then the top level above VOX_FLOOR as 16 bits; (2i+1, j)
@@ -2130,6 +2151,8 @@ const TERRAIN_BATCH_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RG
 TERRAIN_BATCH_DEPTH.onBeforeCompile = (sh) => { terrainVertex(sh); terrainBatchVertex(sh); };
 const TERRAIN_BATCH_MAT = TERRAIN_CHUNK_MAT.clone();
 TERRAIN_BATCH_MAT.onBeforeCompile = (sh) => { TERRAIN_CHUNK_MAT.onBeforeCompile(sh); terrainBatchVertex(sh); };
+for (const m of [TERRAIN_CHUNK_MAT, TERRAIN_BATCH_MAT])
+  m.customProgramCacheKey = function () { return this.onBeforeCompile.toString() + TERRAIN_PBR.length; };
 
 // A falling powder grain's own box, vertex-coloured like a tiny slice of
 // terrain instead of one flat material colour: each of the cube's 6 faces is
@@ -2291,7 +2314,7 @@ function lodStepFor(dist) {
 const MERGE_SIZE = [1, 2, 4, 5];
 const mergeSizeFor = (step) => MERGE_SIZE[step - 1];
 
-const mergeMatCounts = new Uint32Array(MAT_IDS);
+const mergeMatCounts = new Uint32Array(MAT_ID_LIMIT);
 
 // Scratch, reused by every rebuild. The first pass records each exposed face of
 // the chunk (see addFace): its direction, the plane it lies in, where in that
@@ -2612,7 +2635,7 @@ function collectColumn(i, j, step = 1) {
         if (mm !== AIR) mergeMatCounts[mm]++;
       }
   let m = -1, best = 0;
-  for (let mm = 0; mm < MAT_IDS; mm++) {
+  for (let mm = 0; mm < MAT_ID_LIMIT; mm++) {
     if (mergeMatCounts[mm] > best) { best = mergeMatCounts[mm]; m = mm; }
   }
   if (m < 0) return 0;
@@ -2825,28 +2848,31 @@ function applyRenderDist() {
 // chunkCustom marks a chunk whose palette is not the identity, which keeps it
 // out of mergeBatch (a merged group has no per-chunk palette to carry).
 const chunkCustom = new Uint8Array(CHUNK_N * CHUNK_N);
-const palSlot = new Uint8Array(MAT_IDS), palId = new Uint8Array(16);
+const palSlot = new Uint8Array(MAT_ID_LIMIT), palId = new Uint8Array(16), palSeen = new Uint8Array(MAT_ID_LIMIT);
 const palWords = new Float32Array(4);
+// Created ids are too many for a bitmask, so palSeen marks them; they still
+// take free slots lowest id first, which is how the slots were always handed out.
 function chunkPalette(nv) {
-  let used = 0, custom = 0;
+  let used = 0, custom = false;
   for (let v = 0; v < nv; v += 4) {
     const m = qInfo[v] & 63;
     if (m < N_MATS) used |= 1 << m;
-    else if (m >= CUSTOM_MAT0) custom |= 1 << (m - CUSTOM_MAT0);
+    else if (m >= CUSTOM_MAT0) { palSeen[m] = 1; custom = true; }
   }
   for (let m = 0; m < 16; m++) palSlot[m] = palId[m] = m;
-  for (let c = 0, free = 0; c < CUSTOM_MAT_MAX; c++) {
-    if (!(custom >> c & 1)) continue;
+  for (let m = CUSTOM_MAT0, free = 0; custom && m < MAT_ID_LIMIT; m++) {
+    if (!palSeen[m]) continue;
+    palSeen[m] = 0;
     while (free < 16 && used >> free & 1) free++;
-    if (free === 16) { palSlot[CUSTOM_MAT0 + c] = DIRT; continue; }
-    palSlot[CUSTOM_MAT0 + c] = free;
-    palId[free] = CUSTOM_MAT0 + c;
+    if (free === 16) { palSlot[m] = DIRT; continue; }
+    palSlot[m] = free;
+    palId[free] = m;
     used |= 1 << free;
   }
   for (let w = 0; w < 4; w++) {
     palWords[w] = palId[w * 4] + palId[w * 4 + 1] * 64 + palId[w * 4 + 2] * 4096 + palId[w * 4 + 3] * 262144;
   }
-  return custom !== 0;
+  return custom;
 }
 
 // The merge's nv corners packed into vb, relative to the chunk's origin: ox and
@@ -3136,8 +3162,8 @@ let meshWorker = null, meshInflight = 0, meshJobSeq = 0;
 function meshWorkerSource() {
   return `'use strict';
 const GEN_N = ${GEN_N}, GEN_R = ${GEN_R}, BLOCK = ${BLOCK}, CHUNK = ${CHUNK}, CHUNK_N = ${CHUNK_N};
-const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, MAT_IDS = ${MAT_IDS}, FK = ${FK};
-const CUSTOM_MAT0 = ${CUSTOM_MAT0}, CUSTOM_MAT_MAX = ${CUSTOM_MAT_MAX}, DIRT = ${DIRT};
+const VOX_FLOOR = ${VOX_FLOOR}, NO_COLUMN = ${NO_COLUMN}, AIR = ${AIR}, N_MATS = ${N_MATS}, MAT_ID_LIMIT = ${MAT_ID_LIMIT}, FK = ${FK};
+const CUSTOM_MAT0 = ${CUSTOM_MAT0}, DIRT = ${DIRT};
 const GRAIN_GRID = ${GRAIN_GRID}, HALF_BLOCK = ${HALF_BLOCK};
 const FACES = ${JSON.stringify(FACES)}, MERGE_SIZE = ${JSON.stringify(MERGE_SIZE)};
 const GRAIN_TINTS = ${JSON.stringify(GRAIN_TINTS)};
@@ -3150,13 +3176,13 @@ let COL_ROW = 0, COL_K0 = 0;
 const colK = (i, j) => j * COL_ROW + i - COL_K0;
 const voxFloorAt = (k, d) => voxFlr[k * 3 + d], voxFloorVis = (k) => voxFlr[k * 3 + 2];
 let voxMat = new Uint8Array(0), visBits = new Uint8Array(0);
-const mergeMatCounts = new Uint32Array(MAT_IDS);
+const mergeMatCounts = new Uint32Array(MAT_ID_LIMIT);
 let faceN = 0, mergeMask = new Uint8Array(4096);
 let faceP = new Int32Array(16384), faceQ = new Int32Array(16384), faceM = new Uint8Array(16384);
 let faceB = new Int32Array(16384), faceOrd = new Int32Array(16384);
 const planeLo = new Int32Array(6), planeHi = new Int32Array(6), planeAt = new Int32Array(6);
 let planeEnd = new Int32Array(1024);
-const palSlot = new Uint8Array(MAT_IDS), palId = new Uint8Array(16), palWords = new Float32Array(4), packBox = new Int32Array(4);
+const palSlot = new Uint8Array(MAT_ID_LIMIT), palId = new Uint8Array(16), palSeen = new Uint8Array(MAT_ID_LIMIT), palWords = new Float32Array(4), packBox = new Int32Array(4);
 let qPos = new Int32Array(16384 * 3), qInfo = new Uint16Array(16384), qN = 0;
 let rbI0 = 0, rbJ0 = 0, rbStep = 1;
 const colPatch = new Uint8Array(CHUNK * CHUNK * 8);
@@ -6712,14 +6738,13 @@ function craterGround(s, E, vn) {
     }
     const m = voxelAt(c.i, c.j, c.lvl);
     if (m === AIR || m === WATER) continue;
-    // Thrown out of the crater, up and away from the middle. The cube is the
-    // first body breakBlock spawns; whatever the hole then brings down after
-    // it is left to fall as it would.
-    const bodies = impactCollect(() => breakBlock(c.i, c.j, c.lvl));
-    if (!bodies.length) continue;
-    born++;
+    // Thrown out of the crater, up and away from the middle, in the chunk
+    // processImpacts' breakBatch puts it in; whatever the hole then brings
+    // down after it is left to fall as it would. Counted a block at a time,
+    // as when every block was a body of its own.
     const u = vn * IMPACT_EJECT;
-    bodies[0].velocity.set(hx * u * 0.7, u, hz * u * 0.7);
+    if (!breakBlock(c.i, c.j, c.lvl, true, { x: hx * u * 0.7, y: u, z: hz * u * 0.7 })) continue;
+    born++;
   }
   return born;
 }
@@ -6852,7 +6877,7 @@ function processImpacts() {
   // of its contacts that frame pass (the cooldown stamp below says it was).
   impactQueue.sort((x, y) => y.vn - x.vn);
   const reduced = (x, y) => !x ? y : !y ? x : x * y / (x + y);
-  for (const h of impactQueue) {
+  breakBatch(() => { for (const h of impactQueue) {
     if (impactSolidLeft <= 0 && impactPending.length >= IMPACT_PENDING_MAX) break;
     const { a, b } = h;
     if (!a.world || !b.world) continue;   // gone with an earlier hit this frame
@@ -6888,7 +6913,7 @@ function processImpacts() {
       if (!bites) continue;
       impactSolidLeft -= s.cell ? craterGround(s, Es, h.vn) : chipPiece(s, Es, h.vn);
     }
-  }
+  } });
   impactQueue.length = 0;
   digImpactPending();
 }
@@ -8117,17 +8142,19 @@ function breakDebrisBlock(mesh, idx) {
 // heavily overloaded piece comes apart in one pass instead of shedding a block
 // per solve while the rest stays red. All of them are read before any is cut:
 // cutting renumbers the slots behind it, and a split hands blocks to new pieces.
-// Each solid block leaves as a one-cube piece sitting exactly where it was —
+// The solid blocks leave in chunks (breakChunks) sitting exactly where they were —
 // built in the piece's frame, turned with it, moving with it (spawnDebrisPart)
-// — rather than snapped to the world grid, where it would overlap the blocks
-// beside it and kick the piece away.
+// — rather than snapped to the world grid, where they would overlap the blocks
+// beside them and kick the piece away. A chunk is always smaller than the piece
+// it came off: a piece all of whose blocks read red would otherwise come back
+// as itself, under the same load, to be broken again on every solve.
 function breakDebrisBlocks(mesh, idxs) {
   const lat = mesh.userData.blocks;
   if (!lat) return 0;
   const f = chunkOfMesh(mesh);
   mesh.updateWorldMatrix(true, false);
   const qs = [...new Set(idxs)].filter((q) => q >= 0 && q < lat.length).sort((x, y) => y - x);
-  const cubes = [];
+  const cubes = [], cap = Math.min(BREAK_CHUNK_MAX, lat.length - 1);
   // From the back, so a cut never moves a block still to be cut.
   for (const q of qs) {
     const b = lat[q], dropMat = resolveBreakMat(b.mat);
@@ -8145,7 +8172,13 @@ function breakDebrisBlocks(mesh, idxs) {
   if (!qs.length) return 0;
   // Spawned while the piece still lies in the frame the cubes were read in:
   // the rebuild below re-centres it.
-  for (const c of cubes) spawnDebrisPart(mesh, [c], f && f.body);
+  // Lattice cells as whole blocks from the first cube: the piece's own
+  // positions are centre-relative and sit on half-blocks.
+  const p0 = cubes[0]?.pos;
+  for (const c of cubes) {
+    c.x = Math.round((c.pos.x - p0.x) / BLOCK); c.y = Math.round((c.pos.y - p0.y) / BLOCK); c.z = Math.round((c.pos.z - p0.z) / BLOCK);
+  }
+  for (const part of breakChunks(cubes, cap)) spawnDebrisPart(mesh, part, f && f.body);
   if (!lat.length) { removeDebrisMesh(mesh); return qs.length; }
   splitDebrisIfNeeded(mesh);
   if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }   // lighter, and disturbed
@@ -8155,8 +8188,9 @@ function breakDebrisBlocks(mesh, idxs) {
 // Terrain block. The housekeeping is editBlock's, done by hand because the
 // falling piece has to be spawned from the material before it is overwritten.
 // gravity false: the caller is taking more blocks out and asks what hangs once
-// they are all gone (stressBreakSaturated).
-function breakBlock(i, j, lvl, gravity = true) {
+// they are all gone (stressBreakSaturated). eject: the velocity its cube is
+// thrown with — shared out over the chunk it leaves in, under breakBatch.
+function breakBlock(i, j, lvl, gravity = true, eject = null) {
   if (!inVoxelRange(i, j, lvl)) return false;
   const m = voxelAt(i, j, lvl);
   if (m === AIR || m === WATER) return false;
@@ -8185,11 +8219,71 @@ function breakBlock(i, j, lvl, gravity = true) {
     }
   }
 
-  // A group of one — the same path a broken-off cliff takes, just smaller.
-  spawnFallingChunk(new Map([[gravKey(i, j, lvl), { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat), crack }]]));
+  // A group of one — the same path a broken-off cliff takes, just smaller —
+  // or, held back by breakBatch, part of a chunk of the ones broken with it.
+  const u = { i, j, lvl, m: dropMat, color: terrainBlockColor(i, j, lvl, dropMat), crack, eject };
+  if (breakHeld && !MAT_STATS[dropMat]?.powder) breakHeld.push(u);
+  else {
+    spawnFallingChunk(new Map([[gravKey(i, j, lvl), u]]));
+    if (eject) fallingChunks[fallingChunks.length - 1].body.velocity.set(eject.x, eject.y, eject.z);
+  }
   // And whatever the hole left hanging comes down after it.
   if (gravity) applyGravity(i, j, lvl);
   return true;
+}
+
+// Blocks broken together off the world leave as chunks rather than a body
+// each: a collapse breaking hundreds of blocks at once was hundreds of bodies,
+// and those bodies were the lag. breakBatch(fn) holds back the cubes
+// breakBlock spawns while fn runs, then spawns them in chunks of one material,
+// each touching face to face and at most BREAK_CHUNK_MAX blocks (breakChunks).
+// Nothing else is held: a block whose break roll gave powder, and whatever a
+// hole leaves hanging (applyGravity), come down as they always did.
+const BREAK_CHUNK_MAX = 7;
+let breakHeld = null;
+function breakBatch(fn) {
+  if (breakHeld) return fn();
+  breakHeld = [];
+  // Spawned even if fn throws: the blocks have already left the grid.
+  try { return fn(); } finally {
+    const held = breakHeld;
+    breakHeld = null;
+    for (const u of held) { u.x = u.i; u.y = u.lvl; u.z = u.j; u.mat = u.m; }
+    for (const part of breakChunks(held, BREAK_CHUNK_MAX)) {
+      spawnFallingChunk(new Map(part.map((u) => [gravKey(u.i, u.j, u.lvl), u])));
+      // Thrown blocks share what they were thrown with, as one body would.
+      if (!part.some((u) => u.eject)) continue;
+      let vx = 0, vy = 0, vz = 0;
+      for (const u of part) if (u.eject) { vx += u.eject.x; vy += u.eject.y; vz += u.eject.z; }
+      fallingChunks[fallingChunks.length - 1].body.velocity.set(vx / part.length, vy / part.length, vz / part.length);
+    }
+  }
+}
+// `items` ({ x, y, z, mat }, on one lattice) cut into chunks of at most `cap`
+// of one material, every chunk face-connected. Each is grown breadth-first
+// from the first block not yet taken, so it comes out compact and whole.
+const BREAK_NB = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+function breakChunks(items, cap) {
+  const at = new Map();
+  for (const it of items) at.set(it.x + ',' + it.y + ',' + it.z, it);
+  const taken = new Set(), out = [];
+  for (const seed of items) {
+    if (taken.has(seed)) continue;
+    taken.add(seed);
+    const part = [seed];
+    for (let q = 0; q < part.length && part.length < cap; q++) {
+      const c = part[q];
+      for (const [dx, dy, dz] of BREAK_NB) {
+        const nb = at.get((c.x + dx) + ',' + (c.y + dy) + ',' + (c.z + dz));
+        if (!nb || taken.has(nb) || nb.mat !== seed.mat) continue;
+        taken.add(nb);
+        part.push(nb);
+        if (part.length === cap) break;
+      }
+    }
+    out.push(part);
+  }
+  return out;
 }
 
 function flushDirtyChunks() {
@@ -8310,10 +8404,10 @@ function hudBlocks() {
 
 function refreshShovelUI() {
   const n = shovel.held.length;
-  const by = new Array(MAT_IDS).fill(0);
+  const by = new Array(MAT_STATS.length).fill(0);
   for (const m of shovel.held) by[m]++;
   const parts = [];
-  for (let m = 0; m < MAT_IDS; m++) if (by[m]) parts.push(by[m] + ' ' + (MAT_NAMES[m] || '?'));
+  for (let m = 0; m < by.length; m++) if (by[m]) parts.push(by[m] + ' ' + (MAT_NAMES[m] || '?'));
   heldPanel.textContent = 'Blocks held: ' + n + (parts.length ? '  —  ' + parts.join(', ') : '');
   hudText(heldHudEl, String(n));
   shovelBtn.innerHTML = 'Shovel &mdash; ' + (shovel.on ? 'On' : 'Off');
@@ -8571,10 +8665,10 @@ const titleCase = (s) => s.replace(/\b\w/g, (c) => c.toUpperCase());
 // id — placing, the stress solver, powder, debris — takes them as they are.
 // Kept in localStorage, and carried in every save beside the blocks made of them.
 const CUSTOM_MATS_KEY = 'hermes.customMats';
-const isCustomMat = (m) => m >= CUSTOM_MAT0 && m < MAT_IDS && !!MAT_STATS[m];
+const isCustomMat = (m) => m >= CUSTOM_MAT0 && !!MAT_STATS[m];
 const customMatIds = () => {
   const ids = [];
-  for (let m = CUSTOM_MAT0; m < MAT_IDS; m++) if (MAT_STATS[m]) ids.push(m);
+  for (let m = CUSTOM_MAT0; m < MAT_STATS.length; m++) if (MAT_STATS[m]) ids.push(m);
   return ids;
 };
 // A definition as stored, or null if it is not one.
@@ -8588,13 +8682,14 @@ function customMatDef(d) {
     weight: num(d.weight, 0), buoyancy: num(d.buoyancy, 0),
     strength: num(d.strength, 1e-6), pull: num(d.pull, 1e-6), powder: !!d.powder,
   };
-  if (def.id < CUSTOM_MAT0 || def.id >= MAT_IDS || !def.name || !def.color) return null;
+  if (def.id < CUSTOM_MAT0 || def.id >= MAT_ID_LIMIT || !def.name || !def.color) return null;
   if ([def.weight, def.buoyancy, def.strength, def.pull].some(Number.isNaN)) return null;
   return def;
 }
 const customMatDefs = () => customMatIds().map((m) => ({ id: m, ...MAT_STATS[m] }));
 function customMatInstall(d) {
   const { id, name, color, weight, buoyancy, strength, pull, powder } = d;
+  matTablesGrow(id + 1);
   MAT_STATS[id] = { name, weight, buoyancy, strength, pull, powder, color };
   MAT_NAMES[id] = name.toLowerCase();
   const c = TERRAIN_MATS[id].color.set(color);
@@ -8661,8 +8756,8 @@ function customMatsAdopt(list) {
   for (const d of mine) {
     if (names.has(d.name.toLowerCase()) || !defs.some((s) => s.id === d.id)) continue;
     let id = CUSTOM_MAT0;
-    while (id < MAT_IDS && MAT_STATS[id]) id++;
-    if (id === MAT_IDS) { console.warn('no free id for created material', d.name); continue; }
+    while (id < MAT_ID_LIMIT && MAT_STATS[id]) id++;
+    if (id === MAT_ID_LIMIT) { console.warn('no free id for created material', d.name); continue; }
     customMatInstall({ ...d, id });
   }
   customMatsStore();
@@ -8741,16 +8836,15 @@ for (const el of matNewEl.querySelectorAll('input[type=text]')) {
 bindTap(document.getElementById('mn-add'), () => {
   const val = (id) => parseFloat(document.getElementById(id).value.replace(',', '.'));
   const name = document.getElementById('mn-name').value.trim();
-  const ids = customMatIds();
   let id = CUSTOM_MAT0;
-  while (id < MAT_IDS && MAT_STATS[id]) id++;
+  while (id < MAT_ID_LIMIT && MAT_STATS[id]) id++;
   const def = customMatDef({
     id, name, color: document.getElementById('mn-color').value,
     weight: val('mn-weight'), buoyancy: val('mn-buoy'), strength: val('mn-str'), pull: val('mn-pull'),
     powder: document.getElementById('mn-powder').checked,
   });
   let msg = '';
-  if (ids.length >= CUSTOM_MAT_MAX) msg = `At most ${CUSTOM_MAT_MAX} created materials — delete one first`;
+  if (id === MAT_ID_LIMIT) msg = `The game can hold ${MAT_ID_LIMIT - CUSTOM_MAT0} created materials and has them all — delete one first`;
   else if (!name) msg = 'Give it a name';
   else if (MAT_NAMES.some((n) => n === name.toLowerCase().slice(0, 20))) msg = 'That name is taken';
   else if (!def) msg = 'Weight and buoyancy need a number of 0 or more, compression and pull above 0';
@@ -9420,7 +9514,7 @@ function creativeAim() {
 // Rebuilt by customMatsChanged when a material is made or deleted.
 function buildPlacerMatGrid() {
   placerMatGrid.textContent = '';
-  for (let m = 0; m < MAT_IDS; m++) {
+  for (let m = 0; m < MAT_STATS.length; m++) {
     if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;
@@ -12262,11 +12356,13 @@ function stressBreakSaturated() {
   for (let q = 0; q < cells.length; q += 4) ord.push(q);
   ord.sort((a, b) => cells[a + 2] - cells[b + 2]);
   const gone = [];
-  for (const q of ord) {
-    const i = cells[q], j = cells[q + 1], lvl = cells[q + 2];
-    if (voxelAt(i, j, lvl) !== cells[q + 3]) continue;   // gone or changed since the layout
-    if (breakBlock(i, j, lvl, false)) gone.push(i, j, lvl);
-  }
+  breakBatch(() => {
+    for (const q of ord) {
+      const i = cells[q], j = cells[q + 1], lvl = cells[q + 2];
+      if (voxelAt(i, j, lvl) !== cells[q + 3]) continue;   // gone or changed since the layout
+      if (breakBlock(i, j, lvl, false)) gone.push(i, j, lvl);
+    }
+  });
   for (let q = 0; q < gone.length; q += 3) applyGravity(gone[q], gone[q + 1], gone[q + 2]);
   for (const [pc, qs] of pieceHits) {
     // What each block shows now goes with it, broken off or left on the piece.
@@ -12654,7 +12750,7 @@ bindTap(stressShowBtn, () => setStress(stressOn, !stressShown));
 const matBar = document.getElementById('mat-bar');
 function buildMatBar() {
   matBar.textContent = '';
-  for (let m = 0; m < MAT_IDS; m++) {
+  for (let m = 0; m < MAT_STATS.length; m++) {
     if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;

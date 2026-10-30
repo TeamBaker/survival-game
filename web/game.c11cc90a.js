@@ -8138,9 +8138,8 @@ function breakDebrisBlock(mesh, idx) {
 }
 
 // Knock blocks `idxs` (lattice slots) off a piece in one go, and return how many
-// went. The tension break takes every red block of a piece at once, so a
-// heavily overloaded piece comes apart in one pass instead of shedding a block
-// per solve while the rest stays red. All of them are read before any is cut:
+// went. The tension break takes a piece's red blocks a wave at a time
+// (STRESS_BREAK_PER), not a block per solve. All of them are read before any is cut:
 // cutting renumbers the slots behind it, and a split hands blocks to new pieces.
 // The solid blocks leave in chunks (breakChunks) sitting exactly where they were —
 // built in the piece's frame, turned with it, moving with it (spawnDebrisPart)
@@ -10148,6 +10147,7 @@ const STRESS_SOLVE_DEPTH = 8;
 const STRESS_GROUND_R   = 40;    // blocks (8 m) around the player whose ground gets an overlay
 const STRESS_GROUND_DRAW = 3000; // ground overlay cubes, nearest first past this (as many again as built blocks get)
 const STRESS_GEN_SLICE  = 16384; // untouched columns swept per tick for ground a strength edit turned red
+const STRESS_BREAK_PER  = 20;    // blocks one source (the ground, or one piece) breaks per pass; the rest wait their turn
 
 // Cells the player has built, by chunk, as gravCell keys. Pruned lazily: a key
 // whose cell is no longer solid is dropped the next time the world is laid out.
@@ -12191,7 +12191,8 @@ function stressRebuild() {
   stressDrawSig = NaN;   // the drawn window is laid out again on this tick
   if (dirty.length) stressPost(dirty, hits > 0);
   // Nothing to solve, but answers in hand may still be red: ground the sweep
-  // turned up while a solve was out, or columns that waited on one.
+  // turned up while a solve was out, columns that waited on one, or blocks a
+  // wave held back (STRESS_BREAK_PER).
   else stressBreakSaturated();
 }
 
@@ -12258,6 +12259,13 @@ function stressPost(dirty, hit) {
 function stressApply(r) {
   if (!stJob || r.seq !== stJob.seq) return;   // for a world since forgotten
   const S = stCur, nodes = stJob.nodes, hit = stJob.hit;
+  // What was red before the hit was felt (the answers carried over into this
+  // layout): the hit's pass breaks those a wave at a time like any other.
+  let wasRed = null;
+  if (hit) {
+    wasRed = new Uint8Array(stN);
+    for (let n = 0; n < stN; n++) if (stressLevel(n) === STRESS_LUT_N - 1) wasRed[n] = 1;
+  }
   for (let x = 0; x < nodes.length; x++) {
     const n = nodes[x];
     S.u.set(r.u.subarray(x * 6, x * 6 + 6), n * 6);
@@ -12276,7 +12284,7 @@ function stressApply(r) {
   // on that answer, and the colours settle back to what the world carries. It
   // never grows the solve: a hard landing would otherwise bring chunks in for
   // good, every one paid for on every check after, for a force long gone.
-  if (hit) { stressBreakSaturated(); stressRev++; }
+  if (hit) { stressBreakSaturated(wasRed); stressRev++; }
   else if (!stressEscalate(nodes)) stressBreakSaturated();
 }
 
@@ -12286,15 +12294,28 @@ function stressApply(r) {
 // but not yet solved still shows its old colour and is left alone, and one
 // hanging off nothing (Infinity) is gravity's to bring down, not this. What
 // comes down bumps stressRev, and what is left is laid out and solved again.
-// Built and hanging ground alike, and all of it in this one pass: what is left
-// standing is what the answer says carries its load, and any further collapse
-// is the next solve's, started by these breaks. Held back to a budget, the
-// rest stayed red for solve after solve and a collapse crept down a few dozen
-// blocks at a time.
-function stressBreakSaturated() {
+// Built and hanging ground alike. Each source — the ground, and every fallen
+// piece on its own — breaks at most STRESS_BREAK_PER of its red blocks in a
+// pass: a collapse of hundreds at once was one frame of hundreds of bodies,
+// and comes down instead as a crumble of waves. Farthest from what holds it up
+// goes first (stressHops), so a wave never cuts the rest of the red loose: a
+// red block always has a way down through blocks nearer the support, none of
+// which went before it. Taken worst first, a wave took the roots of a slab and
+// the rest of it, red and all, fell whole as one piece.
+// What waits stays red; the breaks are world edits, so the world is laid out
+// and solved again, and what is still red then goes in the next wave (from
+// answers in hand if nothing needed solving — stressRebuild's else). Every
+// pass that holds something back breaks something, so the waves run out.
+// wasRed: on a hit's answer, the nodes red before the hit. That answer is
+// solved once and then forgotten for the world without the hit (stressApply),
+// so a node only the hit turned red, held back, would never read red again:
+// those all break now, as an impact is not held back either, and only the
+// rest count towards the waves.
+function stressBreakSaturated(wasRed = null) {
   if (!stressOn) return;   // not solving, so nothing reads red
-  const S = stCur, top = STRESS_LUT_N - 1;
-  // Ground goes in as i, j, lvl, material: nodes and settled ground alike.
+  const S = stCur, top = STRESS_LUT_N - 1, per = STRESS_BREAK_PER;
+  const hitOnly = (n) => wasRed !== null && n >= 0 && !wasRed[n];
+  // Ground goes in as node (-1 for settled ground), over, i, j, lvl, material.
   const cells = [];
   // A fallen piece's red blocks are gathered here and broken together after
   // the ground, piece by piece: knocking one off renumbers the rest and can
@@ -12313,7 +12334,7 @@ function stressBreakSaturated() {
     if (n < stNTerr) {
       const key = S.key[n];
       const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
-      cells.push(i, j, lvl, S.mat[n]);
+      cells.push(n, stressOver(n), i, j, lvl, S.mat[n]);
       continue;
     }
     while (pi < stPieces.length && stPieces[pi].start + stPieces[pi].count <= n) pi++;
@@ -12345,21 +12366,36 @@ function stressBreakSaturated() {
     if (stressHasGroundR(k)) continue;
     if (!stressGroundRedIn(k, gHit)) stressGroundCols.delete(k);
   }
-  for (let q = 0; q < gHit.length; q += 5) cells.push(gHit[q + 1], gHit[q + 2], gHit[q + 3], gHit[q + 4]);
+  for (let q = 0; q < gHit.length; q += 5) cells.push(-1, gHit[q], gHit[q + 1], gHit[q + 2], gHit[q + 3], gHit[q + 4]);
+  // The ground's wave: only cells still as laid out count towards it, or a
+  // wave of stale ones would break nothing and the rest would wait for good.
+  const ord = [], hitOrd = [];
+  for (let q = 0; q < cells.length; q += 6) {
+    if (voxelAt(cells[q + 2], cells[q + 3], cells[q + 4]) === cells[q + 5]) (hitOnly(cells[q]) ? hitOrd : ord).push(q);
+  }
+  let held = false, hops = null;
+  if (ord.length > per) {
+    hops = stressHops();
+    // Settled ground lies on bedrock, under every node: last, from the top
+    // of its column down. Ties go to the more overloaded.
+    const far = (q) => cells[q] >= 0 ? hops[cells[q]] : -1;
+    ord.sort((a, b) => far(b) - far(a) || (cells[a] < 0 ? cells[b + 4] - cells[a + 4] : 0) || cells[b + 1] - cells[a + 1]);
+    ord.length = per;
+    held = true;
+  }
+  for (const q of hitOrd) ord.push(q);
   // Every red cell leaves the grid before anything is asked whether it still
   // hangs on: broken one at a time with gravity after each, the first break
   // could cut loose a group holding red blocks still to come, and they fell
   // whole inside it rather than breaking. Lowest first, so a block taken from
   // the top of a column does not reshade the ones under it still to go
   // (terrainBlockColor reads the column's top).
-  const ord = [];
-  for (let q = 0; q < cells.length; q += 4) ord.push(q);
-  ord.sort((a, b) => cells[a + 2] - cells[b + 2]);
+  ord.sort((a, b) => cells[a + 4] - cells[b + 4]);
   const gone = [];
   breakBatch(() => {
     for (const q of ord) {
-      const i = cells[q], j = cells[q + 1], lvl = cells[q + 2];
-      if (voxelAt(i, j, lvl) !== cells[q + 3]) continue;   // gone or changed since the layout
+      const i = cells[q + 2], j = cells[q + 3], lvl = cells[q + 4];
+      if (voxelAt(i, j, lvl) !== cells[q + 5]) continue;   // gone or changed since the layout
       if (breakBlock(i, j, lvl, false)) gone.push(i, j, lvl);
     }
   });
@@ -12368,8 +12404,40 @@ function stressBreakSaturated() {
     // What each block shows now goes with it, broken off or left on the piece.
     const lat = pc.mesh.userData.blocks;
     for (let q = 0; q < pc.count; q++) { const k = stressCrackOf(pc.start + q); if (k >= 0) lat[q].crack = k; }
-    breakDebrisBlocks(pc.mesh, qs);
+    let wave = qs.filter((q) => !hitOnly(pc.start + q));
+    if (wave.length > per) {
+      hops ||= stressHops();
+      const h = (q) => hops[pc.start + q];
+      wave.sort((a, b) => h(b) - h(a) || stressOver(pc.start + b) - stressOver(pc.start + a) || a - b);
+      wave.length = per;
+      for (const q of qs) if (hitOnly(pc.start + q)) wave.push(q);
+      held = true;
+    } else wave = qs;
+    breakDebrisBlocks(pc.mesh, wave);
   }
+  // The next wave is asked for outright, not left to the breaks to ask: they
+  // always do today, but a wave that waits on nothing would wait for good.
+  if (held) stressRev++;
+}
+
+// Each node's count of beams from the nearest support (a fixed node, or one
+// with a beam to the ground), over the layout in hand; -1 for one held by
+// nothing. Asked only by a wave that has more than it may take.
+function stressHops() {
+  const S = stCur, hop = new Int32Array(stN).fill(-1), q = [];
+  for (let n = 0; n < stN; n++) if (S.fixed[n]) { hop[n] = 0; q.push(n); }
+  for (let e = 0; e < stNE; e++) {
+    const n = stEA[e] < 0 ? stEB[e] : stEB[e] < 0 ? stEA[e] : -1;
+    if (n >= 0 && hop[n] < 0) { hop[n] = 0; q.push(n); }
+  }
+  for (let x = 0; x < q.length; x++) {
+    const n = q[x];
+    for (let k = stAdjStart[n]; k < stAdjStart[n + 1]; k++) {
+      const m = stAdj[k];
+      if (hop[m] < 0) { hop[m] = hop[n] + 1; q.push(m); }
+    }
+  }
+  return hop;
 }
 
 let stressWorker = null;

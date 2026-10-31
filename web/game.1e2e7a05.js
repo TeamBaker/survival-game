@@ -1169,6 +1169,48 @@ const AIR = N_MATS;
 // a voxel can hold, so it never has to follow them.
 const CUSTOM_MAT0 = AIR + 1, MAT_ID_LIMIT = 64;
 
+// A created material's place angle (powder) and transparency, as the sim and the
+// renderer read them: the panel's numbers turned once, when they are set
+// (matReposeSet, matClearSet), into what the hot loops want, so a built-in id
+// and a created one at the defaults go down exactly the paths they always did.
+//
+// Repose: a grain rolls toward the nearest side where, within reposeReach[m]
+// columns along that side, the ground falls away too far: the grain's top over
+// the top k columns out may be at most k * tan(angle) blocks, which in the air
+// counted down from under the grain (reposeLim) is under ceil(k * tan). One
+// column at one block is the 45 degrees sand has always kept (reposeStd:
+// today's test, verbatim); a shallower angle has to look further out to tell a
+// slope of one in five from flat, a steeper one only enough to average 2-block
+// steps with 1s.
+const REPOSE_REACH_MAX = 16;
+const reposeStd = new Uint8Array(MAT_ID_LIMIT).fill(1);
+const reposeReach = new Uint8Array(MAT_ID_LIMIT).fill(1);
+const reposeLim = new Uint16Array(MAT_ID_LIMIT * REPOSE_REACH_MAX).fill(1);
+// The furthest any material looks: a grain leaving a column can unsettle ones
+// that far off, not just its neighbours (powderDirtySides).
+let reposeReachAll = 1;
+function matReposeSet(m, angle) {
+  reposeStd[m] = angle === 45 ? 1 : 0;
+  const t = Math.tan(angle * Math.PI / 180);
+  // 90 never rolls; anything else at least looks one column out.
+  const R = angle >= 90 ? 0 : angle === 45 ? 1 : t >= 1 ? Math.min(8, Math.ceil(8 / t)) : REPOSE_REACH_MAX;
+  reposeReach[m] = R;
+  for (let k = 1; k <= REPOSE_REACH_MAX; k++) {
+    // A drop of one is level ground (a grain beside a grain), never a slope.
+    reposeLim[m * REPOSE_REACH_MAX + k - 1] = Math.max(1, Math.min(65535, Math.ceil(k * t - 1e-9)));
+  }
+  reposeReachAll = 1;
+  for (let id = CUSTOM_MAT0; id < MAT_ID_LIMIT; id++) if (reposeReach[id] > reposeReachAll) reposeReachAll = reposeReach[id];
+}
+// Transparency: matClear marks the ids drawn see-through (any transparency
+// above 0). A see-through block's own faces go in its chunk's see-through draw,
+// and it puts in the faces of whatever stands against it, which that block
+// never draws itself (it only draws against air) — so nothing else in the
+// mesher, the visibility bits or airLo has to know. clearCount is how many
+// there are: at 0 nothing anywhere asks.
+const matClear = new Uint8Array(MAT_ID_LIMIT);
+let clearCount = 0;
+
 // The numbers are the material's own properties, indexed by material id: weight
 // is how much a block of it drags on you, and is read as-is by the sim — the
 // stress solver's load on the block, and (through debrisWeight) a loose piece's
@@ -1714,6 +1756,20 @@ const stressGroundCols = new Set();
 // Columns written since the tension layout last threw their settled weights
 // away (stSettledW): nothing else changes what generation stacked in one.
 const stressWeightCols = new Set();
+// Columns that hold, or have held, a see-through block (matClear): the mesher
+// walks those all the way down, since the core it skips elsewhere is only
+// buried where everything round it is opaque. Never cleared but by
+// clearColsRecount, so a stale mark costs a longer walk, never a missing face.
+const colClear = new Uint8Array(GEN_N * GEN_N);
+function clearColsRecount() {
+  colClear.fill(0);
+  if (!clearCount) return;
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    const o = voxOff[k];
+    if (o < 0) continue;
+    for (let p = o, end = o + voxLen(k); p < end; p++) if (matClear[voxMat[p]]) { colClear[k] = 1; break; }
+  }
+}
 function setVoxel(i, j, lvl, m) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
   const k = j * GEN_N + i;
@@ -1726,6 +1782,7 @@ function setVoxel(i, j, lvl, m) {
   const was = voxMat[p];
   if (was === m) return was;
   voxMat[p] = m;
+  if (matClear[m]) colClear[k] = 1;
   stressRev++;
   stressCols.add(k);
   stressGroundCols.add(k);
@@ -1907,6 +1964,9 @@ const pbrOf = (m, i) => new THREE.Vector4(m.roughness, m.metalness, m.envMapInte
 const baseOf = (m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b);
 const TERRAIN_PBR = TERRAIN_MATS.map(pbrOf);
 const TERRAIN_BASE = TERRAIN_MATS.map(baseOf);
+// Each material's opacity, 1 less its transparency: only the see-through draw
+// (TERRAIN_CLEAR_MAT) reads it.
+const TERRAIN_ALPHA = TERRAIN_MATS.map(() => 1);
 // Every per-material table out to id n - 1, for a created material about to be
 // installed there. The terrain shaders declare terrainPbr / terrainBase at the
 // length they were compiled with, so a longer table means a new program; the
@@ -1921,8 +1981,9 @@ function matTablesGrow(n) {
     TERRAIN_FACE_MATS.push(faceMatOf(m));
     TERRAIN_PBR.push(pbrOf(m, id));
     TERRAIN_BASE.push(baseOf(m));
+    TERRAIN_ALPHA.push(1);
   }
-  TERRAIN_CHUNK_MAT.needsUpdate = TERRAIN_BATCH_MAT.needsUpdate = true;
+  TERRAIN_CHUNK_MAT.needsUpdate = TERRAIN_BATCH_MAT.needsUpdate = TERRAIN_CLEAR_MAT.needsUpdate = TERRAIN_CLEAR_DEPTH.needsUpdate = true;
 }
 
 // Per column, two RGBA8 texels side by side: (2i, j) is the tint as a 16-bit
@@ -1953,6 +2014,26 @@ function terrainVertex(sh) {
 // material, which would take the packed words for a position.
 const TERRAIN_CHUNK_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
 TERRAIN_CHUNK_DEPTH.onBeforeCompile = terrainVertex;
+// A see-through block's shadow, as thick as the block is opaque: three draws a
+// mesh's every group into the shadow map with the one depth material, so a
+// chunk or piece holding see-through blocks gets this kind instead, which lets
+// through a 4 x 4 dither's share of the texels — the shadow filter blurs that
+// to a lighter shadow; one at 100 casts none.
+const clearDitherGlsl = (a) => `
+  const float clearBayer[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+  ivec2 cq = ivec2(gl_FragCoord.xy) & 3;
+  if (${a} * 16.0 < clearBayer[cq.y * 4 + cq.x] + 0.5) discard;`;
+const TERRAIN_CLEAR_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+TERRAIN_CLEAR_DEPTH.onBeforeCompile = (sh) => {
+  terrainVertex(sh);
+  sh.uniforms.terrainAlpha = { value: TERRAIN_ALPHA };
+  sh.vertexShader = `attribute vec4 terrainPal;\nuniform float terrainAlpha[${TERRAIN_ALPHA.length}];\nvarying float vTerrA;\n`
+    + sh.vertexShader.replace('// terrain vertex unpacked', `
+  int tl = tw.x >> 12;
+  vTerrA = terrainAlpha[(int(terrainPal[tl >> 2]) >> ((tl & 3) * 6)) & 63];`);
+  sh.fragmentShader = 'varying float vTerrA;\n' + sh.fragmentShader.replace('void main() {', 'void main() {' + clearDitherGlsl('vTerrA'));
+};
+TERRAIN_CLEAR_DEPTH.customProgramCacheKey = function () { return this.onBeforeCompile.toString() + TERRAIN_PBR.length; };
 // Terrain is lit as Lambert, which is the cheap part of what MeshStandardMaterial
 // did (sun, hemisphere and ambient into the diffuse colour, sun shadowed), with
 // the rest of the standard shader's output added back on top by hand: the sun's
@@ -2151,7 +2232,24 @@ const TERRAIN_BATCH_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RG
 TERRAIN_BATCH_DEPTH.onBeforeCompile = (sh) => { terrainVertex(sh); terrainBatchVertex(sh); };
 const TERRAIN_BATCH_MAT = TERRAIN_CHUNK_MAT.clone();
 TERRAIN_BATCH_MAT.onBeforeCompile = (sh) => { TERRAIN_CHUNK_MAT.onBeforeCompile(sh); terrainBatchVertex(sh); };
-for (const m of [TERRAIN_CHUNK_MAT, TERRAIN_BATCH_MAT])
+// A chunk's see-through faces (matClear), after its opaque ones in the same
+// buffer and drawn as a second group: blended, and writing no depth, so one
+// never hides another or anything behind it that is drawn after it; what is
+// behind is drawn in full by the opaque pass, and shows through. Chunks with
+// none keep the one material and the one draw.
+const TERRAIN_CLEAR_MAT = TERRAIN_CHUNK_MAT.clone();
+TERRAIN_CLEAR_MAT.transparent = true;
+TERRAIN_CLEAR_MAT.depthWrite = false;
+TERRAIN_CLEAR_MAT.onBeforeCompile = (sh) => {
+  TERRAIN_CHUNK_MAT.onBeforeCompile(sh);
+  sh.uniforms.terrainAlpha = { value: TERRAIN_ALPHA };
+  sh.vertexShader = `uniform float terrainAlpha[${TERRAIN_ALPHA.length}];\nvarying float vTerrA;\n` + sh.vertexShader
+    .replace('vBase = terrainBase[tm];', 'vBase = terrainBase[tm];\n  vTerrA = terrainAlpha[tm];');
+  sh.fragmentShader = 'varying float vTerrA;\n' + sh.fragmentShader
+    .replace('#include <opaque_fragment>', 'diffuseColor.a = vTerrA;\n#include <opaque_fragment>');
+};
+const TERRAIN_CLEAR_PAIR = [TERRAIN_CHUNK_MAT, TERRAIN_CLEAR_MAT];
+for (const m of [TERRAIN_CHUNK_MAT, TERRAIN_BATCH_MAT, TERRAIN_CLEAR_MAT])
   m.customProgramCacheKey = function () { return this.onBeforeCompile.toString() + TERRAIN_PBR.length; };
 
 // A falling powder grain's own box, vertex-coloured like a tiny slice of
@@ -2540,6 +2638,26 @@ function mergeFaces() {
   }
 }
 
+// The see-through quads (matClear) moved behind the rest, order otherwise kept,
+// for the chunk to draw them as a group of their own. Returns where they start.
+function clearSplit(nv) {
+  if (!clearCount) return nv;
+  let nc = 0;
+  for (let v = 0; v < nv; v += 4) if (matClear[qInfo[v] & 63]) nc += 4;
+  if (!nc) return nv;
+  const cp = new Int32Array(nc * 3), ci = new Uint16Array(nc);
+  let w = 0, c = 0;
+  for (let v = 0; v < nv; v += 4) {
+    if (matClear[qInfo[v] & 63]) {
+      cp.set(qPos.subarray(v * 3, v * 3 + 12), c * 3); ci.set(qInfo.subarray(v, v + 4), c); c += 4;
+    } else {
+      if (w !== v) { qPos.copyWithin(w * 3, v * 3, v * 3 + 12); qInfo.copyWithin(w, v, v + 4); }
+      w += 4;
+    }
+  }
+  qPos.set(cp, w * 3); qInfo.set(ci, w);
+  return w;
+}
 
 // Every exposed face of every visible block in column (i, j), recorded for the
 // merge. A block is visible when visBits says it has at least one face touching
@@ -2583,14 +2701,30 @@ function collectColumn(i, j, step = 1) {
     // through voxFloorAt, which the mesh worker's snapshot carries on its own.
     // The block under each one above the floor is in the store; the floor's
     // underside is always open. One bit a face that touches air (FACES order).
-    const lo = Math.max(coreTop + 1, VOX_FLOOR + 1);
+    // A see-through block can sit anywhere in a column (colClear), and what it
+    // leaves showing is not on the visibility bits: that column is walked whole.
+    const clr = clearCount !== 0 && colClear[k] === 1;
+    const lo = clr ? VOX_FLOOR + 1 : Math.max(coreTop + 1, VOX_FLOOR + 1);
     for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
       if (lvl < lo) lvl = VOX_FLOOR;
       let m, open;
       if (lvl > VOX_FLOOR) {
         const p = o + lvl;
         m = voxMat[p];
-        if (m === AIR || !isVisible(p)) continue;
+        if (m === AIR) continue;
+        if (clr && matClear[m] === 1) {
+          // The faces of what stands against it, as that block would draw them
+          // against air; another block of its own material shows nothing.
+          const lv = lvl - VOX_FLOOR;
+          let n;
+          if (lvl <= cE && (n = voxMat[oE + lvl]) !== AIR && n !== m) addBoxFace(1, li + 1, lj, lv, 1, n);
+          if (lvl <= cW && (n = voxMat[oW + lvl]) !== AIR && n !== m) addBoxFace(0, li - 1, lj, lv, 1, n);
+          if (lvl < cap && (n = voxMat[p + 1]) !== AIR && n !== m) addBoxFace(3, li, lj, lv + 1, 1, n);
+          if ((n = voxMat[p - 1]) !== AIR && n !== m) addBoxFace(2, li, lj, lv - 1, 1, n);
+          if (lvl <= cN && (n = voxMat[oN + lvl]) !== AIR && n !== m) addBoxFace(5, li, lj + 1, lv, 1, n);
+          if (lvl <= cS && (n = voxMat[oS + lvl]) !== AIR && n !== m) addBoxFace(4, li, lj - 1, lv, 1, n);
+        }
+        if (!isVisible(p)) continue;
         open = (lvl > cE || voxMat[oE + lvl] === AIR ? 1 : 0) | (lvl > cW || voxMat[oW + lvl] === AIR ? 2 : 0)
           | (lvl >= cap || voxMat[p + 1] === AIR ? 4 : 0) | (voxMat[p - 1] === AIR ? 8 : 0)
           | (lvl > cN || voxMat[oN + lvl] === AIR ? 16 : 0) | (lvl > cS || voxMat[oS + lvl] === AIR ? 32 : 0);
@@ -2937,6 +3071,7 @@ function rebuildChunk(c, r) {
     for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
     mergeFaces();
   }
+  const opq = r ? r.opq : clearSplit(qN);
 
   // The chunk's patch of terrainCols, into the full copy and up to the GPU on
   // its own. A chunk cut short by the edge of the field cannot be sent as a
@@ -3018,6 +3153,17 @@ function rebuildChunk(c, r) {
       attr.needsUpdate = true;
     }
     me.geometry.setDrawRange(0, nq * 6);
+    if (opq < nv) {
+      me.geometry.clearGroups();
+      me.geometry.addGroup(0, (opq >> 2) * 6, 0);
+      me.geometry.addGroup((opq >> 2) * 6, ((nv - opq) >> 2) * 6, 1);
+      me.material = TERRAIN_CLEAR_PAIR;
+      me.customDepthMaterial = TERRAIN_CLEAR_DEPTH;
+    } else if (me.material !== TERRAIN_CHUNK_MAT) {
+      me.geometry.clearGroups();
+      me.material = TERRAIN_CHUNK_MAT;
+      me.customDepthMaterial = TERRAIN_CHUNK_DEPTH;
+    }
     me.setMatrixAt(0, chunkOrigin.makeTranslation(ox, oy, oz));
     me.instanceMatrix.needsUpdate = true;
     // The per-chunk bound is the whole reason for the split — without it three
@@ -3177,6 +3323,9 @@ const colK = (i, j) => j * COL_ROW + i - COL_K0;
 const voxFloorAt = (k, d) => voxFlr[k * 3 + d], voxFloorVis = (k) => voxFlr[k * 3 + 2];
 let voxMat = new Uint8Array(0), visBits = new Uint8Array(0);
 const mergeMatCounts = new Uint32Array(MAT_ID_LIMIT);
+// See-through materials and the window's colClear, sent with a job only while
+// there are any.
+let matClear = new Uint8Array(MAT_ID_LIMIT), clearCount = 0, colClear = new Uint8Array(0);
 let faceN = 0, mergeMask = new Uint8Array(4096);
 let faceP = new Int32Array(16384), faceQ = new Int32Array(16384), faceM = new Uint8Array(16384);
 let faceB = new Int32Array(16384), faceOrd = new Int32Array(16384);
@@ -3197,6 +3346,7 @@ ${addBoxFace}
 ${pushQuad}
 ${emitRect}
 ${mergeFaces}
+${clearSplit}
 ${collectColumn}
 ${chunkPalette}
 ${packCorners}
@@ -3216,6 +3366,8 @@ onmessage = (e) => {
     voxMat = d.vox; visBits = d.bits; voxFlr = d.flr;
     sTop = d.sTop; topLvl = d.topLvl; airLo = d.airLo; tint = d.tint; colMaxCap = d.cap; voxOff = d.off;
     COL_ROW = d.rw; COL_K0 = d.rj0 * d.rw + d.ri0;
+    clearCount = d.mc ? 1 : 0;
+    if (d.mc) { matClear = d.mc; colClear = d.clr; }
     const c = d.c;
     // The snapshot goes back with the answer, for the next job to fill.
     const snap = { sTop: d.sTop, topLvl: d.topLvl, airLo: d.airLo, tint: d.tint, cap: d.cap, off: d.off, vox: d.vox, bits: d.bits, flr: d.flr };
@@ -3238,11 +3390,12 @@ onmessage = (e) => {
     let blocks = 0;
     for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
     mergeFaces();
+    const opq = clearSplit(qN);
     // Packed here, so the main thread copies the vertices straight in.
     const vb = new Uint16Array(qN * 2), patch = colPatch.slice();
     const custom = qN && chunkPalette(qN) ? 1 : 0;
     if (qN) packCorners(vb, qN, 2 * i0, 2 * j0);
-    postMessage({ kind: 'mesh', id: d.id, c, rev: d.rev, step, blocks, nv: qN, vb, custom, pal: palWords.slice(), box: packBox.slice(), patch, snap },
+    postMessage({ kind: 'mesh', id: d.id, c, rev: d.rev, step, blocks, nv: qN, opq, vb, custom, pal: palWords.slice(), box: packBox.slice(), patch, snap },
       [vb.buffer, patch.buffer, ...snapBufs]);
   } catch (err) {
     postMessage({ kind: 'error', msg: String(err && err.stack || err) });
@@ -3346,7 +3499,7 @@ function meshBands(i0, j0, ri0, rj0, rw, rh, step) {
       const side = i > 0 && i < GEN_N - 1 && j > 0 && j < GEN_N - 1
         ? Math.min(airLo[k - 1], airLo[k + 1], airLo[k - GEN_N], airLo[k + GEN_N])
         : VOX_FLOOR;
-      const lo = Math.max(Math.min(side - 1, airLo[k] - 2) + 1, VOX_FLOOR + 1);
+      const lo = clearCount && colClear[k] ? VOX_FLOOR + 1 : Math.max(Math.min(side - 1, airLo[k] - 2) + 1, VOX_FLOOR + 1);
       need(i, j, lo - 1);
       need(i + 1, j, lo); need(i - 1, j, lo); need(i, j + 1, lo); need(i, j - 1, lo);
     }
@@ -3427,6 +3580,11 @@ function meshDispatch(c) {
   s.id = ++meshJobSeq;
   s.rev = chunkRev[c];
   s.step = step;
+  if (clearCount) {
+    s.mc = matClear.slice();
+    s.clr = new Uint8Array(s.rw * s.rh);
+    for (let jj = 0; jj < s.rh; jj++) s.clr.set(colClear.subarray((s.rj0 + jj) * GEN_N + s.ri0, (s.rj0 + jj) * GEN_N + s.ri0 + s.rw), jj * s.rw);
+  }
   meshJob[c] = s.id;
   meshJobStep[c] = s.step;
   meshInflight++;
@@ -5196,6 +5354,26 @@ fallMat.onBeforeCompile = (sh) => {
 // a big piece costs its whole volume in the shadow map each frame.
 const fallDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
 fallDepthMat.onBeforeCompile = fallMat.onBeforeCompile;
+// A piece with see-through blocks in it: each block's opacity comes off its
+// face mask's high bits (debrisFaceMask), so one piece can mix them with
+// opaque ones; blended and writing no depth, as the terrain's see-through draw.
+const fallClearMat = fallMat.clone();
+fallClearMat.transparent = true;
+fallClearMat.depthWrite = false;
+fallClearMat.onBeforeCompile = (sh) => {
+  fallMat.onBeforeCompile(sh);
+  sh.vertexShader = 'varying float vDebA;\n' + sh.vertexShader.replace('#include <project_vertex>',
+    '#include <project_vertex>\n  vDebA = 1.0 - floor(faceHide / 64.0) / 100.0;');
+  sh.fragmentShader = 'varying float vDebA;\n' + sh.fragmentShader
+    .replace('#include <opaque_fragment>', 'diffuseColor.a *= vDebA;\n#include <opaque_fragment>');
+};
+const fallClearDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+fallClearDepth.onBeforeCompile = (sh) => {
+  fallMat.onBeforeCompile(sh);
+  sh.vertexShader = 'varying float vDebA;\n' + sh.vertexShader.replace('#include <project_vertex>',
+    '#include <project_vertex>\n  vDebA = 1.0 - floor(faceHide / 64.0) / 100.0;');
+  sh.fragmentShader = 'varying float vDebA;\n' + sh.fragmentShader.replace('void main() {', 'void main() {' + clearDitherGlsl('vDebA'));
+};
 // A geometry of its own that draws through src's buffers rather than copies of
 // them, for something that only needs an attribute or two of its own on top.
 // three frees every buffer of a geometry on dispose(), shared or not, so one
@@ -5291,10 +5469,13 @@ const debrisLambertMats = new Map();   // standard -> Lambert
 function debrisLambertOf(src) {
   let mt = debrisLambertMats.get(src);
   if (mt) return mt;
-  mt = new THREE.MeshLambertMaterial({ vertexColors: src.vertexColors, shadowSide: src.shadowSide });
+  mt = new THREE.MeshLambertMaterial({ vertexColors: src.vertexColors, shadowSide: src.shadowSide,
+    transparent: src.transparent, opacity: src.opacity, depthWrite: src.depthWrite });
   const pbr = new THREE.Vector3(src.roughness, src.metalness, src.envMapIntensity);
+  // fallClearMat's stand-in reads the alpha too, so the program is src's.
+  mt.customProgramCacheKey = () => 'debrisLambert' + src.onBeforeCompile.toString();
   mt.onBeforeCompile = (sh) => {
-    fallMat.onBeforeCompile(sh);
+    src.onBeforeCompile(sh);
     sh.uniforms.terrainEnv    = { value: scene.environment };
     sh.uniforms.terrainSunDir = { value: SUN };
     sh.uniforms.debrisPbr     = { value: pbr };
@@ -5329,7 +5510,7 @@ function debrisMatFor(src) { return gfx.debrisLambert ? debrisLambertOf(src) : s
 function applyDebrisLambert() {
   const swap = new Map();
   for (const [std, lam] of debrisLambertMats) swap.set(gfx.debrisLambert ? std : lam, gfx.debrisLambert ? lam : std);
-  if (gfx.debrisLambert) for (const std of [fallMat, ...debrisGrainMats.values()]) if (!swap.has(std)) swap.set(std, debrisLambertOf(std));
+  if (gfx.debrisLambert) for (const std of [fallMat, fallClearMat, ...debrisGrainMats.values()]) if (!swap.has(std)) swap.set(std, debrisLambertOf(std));
   scene.traverse((o) => { const to = swap.get(o.material); if (to) o.material = to; });
   // Each cell's batches are kept by material: remade under the new ones.
   for (const C of debrisBatchCells.values()) C.dirty = true;
@@ -5431,22 +5612,49 @@ function debrisCells(lat, S) {
 // neighbour, powder included, and every block gets culled: the piece's own
 // cubes, which sit at the front of the lattice, through the piece's mask, the
 // powder through its layer's.
+//
+// With see-through materials about (clearCount), a block of one hides nothing
+// of another material behind it, and each block carries its transparency as
+// 64 x that over the six mask bits, for fallClearMat to read; the piece's cubes
+// are drawn with that whenever any of them is see-through.
 function debrisFaceMask(mesh) {
   const lat = mesh.userData.blocks, attr = mesh.geometry.attributes.faceHide;
   if (!lat.length) return;
   const { grid, cell, w, wd } = debrisCells(lat, debrisCellsMain);
+  let clear = false;
   for (let q = 0; q < lat.length; q++) {
     const c = cell[q];
     let bits = 0;
-    for (let f = 0; f < 6; f++) {
-      const d = FACE_DIRS[f];
-      if (grid[c + d[0] + d[1] * wd + d[2] * w]) bits |= 1 << f;
+    if (!clearCount) {
+      for (let f = 0; f < 6; f++) {
+        const d = FACE_DIRS[f];
+        if (grid[c + d[0] + d[1] * wd + d[2] * w]) bits |= 1 << f;
+      }
+    } else {
+      const m = lat[q].mat;
+      for (let f = 0; f < 6; f++) {
+        const d = FACE_DIRS[f], nb = grid[c + d[0] + d[1] * wd + d[2] * w];
+        if (nb && (!matClear[lat[nb - 1].mat] || lat[nb - 1].mat === m)) bits |= 1 << f;
+      }
+      if (matClear[m]) {
+        bits += 64 * MAT_STATS[m].transparency;
+        if (q < mesh.count) clear = true;
+      }
     }
     if (q < mesh.count) attr.array[q] = bits;
     else mesh.userData.grains[lat[q].mat].geometry.attributes.faceHide.array[lat[q].k] = bits;
   }
   attr.needsUpdate = true;
-  for (const L of Object.values(mesh.userData.grains || {})) L.geometry.attributes.faceHide.needsUpdate = true;
+  for (const m in mesh.userData.grains || {}) {
+    const L = mesh.userData.grains[m];
+    L.geometry.attributes.faceHide.needsUpdate = true;
+    L.customDepthMaterial = matClear[m] ? fallClearDepth : fallDepthMat;
+  }
+  const plain = debrisMatFor(fallMat), see = debrisMatFor(fallClearMat);
+  if (mesh.material === plain || mesh.material === see) {
+    mesh.material = clear ? see : plain;
+    mesh.customDepthMaterial = clear ? fallClearDepth : fallDepthMat;
+  }
 }
 
 // Which block of its piece a debrisAim hit landed on, as a lattice index, or -1.
@@ -6203,13 +6411,42 @@ const POWDER_SIDES = [[1, 0], [0, 1], [-1, 0], [0, -1]];
 // The same four in the order shedColumn marks them: powderDirty is walked in
 // the order columns went in, so this is not interchangeable with the one above.
 const POWDER_NEAR = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-function powderRoll(i, j, lvl) {
+// A material's own place angle (matReposeSet) widens or narrows that: at 45 it
+// is exactly the test above; otherwise the side whose fall comes soonest wins,
+// so a grain shuffled along level ground toward a far edge always gets nearer
+// it and every roll still ends.
+function powderRoll(i, j, lvl, m) {
   const s0 = (Math.random() * 4) | 0;
-  for (let s = 0; s < 4; s++) {
-    const [di, dj] = POWDER_SIDES[(s0 + s) & 3], ni = i + di, nj = j + dj;
-    if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR && voxelAt(ni, nj, lvl - 1) === AIR) return (s0 + s) & 3;
+  if (reposeStd[m]) {
+    for (let s = 0; s < 4; s++) {
+      const [di, dj] = POWDER_SIDES[(s0 + s) & 3], ni = i + di, nj = j + dj;
+      if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR && voxelAt(ni, nj, lvl - 1) === AIR) return (s0 + s) & 3;
+    }
+    return -1;
   }
-  return -1;
+  const R = reposeReach[m], L0 = m * REPOSE_REACH_MAX, L1 = reposeLim[L0];
+  let best = -1, bestK = R + 1;
+  for (let s = 0; s < 4; s++) {
+    const [di, dj] = POWDER_SIDES[(s0 + s) & 3];
+    let dPrev = 0;
+    for (let k = 1; k < bestK; k++) {
+      const ni = i + di * k, nj = j + dj * k;
+      // The way out is along this level: anything standing in it ends the look.
+      if (!canBuildAt(ni, nj, lvl - 1) || voxelAt(ni, nj, lvl) !== AIR) break;
+      // The open levels under lvl in that column, as far as either question
+      // below needs them counted.
+      const L = reposeLim[L0 + k - 1], cap = Math.max(L, dPrev + L1 + 1);
+      let d = 0;
+      while (d < cap && lvl - 1 - d >= VOX_FLOOR && voxelAt(ni, nj, lvl - 1 - d) === AIR) d++;
+      // A fall off the side of the slope, further out than its first column, is
+      // not the slope: the grain only finds it once the slope has brought it to
+      // the edge, as on flat ground by a cliff it never feels the cliff at all.
+      if (k > 1 && d - dPrev > L1) break;
+      if (d >= L) { best = (s0 + s) & 3; bestK = k; break; }
+      dPrev = d;
+    }
+  }
+  return best;
 }
 // A block taken out can leave the sand beside it standing two over the hole,
 // not just the sand above it hanging, so the columns round it want a look too:
@@ -6219,6 +6456,17 @@ function powderDirtySides(i, j) {
   if (i < GEN_N - 1) powderDirty.add(j * GEN_N + i + 1);
   if (j > 0) powderDirty.add((j - 1) * GEN_N + i);
   if (j < GEN_N - 1) powderDirty.add((j + 1) * GEN_N + i);
+  if (reposeReachAll > 1) powderDirtyFar(i, j);
+}
+// A material that looks further than one column out for its slope can be left
+// standing too steep by a hole that far away.
+function powderDirtyFar(i, j) {
+  for (let k = 2; k <= reposeReachAll; k++) {
+    if (i - k >= 0) powderDirty.add(j * GEN_N + i - k);
+    if (i + k < GEN_N) powderDirty.add(j * GEN_N + i + k);
+    if (j - k >= 0) powderDirty.add((j - k) * GEN_N + i);
+    if (j + k < GEN_N) powderDirty.add((j + k) * GEN_N + i);
+  }
 }
 // Shed whatever powder in column c has nothing under it, up to `budget` blocks.
 // Returns what is left of the budget.
@@ -6243,7 +6491,7 @@ function shedColumn(c, budget) {
     // under it, and then it rolls (powderRoll).
     if (lvl - 1 < VOX_FLOOR) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
-    const roll = voxMat[o + lvl - 1] !== AIR ? powderRoll(i, j, lvl) : -1;
+    const roll = voxMat[o + lvl - 1] !== AIR ? powderRoll(i, j, lvl, m) : -1;
     if (voxMat[o + lvl - 1] !== AIR && roll < 0) continue;
     // Its group may have come loose already; if that was paid for, look again.
     if (gravGuard(i, j, lvl)) { o = voxOff[c] - VOX_FLOOR; lvl++; continue; }
@@ -6255,6 +6503,7 @@ function shedColumn(c, budget) {
       const ni = i + di, nj = j + dj;
       if (ni >= 0 && nj >= 0 && ni < GEN_N && nj < GEN_N) powderDirty.add(nj * GEN_N + ni);
     }
+    if (reposeReachAll > 1) powderDirtyFar(i, j);
     // It is not gone, it is falling: hand it to the same grain path the rubble
     // uses — off the side it rolled to, if that is how it went.
     const [ri, rj] = roll < 0 ? [i, j] : [i + POWDER_SIDES[roll][0], j + POWDER_SIDES[roll][1]];
@@ -7061,7 +7310,7 @@ function catchPowder(dt) {
       while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) lvl++;   // the first free cell over what it hit
       // Landing on an edge it rolls off and falls on down the lower column,
       // where it may roll again — every roll is a level lower, so it stops.
-      const roll = powderRoll(i, j, lvl);
+      const roll = powderRoll(i, j, lvl, p.mat);
       if (roll >= 0) {
         p.pos.set(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]));
         p.v = 0;
@@ -7111,7 +7360,7 @@ function catchPowder(dt) {
       // The spot depends only on the piece and the grain, not on which block was near.
       const local = debrisSpot(mesh, p.pos, powderZero);
       if (!local) continue;
-      const off = debrisRoll(mesh, local);
+      const off = debrisRoll(mesh, local, p.mat);
       if (off === false) continue;   // it falls on past
       if (off) { p.pos.copy(off); p.v = 0; break; }   // falls on from there, as on the ground
       placeOnDebris(mesh, local, p.mat);
@@ -7559,7 +7808,7 @@ const _debrisRollDown = new THREE.Vector3();
 const _debrisRollSide = new THREE.Vector3();
 const _debrisRollAt = new THREE.Vector3();
 const _debrisRollUnder = new THREE.Vector3();
-function debrisRoll(mesh, local) {
+function debrisRoll(mesh, local, m) {
   const lat = mesh.userData.blocks;
   mesh.getWorldQuaternion(_debrisRollQ).invert();
   const d = _debrisRollDown.set(0, -1, 0).applyQuaternion(_debrisRollQ);
@@ -7575,6 +7824,10 @@ function debrisRoll(mesh, local) {
   };
   if (!filled(_debrisRollUnder.copy(local).add(d))) return false;
   const s0 = (Math.random() * 4) | 0;
+  // A piece is too small a lattice to read a slope off further out than its
+  // edge, so any place angle short of 90 keeps the one-step test; at 90 a grain
+  // stays where it lands, as on the ground.
+  if (!reposeReach[m]) return null;
   for (let s = 0; s < 4; s++) {
     const [u, v] = POWDER_SIDES[(s0 + s) & 3];
     // The two lattice axes across down, in turn, either way along each.
@@ -7650,7 +7903,7 @@ function placeOnDebris(mesh, local, m, rebuild = true) {
 // piece further down.
 function layOnDebris(mesh, local, m, rebuild = true) {
   if (MAT_STATS[m]?.powder) {
-    const off = debrisRoll(mesh, local);
+    const off = debrisRoll(mesh, local, m);
     if (off !== null) {
       const g = powderGrain(0, 0, 0, m, null);
       if (off) g.pos.copy(off); else mesh.localToWorld(g.pos.copy(local));
@@ -8670,6 +8923,13 @@ const customMatIds = () => {
   for (let m = CUSTOM_MAT0; m < MAT_STATS.length; m++) if (MAT_STATS[m]) ids.push(m);
   return ids;
 };
+// The place angle (degrees, 0 to 90; powder only) and transparency (0 opaque
+// to 100 unseen, whole numbers — debrisFaceMask packs it beside the face bits)
+// as a created material keeps them: anything out of range comes back to it,
+// and a definition from before they existed, or no number at all, gets 45 and 0.
+const MAT_ANGLE_STD = 45;
+const matAngleOf = (v) => (v == null || v === '' || !Number.isFinite(+v) ? MAT_ANGLE_STD : Math.min(90, Math.max(0, +v)));
+const matClearOf = (v) => (v == null || v === '' || !Number.isFinite(+v) ? 0 : Math.min(100, Math.max(0, Math.round(+v))));
 // A definition as stored, or null if it is not one.
 function customMatDef(d) {
   if (!d || typeof d !== 'object') return null;
@@ -8680,6 +8940,7 @@ function customMatDef(d) {
     color: /^#[0-9a-f]{6}$/i.test(d.color) ? d.color.toLowerCase() : '',
     weight: num(d.weight, 0), buoyancy: num(d.buoyancy, 0),
     strength: num(d.strength, 1e-6), pull: num(d.pull, 1e-6), powder: !!d.powder,
+    angle: matAngleOf(d.angle), transparency: matClearOf(d.transparency),
   };
   if (def.id < CUSTOM_MAT0 || def.id >= MAT_ID_LIMIT || !def.name || !def.color) return null;
   if ([def.weight, def.buoyancy, def.strength, def.pull].some(Number.isNaN)) return null;
@@ -8687,10 +8948,12 @@ function customMatDef(d) {
 }
 const customMatDefs = () => customMatIds().map((m) => ({ id: m, ...MAT_STATS[m] }));
 function customMatInstall(d) {
-  const { id, name, color, weight, buoyancy, strength, pull, powder } = d;
+  const { id, name, color, weight, buoyancy, strength, pull, powder, angle, transparency } = d;
   matTablesGrow(id + 1);
-  MAT_STATS[id] = { name, weight, buoyancy, strength, pull, powder, color };
+  MAT_STATS[id] = { name, weight, buoyancy, strength, pull, powder, color, angle, transparency };
   MAT_NAMES[id] = name.toLowerCase();
+  matReposeSet(id, powder ? angle : MAT_ANGLE_STD);
+  matClearSet(id, transparency);
   const c = TERRAIN_MATS[id].color.set(color);
   TERRAIN_BASE[id].set(c.r, c.g, c.b);
   TERRAIN_PBR[id].w = powder ? 1 : 0;
@@ -8703,6 +8966,60 @@ function customMatInstall(d) {
     const L = fallingGrainLayers.get(key);
     if (L) L.geometry = key < 0 ? fallingGrainCubeGeo(id) : fallingGrainGeo(id);
     g.dispose();
+  }
+}
+// An id given up: no material, and back to what the tables hold for none.
+function customMatFree(m) {
+  MAT_STATS[m] = null;
+  MAT_NAMES[m] = undefined;
+  matReposeSet(m, MAT_ANGLE_STD);
+  matClearSet(m, 0);
+}
+// Transparency into everything that draws material m. Only a change between 0
+// and not touches the terrain — which blocks are in the see-through draw, and
+// which faces they leave showing — and then only the chunks round m's blocks;
+// otherwise it is the opacity the shaders already read. Pieces holding m get
+// their masks again, which carry it.
+function matClearSet(m, tr) {
+  const on = tr > 0 ? 1 : 0, was = matClear[m], a = 1 - tr / 100;
+  matClear[m] = on;
+  clearCount += on - was;
+  TERRAIN_ALPHA[m] = a;
+  const g = debrisGrainMats.get(m);
+  for (const mt of [TERRAIN_FACE_MATS[m], g, g && debrisLambertMats.get(g)]) {
+    if (!mt) continue;
+    if (mt.transparent !== !!on) { mt.transparent = !!on; mt.depthWrite = !on; mt.needsUpdate = true; }
+    mt.opacity = on ? a : 1;
+  }
+  if (on !== was) {
+    clearColsRecount();
+    for (let k = 0; k < GEN_N * GEN_N; k++) {
+      const o = voxOff[k];
+      if (o < 0) continue;
+      let has = false;
+      for (let p = o, end = o + voxLen(k); p < end; p++) if (voxMat[p] === m) { has = true; break; }
+      if (!has) continue;
+      const i = k % GEN_N, j = (k - i) / GEN_N;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const ii = i + di, jj = j + dj;
+        if (ii >= 0 && jj >= 0 && ii < GEN_N && jj < GEN_N) dirtyChunks.add(chunkOf(ii, jj));
+      }
+    }
+  }
+  for (const f of [...fallingChunks, ...restedChunks]) {
+    if (f.mesh?.userData.blocks?.some((b) => b.mat === m)) debrisFaceMask(f.mesh);
+  }
+  menuRedraw = true;
+}
+// A place angle changed under piles already standing: every column holding m
+// is looked at again by the powder pass, so a shallower angle spreads them out
+// to it (a steeper one leaves them as they stand).
+function matAngleSet(m, angle) {
+  matReposeSet(m, angle);
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    const o = voxOff[k];
+    if (o < 0) continue;
+    for (let p = o, end = o + voxLen(k); p < end; p++) if (voxMat[p] === m) { powderDirty.add(k); break; }
   }
 }
 function customMatsStore() {
@@ -8733,8 +9050,7 @@ function customMatInUse(m) {
 function customMatDelete(m) {
   if (!isCustomMat(m)) return '';
   if (customMatInUse(m)) return `${MAT_STATS[m].name} is still in the world — remove its blocks first`;
-  MAT_STATS[m] = null;
-  MAT_NAMES[m] = undefined;
+  customMatFree(m);
   if (placerMat === m) { placerMat = DIRT; placerMatName.textContent = MAT_STATS[DIRT].name; }
   customMatsStore();
   customMatsChanged();
@@ -8750,7 +9066,7 @@ function customMatsAdopt(list) {
   if (!defs.length) return;
   const mine = customMatDefs();
   const names = new Set(defs.map((d) => d.name.toLowerCase()));
-  for (const d of mine) if (names.has(d.name.toLowerCase())) { MAT_STATS[d.id] = null; MAT_NAMES[d.id] = undefined; }
+  for (const d of mine) if (names.has(d.name.toLowerCase())) customMatFree(d.id);
   for (const d of defs) customMatInstall(d);
   for (const d of mine) {
     if (names.has(d.name.toLowerCase()) || !defs.some((s) => s.id === d.id)) continue;
@@ -8791,7 +9107,15 @@ function buildMatList() {
         + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
         + ` &middot; Pull: `
         + `<input class="mat-str" data-mat="${i}" data-key="pull" type="text" inputmode="decimal" autocomplete="off" value="${st.pull}">`
-        + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
+        + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}`
+        // A built-in powder holds sand's 45 degrees, and is not to be changed.
+        + (st.powder ? ' &middot; Place angle: ' + (isCustomMat(i)
+          ? `<input class="mat-str mat-par" data-mat="${i}" data-key="angle" type="text" inputmode="decimal" autocomplete="off" value="${st.angle}">`
+          : MAT_ANGLE_STD) : '')
+        + (isCustomMat(i)
+          ? ` &middot; Transparency: <input class="mat-str mat-par" data-mat="${i}" data-key="transparency" type="text" inputmode="decimal" autocomplete="off" value="${st.transparency}">`
+          : '')
+        + '</span>'
       : '<span>no stats &mdash; not carryable</span>';
     return '<div class="mat-row">'
          + `<div class="mat-sw" style="background:${hex}"></div>`
@@ -8803,7 +9127,7 @@ function buildMatList() {
   // Strength (compression) and pull are edited in place: a number above zero goes
   // straight into MAT_STATS and the stress overlay re-solves with it; anything else
   // is left marked until the field is left, when it snaps back to the value in force.
-  for (const el of matListEl.querySelectorAll('.mat-str')) {
+  for (const el of matListEl.querySelectorAll('.mat-str:not(.mat-par)')) {
     const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
     el.addEventListener('input', () => {
       const v = parseFloat(el.value.replace(',', '.'));
@@ -8813,6 +9137,26 @@ function buildMatList() {
       st[key] = v;
       if (isCustomMat(m)) customMatsStore();
       stressInvalidate();
+    });
+    el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+  }
+  // A created material's place angle and transparency, the same way: a number
+  // goes in at once, brought into range (0 to 90, 0 to 100) — marked if it had to
+  // be — and the field shows what is in force once it is left.
+  for (const el of matListEl.querySelectorAll('.mat-par')) {
+    const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
+    const fit = key === 'angle' ? matAngleOf : matClearOf;
+    el.addEventListener('input', () => {
+      const raw = parseFloat(el.value.replace(',', '.'));
+      const num = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(raw);
+      const v = num ? fit(raw) : NaN;
+      el.classList.toggle('bad', !num || v !== raw);
+      if (!num || v === st[key]) return;
+      st[key] = v;
+      if (key === 'angle') matAngleSet(m, v);
+      else matClearSet(m, v);
+      customMatsStore();
     });
     el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
@@ -8837,23 +9181,31 @@ bindTap(document.getElementById('mn-add'), () => {
   const name = document.getElementById('mn-name').value.trim();
   let id = CUSTOM_MAT0;
   while (id < MAT_ID_LIMIT && MAT_STATS[id]) id++;
+  const powder = document.getElementById('mn-powder').checked;
+  const angle = powder ? val('mn-angle') : MAT_ANGLE_STD, clear = val('mn-clear');
   const def = customMatDef({
     id, name, color: document.getElementById('mn-color').value,
     weight: val('mn-weight'), buoyancy: val('mn-buoy'), strength: val('mn-str'), pull: val('mn-pull'),
-    powder: document.getElementById('mn-powder').checked,
+    powder, angle, transparency: clear,
   });
   let msg = '';
   if (id === MAT_ID_LIMIT) msg = `The game can hold ${MAT_ID_LIMIT - CUSTOM_MAT0} created materials and has them all — delete one first`;
   else if (!name) msg = 'Give it a name';
   else if (MAT_NAMES.some((n) => n === name.toLowerCase().slice(0, 20))) msg = 'That name is taken';
   else if (!def) msg = 'Weight and buoyancy need a number of 0 or more, compression and pull above 0';
+  else if (!Number.isFinite(angle)) msg = 'Place angle needs a number from 0 to 90';
+  else if (!Number.isFinite(clear)) msg = 'Transparency needs a number from 0 to 100';
   if (msg) { matNewMsg.textContent = msg; return; }
   customMatInstall(def);
   customMatsStore();
   customMatsChanged();
   document.getElementById('mn-name').value = '';
-  matNewMsg.textContent = `Made ${def.name}`;
+  const fitted = [def.angle !== angle && `place angle ${def.angle}`, def.transparency !== clear && `transparency ${def.transparency}`].filter(Boolean);
+  matNewMsg.textContent = `Made ${def.name}` + (fitted.length ? ` (${fitted.join(', ')})` : '');
 });
+// The place angle is a powder's alone, so it is only asked for with the box ticked.
+const mnPowder = document.getElementById('mn-powder');
+mnPowder.addEventListener('change', () => { document.getElementById('mn-angle-row').hidden = !mnPowder.checked; });
 
 // The whole table, laid out as the MAT_STATS source is, so it pastes straight back.
 function matStatsSource() {
@@ -9068,7 +9420,14 @@ if (shSlider) {
   });
 }
 function shadowProgramsChanged() {
-  scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
+  scene.traverse((o) => {
+    if (Array.isArray(o.material)) for (const m of o.material) m.needsUpdate = true;
+    else if (o.material) o.material.needsUpdate = true;
+  });
+  // The see-through draws can be out of the scene just now (no chunk or piece
+  // has a see-through block) and keep the program they were last built with,
+  // shadows and all, until they are back in it.
+  for (const m of [TERRAIN_CLEAR_MAT, fallClearMat, debrisLambertMats.get(fallClearMat)]) if (m) m.needsUpdate = true;
   menuRedraw = true;
   shadowWarm();
 }
@@ -9416,6 +9775,7 @@ function toggleSandbox() {
     sTop.fill(NO_COLUMN);
     visBits.fill(0);
     airLo.fill(VOX_FLOOR);
+    colClear.fill(0);
     powderDirty.clear();
     powderCarry.length = 0;
     for (let c = 0; c < chunkMesh.length; c++) {
@@ -14234,6 +14594,7 @@ function applyWorldCore(s) {
   restoreVoxStore(vs, laid);
   if (laid) airLo.set(laid.airLo);
   else rescanAllAirLo();
+  clearColsRecount();
   worldBlocks = vs.worldBlocks;
   tint.set(vs.tint);
   if (vs.hRaw) hRaw.set(vs.hRaw);
@@ -14590,6 +14951,8 @@ function warmFirstUse() {
   };
   const white = new THREE.Color(1, 1, 1);
   add(debrisInstances(1), true, true).setColorAt(0, white);
+  // See-through pieces only once there is a see-through material to make them of.
+  if (clearCount) add(debrisInstances(1, fallGeo, debrisMatFor(fallClearMat)), true, true).setColorAt(0, white);
   for (let m = 0; m < TERRAIN_FACE_MATS.length; m++) {
     if (!MAT_STATS[m]?.powder || !TERRAIN_FACE_MATS[m]) continue;
     add(debrisInstances(1, debrisGrainGeo(m), debrisGrainMat(m)), true, true).setColorAt(0, white);

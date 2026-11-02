@@ -1186,6 +1186,11 @@ const REPOSE_REACH_MAX = 16;
 const reposeStd = new Uint8Array(MAT_ID_LIMIT).fill(1);
 const reposeReach = new Uint8Array(MAT_ID_LIMIT).fill(1);
 const reposeLim = new Uint16Array(MAT_ID_LIMIT * REPOSE_REACH_MAX).fill(1);
+// Press: how readily the powder gives under a weight (pressPowder), from the
+// same angle: 1 at 0, a little over half at 45, a twentieth at 90. Steep
+// powder still gives, only slowly.
+const pressEaseOf = (angle) => 0.05 + 0.95 * Math.cos(angle * Math.PI / 180) ** 2;
+const pressEase = new Float32Array(MAT_ID_LIMIT).fill(pressEaseOf(45));
 // The furthest any material looks: a grain leaving a column can unsettle ones
 // that far off, not just its neighbours (powderDirtySides).
 let reposeReachAll = 1;
@@ -1195,6 +1200,7 @@ function matReposeSet(m, angle) {
   // 90 never rolls; anything else at least looks one column out.
   const R = angle >= 90 ? 0 : angle === 45 ? 1 : t >= 1 ? Math.min(8, Math.ceil(8 / t)) : REPOSE_REACH_MAX;
   reposeReach[m] = R;
+  pressEase[m] = pressEaseOf(angle);
   for (let k = 1; k <= REPOSE_REACH_MAX; k++) {
     // A drop of one is level ground (a grain beside a grain), never a slope.
     reposeLim[m * REPOSE_REACH_MAX + k - 1] = Math.max(1, Math.min(65535, Math.ceil(k * t - 1e-9)));
@@ -6519,11 +6525,140 @@ function shedColumn(c, budget) {
   }
   return budget;
 }
-function checkTerrainPowder() {
+// ----- a weight on powder presses it out from under -----
+// Powder holds nothing up for good. A piece lying on it (a loose piece: the
+// ground and what is built on it never press) squeezes the powder cells under
+// it out to the side, a cell at a time, and sinks into each hole it leaves,
+// until what it lies on is not powder or nothing is under it. The load on a
+// cell a block of the piece lies on is the piece's weight shared over every
+// ground cell it lies on, powder or not; that, times how readily the powder
+// gives (pressEase, from its place angle), is how many cells a second go from
+// under that block. A cell that goes is a grain at the top of the nearest
+// column, along one of the four sides, that is out from under the piece and
+// reached through powder only; it lands from there as any grain does.
+const PRESS_RATE = 0.2;    // cells a second per unit of weight on the cell, at pressEase 1
+const PRESS_MAX = 10;      // cells a second, however heavy
+const PRESS_REACH = 8;     // columns out a pressed cell looks for a way up
+const PRESS_RISE = 16;     // levels up through powder it may be pushed
+const _pressAt = [];
+function pressPowder(dt) {
+  if (!dt || (!restedChunks.length && !fallingChunks.length)) return;
+  dt = Math.min(dt, 0.1);
+  // As the lists stand now: a loose group a cell's going lets off joins the end of fallingChunks.
+  const nR = restedChunks.length, nF = fallingChunks.length;
+  for (let k = 0; k < nR; k++) if (!restedChunks[k].gone) pressPiece(restedChunks[k], dt);
+  for (let k = 0; k < nF; k++) if (!fallingChunks[k].gone) pressPiece(fallingChunks[k], dt);
+}
+function pressPiece(f, dt) {
+  const b = f.body;
+  // On the move it is not lying on anything yet (and a sleeper is lying still);
+  // one held kinematic (a lone block gliding into its cell) is not lying at all.
+  if (b.type !== CANNON.Body.DYNAMIC) return;
+  if (b.sleepState !== CANNON.Body.SLEEPING && (b.velocity.lengthSquared() >= FALL_REST_V * FALL_REST_V
+   || b.angularVelocity.lengthSquared() >= FALL_REST_V * FALL_REST_V)) return;
+  const c = powderCatchBox(f.mesh);
+  // Nothing under it was powder last look and it has not moved since: nor is it now.
+  const sig = f.pressNone;
+  if (sig && sig[0] === c.px && sig[1] === c.py && sig[2] === c.pz && sig[3] === c.qw && sig[4] === c.qx
+   && sig[5] === c.qy && sig[6] === c.qz && sig[7] === c.n) return;
+  const lat = f.mesh.userData.blocks, at = _pressAt;
+  at.length = 0;
+  let w = 0, nS = 0;
+  for (let q = 0; q < c.n; q++) {
+    w += debrisWeight(lat[q].mat);
+    // The cell under the block's bottom face. A block over another of its own
+    // piece finds air there (a piece is not in the store), so only the
+    // undersides count.
+    const i = colI(c.w[q * 3]), j = colJ(c.w[q * 3 + 2]), l = Math.floor(c.w[q * 3 + 1] / BLOCK - 0.75);
+    const v = voxelAt(i, j, l);
+    if (v === AIR || v === WATER) continue;
+    nS++;
+    if (MAT_STATS[v]?.powder) at.push(i, j, l, v);
+  }
+  if (!nS && f.pressSink) { pressSink(f, c); return; }   // pressed out from under altogether: down into the holes
+  f.pressSink = false;
+  if (!at.length) {
+    f.pressNone = [c.px, c.py, c.pz, c.qw, c.qx, c.qy, c.qz, c.n];
+    if (f.pressAcc) f.pressAcc.clear();
+    return;
+  }
+  f.pressNone = null;
+  const was = f.pressAcc || new Map(), now = f.pressOld || new Map();
+  now.clear();
+  const load = w / nS, NN = GEN_N * GEN_N;
+  for (let k = 0; k < at.length; k += 4) {
+    const i = at[k], j = at[k + 1], l = at[k + 2], m = at[k + 3], key = (l - VOX_FLOOR) * NN + j * GEN_N + i;
+    const acc = (was.get(key) || 0) + Math.min(PRESS_MAX, PRESS_RATE * load * pressEase[m]) * dt;
+    // Somewhere to go, or it waits (full) for a way out.
+    if (acc >= 1 && pressOut(i, j, l, m)) { f.pressSink = true; continue; }
+    now.set(key, Math.min(acc, 1));
+  }
+  f.pressAcc = now; f.pressOld = was;
+}
+// A piece every cell under which has been pressed out goes down into the holes
+// itself, square, as far as the nearest ground under any of its blocks: left to
+// the physics, the powder flush against its sides would hold it up, since
+// cannon's friction grips a side as hard as a floor. Not before the holes are in
+// the colliders, or it would go down into the old ones and be thrown back out.
+const pressColDone = (c) => !colJob[c] && !dirtyColliders.has(c) && !colRedo.has(c) && !powderLateCols.has(c);
+function pressSink(f, c) {
+  let gap = Infinity;
+  for (let q = 0; q < c.n; q++) {
+    const i = colI(c.w[q * 3]), j = colJ(c.w[q * 3 + 2]), y = c.w[q * 3 + 1];
+    if (!pressColDone(chunkOf(i, j))) return;
+    // Down from the cell under the block (a block of its own over another finds
+    // that one's cell open, and so a longer way down) to the first that is not air.
+    const l0 = Math.floor(y / BLOCK - 0.75);
+    let l = l0;
+    while (l > l0 - 3 && voxelAt(i, j, l) === AIR) l--;
+    gap = Math.min(gap, y - HALF_BLOCK - (l + 1) * BLOCK);
+  }
+  f.pressSink = false;
+  if (!(gap > 0.001)) return;
+  const b = f.body;
+  b.position.y -= gap; b.previousPosition.y -= gap; b.interpolatedPosition.y -= gap;
+  b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
+  b.aabbNeedsUpdate = true;
+  b.wakeUp();
+  f.mesh.position.copy(b.position);
+}
+// Press the powder cell (i, j, l) out from under a piece: true if it went.
+function pressOut(i, j, l, m) {
+  const s0 = (Math.random() * 4) | 0;
+  let open = 15;   // the sides still worth looking along
+  for (let k = 1; k <= PRESS_REACH && open; k++) {
+    for (let s = 0; s < 4; s++) {
+      const d = (s0 + s) & 3;
+      if (!(open >> d & 1)) continue;
+      const ni = i + POWDER_SIDES[d][0] * k, nj = j + POWDER_SIDES[d][1] * k;
+      // Up that column through powder to its first open cell; anything else ends the side.
+      let L = l, v;
+      while (L <= l + PRESS_RISE && (v = voxelAt(ni, nj, L)) !== AIR && MAT_STATS[v]?.powder) L++;
+      if (v !== AIR || L > l + PRESS_RISE || !canBuildAt(ni, nj, L)) { open &= ~(1 << d); continue; }
+      const x = colX(ni), y = (L + 0.5) * BLOCK, z = colZ(nj);
+      // Still under a piece (in it, or with it right over: a hole another
+      // cell has just left): further out.
+      if (powderPieceBeside(x, y, z) || powderPieceBeside(x, y + BLOCK, z)) continue;
+      // Not into a falling grain: that side waits.
+      if (powderGrainAt(x, y, z, null)) { open &= ~(1 << d); continue; }
+      if (gravGuard(i, j, l) && voxelAt(i, j, l) !== m) return false;
+      editBlock(i, j, l, AIR);
+      for (const [di, dj] of POWDER_NEAR) {
+        const ai = i + di, aj = j + dj;
+        if (ai >= 0 && aj >= 0 && ai < GEN_N && aj < GEN_N) powderDirty.add(aj * GEN_N + ai);
+      }
+      if (reposeReachAll > 1) powderDirtyFar(i, j);
+      powderGrain(x, y, z, m, null);
+      return true;
+    }
+  }
+  return false;
+}
+function checkTerrainPowder(dt = 0) {
   // Every grain the pass takes out owes its gravity and face refresh until the
   // end of it (see flushGravity).
   gravDefer = true;
-  try { shedTerrainPowder(); } finally {
+  try { shedTerrainPowder(dt); } finally {
     powderIdxLive = false;   // the grains' filing is only kept up to here
     gravDefer = false;
     flushGravity();   // what comes loose is rubble, rebuilt at once as ever
@@ -6533,7 +6668,7 @@ function checkTerrainPowder() {
     gravAnchored.clear();
   }
 }
-function shedTerrainPowder() {
+function shedTerrainPowder(dt) {
   powderPieceFiled = false;   // the pieces are filed afresh for this pass, if a roll asks
   // What the last pass left owed, in column order so it does not matter which
   // way round it was owed.
@@ -6563,6 +6698,7 @@ function shedTerrainPowder() {
   }
   powderQueue.length = 0;
   powderQHead = 0;
+  pressPowder(dt);
   // Dig out from under a bank of sand and it goes this frame, not whenever the
   // sweep next comes round. editBlock re-marks the column as it empties it, so a
   // collapse that outruns the budget carries on next frame.
@@ -13854,7 +13990,7 @@ function tick() {
   processImpacts();      // after the meshes have the bodies' poses, before anything is called settled
   updateFallingChunks();
   updatePowderBlocks(dt);
-  checkTerrainPowder();
+  checkTerrainPowder(dt);
   syncFallingGrains();   // after every grain this frame has spawned, moved or landed
 
   // Queue the chunks around the player for the worker and let distant ones go.

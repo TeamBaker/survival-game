@@ -5679,20 +5679,21 @@ const debris = new THREE.Group();
 scene.add(debris);
 const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
 const restedChunks  = [];  // { mesh, body, still } — come to a stop, but still in the world
-const powderFalling = [];  // { pos, mat, v, from } — a grain in the air, between the piece it left and whatever catches it
+const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air, between the piece it left and whatever catches it
 // A pour lands and sheds hundreds of grains a second; each one used to be a
 // fresh record and Vector3 for the collector. Records go back here when a grain
 // lands or leaves the field, and come out again for the next one.
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
-  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0 };
-  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from;
+  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1 };
+  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
   return g;
 }
 function powderGrainFree(g) {
   g.from = null;   // a mesh held here would outlive its piece
+  g.dn = null;
   powderGrainPool.push(g);
 }
 // Grains that landed on the ground in a chunk whose rebuild is being held back
@@ -7182,6 +7183,18 @@ function processImpacts() {
 // leaves the piece and falls on its own, and goes back into the world wherever
 // it lands.
 const POWDER_G = 9.82, POWDER_VMAX = 40;
+// A stack of falling grains square on each other comes down faster the deeper
+// it is, so a tall one crashes down as a plug rather than hanging while it
+// feeds out one grain at a time. A grain is pushed by the deepest stack it has
+// been in this flight — the grains rolled out from under a tall one go on
+// pushed too, which is what lets the foot of it clear — and falls at no less
+// than powderPushV of that: nothing more for up to three, POWDER_PUSH_PER m/s
+// for every grain past three, at most POWDER_PUSH_MAX. That is under the top
+// speed, POWDER_VMAX, and every way down is swept whole, so nothing goes through.
+const POWDER_PUSH_PER = 1, POWDER_PUSH_MAX = 20;
+function powderPushV(push) {
+  return push <= 3 ? 0 : Math.min((push - 3) * POWDER_PUSH_PER, POWDER_PUSH_MAX);
+}
 const powderDown = new CANNON.Vec3(0, -1, 0), powderQ = new CANNON.Quaternion();
 const powderLocalDown = new CANNON.Vec3();
 const powderProbe = new THREE.Vector3();
@@ -7487,10 +7500,23 @@ function catchPowder(dt) {
   const stamp = ++powderStamp;
   let gone = 0;
   const leave = (n) => { powderIdxDel(a[n]); a[n] = null; gone++; };
+  // How deep the stack each grain is in, from where they all are before any
+  // moves: highest first, a grain's depth from it up (d) is one more than that
+  // of the grain sitting square on it, and the grain under it is noted (dn).
+  // The whole stack goes by the depth at its foot, so it moves as one.
+  for (let o = len - 1; o >= 0; o--) {
+    const p = a[ord[o]], q = powderGrainAt(p.pos.x, p.pos.y + BLOCK, p.pos.z, p);
+    p.dn = null;
+    if (q && q.pos.y - p.pos.y < BLOCK * 1.05 && q.dn === null && q.t === -stamp) { p.d = q.d + 1; q.dn = p; }
+    else p.d = 1;
+    p.t = -stamp;
+  }
   grains: for (let o = 0; o < len; o++) {
     const n = ord[o], p = a[n];
     p.t = stamp;
-    p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
+    if (p.dn) p.d = p.dn.d;   // the grain under it went first and holds the stack's depth by now
+    if (p.d > p.push) p.push = p.d;
+    p.v = Math.min(Math.max(p.v + POWDER_G * dt, powderPushV(p.push)), POWDER_VMAX);
     const px = p.pos.x, pz = p.pos.z, y0 = p.pos.y;
     let y = y0 - p.v * dt;
     // A grain under it that has moved: it comes down onto that and on at its
@@ -7540,10 +7566,19 @@ function catchPowder(dt) {
         // asks about that cell again next frame, not a neighbour's.
         const local = powderCell(mesh, p.pos);
         let off = debrisRoll(mesh, local, p.mat);
+        // Nor off into another piece lying there, or onto one: debrisRoll knows
+        // only this one, and two pieces side by side sent a grain back and forth
+        // between them every frame. The other piece holds it in, as on the ground.
+        if (off && (powderInPiece(off.x, off.y, off.z) || powderInPiece(_debrisRollUnder.x, _debrisRollUnder.y, _debrisRollUnder.z))) off = null;
         // Only a grain lower down, moved already, holds the spot against it:
         // one higher up comes after, and keeps out of its way then. So the
         // lowest of any that wait always goes, and they never wait on each other.
         let to = off || (off === false ? powderPast(mesh, local, p.pos.y - yEnd) : mesh.localToWorld(powderSpot.copy(local)));
+        // Falling on past that is no lower than it was (its cell is over where
+        // it touched, or the piece's column runs aslant) with the ground right
+        // under it, it came back to the same spot every frame: it goes on to
+        // the ground instead.
+        if (off === false && to && to.y > y0 - 1e-4 && land !== -Infinity) to = null;
         let clear = to ? powderClear(to.x, to.y, to.z, p, stamp) : 0;
         // Rolled off into the ground's edge it stays, as debrisRoll would have had it.
         if (off && clear === 2) { off = null; to = mesh.localToWorld(powderSpot.copy(local)); clear = powderClear(to.x, to.y, to.z, p, stamp); }
@@ -14140,6 +14175,7 @@ function collectWorldMeta() {
       pos: g.pos.toArray(),
       mat: g.mat,
       v: g.v,
+      push: g.push,   // the stack it was in: a falling plug saved goes on as fast
       // `from` is the debris mesh it fell off, which does not survive a reload:
       // a restored grain may land on any piece.
       from: null,
@@ -14940,7 +14976,9 @@ function applyWorldCore(s) {
 
   // Restore powder falling
   for (const g of ds.powderFalling) {
-    powderGrain(g.pos[0], g.pos[1], g.pos[2], g.mat, g.from ? new THREE.Vector3(...g.from) : null).v = g.v;
+    const q = powderGrain(g.pos[0], g.pos[1], g.pos[2], g.mat, g.from ? new THREE.Vector3(...g.from) : null);
+    q.v = g.v;
+    q.push = g.push ?? 1;   // older saves: from the stack it is found in
   }
   syncFallingGrains();
   for (const q of ds.powderQueue) powderQueue.push(q.i, q.j, q.lvl);

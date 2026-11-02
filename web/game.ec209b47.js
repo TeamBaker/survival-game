@@ -7602,8 +7602,12 @@ function catchPowder(dt) {
       if (powderInPiece(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))) roll = -1;
     }
     if (roll >= 0) {
-      const rx = colX(i + POWDER_SIDES[roll][0]), ry = (lvl + 0.5) * BLOCK, rz = colZ(j + POWDER_SIDES[roll][1]);
-      if (!powderGrainAt(rx, ry, rz, p, 0, stamp)) powderMove(p, rx, ry, rz);
+      const ri = i + POWDER_SIDES[roll][0], rj = j + POWDER_SIDES[roll][1];
+      const rx = colX(ri), ry = (lvl + 0.5) * BLOCK, rz = colZ(rj);
+      // One still to move there would go up onto it, but not with the ground
+      // over that cell (a face that is shedding): then it holds the spot too.
+      if (!powderGrainAt(rx, ry, rz, p, 0, stamp)
+          && !(inVoxelRange(ri, rj, lvl + 1) && voxelAt(ri, rj, lvl + 1) !== AIR && powderGrainAt(rx, ry, rz, p))) powderMove(p, rx, ry, rz);
       else p.pos.y = powderAbove(px, ry, pz, p, stamp);
       p.v = 0;
       continue;

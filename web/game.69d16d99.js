@@ -7325,11 +7325,14 @@ const POWDER_G = 9.82, POWDER_VMAX = 40;
 // been in this flight — the grains rolled out from under a tall one go on
 // pushed too, which is what lets the foot of it clear — and falls at no less
 // than powderPushV of that: nothing more for up to three, POWDER_PUSH_PER m/s
-// for every grain past three, at most POWDER_PUSH_MAX. That is under the top
-// speed, POWDER_VMAX, and every way down is swept whole, so nothing goes through.
-const POWDER_PUSH_PER = 1, POWDER_PUSH_MAX = 20;
+// for every grain past three, with no ceiling of its own. Only POWDER_VMAX,
+// the top speed of any grain, bounds it, and every way down is swept whole at
+// that, so nothing goes through. A stack never gets near it anyway: a grain
+// that comes down onto a fast one slides off its side (powderSlide), so a heavy
+// stream spreads out as it falls rather than piling up in one column.
+const POWDER_PUSH_PER = 1;
 function powderPushV(push) {
-  return push <= 3 ? 0 : Math.min((push - 3) * POWDER_PUSH_PER, POWDER_PUSH_MAX);
+  return push <= 3 ? 0 : (push - 3) * POWDER_PUSH_PER;
 }
 const powderDown = new CANNON.Vec3(0, -1, 0), powderQ = new CANNON.Quaternion();
 const powderLocalDown = new CANNON.Vec3();
@@ -7619,6 +7622,42 @@ function powderAbove(x, y, z, self, stamp) {
   for (let g; (g = powderGrainAt(x, y, z, self, 0, stamp)); ) y = g.pos.y + BLOCK;
   return y;
 }
+// A grain that comes down onto a falling grain, or finds itself inside one,
+// going at a pace POWDER_SLIDE_DV or more off its own, either of the two at
+// POWDER_SLIDE_V or more, does not go on top of it: it slides off the side,
+// at the faster of the two speeds, into the nearest spot round it, out to two
+// columns, that no falling grain, ground or piece holds, nor any ground or
+// piece on the way across. With nowhere to go it goes on top, as onto a slower
+// one. A grain at the pace of the one under it is riding it, and stays.
+const POWDER_SLIDE_V = 6, POWDER_SLIDE_DV = 2;
+const POWDER_SLIDE = [];
+for (let a = -2; a <= 2; a++) for (let b = -2; b <= 2; b++) if (a || b) POWDER_SLIDE.push([a, b, a * a + b * b]);
+POWDER_SLIDE.sort((u, w) => u[2] - w[2]);
+function powderSlide(p, x, y, z, pieces) {
+  const i = colI(x), j = colJ(z), l0 = Math.floor((y - HALF_BLOCK) / BLOCK + 0.01), l1 = Math.floor((y + HALF_BLOCK) / BLOCK - 0.01);
+  const ground = (ci, cj) => { for (let l = l0; l <= l1; l++) if (voxelAt(ci, cj, l) !== AIR) return true; return false; };
+  const blocked = (ci, cj) => ground(ci, cj) || (pieces && powderInPiece(colX(ci), y, colZ(cj)));
+  // Equally near spots are tried from a random one on, so the stream spreads evenly.
+  for (let g0 = 0; g0 < POWDER_SLIDE.length; ) {
+    let g1 = g0;
+    while (g1 < POWDER_SLIDE.length && POWDER_SLIDE[g1][2] === POWDER_SLIDE[g0][2]) g1++;
+    const n = g1 - g0, s0 = (Math.random() * n) | 0;
+    for (let s = 0; s < n; s++) {
+      const [a, b] = POWDER_SLIDE[g0 + (s0 + s) % n], ti = i + a, tj = j + b, tx = colX(ti), tz = colZ(tj);
+      if (powderGrainAt(tx, y, tz, p) || blocked(ti, tj)) continue;
+      // Across: every column between this one and that, the box they span.
+      let way = true;
+      for (let u = Math.min(0, a); u <= Math.max(0, a) && way; u++)
+        for (let w = Math.min(0, b); w <= Math.max(0, b); w++)
+          if ((u || w) && (u !== a || w !== b) && blocked(i + u, j + w)) { way = false; break; }
+      if (!way) continue;
+      powderMove(p, tx, y, tz);
+      return true;
+    }
+    g0 = g1;
+  }
+  return false;
+}
 const powderOrder = [];
 let powderStamp = 0;
 const powderSpot = new THREE.Vector3();
@@ -7660,6 +7699,17 @@ function catchPowder(dt) {
     // goes up onto it unless the ground is there; a grain it then overlaps is
     // higher, so comes later and goes up onto it in turn.
     powderGrainAt(px, y0, pz, p, stamp);
+    // Coming down onto one, or made inside one, going at another pace from its
+    // own, either of them fast: off the side. Two grains of a stack go at the
+    // same pace (the same push), so a stack holds together. From there it is a
+    // grain falling like any other.
+    if (powderUnderTop > y && Math.max(powderUnderG.v, p.v) >= POWDER_SLIDE_V && Math.abs(powderUnderG.v - p.v) >= POWDER_SLIDE_DV) {
+      const pieces = restedChunks.length > 0 || fallingChunks.length > 0;
+      if (pieces && !filed) { powderCatchFile(reach); filed = true; }
+      const vq = powderUnderG.v;
+      if (powderSlide(p, px, y0, pz, pieces)) { p.v = Math.max(p.v, vq); continue; }
+      powderGrainAt(px, y0, pz, p, stamp);   // the looking round lost which one is under it
+    }
     if (powderUnderTop > y0) {
       const top = powderAbove(px, powderUnderTop, pz, p, stamp);
       if (powderClear(px, top, pz, p) !== 2) powderMove(p, px, top, pz);

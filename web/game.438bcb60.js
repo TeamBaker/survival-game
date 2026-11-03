@@ -5627,7 +5627,8 @@ function debrisCells(lat, S) {
 //
 // With see-through materials about (clearCount), a block of one hides nothing
 // of another material behind it, and each block carries its transparency as
-// 64 x that over the six mask bits, for fallClearMat to read; the piece's cubes
+// 64 x that over the six mask bits, for fallClearMat to read — rounded to a
+// whole number, as a fraction there would carry into the bits; the piece's cubes
 // are drawn with that whenever any of them is see-through.
 function debrisFaceMask(mesh) {
   const lat = mesh.userData.blocks, attr = mesh.geometry.attributes.faceHide;
@@ -5649,7 +5650,7 @@ function debrisFaceMask(mesh) {
         if (nb && (!matClear[lat[nb - 1].mat] || lat[nb - 1].mat === m)) bits |= 1 << f;
       }
       if (matClear[m]) {
-        bits += 64 * MAT_STATS[m].transparency;
+        bits += 64 * Math.round(MAT_STATS[m].transparency);
         if (q < mesh.count) clear = true;
       }
     }
@@ -9578,12 +9579,13 @@ const customMatIds = () => {
   return ids;
 };
 // The place angle (degrees, 0 to 90; powder only) and transparency (0 opaque
-// to 100 unseen, whole numbers — debrisFaceMask packs it beside the face bits)
-// as a created material keeps them: anything out of range comes back to it,
-// and a definition from before they existed, or no number at all, gets 45 and 0.
+// to 100 unseen; debrisFaceMask packs it to the nearest whole number beside the
+// face bits, the terrain and the grains take it as it is) as a created material
+// keeps them: anything out of range comes back to it, and a definition from
+// before they existed, or no number at all, gets 45 and 0.
 const MAT_ANGLE_STD = 45;
 const matAngleOf = (v) => (v == null || v === '' || !Number.isFinite(+v) ? MAT_ANGLE_STD : Math.min(90, Math.max(0, +v)));
-const matClearOf = (v) => (v == null || v === '' || !Number.isFinite(+v) ? 0 : Math.min(100, Math.max(0, Math.round(+v))));
+const matClearOf = (v) => (v == null || v === '' || !Number.isFinite(+v) ? 0 : Math.min(100, Math.max(0, +v)));
 // A definition as stored, or null if it is not one.
 function customMatDef(d) {
   if (!d || typeof d !== 'object') return null;

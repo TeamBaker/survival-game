@@ -1186,6 +1186,10 @@ const REPOSE_REACH_MAX = 16;
 const reposeStd = new Uint8Array(MAT_ID_LIMIT).fill(1);
 const reposeReach = new Uint8Array(MAT_ID_LIMIT).fill(1);
 const reposeLim = new Uint16Array(MAT_ID_LIMIT * REPOSE_REACH_MAX).fill(1);
+// Angle 0 spreads flat like water: level ground to the end of the look is no
+// reason to stop there (powderFar).
+const reposeFlat = new Uint8Array(MAT_ID_LIMIT);
+let powderFarNone = 0, powderFarNoneI = 0, powderFarNoneJ = 0, powderFarNoneL = 0;   // the last far look that found nothing, while it holds
 // Press: how readily the powder gives under a weight (pressPowder), from the
 // same angle: 1 at 0, a little over half at 45, a twentieth at 90. Steep
 // powder still gives, only slowly.
@@ -1200,6 +1204,7 @@ function matReposeSet(m, angle) {
   // 90 never rolls; anything else at least looks one column out.
   const R = angle >= 90 ? 0 : angle === 45 ? 1 : t >= 1 ? Math.min(8, Math.ceil(8 / t)) : REPOSE_REACH_MAX;
   reposeReach[m] = R;
+  reposeFlat[m] = t <= 0 ? 1 : 0;
   pressEase[m] = pressEaseOf(angle);
   for (let k = 1; k <= REPOSE_REACH_MAX; k++) {
     // A drop of one is level ground (a grain beside a grain), never a slope.
@@ -1788,6 +1793,7 @@ function setVoxel(i, j, lvl, m) {
   const was = voxMat[p];
   if (was === m) return was;
   voxMat[p] = m;
+  if (powderFarNone) powderFarTouch(i, j, lvl, m);
   if (matClear[m]) colClear[k] = 1;
   stressRev++;
   stressCols.add(k);
@@ -5691,7 +5697,7 @@ const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air
 // lands or leaves the field, and come out again for the next one.
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
-  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1 };
+  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null };
   g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
@@ -5700,6 +5706,7 @@ function powderGrain(x, y, z, mat, from) {
 function powderGrainFree(g) {
   g.from = null;   // a mesh held here would outlive its piece
   g.dn = null;
+  g.far = null;
   powderGrainPool.push(g);
 }
 // Grains that landed on the ground in a chunk whose rebuild is being held back
@@ -6423,7 +6430,8 @@ const POWDER_NEAR = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 // is exactly the test above; otherwise the side whose fall comes soonest wins,
 // so a grain shuffled along level ground toward a far edge always gets nearer
 // it and every roll still ends.
-function powderRoll(i, j, lvl, m) {
+function powderRoll(i, j, lvl, m, g = null) {
+  powderFarWait = false; powderFarWay = null;
   const s0 = (Math.random() * 4) | 0;
   if (reposeStd[m]) {
     for (let s = 0; s < 4; s++) {
@@ -6433,7 +6441,7 @@ function powderRoll(i, j, lvl, m) {
     return -1;
   }
   const R = reposeReach[m], L0 = m * REPOSE_REACH_MAX, L1 = reposeLim[L0];
-  let best = -1, bestK = R + 1;
+  let best = -1, bestK = R + 1, open = false;
   for (let s = 0; s < 4; s++) {
     const [di, dj] = POWDER_SIDES[(s0 + s) & 3];
     let dPrev = 0;
@@ -6450,11 +6458,162 @@ function powderRoll(i, j, lvl, m) {
       // not the slope: the grain only finds it once the slope has brought it to
       // the edge, as on flat ground by a cliff it never feels the cliff at all.
       if (k > 1 && d - dPrev > L1) break;
+      // Nor, at angle 0, the lip of one: it would only roll on over (powderFarLip).
+      if (d >= L && k > 1 && reposeFlat[m] && powderFarLip(ni, nj, lvl - 1)) break;
       if (d >= L) { best = (s0 + s) & 3; bestK = k; break; }
       dPrev = d;
+      if (k === REPOSE_REACH_MAX) open = true;   // level ground all the way out, and maybe on past
     }
   }
+  if (best < 0 && reposeFlat[m]) return powderFar(i, j, lvl, g, open);
   return best;
+}
+// Angle 0 keeps going until there is no lower ground to find. A grain whose
+// look ran out over level ground (`open`) looks on, across the level ground it
+// stands on as far as that goes, for the nearest column one level lower:
+// nearest by the way there, round whatever stands in it, column by column, the
+// same questions powderRoll asks (two or more down off the side of level ground
+// is a cliff it does not feel, nor is it drawn to a cliff's lip). It rolls the
+// first column of that way, and a falling grain (`g`) keeps the way, so from
+// then on each column costs it only the look at the next. Bounded: a look goes
+// at most POWDER_FAR_R columns out and takes in POWDER_FAR_CAP of them, and once
+// the frame's looks have taken in POWDER_FAR_BUDGET the rest wait for the next
+// frame (powderFarWait: the grain stays where it is and its column is looked at
+// again then). Two answers are kept for other grains. Where the last way went,
+// for POWDER_FAR_SHARE frames: a grain on the same level heads straight for it
+// instead of looking, a column nearer each frame (powderFarToward), and the
+// near look spreads them along the edge they come to. And the last look that
+// found nothing lower, for any grain on the level ground it went over, until
+// the ground changes where it could make a way lower (powderFarTouch).
+const POWDER_FAR_R = 127;
+const POWDER_FAR_CAP = 16384;
+const POWDER_FAR_BUDGET = 16384;
+const POWDER_FAR_W = 2 * POWDER_FAR_R + 1;
+const POWDER_FAR_SHARE = 8;
+let powderFarSeen = null, powderFarFrom = null, powderFarQ = null, powderFarStamp = 0;
+let powderFarSpent = 0;      // columns this frame's looks have taken in
+let powderFarWait = false;   // the last powderRoll owed a look the frame had no room for
+let powderFarWay = null;     // the way the last powderRoll found, for a grain not falling yet (shedColumn)
+let powderFarLast = -1, powderFarLastL = 0, powderFarLastF = 0;   // the column the last way went to, its level, the frame
+const powderSideOf = (di, dj) => di > 0 ? 0 : dj > 0 ? 1 : di < 0 ? 2 : 3;
+// Nor is it drawn to the lip of a cliff, the column one down with a drop of two
+// or more beside it: a grain there would only roll on over (powderRoll's first
+// column), and the level ground behind it would never fill.
+function powderFarLip(i, j, lvl) {
+  if (lvl - 2 < VOX_FLOOR) return false;
+  for (const [di, dj] of POWDER_SIDES) {
+    const ni = i + di, nj = j + dj;
+    if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR && voxelAt(ni, nj, lvl - 1) === AIR && voxelAt(ni, nj, lvl - 2) === AIR) return true;
+  }
+  return false;
+}
+// Can a grain at level lvl go into column (i, j): 1 level ground, 2 one lower
+// (and not a lip), 0 not.
+function powderFarCan(i, j, lvl) {
+  if (!canBuildAt(i, j, lvl - 1) || voxelAt(i, j, lvl) !== AIR) return 0;
+  if (lvl - 1 < VOX_FLOOR || voxelAt(i, j, lvl - 1) !== AIR) return 1;
+  return (lvl - 2 < VOX_FLOOR || voxelAt(i, j, lvl - 2) !== AIR) && !powderFarLip(i, j, lvl - 1) ? 2 : 0;
+}
+// A column nearer column t along either side: the side, or -1.
+function powderFarToward(i, j, lvl, t) {
+  const ti = t % GEN_N, tj = (t - ti) / GEN_N, di = Math.sign(ti - i), dj = Math.sign(tj - j);
+  const iFirst = Math.abs(ti - i) >= Math.abs(tj - j);
+  for (let s = 0; s < 2; s++) {
+    const alongI = (s === 0) === iFirst;
+    if (alongI ? !di : !dj) continue;
+    const ni = alongI ? i + di : i, nj = alongI ? j : j + dj;
+    if (powderFarCan(ni, nj, lvl)) return powderSideOf(ni - i, nj - j);
+  }
+  return -1;
+}
+function powderFar(i, j, lvl, g, open) {
+  const c = j * GEN_N + i, w = g && g.far;
+  if (w && w.lvl === lvl) {
+    if (w.path) {
+      // On along the way it found while the next column is still there to go to.
+      if (w.path[w.at] !== c && w.at > 0 && w.path[w.at - 1] === c) w.at--;   // held up last frame: it did not go
+      if (w.path[w.at] === c && w.at + 1 < w.path.length) {
+        const n = w.path[w.at + 1], ni = n % GEN_N, nj = (n - ni) / GEN_N;
+        if (powderFarCan(ni, nj, lvl)) { w.at++; return powderSideOf(ni - i, nj - j); }
+      }
+    } else if (w.to !== c) {
+      const r = powderFarToward(i, j, lvl, w.to);
+      if (r >= 0) return r;
+    }
+  }
+  if (g) g.far = null;
+  if (!open) return -1;
+  const W = POWDER_FAR_W, R = POWDER_FAR_R;
+  if (powderFarNone && powderFarNoneL === lvl) {
+    const wi = i - powderFarNoneI + R, wj = j - powderFarNoneJ + R;
+    if (wi >= 0 && wj >= 0 && wi < W && wj < W && powderFarSeen[wj * W + wi] === powderFarNone) return -1;
+  }
+  const lt = powderFarLast, lti = lt % GEN_N;
+  if (lt >= 0 && powderFarLastL === lvl && frameCount - powderFarLastF < POWDER_FAR_SHARE && lt !== c
+      && Math.abs(lti - i) <= R && Math.abs((lt - lti) / GEN_N - j) <= R) {
+    const r = powderFarToward(i, j, lvl, lt);
+    if (r >= 0) {
+      const way = { lvl, path: null, at: 0, to: lt };
+      if (g) g.far = way; else powderFarWay = way;
+      return r;
+    }
+  }
+  if (powderFarSpent >= POWDER_FAR_BUDGET) { powderFarWait = true; return -1; }
+  if (!powderFarSeen) { powderFarSeen = new Uint32Array(W * W); powderFarFrom = new Int32Array(W * W); powderFarQ = new Int32Array(POWDER_FAR_CAP); }
+  if (++powderFarStamp > 0x7ffffff0) { powderFarSeen.fill(0); powderFarStamp = 1; }
+  const st = powderFarStamp, seen = powderFarSeen, from = powderFarFrom, q = powderFarQ, o = R * W + R;
+  seen[o] = st; q[0] = o;
+  const s0 = (Math.random() * 4) | 0;
+  let head = 0, tail = 1, n = 1, found = -1;
+  look: while (head < tail) {
+    const at = q[head++], ai = at % W, aj = (at - ai) / W;
+    for (let s = 0; s < 4; s++) {
+      const [di, dj] = POWDER_SIDES[(s0 + s) & 3], wi = ai + di, wj = aj + dj;
+      if (wi < 0 || wj < 0 || wi >= W || wj >= W) continue;
+      const wk = wj * W + wi;
+      if ((seen[wk] & 0x7fffffff) === st) continue;
+      seen[wk] = st | 0x80000000;   // looked at; plain st once it is level ground the look went over
+      if (++n > POWDER_FAR_CAP) break look;
+      const can = powderFarCan(i + wi - R, j + wj - R, lvl);
+      if (!can) continue;
+      from[wk] = at;
+      if (can === 2) { found = wk; break look; }
+      seen[wk] = st;
+      if (tail < POWDER_FAR_CAP) q[tail++] = wk;
+    }
+  }
+  powderFarSpent += n;
+  if (found < 0) { powderFarNone = st; powderFarNoneI = i; powderFarNoneJ = j; powderFarNoneL = lvl; return -1; }
+  let len = 1;
+  for (let k = found; k !== o; k = from[k]) len++;
+  const path = new Int32Array(len);
+  for (let k = found, e = len - 1; e >= 0; k = from[k], e--) path[e] = (j + (k - k % W) / W - R) * GEN_N + i + k % W - R;
+  const way = { lvl, path, at: 1, to: -1 };
+  if (g) g.far = way; else powderFarWay = way;
+  powderFarLast = path[len - 1]; powderFarLastL = lvl; powderFarLastF = frameCount;
+  const n1 = path[1], i1 = n1 % GEN_N;
+  return powderSideOf(i1 - i, (n1 - i1) / GEN_N - j);
+}
+// A cell of the ground changed: does the last look's "nothing lower" still
+// hold? Only what changes the questions powderFarCan asks of some column at its
+// level can make a way lower: a cell at that level or up to three under it.
+// Ground put in at the level only stands in the way. One taken out at the level
+// of a column the look found standing in the way, with every column round it
+// looked at too, only adds that column to the level ground.
+function powderFarTouch(i, j, lvl, m) {
+  const L = powderFarNoneL;
+  if (lvl > L || lvl < L - 3 || (lvl === L && m !== AIR)) return;
+  const W = POWDER_FAR_W, R = POWDER_FAR_R, wi = i - powderFarNoneI + R, wj = j - powderFarNoneJ + R, st = powderFarNone;
+  if (lvl === L && wi > 0 && wj > 0 && wi < W - 1 && wj < W - 1 && powderFarCan(i, j, L) === 1) {
+    const sn = powderFarSeen, wk = wj * W + wi;
+    if ((sn[wk] & 0x7fffffff) === st && (sn[wk - 1] & 0x7fffffff) === st && (sn[wk + 1] & 0x7fffffff) === st
+     && (sn[wk - W] & 0x7fffffff) === st && (sn[wk + W] & 0x7fffffff) === st) {
+      // Joined to the level ground only if beside some of it.
+      if (sn[wk - 1] === st || sn[wk + 1] === st || sn[wk - W] === st || sn[wk + W] === st) sn[wk] = st;
+      return;
+    }
+  }
+  powderFarNone = 0;
 }
 // A block taken out can leave the sand beside it standing two over the hole,
 // not just the sand above it hanging, so the columns round it want a look too:
@@ -6502,7 +6661,11 @@ function shedColumn(c, budget) {
     let roll = voxMat[o + lvl - 1] !== AIR ? powderRoll(i, j, lvl, m) : -1;
     // Nor off into a piece lying beside it: the piece holds it in (see catchPowder).
     if (roll >= 0 && powderPieceBeside(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))) roll = -1;
-    if (voxMat[o + lvl - 1] !== AIR && roll < 0) continue;
+    const way = roll >= 0 ? powderFarWay : null;
+    if (voxMat[o + lvl - 1] !== AIR && roll < 0) {
+      if (powderFarWait) powderCarry.push(c);   // its far look waits for next frame
+      continue;
+    }
     // It goes as a grain where it stands, or off the side it rolls to: not
     // while a falling grain is there. It stays, and the column gets another look next pass.
     const [ri, rj] = roll < 0 ? [i, j] : [i + POWDER_SIDES[roll][0], j + POWDER_SIDES[roll][1]];
@@ -6520,7 +6683,7 @@ function shedColumn(c, budget) {
     if (reposeReachAll > 1) powderDirtyFar(i, j);
     // It is not gone, it is falling: hand it to the same grain path the rubble
     // uses — off the side it rolled to, if that is how it went.
-    powderGrain(colX(ri), (lvl + 0.5) * BLOCK, colZ(rj), m, null);
+    powderGrain(colX(ri), (lvl + 0.5) * BLOCK, colZ(rj), m, null).far = way;
     budget--;
   }
   return budget;
@@ -7815,7 +7978,8 @@ function catchPowder(dt) {
     // where it may roll again — every roll is a level lower, so it stops. A
     // falling grain already moved there and it waits on top for a frame (one
     // still to move comes after, and goes up onto it if it must).
-    let roll = powderRoll(i, j, lvl, p.mat);
+    let roll = powderRoll(i, j, lvl, p.mat, p);
+    const farWait = powderFarWait;
     // Nor into a piece lying there: the piece holds it in, as the ground holds
     // in one on a piece (debrisRoll).
     if (roll >= 0 && (restedChunks.length || fallingChunks.length)) {
@@ -7834,6 +7998,7 @@ function catchPowder(dt) {
       continue;
     }
     leave(n);
+    if (farWait) powderCarry.push(j * GEN_N + i);   // its far look waits for next frame, from where it lies
     if (canBuildAt(i, j, lvl)) {
       powderLate = true;
       editBlock(i, j, lvl, p.mat);
@@ -7865,6 +8030,7 @@ function catchPowder(dt) {
 }
 
 function updatePowderBlocks(dt) {
+  powderFarSpent = 0;
   powderIdxFile();   // kept in step until checkTerrainPowder is done
   shedPowder(dt);
   catchPowder(dt);
@@ -10266,6 +10432,7 @@ function toggleSandbox() {
     colClear.fill(0);
     powderDirty.clear();
     powderCarry.length = 0;
+    powderFarNone = 0; powderFarLast = -1;
     for (let c = 0; c < chunkMesh.length; c++) {
       if (chunkMesh[c]) rebuildChunk(c);
     }
@@ -15155,6 +15322,7 @@ function applyWorldCore(s) {
   powderQHead = 0;
   powderDirty.clear();
   powderCarry.length = 0;
+  powderFarNone = 0; powderFarLast = -1;
   impactPending.length = 0;   // a crater still being dug in the world that was left
   loneGlides.length = 0; loneScanAt = 0;   // its pieces are gone, and this world's clock starts over
 

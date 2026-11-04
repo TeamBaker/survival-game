@@ -2747,15 +2747,18 @@ function collectColumn(i, j, step = 1) {
         if (m === AIR) continue;
         if (clr && matClear[m] === 1) {
           // The faces of what stands against it, as that block would draw them
-          // against air; another block of its own material shows nothing.
+          // against air — another block of its own material too, so a look
+          // through n of them crosses n blended faces and the glass reads as
+          // thick as it is: 1 block lets through its transparency, n blocks
+          // that to the n-th power.
           const lv = lvl - VOX_FLOOR;
           let n;
-          if (lvl <= cE && (n = voxMat[oE + lvl]) !== AIR && n !== m) addBoxFace(1, li + 1, lj, lv, 1, n);
-          if (lvl <= cW && (n = voxMat[oW + lvl]) !== AIR && n !== m) addBoxFace(0, li - 1, lj, lv, 1, n);
-          if (lvl < cap && (n = voxMat[p + 1]) !== AIR && n !== m) addBoxFace(3, li, lj, lv + 1, 1, n);
-          if ((n = voxMat[p - 1]) !== AIR && n !== m) addBoxFace(2, li, lj, lv - 1, 1, n);
-          if (lvl <= cN && (n = voxMat[oN + lvl]) !== AIR && n !== m) addBoxFace(5, li, lj + 1, lv, 1, n);
-          if (lvl <= cS && (n = voxMat[oS + lvl]) !== AIR && n !== m) addBoxFace(4, li, lj - 1, lv, 1, n);
+          if (lvl <= cE && (n = voxMat[oE + lvl]) !== AIR) addBoxFace(1, li + 1, lj, lv, 1, n);
+          if (lvl <= cW && (n = voxMat[oW + lvl]) !== AIR) addBoxFace(0, li - 1, lj, lv, 1, n);
+          if (lvl < cap && (n = voxMat[p + 1]) !== AIR) addBoxFace(3, li, lj, lv + 1, 1, n);
+          if ((n = voxMat[p - 1]) !== AIR) addBoxFace(2, li, lj, lv - 1, 1, n);
+          if (lvl <= cN && (n = voxMat[oN + lvl]) !== AIR) addBoxFace(5, li, lj + 1, lv, 1, n);
+          if (lvl <= cS && (n = voxMat[oS + lvl]) !== AIR) addBoxFace(4, li, lj - 1, lv, 1, n);
         }
         if (!isVisible(p)) continue;
         open = (lvl > cE || voxMat[oE + lvl] === AIR ? 1 : 0) | (lvl > cW || voxMat[oW + lvl] === AIR ? 2 : 0)
@@ -5676,8 +5679,9 @@ function debrisCells(lat, S) {
 // powder through its layer's.
 //
 // With see-through materials about (clearCount), a block of one hides nothing
-// of another material behind it, and each block carries its transparency as
-// 64 x that over the six mask bits, for fallClearMat to read — rounded to a
+// behind it — another of its own material neither, so a piece's glass reads as
+// thick as it is, as the terrain's does — and each block carries its
+// transparency as 64 x that over the six mask bits, for fallClearMat to read — rounded to a
 // whole number, as a fraction there would carry into the bits; the piece's cubes
 // are drawn with that whenever any of them is see-through.
 function debrisFaceMask(mesh) {
@@ -5697,7 +5701,7 @@ function debrisFaceMask(mesh) {
       const m = lat[q].mat;
       for (let f = 0; f < 6; f++) {
         const d = FACE_DIRS[f], nb = grid[c + d[0] + d[1] * wd + d[2] * w];
-        if (nb && (!matClear[lat[nb - 1].mat] || lat[nb - 1].mat === m)) bits |= 1 << f;
+        if (nb && !matClear[lat[nb - 1].mat]) bits |= 1 << f;
       }
       if (matClear[m]) {
         bits += 64 * Math.round(MAT_STATS[m].transparency);

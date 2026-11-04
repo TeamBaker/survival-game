@@ -2027,8 +2027,125 @@ terrainCols.magFilter = terrainCols.minFilter = THREE.NearestFilter;
 terrainCols.generateMipmaps = false;
 terrainCols.needsUpdate = true;
 const terrainColPatch = new THREE.DataTexture(new Uint8Array(CHUNK * 2 * CHUNK * 4), CHUNK * 2, CHUNK);
-
 const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+
+// Where the see-through blocks are, for the see-through draw to read how far a
+// sight-line runs through them (terrainClearDepth): a glass run draws only its
+// outside, one blended layer, and its opacity comes from that distance, not
+// from a layer per block. Per chunk with any (chunkClear), one 16 x 16 tile of
+// material ids a level, from its lowest see-through block to its highest, 255
+// where a block is anything else; clearIdx says for each chunk which tile its
+// lowest level starts at, that level, and how many. rebuildChunk keeps its
+// chunk's tiles current; the atlas is packed again and goes up whole before
+// the next frame that draws (scene.onBeforeRender) — it is only as big as the
+// glass there is.
+const CLEAR_ATLAS_TW = 64;                      // tiles across the atlas
+const CLEAR_ATLAS_MAX = CLEAR_ATLAS_TW * 256;   // ... and at most, 4096 texels deep
+const clearTiles = new Array(CHUNK_N * CHUNK_N).fill(null);   // per chunk: { lo, n, ids }
+let clearVolDirty = false;
+const clearIdx = new THREE.DataTexture(new Float32Array(CHUNK_N * CHUNK_N * 4), CHUNK_N, CHUNK_N, THREE.RGBAFormat, THREE.FloatType);
+clearIdx.magFilter = clearIdx.minFilter = THREE.NearestFilter;
+clearIdx.generateMipmaps = false;
+clearIdx.needsUpdate = true;
+const clearAtlasOf = (rows) => {
+  const t = new THREE.DataTexture(new Uint8Array(CLEAR_ATLAS_TW * 16 * rows * 16).fill(255), CLEAR_ATLAS_TW * 16, rows * 16, THREE.RedFormat, THREE.UnsignedByteType);
+  t.magFilter = t.minFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  t.unpackAlignment = 1;
+  t.needsUpdate = true;
+  return t;
+};
+const clearAtlasU = { value: clearAtlasOf(1) }, clearIdxU = { value: clearIdx };
+function clearVolChunk(c) {
+  let t = null;
+  if (clearCount && chunkClear[c]) {
+    const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+    const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+    let lo = Infinity, hi = -Infinity;
+    for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
+      const k = j * GEN_N + i, o = voxOff[k];
+      if (!colClear[k] || o < 0) continue;
+      for (let p = o, end = o + voxLen(k); p < end; p++) if (matClear[voxMat[p]]) {
+        const l = VOX_FLOOR + p - o;
+        if (l < lo) lo = l;
+        if (l > hi) hi = l;
+      }
+    }
+    if (hi >= lo) {
+      const n = hi - lo + 1, ids = new Uint8Array(n * 256).fill(255);
+      for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
+        const k = j * GEN_N + i, o = voxOff[k];
+        if (!colClear[k] || o < 0) continue;
+        const end = Math.min(o + voxLen(k), o + hi - VOX_FLOOR + 1);
+        for (let p = Math.max(o, o + lo - VOX_FLOOR); p < end; p++) {
+          const m = voxMat[p];
+          if (matClear[m]) ids[(VOX_FLOOR + p - o - lo) * 256 + (j - j0) * 16 + (i - i0)] = m;
+        }
+      }
+      t = { lo, n, ids };
+    }
+  }
+  if (t || clearTiles[c]) { clearTiles[c] = t; clearVolDirty = true; }
+}
+function clearVolFlush() {
+  if (!clearVolDirty) return;
+  clearVolDirty = false;
+  let tiles = 0;
+  for (const t of clearTiles) if (t) tiles += t.n;
+  tiles = Math.min(tiles, CLEAR_ATLAS_MAX);
+  const rows = Math.max(1, Math.ceil(tiles / CLEAR_ATLAS_TW));
+  let atlas = clearAtlasU.value;
+  if (atlas.image.height !== rows * 16) { atlas.dispose(); atlas = clearAtlasU.value = clearAtlasOf(rows); }
+  const A = atlas.image.data, W = CLEAR_ATLAS_TW * 16, I = clearIdx.image.data;
+  I.fill(0);
+  let at = 0;
+  for (let c = 0; c < clearTiles.length; c++) {
+    const t = clearTiles[c];
+    if (!t || at + t.n > CLEAR_ATLAS_MAX) continue;   // past the cap a chunk's glass reads one block deep
+    I[c * 4] = at; I[c * 4 + 1] = t.lo; I[c * 4 + 2] = t.n;
+    for (let l = 0; l < t.n; l++, at++) {
+      const x0 = (at % CLEAR_ATLAS_TW) * 16, y0 = ((at / CLEAR_ATLAS_TW) | 0) * 16;
+      for (let r = 0; r < 16; r++) A.set(t.ids.subarray(l * 256 + r * 16, l * 256 + r * 16 + 16), (y0 + r) * W + x0);
+    }
+  }
+  atlas.needsUpdate = true;
+  clearIdx.needsUpdate = true;
+}
+scene.onBeforeRender = clearVolFlush;
+// The march itself, in blocks: from p, on the face of block b0 (material m)
+// that the look comes in through, along d, for as long as it stays in m;
+// how far that is. A run of another see-through material is its own layer.
+const clearDepthGlsl = `
+uniform highp sampler2D clearAtlas;
+uniform highp sampler2D clearIdx;
+int clearMatAt(ivec3 b) {
+  if (b.x < 0 || b.z < 0 || b.x >= ${GEN_N} || b.z >= ${GEN_N}) return -1;
+  vec4 e = texelFetch(clearIdx, b.xz / ${CHUNK}, 0);
+  int t = b.y - int(e.y);
+  if (t < 0 || t >= int(e.z)) return -1;
+  int tile = int(e.x) + t;
+  ivec2 at = ivec2((tile % ${CLEAR_ATLAS_TW}) * 16 + b.x % ${CHUNK}, (tile / ${CLEAR_ATLAS_TW}) * 16 + b.z % ${CHUNK});
+  return int(texelFetch(clearAtlas, at, 0).r * 255.0 + 0.5);
+}
+float terrainClearDepth(vec3 wp, vec3 n, vec3 d, int m) {
+  // Block units: column, level, row.
+  vec3 p = vec3((wp.x + ${glf(GEN_R)}) / ${glf(BLOCK)}, wp.y / ${glf(BLOCK)}, (wp.z + ${glf(GEN_R)}) / ${glf(BLOCK)});
+  ivec3 b = ivec3(floor(p - n * 0.5));
+  p = clamp(p, vec3(b) + 0.001, vec3(b) + 0.999);
+  vec3 ad = max(abs(d), vec3(1e-6));
+  ivec3 st = ivec3(d.x < 0.0 ? -1 : 1, d.y < 0.0 ? -1 : 1, d.z < 0.0 ? -1 : 1);
+  vec3 tMax = (vec3(b) + step(0.0, d) - p) * vec3(st) / ad, tD = 1.0 / ad;
+  float t = 0.0;
+  for (int k = 0; k < 64; k++) {
+    if (tMax.x <= tMax.y && tMax.x <= tMax.z) { t = tMax.x; b.x += st.x; tMax.x += tD.x; }
+    else if (tMax.y <= tMax.z) { t = tMax.y; b.y += st.y; tMax.y += tD.y; }
+    else { t = tMax.z; b.z += st.z; tMax.z += tD.z; }
+    if (clearMatAt(b) != m) break;
+  }
+  return t;
+}
+`;
+
 // The unpacking both terrain shaders share (see the vertex layout above):
 // `transformed` is the corner in half-blocks from the chunk's origin, which the
 // instancing chunks of three's own shader then add on.
@@ -2056,11 +2173,26 @@ const TERRAIN_CLEAR_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RG
 TERRAIN_CLEAR_DEPTH.onBeforeCompile = (sh) => {
   terrainVertex(sh);
   sh.uniforms.terrainAlpha = { value: TERRAIN_ALPHA };
-  sh.vertexShader = `attribute vec4 terrainPal;\nuniform float terrainAlpha[${TERRAIN_ALPHA.length}];\nvarying float vTerrA;\n`
+  sh.uniforms.clearAtlas = clearAtlasU;
+  sh.uniforms.clearIdx = clearIdxU;
+  sh.vertexShader = `attribute vec4 terrainPal;\nuniform float terrainAlpha[${TERRAIN_ALPHA.length}];\n`
+    + `varying float vTerrA;\nvarying float vTerrM;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\n`
     + sh.vertexShader.replace('// terrain vertex unpacked', `
   int tl = tw.x >> 12;
-  vTerrA = terrainAlpha[(int(terrainPal[tl >> 2]) >> ((tl & 3) * 6)) & 63];`);
-  sh.fragmentShader = 'varying float vTerrA;\n' + sh.fragmentShader.replace('void main() {', 'void main() {' + clearDitherGlsl('vTerrA'));
+  int tm = (int(terrainPal[tl >> 2]) >> ((tl & 3) * 6)) & 63;
+  vTerrA = terrainAlpha[tm];
+  vTerrM = float(tm);
+  vTerrPos = (modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz;
+  int tf = (tw.y >> 11) & 7;
+  float tsg = (tf & 1) == 0 ? 1.0 : -1.0;
+  vTerrN = vec3(tf < 2 ? tsg : 0.0, tf / 2 == 1 ? tsg : 0.0, tf >= 4 ? tsg : 0.0);`);
+  // The sun's light through it the same way: the faces turned away from the sun
+  // are the ones this pass draws, so the march goes from there back toward it.
+  sh.fragmentShader = 'varying float vTerrA;\nvarying float vTerrM;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\n' + clearDepthGlsl
+    + sh.fragmentShader.replace('void main() {', `void main() {
+  float tA = vTerrA < 1.0
+    ? 1.0 - pow(1.0 - vTerrA, terrainClearDepth(vTerrPos, vTerrN, vec3(${glf(SUN.x)}, ${glf(SUN.y)}, ${glf(SUN.z)}), int(vTerrM + 0.5)))
+    : 1.0;` + clearDitherGlsl('tA'));
 };
 TERRAIN_CLEAR_DEPTH.customProgramCacheKey = function () { return this.onBeforeCompile.toString() + TERRAIN_PBR.length; };
 // Terrain is lit as Lambert, which is the cheap part of what MeshStandardMaterial
@@ -2272,10 +2404,17 @@ TERRAIN_CLEAR_MAT.depthWrite = false;
 TERRAIN_CLEAR_MAT.onBeforeCompile = (sh) => {
   TERRAIN_CHUNK_MAT.onBeforeCompile(sh);
   sh.uniforms.terrainAlpha = { value: TERRAIN_ALPHA };
-  sh.vertexShader = `uniform float terrainAlpha[${TERRAIN_ALPHA.length}];\nvarying float vTerrA;\n` + sh.vertexShader
-    .replace('vBase = terrainBase[tm];', 'vBase = terrainBase[tm];\n  vTerrA = terrainAlpha[tm];');
-  sh.fragmentShader = 'varying float vTerrA;\n' + sh.fragmentShader
-    .replace('#include <opaque_fragment>', 'diffuseColor.a = vTerrA;\n#include <opaque_fragment>');
+  sh.uniforms.clearAtlas = clearAtlasU;
+  sh.uniforms.clearIdx = clearIdxU;
+  sh.vertexShader = `uniform float terrainAlpha[${TERRAIN_ALPHA.length}];\nvarying float vTerrA;\nvarying float vTerrM;\n` + sh.vertexShader
+    .replace('vBase = terrainBase[tm];', 'vBase = terrainBase[tm];\n  vTerrA = terrainAlpha[tm];\n  vTerrM = float(tm);');
+  // One block lets through its transparency, a look L blocks deep that to the
+  // L-th power, however the run is shaped and from wherever it is seen.
+  sh.fragmentShader = 'varying float vTerrA;\nvarying float vTerrM;\n' + clearDepthGlsl + sh.fragmentShader
+    .replace('#include <opaque_fragment>', `
+  float tL = terrainClearDepth(vTerrPos, vTerrN, normalize(vTerrPos - cameraPosition), int(vTerrM + 0.5));
+  diffuseColor.a = 1.0 - pow(1.0 - vTerrA, tL);
+#include <opaque_fragment>`);
 };
 const TERRAIN_CLEAR_PAIR = [TERRAIN_CHUNK_MAT, TERRAIN_CLEAR_MAT];
 for (const m of [TERRAIN_CHUNK_MAT, TERRAIN_BATCH_MAT, TERRAIN_CLEAR_MAT])
@@ -2747,18 +2886,17 @@ function collectColumn(i, j, step = 1) {
         if (m === AIR) continue;
         if (clr && matClear[m] === 1) {
           // The faces of what stands against it, as that block would draw them
-          // against air — another block of its own material too, so a look
-          // through n of them crosses n blended faces and the glass reads as
-          // thick as it is: 1 block lets through its transparency, n blocks
-          // that to the n-th power.
+          // against air; another block of its own material shows nothing — a
+          // run of it is one layer, as opaque as the look through it is deep
+          // (terrainClearDepth), not a layer a block.
           const lv = lvl - VOX_FLOOR;
           let n;
-          if (lvl <= cE && (n = voxMat[oE + lvl]) !== AIR) addBoxFace(1, li + 1, lj, lv, 1, n);
-          if (lvl <= cW && (n = voxMat[oW + lvl]) !== AIR) addBoxFace(0, li - 1, lj, lv, 1, n);
-          if (lvl < cap && (n = voxMat[p + 1]) !== AIR) addBoxFace(3, li, lj, lv + 1, 1, n);
-          if ((n = voxMat[p - 1]) !== AIR) addBoxFace(2, li, lj, lv - 1, 1, n);
-          if (lvl <= cN && (n = voxMat[oN + lvl]) !== AIR) addBoxFace(5, li, lj + 1, lv, 1, n);
-          if (lvl <= cS && (n = voxMat[oS + lvl]) !== AIR) addBoxFace(4, li, lj - 1, lv, 1, n);
+          if (lvl <= cE && (n = voxMat[oE + lvl]) !== AIR && n !== m) addBoxFace(1, li + 1, lj, lv, 1, n);
+          if (lvl <= cW && (n = voxMat[oW + lvl]) !== AIR && n !== m) addBoxFace(0, li - 1, lj, lv, 1, n);
+          if (lvl < cap && (n = voxMat[p + 1]) !== AIR && n !== m) addBoxFace(3, li, lj, lv + 1, 1, n);
+          if ((n = voxMat[p - 1]) !== AIR && n !== m) addBoxFace(2, li, lj, lv - 1, 1, n);
+          if (lvl <= cN && (n = voxMat[oN + lvl]) !== AIR && n !== m) addBoxFace(5, li, lj + 1, lv, 1, n);
+          if (lvl <= cS && (n = voxMat[oS + lvl]) !== AIR && n !== m) addBoxFace(4, li, lj - 1, lv, 1, n);
         }
         if (!isVisible(p)) continue;
         open = (lvl > cE || voxMat[oE + lvl] === AIR ? 1 : 0) | (lvl > cW || voxMat[oW + lvl] === AIR ? 2 : 0)
@@ -3106,6 +3244,7 @@ function rebuildChunk(c, r) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   let blocks = 0;
+  clearVolChunk(c);
   const step = r ? r.step : chunkStepWant(c);
   chunkStep[c] = step;
   const stride = mergeSizeFor(step);
@@ -5419,25 +5558,40 @@ fallMat.onBeforeCompile = (sh) => {
 // a big piece costs its whole volume in the shadow map each frame.
 const fallDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
 fallDepthMat.onBeforeCompile = fallMat.onBeforeCompile;
-// A piece with see-through blocks in it: each block's opacity comes off its
+// A piece with see-through blocks in it: each block's transparency and how far
+// its run of its own material goes along each of the piece's axes come off its
 // face mask's high bits (debrisFaceMask), so one piece can mix them with
 // opaque ones; blended and writing no depth, as the terrain's see-through draw.
+// A run draws only its outside, and is as opaque as the look through it is
+// long — taken as the box its runs span, which is exact for a slab or a block
+// of glass and caps at 8 blocks along an axis.
+// The look's direction (vDebDir) in the piece's own axes, from dir in the world's.
+const debrisClearVertex = (dir) => `#include <project_vertex>
+  float dh = floor(faceHide / 8192.0);
+  vDebT = mod(floor(faceHide / 64.0), 128.0) / 100.0;
+  vDebRun = vec3(mod(dh, 8.0), mod(floor(dh / 8.0), 8.0), floor(dh / 64.0)) + 1.0;
+  mat3 dR = mat3(modelMatrix) * mat3(instanceMatrix);
+  vDebDir = transpose(dR) * (${dir});`;
+const debrisClearAlpha = `
+  vec3 dd = abs(normalize(vDebDir)) + 1e-6;
+  float dA = 1.0 - pow(vDebT, min(vDebRun.x / dd.x, min(vDebRun.y / dd.y, vDebRun.z / dd.z)));`;
+const debrisClearVary = 'varying float vDebT;\nvarying vec3 vDebRun;\nvarying vec3 vDebDir;\n';
 const fallClearMat = fallMat.clone();
 fallClearMat.transparent = true;
 fallClearMat.depthWrite = false;
 fallClearMat.onBeforeCompile = (sh) => {
   fallMat.onBeforeCompile(sh);
-  sh.vertexShader = 'varying float vDebA;\n' + sh.vertexShader.replace('#include <project_vertex>',
-    '#include <project_vertex>\n  vDebA = 1.0 - floor(faceHide / 64.0) / 100.0;');
-  sh.fragmentShader = 'varying float vDebA;\n' + sh.fragmentShader
-    .replace('#include <opaque_fragment>', 'diffuseColor.a *= vDebA;\n#include <opaque_fragment>');
+  sh.vertexShader = debrisClearVary + sh.vertexShader.replace('#include <project_vertex>',
+    debrisClearVertex('(modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz - cameraPosition'));
+  sh.fragmentShader = debrisClearVary + sh.fragmentShader
+    .replace('#include <opaque_fragment>', debrisClearAlpha + '\n  diffuseColor.a *= dA;\n#include <opaque_fragment>');
 };
 const fallClearDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
 fallClearDepth.onBeforeCompile = (sh) => {
   fallMat.onBeforeCompile(sh);
-  sh.vertexShader = 'varying float vDebA;\n' + sh.vertexShader.replace('#include <project_vertex>',
-    '#include <project_vertex>\n  vDebA = 1.0 - floor(faceHide / 64.0) / 100.0;');
-  sh.fragmentShader = 'varying float vDebA;\n' + sh.fragmentShader.replace('void main() {', 'void main() {' + clearDitherGlsl('vDebA'));
+  sh.vertexShader = debrisClearVary + sh.vertexShader.replace('#include <project_vertex>',
+    debrisClearVertex(`vec3(${glf(SUN.x)}, ${glf(SUN.y)}, ${glf(SUN.z)})`));
+  sh.fragmentShader = debrisClearVary + sh.fragmentShader.replace('void main() {', 'void main() {' + debrisClearAlpha + clearDitherGlsl('dA'));
 };
 // A geometry of its own that draws through src's buffers rather than copies of
 // them, for something that only needs an attribute or two of its own on top.
@@ -5679,11 +5833,12 @@ function debrisCells(lat, S) {
 // powder through its layer's.
 //
 // With see-through materials about (clearCount), a block of one hides nothing
-// behind it — another of its own material neither, so a piece's glass reads as
-// thick as it is, as the terrain's does — and each block carries its
-// transparency as 64 x that over the six mask bits, for fallClearMat to read — rounded to a
-// whole number, as a fraction there would carry into the bits; the piece's cubes
-// are drawn with that whenever any of them is see-through.
+// of another material behind it, and each block carries its transparency as
+// 64 x that over the six mask bits, for fallClearMat to read — rounded to a
+// whole number, as a fraction there would carry into the bits — and over that,
+// 8192 x its runs of its own material along x, y and z, less one and 3 bits
+// apiece; the piece's cubes are drawn with that whenever any of them is
+// see-through.
 function debrisFaceMask(mesh) {
   const lat = mesh.userData.blocks, attr = mesh.geometry.attributes.faceHide;
   if (!lat.length) return;
@@ -5701,10 +5856,17 @@ function debrisFaceMask(mesh) {
       const m = lat[q].mat;
       for (let f = 0; f < 6; f++) {
         const d = FACE_DIRS[f], nb = grid[c + d[0] + d[1] * wd + d[2] * w];
-        if (nb && !matClear[lat[nb - 1].mat]) bits |= 1 << f;
+        if (nb && (!matClear[lat[nb - 1].mat] || lat[nb - 1].mat === m)) bits |= 1 << f;
       }
       if (matClear[m]) {
         bits += 64 * Math.round(MAT_STATS[m].transparency);
+        for (let a = 0, sh = 1; a < 3; a++, sh *= 8) {
+          const s = a === 0 ? 1 : a === 1 ? wd : w;
+          let r = 1, nb;
+          for (let g = c + s; r < 8 && (nb = grid[g]) && lat[nb - 1].mat === m; g += s) r++;
+          for (let g = c - s; r < 8 && (nb = grid[g]) && lat[nb - 1].mat === m; g -= s) r++;
+          bits += 8192 * sh * (r - 1);
+        }
         if (q < mesh.count) clear = true;
       }
     }

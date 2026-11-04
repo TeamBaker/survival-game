@@ -1169,6 +1169,59 @@ const AIR = N_MATS;
 // a voxel can hold, so it never has to follow them.
 const CUSTOM_MAT0 = AIR + 1, MAT_ID_LIMIT = 64;
 
+// A created material's place angle (powder) and transparency, as the sim and the
+// renderer read them: the panel's numbers turned once, when they are set
+// (matReposeSet, matClearSet), into what the hot loops want, so a built-in id
+// and a created one at the defaults go down exactly the paths they always did.
+//
+// Repose: a grain rolls toward the nearest side where, within reposeReach[m]
+// columns along that side, the ground falls away too far: the grain's top over
+// the top k columns out may be at most k * tan(angle) blocks, which in the air
+// counted down from under the grain (reposeLim) is under ceil(k * tan). One
+// column at one block is the 45 degrees sand has always kept (reposeStd:
+// today's test, verbatim); a shallower angle has to look further out to tell a
+// slope of one in five from flat, a steeper one only enough to average 2-block
+// steps with 1s.
+const REPOSE_REACH_MAX = 16;
+const reposeStd = new Uint8Array(MAT_ID_LIMIT).fill(1);
+const reposeReach = new Uint8Array(MAT_ID_LIMIT).fill(1);
+const reposeLim = new Uint16Array(MAT_ID_LIMIT * REPOSE_REACH_MAX).fill(1);
+// Angle 0 spreads flat like water: level ground to the end of the look is no
+// reason to stop there (powderFar).
+const reposeFlat = new Uint8Array(MAT_ID_LIMIT);
+let powderFarNone = 0, powderFarNoneI = 0, powderFarNoneJ = 0, powderFarNoneL = 0;   // the last far look that found nothing, while it holds
+// Press: how readily the powder gives under a weight (pressPowder), from the
+// same angle: 1 at 0, a little over half at 45, a twentieth at 90. Steep
+// powder still gives, only slowly.
+const pressEaseOf = (angle) => 0.05 + 0.95 * Math.cos(angle * Math.PI / 180) ** 2;
+const pressEase = new Float32Array(MAT_ID_LIMIT).fill(pressEaseOf(45));
+// The furthest any material looks: a grain leaving a column can unsettle ones
+// that far off, not just its neighbours (powderDirtySides).
+let reposeReachAll = 1;
+function matReposeSet(m, angle) {
+  reposeStd[m] = angle === 45 ? 1 : 0;
+  const t = Math.tan(angle * Math.PI / 180);
+  // 90 never rolls; anything else at least looks one column out.
+  const R = angle >= 90 ? 0 : angle === 45 ? 1 : t >= 1 ? Math.min(8, Math.ceil(8 / t)) : REPOSE_REACH_MAX;
+  reposeReach[m] = R;
+  reposeFlat[m] = t <= 0 ? 1 : 0;
+  pressEase[m] = pressEaseOf(angle);
+  for (let k = 1; k <= REPOSE_REACH_MAX; k++) {
+    // A drop of one is level ground (a grain beside a grain), never a slope.
+    reposeLim[m * REPOSE_REACH_MAX + k - 1] = Math.max(1, Math.min(65535, Math.ceil(k * t - 1e-9)));
+  }
+  reposeReachAll = 1;
+  for (let id = CUSTOM_MAT0; id < MAT_ID_LIMIT; id++) if (reposeReach[id] > reposeReachAll) reposeReachAll = reposeReach[id];
+}
+// Transparency: matClear marks the ids drawn see-through (any transparency
+// above 0). A see-through block's own faces go in its chunk's see-through draw,
+// and it puts in the faces of whatever stands against it, which that block
+// never draws itself (it only draws against air) — so nothing else in the
+// mesher, the visibility bits or airLo has to know. clearCount is how many
+// there are: at 0 nothing anywhere asks.
+const matClear = new Uint8Array(MAT_ID_LIMIT);
+let clearCount = 0;
+
 // The numbers are the material's own properties, indexed by material id: weight
 // is how much a block of it drags on you, and is read as-is by the sim — the
 // stress solver's load on the block, and (through debrisWeight) a loose piece's
@@ -1714,6 +1767,31 @@ const stressGroundCols = new Set();
 // Columns written since the tension layout last threw their settled weights
 // away (stSettledW): nothing else changes what generation stacked in one.
 const stressWeightCols = new Set();
+// Columns that hold, or have held, a see-through block (matClear): the mesher
+// walks those all the way down, since the core it skips elsewhere is only
+// buried where everything round it is opaque. Never cleared but by
+// clearColsRecount, so a stale mark costs a longer walk, never a missing face.
+// chunkClear is the same mark by chunk, for chunkStepWant; a chunk whose mark
+// changes is redrawn, and so are the ones before it, whose LOD cubes stop short
+// of it or not (lodClipOf).
+const colClear = new Uint8Array(GEN_N * GEN_N);
+function clearColsRecount() {
+  const was = chunkClear.slice();
+  colClear.fill(0);
+  chunkClear.fill(0);
+  if (clearCount) for (let k = 0; k < GEN_N * GEN_N; k++) {
+    const o = voxOff[k];
+    if (o < 0) continue;
+    for (let p = o, end = o + voxLen(k); p < end; p++) if (matClear[voxMat[p]]) {
+      colClear[k] = 1; chunkClear[chunkOf(k % GEN_N, (k / GEN_N) | 0)] = 1; break;
+    }
+  }
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) if (chunkClear[c] !== was[c]) chunkClearDirty(c);
+}
+function chunkClearDirty(c) {
+  const ci = c % CHUNK_N, cj = (c / CHUNK_N) | 0;
+  for (let b = Math.max(0, cj - 1); b <= cj; b++) for (let a = Math.max(0, ci - 1); a <= ci; a++) dirtyChunks.add(b * CHUNK_N + a);
+}
 function setVoxel(i, j, lvl, m) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
   const k = j * GEN_N + i;
@@ -1726,6 +1804,12 @@ function setVoxel(i, j, lvl, m) {
   const was = voxMat[p];
   if (was === m) return was;
   voxMat[p] = m;
+  if (powderFarNone) powderFarTouch(i, j, lvl, m);
+  if (matClear[m]) {
+    colClear[k] = 1;
+    const c = chunkOf(i, j);
+    if (!chunkClear[c]) { chunkClear[c] = 1; chunkClearDirty(c); }
+  }
   stressRev++;
   stressCols.add(k);
   stressGroundCols.add(k);
@@ -1809,6 +1893,8 @@ const stressChunkLow = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
 // while nothing solid changed within its reach — no matter what else changed.
 let stressEditSeq = 0;
 const stressChunkEdit = new Float64Array(CHUNK_N * CHUNK_N);
+// Chunks holding, or that have held, a see-through block (see colClear).
+const chunkClear = new Uint8Array(CHUNK_N * CHUNK_N);
 
 // A separate, coarser grid overlay used for LOD — not the mesh chunk grid above.
 const CHUNK_GRID = 20;                          // blocks per grid chunk side
@@ -1907,6 +1993,9 @@ const pbrOf = (m, i) => new THREE.Vector4(m.roughness, m.metalness, m.envMapInte
 const baseOf = (m) => new THREE.Vector3(m.color.r, m.color.g, m.color.b);
 const TERRAIN_PBR = TERRAIN_MATS.map(pbrOf);
 const TERRAIN_BASE = TERRAIN_MATS.map(baseOf);
+// Each material's opacity, 1 less its transparency: only the see-through draw
+// (TERRAIN_CLEAR_MAT) reads it.
+const TERRAIN_ALPHA = TERRAIN_MATS.map(() => 1);
 // Every per-material table out to id n - 1, for a created material about to be
 // installed there. The terrain shaders declare terrainPbr / terrainBase at the
 // length they were compiled with, so a longer table means a new program; the
@@ -1921,8 +2010,9 @@ function matTablesGrow(n) {
     TERRAIN_FACE_MATS.push(faceMatOf(m));
     TERRAIN_PBR.push(pbrOf(m, id));
     TERRAIN_BASE.push(baseOf(m));
+    TERRAIN_ALPHA.push(1);
   }
-  TERRAIN_CHUNK_MAT.needsUpdate = TERRAIN_BATCH_MAT.needsUpdate = true;
+  TERRAIN_CHUNK_MAT.needsUpdate = TERRAIN_BATCH_MAT.needsUpdate = TERRAIN_CLEAR_MAT.needsUpdate = TERRAIN_CLEAR_DEPTH.needsUpdate = true;
 }
 
 // Per column, two RGBA8 texels side by side: (2i, j) is the tint as a 16-bit
@@ -1937,8 +2027,125 @@ terrainCols.magFilter = terrainCols.minFilter = THREE.NearestFilter;
 terrainCols.generateMipmaps = false;
 terrainCols.needsUpdate = true;
 const terrainColPatch = new THREE.DataTexture(new Uint8Array(CHUNK * 2 * CHUNK * 4), CHUNK * 2, CHUNK);
-
 const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+
+// Where the see-through blocks are, for the see-through draw to read how far a
+// sight-line runs through them (terrainClearDepth): a glass run draws only its
+// outside, one blended layer, and its opacity comes from that distance, not
+// from a layer per block. Per chunk with any (chunkClear), one 16 x 16 tile of
+// material ids a level, from its lowest see-through block to its highest, 255
+// where a block is anything else; clearIdx says for each chunk which tile its
+// lowest level starts at, that level, and how many. rebuildChunk keeps its
+// chunk's tiles current; the atlas is packed again and goes up whole before
+// the next frame that draws (scene.onBeforeRender) — it is only as big as the
+// glass there is.
+const CLEAR_ATLAS_TW = 64;                      // tiles across the atlas
+const CLEAR_ATLAS_MAX = CLEAR_ATLAS_TW * 256;   // ... and at most, 4096 texels deep
+const clearTiles = new Array(CHUNK_N * CHUNK_N).fill(null);   // per chunk: { lo, n, ids }
+let clearVolDirty = false;
+const clearIdx = new THREE.DataTexture(new Float32Array(CHUNK_N * CHUNK_N * 4), CHUNK_N, CHUNK_N, THREE.RGBAFormat, THREE.FloatType);
+clearIdx.magFilter = clearIdx.minFilter = THREE.NearestFilter;
+clearIdx.generateMipmaps = false;
+clearIdx.needsUpdate = true;
+const clearAtlasOf = (rows) => {
+  const t = new THREE.DataTexture(new Uint8Array(CLEAR_ATLAS_TW * 16 * rows * 16).fill(255), CLEAR_ATLAS_TW * 16, rows * 16, THREE.RedFormat, THREE.UnsignedByteType);
+  t.magFilter = t.minFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  t.unpackAlignment = 1;
+  t.needsUpdate = true;
+  return t;
+};
+const clearAtlasU = { value: clearAtlasOf(1) }, clearIdxU = { value: clearIdx };
+function clearVolChunk(c) {
+  let t = null;
+  if (clearCount && chunkClear[c]) {
+    const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
+    const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
+    let lo = Infinity, hi = -Infinity;
+    for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
+      const k = j * GEN_N + i, o = voxOff[k];
+      if (!colClear[k] || o < 0) continue;
+      for (let p = o, end = o + voxLen(k); p < end; p++) if (matClear[voxMat[p]]) {
+        const l = VOX_FLOOR + p - o;
+        if (l < lo) lo = l;
+        if (l > hi) hi = l;
+      }
+    }
+    if (hi >= lo) {
+      const n = hi - lo + 1, ids = new Uint8Array(n * 256).fill(255);
+      for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
+        const k = j * GEN_N + i, o = voxOff[k];
+        if (!colClear[k] || o < 0) continue;
+        const end = Math.min(o + voxLen(k), o + hi - VOX_FLOOR + 1);
+        for (let p = Math.max(o, o + lo - VOX_FLOOR); p < end; p++) {
+          const m = voxMat[p];
+          if (matClear[m]) ids[(VOX_FLOOR + p - o - lo) * 256 + (j - j0) * 16 + (i - i0)] = m;
+        }
+      }
+      t = { lo, n, ids };
+    }
+  }
+  if (t || clearTiles[c]) { clearTiles[c] = t; clearVolDirty = true; }
+}
+function clearVolFlush() {
+  if (!clearVolDirty) return;
+  clearVolDirty = false;
+  let tiles = 0;
+  for (const t of clearTiles) if (t) tiles += t.n;
+  tiles = Math.min(tiles, CLEAR_ATLAS_MAX);
+  const rows = Math.max(1, Math.ceil(tiles / CLEAR_ATLAS_TW));
+  let atlas = clearAtlasU.value;
+  if (atlas.image.height !== rows * 16) { atlas.dispose(); atlas = clearAtlasU.value = clearAtlasOf(rows); }
+  const A = atlas.image.data, W = CLEAR_ATLAS_TW * 16, I = clearIdx.image.data;
+  I.fill(0);
+  let at = 0;
+  for (let c = 0; c < clearTiles.length; c++) {
+    const t = clearTiles[c];
+    if (!t || at + t.n > CLEAR_ATLAS_MAX) continue;   // past the cap a chunk's glass reads one block deep
+    I[c * 4] = at; I[c * 4 + 1] = t.lo; I[c * 4 + 2] = t.n;
+    for (let l = 0; l < t.n; l++, at++) {
+      const x0 = (at % CLEAR_ATLAS_TW) * 16, y0 = ((at / CLEAR_ATLAS_TW) | 0) * 16;
+      for (let r = 0; r < 16; r++) A.set(t.ids.subarray(l * 256 + r * 16, l * 256 + r * 16 + 16), (y0 + r) * W + x0);
+    }
+  }
+  atlas.needsUpdate = true;
+  clearIdx.needsUpdate = true;
+}
+scene.onBeforeRender = clearVolFlush;
+// The march itself, in blocks: from p, on the face of block b0 (material m)
+// that the look comes in through, along d, for as long as it stays in m;
+// how far that is. A run of another see-through material is its own layer.
+const clearDepthGlsl = `
+uniform highp sampler2D clearAtlas;
+uniform highp sampler2D clearIdx;
+int clearMatAt(ivec3 b) {
+  if (b.x < 0 || b.z < 0 || b.x >= ${GEN_N} || b.z >= ${GEN_N}) return -1;
+  vec4 e = texelFetch(clearIdx, b.xz / ${CHUNK}, 0);
+  int t = b.y - int(e.y);
+  if (t < 0 || t >= int(e.z)) return -1;
+  int tile = int(e.x) + t;
+  ivec2 at = ivec2((tile % ${CLEAR_ATLAS_TW}) * 16 + b.x % ${CHUNK}, (tile / ${CLEAR_ATLAS_TW}) * 16 + b.z % ${CHUNK});
+  return int(texelFetch(clearAtlas, at, 0).r * 255.0 + 0.5);
+}
+float terrainClearDepth(vec3 wp, vec3 n, vec3 d, int m) {
+  // Block units: column, level, row.
+  vec3 p = vec3((wp.x + ${glf(GEN_R)}) / ${glf(BLOCK)}, wp.y / ${glf(BLOCK)}, (wp.z + ${glf(GEN_R)}) / ${glf(BLOCK)});
+  ivec3 b = ivec3(floor(p - n * 0.5));
+  p = clamp(p, vec3(b) + 0.001, vec3(b) + 0.999);
+  vec3 ad = max(abs(d), vec3(1e-6));
+  ivec3 st = ivec3(d.x < 0.0 ? -1 : 1, d.y < 0.0 ? -1 : 1, d.z < 0.0 ? -1 : 1);
+  vec3 tMax = (vec3(b) + step(0.0, d) - p) * vec3(st) / ad, tD = 1.0 / ad;
+  float t = 0.0;
+  for (int k = 0; k < 64; k++) {
+    if (tMax.x <= tMax.y && tMax.x <= tMax.z) { t = tMax.x; b.x += st.x; tMax.x += tD.x; }
+    else if (tMax.y <= tMax.z) { t = tMax.y; b.y += st.y; tMax.y += tD.y; }
+    else { t = tMax.z; b.z += st.z; tMax.z += tD.z; }
+    if (clearMatAt(b) != m) break;
+  }
+  return t;
+}
+`;
+
 // The unpacking both terrain shaders share (see the vertex layout above):
 // `transformed` is the corner in half-blocks from the chunk's origin, which the
 // instancing chunks of three's own shader then add on.
@@ -1953,6 +2160,41 @@ function terrainVertex(sh) {
 // material, which would take the packed words for a position.
 const TERRAIN_CHUNK_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
 TERRAIN_CHUNK_DEPTH.onBeforeCompile = terrainVertex;
+// A see-through block's shadow, as thick as the block is opaque: three draws a
+// mesh's every group into the shadow map with the one depth material, so a
+// chunk or piece holding see-through blocks gets this kind instead, which lets
+// through a 4 x 4 dither's share of the texels — the shadow filter blurs that
+// to a lighter shadow; one at 100 casts none.
+const clearDitherGlsl = (a) => `
+  const float clearBayer[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+  ivec2 cq = ivec2(gl_FragCoord.xy) & 3;
+  if (${a} * 16.0 < clearBayer[cq.y * 4 + cq.x] + 0.5) discard;`;
+const TERRAIN_CLEAR_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+TERRAIN_CLEAR_DEPTH.onBeforeCompile = (sh) => {
+  terrainVertex(sh);
+  sh.uniforms.terrainAlpha = { value: TERRAIN_ALPHA };
+  sh.uniforms.clearAtlas = clearAtlasU;
+  sh.uniforms.clearIdx = clearIdxU;
+  sh.vertexShader = `attribute vec4 terrainPal;\nuniform float terrainAlpha[${TERRAIN_ALPHA.length}];\n`
+    + `varying float vTerrA;\nvarying float vTerrM;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\n`
+    + sh.vertexShader.replace('// terrain vertex unpacked', `
+  int tl = tw.x >> 12;
+  int tm = (int(terrainPal[tl >> 2]) >> ((tl & 3) * 6)) & 63;
+  vTerrA = terrainAlpha[tm];
+  vTerrM = float(tm);
+  vTerrPos = (modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz;
+  int tf = (tw.y >> 11) & 7;
+  float tsg = (tf & 1) == 0 ? 1.0 : -1.0;
+  vTerrN = vec3(tf < 2 ? tsg : 0.0, tf / 2 == 1 ? tsg : 0.0, tf >= 4 ? tsg : 0.0);`);
+  // The sun's light through it the same way: the faces turned away from the sun
+  // are the ones this pass draws, so the march goes from there back toward it.
+  sh.fragmentShader = 'varying float vTerrA;\nvarying float vTerrM;\nvarying vec3 vTerrPos;\nvarying vec3 vTerrN;\n' + clearDepthGlsl
+    + sh.fragmentShader.replace('void main() {', `void main() {
+  float tA = vTerrA < 1.0
+    ? 1.0 - pow(1.0 - vTerrA, terrainClearDepth(vTerrPos, vTerrN, vec3(${glf(SUN.x)}, ${glf(SUN.y)}, ${glf(SUN.z)}), int(vTerrM + 0.5)))
+    : 1.0;` + clearDitherGlsl('tA'));
+};
+TERRAIN_CLEAR_DEPTH.customProgramCacheKey = function () { return this.onBeforeCompile.toString() + TERRAIN_PBR.length; };
 // Terrain is lit as Lambert, which is the cheap part of what MeshStandardMaterial
 // did (sun, hemisphere and ambient into the diffuse colour, sun shadowed), with
 // the rest of the standard shader's output added back on top by hand: the sun's
@@ -2151,7 +2393,31 @@ const TERRAIN_BATCH_DEPTH = new THREE.MeshDepthMaterial({ depthPacking: THREE.RG
 TERRAIN_BATCH_DEPTH.onBeforeCompile = (sh) => { terrainVertex(sh); terrainBatchVertex(sh); };
 const TERRAIN_BATCH_MAT = TERRAIN_CHUNK_MAT.clone();
 TERRAIN_BATCH_MAT.onBeforeCompile = (sh) => { TERRAIN_CHUNK_MAT.onBeforeCompile(sh); terrainBatchVertex(sh); };
-for (const m of [TERRAIN_CHUNK_MAT, TERRAIN_BATCH_MAT])
+// A chunk's see-through faces (matClear), after its opaque ones in the same
+// buffer and drawn as a second group: blended, and writing no depth, so one
+// never hides another or anything behind it that is drawn after it; what is
+// behind is drawn in full by the opaque pass, and shows through. Chunks with
+// none keep the one material and the one draw.
+const TERRAIN_CLEAR_MAT = TERRAIN_CHUNK_MAT.clone();
+TERRAIN_CLEAR_MAT.transparent = true;
+TERRAIN_CLEAR_MAT.depthWrite = false;
+TERRAIN_CLEAR_MAT.onBeforeCompile = (sh) => {
+  TERRAIN_CHUNK_MAT.onBeforeCompile(sh);
+  sh.uniforms.terrainAlpha = { value: TERRAIN_ALPHA };
+  sh.uniforms.clearAtlas = clearAtlasU;
+  sh.uniforms.clearIdx = clearIdxU;
+  sh.vertexShader = `uniform float terrainAlpha[${TERRAIN_ALPHA.length}];\nvarying float vTerrA;\nvarying float vTerrM;\n` + sh.vertexShader
+    .replace('vBase = terrainBase[tm];', 'vBase = terrainBase[tm];\n  vTerrA = terrainAlpha[tm];\n  vTerrM = float(tm);');
+  // One block lets through its transparency, a look L blocks deep that to the
+  // L-th power, however the run is shaped and from wherever it is seen.
+  sh.fragmentShader = 'varying float vTerrA;\nvarying float vTerrM;\n' + clearDepthGlsl + sh.fragmentShader
+    .replace('#include <opaque_fragment>', `
+  float tL = terrainClearDepth(vTerrPos, vTerrN, normalize(vTerrPos - cameraPosition), int(vTerrM + 0.5));
+  diffuseColor.a = 1.0 - pow(1.0 - vTerrA, tL);
+#include <opaque_fragment>`);
+};
+const TERRAIN_CLEAR_PAIR = [TERRAIN_CHUNK_MAT, TERRAIN_CLEAR_MAT];
+for (const m of [TERRAIN_CHUNK_MAT, TERRAIN_BATCH_MAT, TERRAIN_CLEAR_MAT])
   m.customProgramCacheKey = function () { return this.onBeforeCompile.toString() + TERRAIN_PBR.length; };
 
 // A falling powder grain's own box, vertex-coloured like a tiny slice of
@@ -2216,7 +2482,13 @@ function grainGeo(m, seed = 0) {
 const fallingGrainGeos = new Map();
 function fallingGrainGeo(m) {
   let g = fallingGrainGeos.get(m);
-  if (!g) fallingGrainGeos.set(m, g = grainGeo(m));
+  if (g) return g;
+  g = grainGeo(m);
+  // For the face mask (fallingGrainMask): grainGeo lays its faces down one
+  // after another in FACE_DIRS order.
+  const nv = g.attributes.position.count, per = nv / 6;
+  g.setAttribute('faceId', new THREE.BufferAttribute(Float32Array.from({ length: nv }, (_, v) => Math.floor(v / per)), 1));
+  fallingGrainGeos.set(m, g);
   return g;
 }
 // gfx.grainCube: a far grain's plain 24-vertex cube in the material's own colour
@@ -2228,6 +2500,7 @@ function fallingGrainCubeGeo(m) {
   const c = TERRAIN_MATS[m].color, col = new Float32Array(72);
   for (let v = 0; v < 24; v++) c.toArray(col, v * 3);
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('faceId', new THREE.BufferAttribute(Float32Array.from({ length: 24 }, (_, v) => v >> 2), 1));
   fallingGrainGeos.set(~m, g);
   return g;
 }
@@ -2540,6 +2813,26 @@ function mergeFaces() {
   }
 }
 
+// The see-through quads (matClear) moved behind the rest, order otherwise kept,
+// for the chunk to draw them as a group of their own. Returns where they start.
+function clearSplit(nv) {
+  if (!clearCount) return nv;
+  let nc = 0;
+  for (let v = 0; v < nv; v += 4) if (matClear[qInfo[v] & 63]) nc += 4;
+  if (!nc) return nv;
+  const cp = new Int32Array(nc * 3), ci = new Uint16Array(nc);
+  let w = 0, c = 0;
+  for (let v = 0; v < nv; v += 4) {
+    if (matClear[qInfo[v] & 63]) {
+      cp.set(qPos.subarray(v * 3, v * 3 + 12), c * 3); ci.set(qInfo.subarray(v, v + 4), c); c += 4;
+    } else {
+      if (w !== v) { qPos.copyWithin(w * 3, v * 3, v * 3 + 12); qInfo.copyWithin(w, v, v + 4); }
+      w += 4;
+    }
+  }
+  qPos.set(cp, w * 3); qInfo.set(ci, w);
+  return w;
+}
 
 // Every exposed face of every visible block in column (i, j), recorded for the
 // merge. A block is visible when visBits says it has at least one face touching
@@ -2548,7 +2841,11 @@ function mergeFaces() {
 // faces that touch air themselves are drawn, so the six-sided box that used to
 // stand in for every block is down to the one or two sides of it anything could
 // ever see. Returns the blocks it drew something for.
-const lodCentre = [0, 0, 0];
+const lodCentre = [0, 0, 0], lodExt = [0, 0, 0];
+// Which of the chunk's far sides (1: +i, 2: +j, 4: the +i +j corner) has a
+// chunk drawn at full detail past it (lodClipOf): a LOD cube there stops at the
+// chunk's edge rather than hanging over it into blocks drawn one by one.
+let lodClip = 0;
 function collectColumn(i, j, step = 1) {
   if (step === 1) {
     const k = colK(i, j);
@@ -2583,14 +2880,32 @@ function collectColumn(i, j, step = 1) {
     // through voxFloorAt, which the mesh worker's snapshot carries on its own.
     // The block under each one above the floor is in the store; the floor's
     // underside is always open. One bit a face that touches air (FACES order).
-    const lo = Math.max(coreTop + 1, VOX_FLOOR + 1);
+    // A see-through block can sit anywhere in a column (colClear), and what it
+    // leaves showing is not on the visibility bits: that column is walked whole.
+    const clr = clearCount !== 0 && colClear[k] === 1;
+    const lo = clr ? VOX_FLOOR + 1 : Math.max(coreTop + 1, VOX_FLOOR + 1);
     for (let lvl = top; lvl >= VOX_FLOOR; lvl--) {
       if (lvl < lo) lvl = VOX_FLOOR;
       let m, open;
       if (lvl > VOX_FLOOR) {
         const p = o + lvl;
         m = voxMat[p];
-        if (m === AIR || !isVisible(p)) continue;
+        if (m === AIR) continue;
+        if (clr && matClear[m] === 1) {
+          // The faces of what stands against it, as that block would draw them
+          // against air; another block of its own material shows nothing — a
+          // run of it is one layer, as opaque as the look through it is deep
+          // (terrainClearDepth), not a layer a block.
+          const lv = lvl - VOX_FLOOR;
+          let n;
+          if (lvl <= cE && (n = voxMat[oE + lvl]) !== AIR && n !== m) addBoxFace(1, li + 1, lj, lv, 1, n);
+          if (lvl <= cW && (n = voxMat[oW + lvl]) !== AIR && n !== m) addBoxFace(0, li - 1, lj, lv, 1, n);
+          if (lvl < cap && (n = voxMat[p + 1]) !== AIR && n !== m) addBoxFace(3, li, lj, lv + 1, 1, n);
+          if ((n = voxMat[p - 1]) !== AIR && n !== m) addBoxFace(2, li, lj, lv - 1, 1, n);
+          if (lvl <= cN && (n = voxMat[oN + lvl]) !== AIR && n !== m) addBoxFace(5, li, lj + 1, lv, 1, n);
+          if (lvl <= cS && (n = voxMat[oS + lvl]) !== AIR && n !== m) addBoxFace(4, li, lj - 1, lv, 1, n);
+        }
+        if (!isVisible(p)) continue;
         open = (lvl > cE || voxMat[oE + lvl] === AIR ? 1 : 0) | (lvl > cW || voxMat[oW + lvl] === AIR ? 2 : 0)
           | (lvl >= cap || voxMat[p + 1] === AIR ? 4 : 0) | (voxMat[p - 1] === AIR ? 8 : 0)
           | (lvl > cN || voxMat[oN + lvl] === AIR ? 16 : 0) | (lvl > cS || voxMat[oS + lvl] === AIR ? 32 : 0);
@@ -2613,7 +2928,12 @@ function collectColumn(i, j, step = 1) {
   // leaving a gap, which is the right trade at the distance this only ever
   // draws at.
   const S = mergeSizeFor(step);
-  const iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
+  let iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
+  const iEnd = rbI0 + CHUNK, jEnd = rbJ0 + CHUNK;
+  const overI = iMax > iEnd, overJ = jMax > jEnd;
+  const clipI = overI && (lodClip & 1 || overJ && lodClip & 4), clipJ = overJ && (lodClip & 2 || overI && lodClip & 4);
+  if (clipI) iMax = iEnd;
+  if (clipJ) jMax = jEnd;
   let top = NO_COLUMN, bestK = -1, bestI = 0, bestJ = 0;
   for (let jj = j; jj < jMax; jj++) {
     for (let ii = i; ii < iMax; ii++) {
@@ -2644,21 +2964,25 @@ function collectColumn(i, j, step = 1) {
   // unless bedrock cut the band short; such a cube is drawn as it stands, face
   // by face, and the shader still finds it by the same arithmetic. Its centre
   // is a whole number of half-blocks either way (hc), as pushQuad wants it.
-  const cx = colX(i) + (S - 1) * HALF_BLOCK, cz = colZ(j) + (S - 1) * HALF_BLOCK;
+  // One cut short at the chunk's edge is that much narrower, and drawn as it
+  // stands too; the shader finds its column the same way.
+  const ext = lodExt;
+  ext[0] = clipI ? iMax - i : S; ext[1] = S; ext[2] = clipJ ? jMax - j : S;
+  const cx = colX(i) + (ext[0] - 1) * HALF_BLOCK, cz = colZ(j) + (ext[2] - 1) * HALF_BLOCK;
   const hc = lodCentre;
-  hc[0] = 2 * i + S; hc[1] = bandBottom + top + 1 - 2 * VOX_FLOOR; hc[2] = 2 * j + S;
+  hc[0] = 2 * i + ext[0]; hc[1] = bandBottom + top + 1 - 2 * VOX_FLOOR; hc[2] = 2 * j + ext[2];
   setColTexel(i, j, tint[bestK], top, cx, cz);
-  const onGrid = bandBottom === top - S + 1;
+  const onGrid = bandBottom === top - S + 1 && !clipI && !clipJ;
   for (let f = 0; f < 6; f++) {
     const F = FACES[f];
     let nb;
     if (F.dl > 0) nb = voxelAt(bestI, bestJ, top + 1);
     else if (F.dl < 0) nb = voxelAt(bestI, bestJ, bandBottom - 1);
-    else nb = voxelAt(i + F.di * S, j + F.dj * S, top);
+    else nb = voxelAt(i + (F.di > 0 ? ext[0] : F.di * S), j + (F.dj > 0 ? ext[2] : F.dj * S), top);
     if (nb !== AIR) continue;
     if (onGrid) { addBoxFace(f, i - rbI0, j - rbJ0, bandBottom - VOX_FLOOR, S, m); continue; }
     for (let a = 0; a < 3; a++) {
-      qLo[a] = hc[a] - S; qHi[a] = hc[a] + S;
+      qLo[a] = hc[a] - ext[a]; qHi[a] = hc[a] + ext[a];
       if (F.n[a] > 0) qLo[a] = qHi[a];
       else if (F.n[a] < 0) qHi[a] = qLo[a];
     }
@@ -2713,6 +3037,18 @@ let lodOverride = null;
 // The step each chunk's mesh was last built at — set by rebuildChunk, so any
 // rebuild (a dig, a load) counts, and updateLOD only queues the ones that lag.
 const chunkStep = new Int8Array(CHUNK_N * CHUNK_N);
+// The step chunk c is meshed at: its cell's, but always 1 for a chunk with a
+// see-through block in it. A LOD cube is one material over its whole S-block
+// band, so the glass in it either fills the cube or is lost under the rock
+// round it, and nothing behind it is drawn to show through: glass is only
+// glass at full detail, wherever it stands and whatever the LOD Override says.
+const chunkStepWant = (c) => (chunkClear[c] ? 1 : gridStep[chunkGridIdx[c]]);
+// lodClip for chunk c: which of the chunks past its far sides are full-detail
+// for their glass.
+function lodClipOf(c) {
+  const ci = c % CHUNK_N, cj = (c / CHUNK_N) | 0, ei = ci + 1 < CHUNK_N, ej = cj + 1 < CHUNK_N;
+  return (ei && chunkClear[c + 1] ? 1 : 0) | (ej && chunkClear[c + CHUNK_N] ? 2 : 0) | (ei && ej && chunkClear[c + CHUNK_N + 1] ? 4 : 0);
+}
 // Bumped for a chunk and its neighbours by every rebuild from the store (and by
 // remeshAllChunks), so a mesh worker result built from an older snapshot of the
 // store is known to be stale. meshJob is the id of the worker job a chunk's mesh
@@ -2915,7 +3251,8 @@ function rebuildChunk(c, r) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   let blocks = 0;
-  const step = r ? r.step : gridStep[chunkGridIdx[c]];
+  clearVolChunk(c);
+  const step = r ? r.step : chunkStepWant(c);
   chunkStep[c] = step;
   const stride = mergeSizeFor(step);
   rbI0 = i0; rbJ0 = j0; rbStep = step;
@@ -2934,9 +3271,11 @@ function rebuildChunk(c, r) {
     for (let b = Math.max(0, cj - 1); b <= Math.min(CHUNK_N - 1, cj + 1); b++) {
       for (let a = Math.max(0, ci - 1); a <= Math.min(CHUNK_N - 1, ci + 1); a++) chunkRev[b * CHUNK_N + a]++;
     }
+    lodClip = step > 1 ? lodClipOf(c) : 0;
     for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
     mergeFaces();
   }
+  const opq = r ? r.opq : clearSplit(qN);
 
   // The chunk's patch of terrainCols, into the full copy and up to the GPU on
   // its own. A chunk cut short by the edge of the field cannot be sent as a
@@ -3018,6 +3357,17 @@ function rebuildChunk(c, r) {
       attr.needsUpdate = true;
     }
     me.geometry.setDrawRange(0, nq * 6);
+    if (opq < nv) {
+      me.geometry.clearGroups();
+      me.geometry.addGroup(0, (opq >> 2) * 6, 0);
+      me.geometry.addGroup((opq >> 2) * 6, ((nv - opq) >> 2) * 6, 1);
+      me.material = TERRAIN_CLEAR_PAIR;
+      me.customDepthMaterial = TERRAIN_CLEAR_DEPTH;
+    } else if (me.material !== TERRAIN_CHUNK_MAT) {
+      me.geometry.clearGroups();
+      me.material = TERRAIN_CHUNK_MAT;
+      me.customDepthMaterial = TERRAIN_CHUNK_DEPTH;
+    }
     me.setMatrixAt(0, chunkOrigin.makeTranslation(ox, oy, oz));
     me.instanceMatrix.needsUpdate = true;
     // The per-chunk bound is the whole reason for the split — without it three
@@ -3084,7 +3434,7 @@ function updateLOD() {
     if (meshJob[c] !== r.id) continue;
     meshJob[c] = 0;
     if (r.rev === chunkRev[c]) rebuildChunk(c, r);
-    else if (chunkStep[c] !== gridStep[chunkGridIdx[c]]) meshDispatch(c);
+    else if (chunkStep[c] !== chunkStepWant(c)) meshDispatch(c);
   }
   meshDone.length = 0;
   const cam = camera.position;
@@ -3109,7 +3459,7 @@ function updateLOD() {
       lodHead = lodTail = 0;
       for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
         const g = chunkGridIdx[c];
-        if (!chunkMesh[c] || chunkStep[c] === gridStep[g]) continue;
+        if (!chunkMesh[c] || chunkStep[c] === chunkStepWant(c)) continue;
         const dx = cam.x - gridCenterX[g], dz = cam.z - gridCenterZ[g];
         lodDist[c] = dx * dx + dz * dz;
         lodQueue[lodTail++] = c;
@@ -3125,9 +3475,9 @@ function updateLOD() {
     if (meshWorker && meshInflight >= MESH_INFLIGHT_MAX) break;
     const c = lodQueue[lodHead++];
     // Something else (a dig, say) may have rebuilt it at the new step already.
-    if (chunkStep[c] === gridStep[chunkGridIdx[c]]) continue;
+    if (chunkStep[c] === chunkStepWant(c)) continue;
     if (!meshWorker) rebuildChunk(c);
-    else if (!meshJob[c] || meshJobStep[c] !== gridStep[chunkGridIdx[c]]) meshDispatch(c);
+    else if (!meshJob[c] || meshJobStep[c] !== chunkStepWant(c)) meshDispatch(c);
     if (performance.now() - t0 >= LOD_BUDGET_MS) break;
   }
   if (lodHead === lodTail) lodHead = lodTail = 0;
@@ -3177,6 +3527,9 @@ const colK = (i, j) => j * COL_ROW + i - COL_K0;
 const voxFloorAt = (k, d) => voxFlr[k * 3 + d], voxFloorVis = (k) => voxFlr[k * 3 + 2];
 let voxMat = new Uint8Array(0), visBits = new Uint8Array(0);
 const mergeMatCounts = new Uint32Array(MAT_ID_LIMIT);
+// See-through materials and the window's colClear, sent with a job only while
+// there are any.
+let matClear = new Uint8Array(MAT_ID_LIMIT), clearCount = 0, colClear = new Uint8Array(0);
 let faceN = 0, mergeMask = new Uint8Array(4096);
 let faceP = new Int32Array(16384), faceQ = new Int32Array(16384), faceM = new Uint8Array(16384);
 let faceB = new Int32Array(16384), faceOrd = new Int32Array(16384);
@@ -3186,7 +3539,8 @@ const palSlot = new Uint8Array(MAT_ID_LIMIT), palId = new Uint8Array(16), palSee
 let qPos = new Int32Array(16384 * 3), qInfo = new Uint16Array(16384), qN = 0;
 let rbI0 = 0, rbJ0 = 0, rbStep = 1;
 const colPatch = new Uint8Array(CHUNK * CHUNK * 8);
-const lodCentre = [0, 0, 0], qLo = [0, 0, 0], qHi = [0, 0, 0];
+const lodCentre = [0, 0, 0], lodExt = [0, 0, 0], qLo = [0, 0, 0], qHi = [0, 0, 0];
+let lodClip = 0;
 const colX = ${colX}, colZ = ${colZ};
 const voxCap = ${voxCap}, isVisible = ${isVisible}, mergeSizeFor = ${mergeSizeFor};
 const gridX = ${gridX}, gridZ = ${gridZ}, gridY = ${gridY};
@@ -3197,6 +3551,7 @@ ${addBoxFace}
 ${pushQuad}
 ${emitRect}
 ${mergeFaces}
+${clearSplit}
 ${collectColumn}
 ${chunkPalette}
 ${packCorners}
@@ -3216,6 +3571,9 @@ onmessage = (e) => {
     voxMat = d.vox; visBits = d.bits; voxFlr = d.flr;
     sTop = d.sTop; topLvl = d.topLvl; airLo = d.airLo; tint = d.tint; colMaxCap = d.cap; voxOff = d.off;
     COL_ROW = d.rw; COL_K0 = d.rj0 * d.rw + d.ri0;
+    clearCount = d.mc ? 1 : 0;
+    lodClip = d.clip | 0;
+    if (d.mc) { matClear = d.mc; colClear = d.clr; }
     const c = d.c;
     // The snapshot goes back with the answer, for the next job to fill.
     const snap = { sTop: d.sTop, topLvl: d.topLvl, airLo: d.airLo, tint: d.tint, cap: d.cap, off: d.off, vox: d.vox, bits: d.bits, flr: d.flr };
@@ -3238,11 +3596,12 @@ onmessage = (e) => {
     let blocks = 0;
     for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
     mergeFaces();
+    const opq = clearSplit(qN);
     // Packed here, so the main thread copies the vertices straight in.
     const vb = new Uint16Array(qN * 2), patch = colPatch.slice();
     const custom = qN && chunkPalette(qN) ? 1 : 0;
     if (qN) packCorners(vb, qN, 2 * i0, 2 * j0);
-    postMessage({ kind: 'mesh', id: d.id, c, rev: d.rev, step, blocks, nv: qN, vb, custom, pal: palWords.slice(), box: packBox.slice(), patch, snap },
+    postMessage({ kind: 'mesh', id: d.id, c, rev: d.rev, step, blocks, nv: qN, opq, vb, custom, pal: palWords.slice(), box: packBox.slice(), patch, snap },
       [vb.buffer, patch.buffer, ...snapBufs]);
   } catch (err) {
     postMessage({ kind: 'error', msg: String(err && err.stack || err) });
@@ -3346,7 +3705,7 @@ function meshBands(i0, j0, ri0, rj0, rw, rh, step) {
       const side = i > 0 && i < GEN_N - 1 && j > 0 && j < GEN_N - 1
         ? Math.min(airLo[k - 1], airLo[k + 1], airLo[k - GEN_N], airLo[k + GEN_N])
         : VOX_FLOOR;
-      const lo = Math.max(Math.min(side - 1, airLo[k] - 2) + 1, VOX_FLOOR + 1);
+      const lo = clearCount && colClear[k] ? VOX_FLOOR + 1 : Math.max(Math.min(side - 1, airLo[k] - 2) + 1, VOX_FLOOR + 1);
       need(i, j, lo - 1);
       need(i + 1, j, lo); need(i - 1, j, lo); need(i, j + 1, lo); need(i, j - 1, lo);
     }
@@ -3354,9 +3713,13 @@ function meshBands(i0, j0, ri0, rj0, rw, rh, step) {
   }
   // A LOD cube: its footprint from under its band, and the four columns beside
   // it at its top.
-  const S = mergeSizeFor(step);
+  const S = mergeSizeFor(step), clip = lodClipOf(chunkOf(i0, j0));
   for (let j = j0; j < j1; j += S) for (let i = i0; i < i1; i += S) {
-    const iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
+    let iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
+    const overI = iMax > i0 + CHUNK, overJ = jMax > j0 + CHUNK;
+    const clipI = overI && (clip & 1 || overJ && clip & 4), clipJ = overJ && (clip & 2 || overI && clip & 4);
+    if (clipI) iMax = i0 + CHUNK;
+    if (clipJ) jMax = j0 + CHUNK;
     let top = NO_COLUMN;
     for (let jj = j; jj < jMax; jj++) for (let ii = i; ii < iMax; ii++) {
       const kk = jj * GEN_N + ii, ct = sTop[kk];
@@ -3365,7 +3728,7 @@ function meshBands(i0, j0, ri0, rj0, rw, rh, step) {
     if (top === NO_COLUMN) continue;
     const below = Math.max(VOX_FLOOR, top - S + 1) - 1;
     for (let jj = j; jj < jMax; jj++) for (let ii = i; ii < iMax; ii++) need(ii, jj, below);
-    need(i + S, j, top); need(i - S, j, top); need(i, j + S, top); need(i, j - S, top);
+    need(clipI ? iMax : i + S, j, top); need(i - S, j, top); need(i, clipJ ? jMax : j + S, top); need(i, j - S, top);
   }
 }
 let voxMat32 = new Int32Array(0);
@@ -3421,12 +3784,18 @@ function meshPost(s) {
 
 // Chunk c's mesh, at its cell's current step, sent off to the worker.
 function meshDispatch(c) {
-  const step = gridStep[chunkGridIdx[c]];
+  const step = chunkStepWant(c);
   const s = meshSnapshot(c, mergeSizeFor(step), step);
   s.kind = 'mesh';
   s.id = ++meshJobSeq;
   s.rev = chunkRev[c];
   s.step = step;
+  s.clip = step > 1 ? lodClipOf(c) : 0;
+  if (clearCount) {
+    s.mc = matClear.slice();
+    s.clr = new Uint8Array(s.rw * s.rh);
+    for (let jj = 0; jj < s.rh; jj++) s.clr.set(colClear.subarray((s.rj0 + jj) * GEN_N + s.ri0, (s.rj0 + jj) * GEN_N + s.ri0 + s.rw), jj * s.rw);
+  }
   meshJob[c] = s.id;
   meshJobStep[c] = s.step;
   meshInflight++;
@@ -5196,6 +5565,41 @@ fallMat.onBeforeCompile = (sh) => {
 // a big piece costs its whole volume in the shadow map each frame.
 const fallDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
 fallDepthMat.onBeforeCompile = fallMat.onBeforeCompile;
+// A piece with see-through blocks in it: each block's transparency and how far
+// its run of its own material goes along each of the piece's axes come off its
+// face mask's high bits (debrisFaceMask), so one piece can mix them with
+// opaque ones; blended and writing no depth, as the terrain's see-through draw.
+// A run draws only its outside, and is as opaque as the look through it is
+// long — taken as the box its runs span, which is exact for a slab or a block
+// of glass and caps at 8 blocks along an axis.
+// The look's direction (vDebDir) in the piece's own axes, from dir in the world's.
+const debrisClearVertex = (dir) => `#include <project_vertex>
+  float dh = floor(faceHide / 8192.0);
+  vDebT = mod(floor(faceHide / 64.0), 128.0) / 100.0;
+  vDebRun = vec3(mod(dh, 8.0), mod(floor(dh / 8.0), 8.0), floor(dh / 64.0)) + 1.0;
+  mat3 dR = mat3(modelMatrix) * mat3(instanceMatrix);
+  vDebDir = transpose(dR) * (${dir});`;
+const debrisClearAlpha = `
+  vec3 dd = abs(normalize(vDebDir)) + 1e-6;
+  float dA = 1.0 - pow(vDebT, min(vDebRun.x / dd.x, min(vDebRun.y / dd.y, vDebRun.z / dd.z)));`;
+const debrisClearVary = 'varying float vDebT;\nvarying vec3 vDebRun;\nvarying vec3 vDebDir;\n';
+const fallClearMat = fallMat.clone();
+fallClearMat.transparent = true;
+fallClearMat.depthWrite = false;
+fallClearMat.onBeforeCompile = (sh) => {
+  fallMat.onBeforeCompile(sh);
+  sh.vertexShader = debrisClearVary + sh.vertexShader.replace('#include <project_vertex>',
+    debrisClearVertex('(modelMatrix * (instanceMatrix * vec4(transformed, 1.0))).xyz - cameraPosition'));
+  sh.fragmentShader = debrisClearVary + sh.fragmentShader
+    .replace('#include <opaque_fragment>', debrisClearAlpha + '\n  diffuseColor.a *= dA;\n#include <opaque_fragment>');
+};
+const fallClearDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+fallClearDepth.onBeforeCompile = (sh) => {
+  fallMat.onBeforeCompile(sh);
+  sh.vertexShader = debrisClearVary + sh.vertexShader.replace('#include <project_vertex>',
+    debrisClearVertex(`vec3(${glf(SUN.x)}, ${glf(SUN.y)}, ${glf(SUN.z)})`));
+  sh.fragmentShader = debrisClearVary + sh.fragmentShader.replace('void main() {', 'void main() {' + debrisClearAlpha + clearDitherGlsl('dA'));
+};
 // A geometry of its own that draws through src's buffers rather than copies of
 // them, for something that only needs an attribute or two of its own on top.
 // three frees every buffer of a geometry on dispose(), shared or not, so one
@@ -5265,11 +5669,8 @@ const debrisGrainGeos = new Map();
 function debrisGrainGeo(m) {
   let g = debrisGrainGeos.get(m);
   if (g) return g;
-  g = fallingGrainGeo(m).clone();
+  g = fallingGrainGeo(m).clone();   // faceId and all
   g.scale(BLOCK, BLOCK, BLOCK);
-  // grainGeo lays its faces down one after another in FACE_DIRS order too.
-  const nv = g.attributes.position.count, per = nv / 6;
-  g.setAttribute('faceId', new THREE.BufferAttribute(Float32Array.from({ length: nv }, (_, v) => Math.floor(v / per)), 1));
   debrisGrainGeos.set(m, g);
   return g;
 }
@@ -5291,10 +5692,13 @@ const debrisLambertMats = new Map();   // standard -> Lambert
 function debrisLambertOf(src) {
   let mt = debrisLambertMats.get(src);
   if (mt) return mt;
-  mt = new THREE.MeshLambertMaterial({ vertexColors: src.vertexColors, shadowSide: src.shadowSide });
+  mt = new THREE.MeshLambertMaterial({ vertexColors: src.vertexColors, shadowSide: src.shadowSide,
+    transparent: src.transparent, opacity: src.opacity, depthWrite: src.depthWrite });
   const pbr = new THREE.Vector3(src.roughness, src.metalness, src.envMapIntensity);
+  // fallClearMat's stand-in reads the alpha too, so the program is src's.
+  mt.customProgramCacheKey = () => 'debrisLambert' + src.onBeforeCompile.toString();
   mt.onBeforeCompile = (sh) => {
-    fallMat.onBeforeCompile(sh);
+    src.onBeforeCompile(sh);
     sh.uniforms.terrainEnv    = { value: scene.environment };
     sh.uniforms.terrainSunDir = { value: SUN };
     sh.uniforms.debrisPbr     = { value: pbr };
@@ -5329,7 +5733,7 @@ function debrisMatFor(src) { return gfx.debrisLambert ? debrisLambertOf(src) : s
 function applyDebrisLambert() {
   const swap = new Map();
   for (const [std, lam] of debrisLambertMats) swap.set(gfx.debrisLambert ? std : lam, gfx.debrisLambert ? lam : std);
-  if (gfx.debrisLambert) for (const std of [fallMat, ...debrisGrainMats.values()]) if (!swap.has(std)) swap.set(std, debrisLambertOf(std));
+  if (gfx.debrisLambert) for (const std of [fallMat, fallClearMat, ...debrisGrainMats.values()]) if (!swap.has(std)) swap.set(std, debrisLambertOf(std));
   scene.traverse((o) => { const to = swap.get(o.material); if (to) o.material = to; });
   // Each cell's batches are kept by material: remade under the new ones.
   for (const C of debrisBatchCells.values()) C.dirty = true;
@@ -5431,22 +5835,59 @@ function debrisCells(lat, S) {
 // neighbour, powder included, and every block gets culled: the piece's own
 // cubes, which sit at the front of the lattice, through the piece's mask, the
 // powder through its layer's.
+//
+// With see-through materials about (clearCount), a block of one hides nothing
+// of another material behind it, and each block carries its transparency as
+// 64 x that over the six mask bits, for fallClearMat to read — rounded to a
+// whole number, as a fraction there would carry into the bits — and over that,
+// 8192 x its runs of its own material along x, y and z, less one and 3 bits
+// apiece; the piece's cubes are drawn with that whenever any of them is
+// see-through.
 function debrisFaceMask(mesh) {
   const lat = mesh.userData.blocks, attr = mesh.geometry.attributes.faceHide;
   if (!lat.length) return;
   const { grid, cell, w, wd } = debrisCells(lat, debrisCellsMain);
+  let clear = false;
   for (let q = 0; q < lat.length; q++) {
     const c = cell[q];
     let bits = 0;
-    for (let f = 0; f < 6; f++) {
-      const d = FACE_DIRS[f];
-      if (grid[c + d[0] + d[1] * wd + d[2] * w]) bits |= 1 << f;
+    if (!clearCount) {
+      for (let f = 0; f < 6; f++) {
+        const d = FACE_DIRS[f];
+        if (grid[c + d[0] + d[1] * wd + d[2] * w]) bits |= 1 << f;
+      }
+    } else {
+      const m = lat[q].mat;
+      for (let f = 0; f < 6; f++) {
+        const d = FACE_DIRS[f], nb = grid[c + d[0] + d[1] * wd + d[2] * w];
+        if (nb && (!matClear[lat[nb - 1].mat] || lat[nb - 1].mat === m)) bits |= 1 << f;
+      }
+      if (matClear[m]) {
+        bits += 64 * Math.round(MAT_STATS[m].transparency);
+        for (let a = 0, sh = 1; a < 3; a++, sh *= 8) {
+          const s = a === 0 ? 1 : a === 1 ? wd : w;
+          let r = 1, nb;
+          for (let g = c + s; r < 8 && (nb = grid[g]) && lat[nb - 1].mat === m; g += s) r++;
+          for (let g = c - s; r < 8 && (nb = grid[g]) && lat[nb - 1].mat === m; g -= s) r++;
+          bits += 8192 * sh * (r - 1);
+        }
+        if (q < mesh.count) clear = true;
+      }
     }
     if (q < mesh.count) attr.array[q] = bits;
     else mesh.userData.grains[lat[q].mat].geometry.attributes.faceHide.array[lat[q].k] = bits;
   }
   attr.needsUpdate = true;
-  for (const L of Object.values(mesh.userData.grains || {})) L.geometry.attributes.faceHide.needsUpdate = true;
+  for (const m in mesh.userData.grains || {}) {
+    const L = mesh.userData.grains[m];
+    L.geometry.attributes.faceHide.needsUpdate = true;
+    L.customDepthMaterial = matClear[m] ? fallClearDepth : fallDepthMat;
+  }
+  const plain = debrisMatFor(fallMat), see = debrisMatFor(fallClearMat);
+  if (mesh.material === plain || mesh.material === see) {
+    mesh.material = clear ? see : plain;
+    mesh.customDepthMaterial = clear ? fallClearDepth : fallDepthMat;
+  }
 }
 
 // Which block of its piece a debrisAim hit landed on, as a lattice index, or -1.
@@ -5471,19 +5912,22 @@ const debris = new THREE.Group();
 scene.add(debris);
 const fallingChunks = [];  // { mesh, body, still } — still moving, watched every frame
 const restedChunks  = [];  // { mesh, body, still } — come to a stop, but still in the world
-const powderFalling = [];  // { pos, mat, v, from } — a grain in the air, between the piece it left and whatever catches it
+const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air, between the piece it left and whatever catches it
 // A pour lands and sheds hundreds of grains a second; each one used to be a
 // fresh record and Vector3 for the collector. Records go back here when a grain
 // lands or leaves the field, and come out again for the next one.
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
-  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0 };
-  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from;
+  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null };
+  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1;
   powderFalling.push(g);
+  if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
   return g;
 }
 function powderGrainFree(g) {
   g.from = null;   // a mesh held here would outlive its piece
+  g.dn = null;
+  g.far = null;
   powderGrainPool.push(g);
 }
 // Grains that landed on the ground in a chunk whose rebuild is being held back
@@ -5704,14 +6148,37 @@ function debrisBatchSync() {
 // a frame, after everything that spawns or catches grains has run, packing the
 // instances from 0 and drawing only `count` of them. A grain that landed is
 // simply not written, so nothing is left behind where it was.
+//
+// Grains come down in stacks and slabs, flush against each other, and like a
+// piece's blocks (debrisFaceMask) each draws only its outside: every instance
+// carries a mask of the faces another grain in the air sits flush against
+// (fallingGrainMask), and the material throws those off-screen — so a falling
+// block of sand draws its surface, not its volume, and a see-through powder's
+// buried faces do not show through it.
 const fallingGrainLayers = new Map();   // mat -> InstancedMesh
 const fallingGrainM4 = new THREE.Matrix4();
 const LOD_RADIUS_SQ = LOD_SPHERES.map((s) => s.radius * s.radius);
+// The terrain's white vertex-coloured material, with the mask shader on.
+const fallingGrainMats = new Map();
+function fallingGrainMat(m) {
+  let mt = fallingGrainMats.get(m);
+  if (mt) return mt;
+  mt = TERRAIN_FACE_MATS[m].clone();
+  mt.onBeforeCompile = fallMat.onBeforeCompile;
+  fallingGrainMats.set(m, mt);
+  return mt;
+}
+// A layer's geometry: the cube's buffers, and a mask per instance of its own.
+function fallingGrainLayerGeo(src, cap) {
+  const g = shareGeo(src);
+  g.setAttribute('faceHide', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1).setUsage(THREE.DynamicDrawUsage));
+  return g;
+}
 function fallingGrainLayer(m, cube = false) {
   const key = cube ? ~m : m;   // gfx.grainCube's far layer under ~m
   let L = fallingGrainLayers.get(key);
   if (L) return L;
-  L = new THREE.InstancedMesh(cube ? fallingGrainCubeGeo(m) : fallingGrainGeo(m), TERRAIN_FACE_MATS[m], 64);
+  L = new THREE.InstancedMesh(fallingGrainLayerGeo(cube ? fallingGrainCubeGeo(m) : fallingGrainGeo(m), 64), fallingGrainMat(m), 64);
   L.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   L.count = 0;
   // The grains are all over the place and move every frame: a bounding sphere
@@ -5721,8 +6188,10 @@ function fallingGrainLayer(m, cube = false) {
   fallingGrainLayers.set(key, L);
   return L;
 }
+const fallingGrainDrawn = [];   // the grain records drawn this frame
 function syncFallingGrains() {
   for (const L of fallingGrainLayers.values()) L.count = 0;
+  fallingGrainDrawn.length = 0;
   for (const p of powderFalling) fallingGrainDraw(p);
   for (const p of powderLanded) {
     // Shed again before its chunk caught up: the grain that left is drawn as
@@ -5730,9 +6199,10 @@ function syncFallingGrains() {
     const i = p.k % GEN_N, t = (p.k - i) / GEN_N, j = t % GEN_N;
     if (voxelAt(i, j, (t - j) / GEN_N + VOX_FLOOR) === p.mat) fallingGrainDraw(p);
   }
+  fallingGrainMask();
   for (const L of fallingGrainLayers.values()) {
     L.visible = L.count > 0;
-    if (L.visible) L.instanceMatrix.needsUpdate = true;
+    if (L.visible) { L.instanceMatrix.needsUpdate = true; L.geometry.attributes.faceHide.needsUpdate = true; }
   }
 }
 function fallingGrainDraw(p) {
@@ -5752,9 +6222,51 @@ function fallingGrainDraw(p) {
     grown.array.set(L.instanceMatrix.array);
     L.dispose();
     L.instanceMatrix = grown;
+    // The mask is written after every grain is down, so nothing to carry over.
+    const g = fallingGrainLayerGeo(L.geometry.userData.shared, cap * 2);
+    freeGeo(L.geometry);
+    L.geometry = g;
   }
   const s = mergeSizeFor(step) * BLOCK;
+  p.dL = L; p.dK = L.count; p.dS = s;
+  fallingGrainDrawn.push(p);
   L.setMatrixAt(L.count++, fallingGrainM4.makeScale(s, s, s).setPosition(p.pos));
+}
+// Each drawn grain's mask: bit f set where another drawn grain, at the same
+// size, sits a block off along FACE_DIRS[f] to within FALL_FLUSH. Two at
+// different sizes (either side of an LOD ring) cover different areas, so each
+// keeps its face. The grains are filed by the block-sized cell their centre is
+// in, chained through dNx; a neighbour's centre within FALL_FLUSH of a cell
+// wall can be in the cell on either side, and both are looked in.
+const FALL_FLUSH = BLOCK * 1e-3;   // a stack's grains sit within 1e-4 of a block of each other
+const fallingGrainCells = new Map();
+const fallGrainKey = (x, y, z) => ((y + 4096) * 32768 + z + 16384) * 32768 + x + 16384;
+function fallingGrainMask() {
+  const cells = fallingGrainCells, drawn = fallingGrainDrawn;
+  cells.clear();
+  for (const p of drawn) {
+    const k = fallGrainKey(Math.floor(p.pos.x / BLOCK), Math.floor(p.pos.y / BLOCK), Math.floor(p.pos.z / BLOCK));
+    p.dNx = cells.get(k) || null;
+    cells.set(k, p);
+  }
+  for (const p of drawn) {
+    let bits = 0;
+    for (let f = 0; f < 6; f++) {
+      const d = FACE_DIRS[f];
+      const tx = p.pos.x + d[0] * BLOCK, ty = p.pos.y + d[1] * BLOCK, tz = p.pos.z + d[2] * BLOCK;
+      const x0 = Math.floor((tx - FALL_FLUSH) / BLOCK), x1 = Math.floor((tx + FALL_FLUSH) / BLOCK);
+      const y0 = Math.floor((ty - FALL_FLUSH) / BLOCK), y1 = Math.floor((ty + FALL_FLUSH) / BLOCK);
+      const z0 = Math.floor((tz - FALL_FLUSH) / BLOCK), z1 = Math.floor((tz + FALL_FLUSH) / BLOCK);
+      find: for (let cy = y0; cy <= y1; cy++) for (let cz = z0; cz <= z1; cz++) for (let cx = x0; cx <= x1; cx++) {
+        for (let q = cells.get(fallGrainKey(cx, cy, cz)); q; q = q.dNx) {
+          if (q !== p && q.dS === p.dS && Math.abs(q.pos.x - tx) < FALL_FLUSH && Math.abs(q.pos.y - ty) < FALL_FLUSH
+           && Math.abs(q.pos.z - tz) < FALL_FLUSH) { bits |= 1 << f; break find; }
+        }
+      }
+    }
+    p.dL.geometry.attributes.faceHide.array[p.dK] = bits;
+  }
+  for (const p of drawn) { p.dL = null; p.dNx = null; }
 }
 // Terrain powder that a landing grain has just left unsupported. A column comes
 // down one block at a time, bottom to top: the block that lands queues whatever
@@ -6191,7 +6703,7 @@ function spawnFallingChunk(unit) {
 const POWDER_SCAN_CAP  = 32;      // blocks taken per pass, so a sand cliff costs a few frames rather than one long one
 // Columns something has just edited, answered on the spot.
 const powderDirty = new Set();
-const powderCarry = [];   // columns owed a look next pass: out of budget, or left by a loose group
+const powderCarry = [];   // columns owed a look next pass: out of budget, left by a loose group, or a falling grain in the way
 // Nor will it stand two above the ground beside it: a grain with air at its
 // side and under that rolls off into the lower column. Held up from below
 // alone, sand that fell came down its own column and stayed there, so a heap
@@ -6203,13 +6715,194 @@ const POWDER_SIDES = [[1, 0], [0, 1], [-1, 0], [0, -1]];
 // The same four in the order shedColumn marks them: powderDirty is walked in
 // the order columns went in, so this is not interchangeable with the one above.
 const POWDER_NEAR = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-function powderRoll(i, j, lvl) {
+// A material's own place angle (matReposeSet) widens or narrows that: at 45 it
+// is exactly the test above; otherwise the side whose fall comes soonest wins,
+// so a grain shuffled along level ground toward a far edge always gets nearer
+// it and every roll still ends.
+function powderRoll(i, j, lvl, m, g = null) {
+  powderFarWait = false; powderFarWay = null;
   const s0 = (Math.random() * 4) | 0;
+  if (reposeStd[m]) {
+    for (let s = 0; s < 4; s++) {
+      const [di, dj] = POWDER_SIDES[(s0 + s) & 3], ni = i + di, nj = j + dj;
+      if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR && voxelAt(ni, nj, lvl - 1) === AIR) return (s0 + s) & 3;
+    }
+    return -1;
+  }
+  const R = reposeReach[m], L0 = m * REPOSE_REACH_MAX, L1 = reposeLim[L0];
+  let best = -1, bestK = R + 1, open = false;
   for (let s = 0; s < 4; s++) {
-    const [di, dj] = POWDER_SIDES[(s0 + s) & 3], ni = i + di, nj = j + dj;
-    if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR && voxelAt(ni, nj, lvl - 1) === AIR) return (s0 + s) & 3;
+    const [di, dj] = POWDER_SIDES[(s0 + s) & 3];
+    let dPrev = 0;
+    for (let k = 1; k < bestK; k++) {
+      const ni = i + di * k, nj = j + dj * k;
+      // The way out is along this level: anything standing in it ends the look.
+      if (!canBuildAt(ni, nj, lvl - 1) || voxelAt(ni, nj, lvl) !== AIR) break;
+      // The open levels under lvl in that column, as far as either question
+      // below needs them counted.
+      const L = reposeLim[L0 + k - 1], cap = Math.max(L, dPrev + L1 + 1);
+      let d = 0;
+      while (d < cap && lvl - 1 - d >= VOX_FLOOR && voxelAt(ni, nj, lvl - 1 - d) === AIR) d++;
+      // A fall off the side of the slope, further out than its first column, is
+      // not the slope: the grain only finds it once the slope has brought it to
+      // the edge, as on flat ground by a cliff it never feels the cliff at all.
+      if (k > 1 && d - dPrev > L1) break;
+      // Nor, at angle 0, the lip of one: it would only roll on over (powderFarLip).
+      if (d >= L && k > 1 && reposeFlat[m] && powderFarLip(ni, nj, lvl - 1)) break;
+      if (d >= L) { best = (s0 + s) & 3; bestK = k; break; }
+      dPrev = d;
+      if (k === REPOSE_REACH_MAX) open = true;   // level ground all the way out, and maybe on past
+    }
+  }
+  if (best < 0 && reposeFlat[m]) return powderFar(i, j, lvl, g, open);
+  return best;
+}
+// Angle 0 keeps going until there is no lower ground to find. A grain whose
+// look ran out over level ground (`open`) looks on, across the level ground it
+// stands on as far as that goes, for the nearest column one level lower:
+// nearest by the way there, round whatever stands in it, column by column, the
+// same questions powderRoll asks (two or more down off the side of level ground
+// is a cliff it does not feel, nor is it drawn to a cliff's lip). It rolls the
+// first column of that way, and a falling grain (`g`) keeps the way, so from
+// then on each column costs it only the look at the next. Bounded: a look goes
+// at most POWDER_FAR_R columns out and takes in POWDER_FAR_CAP of them, and once
+// the frame's looks have taken in POWDER_FAR_BUDGET the rest wait for the next
+// frame (powderFarWait: the grain stays where it is and its column is looked at
+// again then). Two answers are kept for other grains. Where the last way went,
+// for POWDER_FAR_SHARE frames: a grain on the same level heads straight for it
+// instead of looking, a column nearer each frame (powderFarToward), and the
+// near look spreads them along the edge they come to. And the last look that
+// found nothing lower, for any grain on the level ground it went over, until
+// the ground changes where it could make a way lower (powderFarTouch).
+const POWDER_FAR_R = 127;
+const POWDER_FAR_CAP = 16384;
+const POWDER_FAR_BUDGET = 16384;
+const POWDER_FAR_W = 2 * POWDER_FAR_R + 1;
+const POWDER_FAR_SHARE = 8;
+let powderFarSeen = null, powderFarFrom = null, powderFarQ = null, powderFarStamp = 0;
+let powderFarSpent = 0;      // columns this frame's looks have taken in
+let powderFarWait = false;   // the last powderRoll owed a look the frame had no room for
+let powderFarWay = null;     // the way the last powderRoll found, for a grain not falling yet (shedColumn)
+let powderFarLast = -1, powderFarLastL = 0, powderFarLastF = 0;   // the column the last way went to, its level, the frame
+const powderSideOf = (di, dj) => di > 0 ? 0 : dj > 0 ? 1 : di < 0 ? 2 : 3;
+// Nor is it drawn to the lip of a cliff, the column one down with a drop of two
+// or more beside it: a grain there would only roll on over (powderRoll's first
+// column), and the level ground behind it would never fill.
+function powderFarLip(i, j, lvl) {
+  if (lvl - 2 < VOX_FLOOR) return false;
+  for (const [di, dj] of POWDER_SIDES) {
+    const ni = i + di, nj = j + dj;
+    if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR && voxelAt(ni, nj, lvl - 1) === AIR && voxelAt(ni, nj, lvl - 2) === AIR) return true;
+  }
+  return false;
+}
+// Can a grain at level lvl go into column (i, j): 1 level ground, 2 one lower
+// (and not a lip), 0 not.
+function powderFarCan(i, j, lvl) {
+  if (!canBuildAt(i, j, lvl - 1) || voxelAt(i, j, lvl) !== AIR) return 0;
+  if (lvl - 1 < VOX_FLOOR || voxelAt(i, j, lvl - 1) !== AIR) return 1;
+  return (lvl - 2 < VOX_FLOOR || voxelAt(i, j, lvl - 2) !== AIR) && !powderFarLip(i, j, lvl - 1) ? 2 : 0;
+}
+// A column nearer column t along either side: the side, or -1.
+function powderFarToward(i, j, lvl, t) {
+  const ti = t % GEN_N, tj = (t - ti) / GEN_N, di = Math.sign(ti - i), dj = Math.sign(tj - j);
+  const iFirst = Math.abs(ti - i) >= Math.abs(tj - j);
+  for (let s = 0; s < 2; s++) {
+    const alongI = (s === 0) === iFirst;
+    if (alongI ? !di : !dj) continue;
+    const ni = alongI ? i + di : i, nj = alongI ? j : j + dj;
+    if (powderFarCan(ni, nj, lvl)) return powderSideOf(ni - i, nj - j);
   }
   return -1;
+}
+function powderFar(i, j, lvl, g, open) {
+  const c = j * GEN_N + i, w = g && g.far;
+  if (w && w.lvl === lvl) {
+    if (w.path) {
+      // On along the way it found while the next column is still there to go to.
+      if (w.path[w.at] !== c && w.at > 0 && w.path[w.at - 1] === c) w.at--;   // held up last frame: it did not go
+      if (w.path[w.at] === c && w.at + 1 < w.path.length) {
+        const n = w.path[w.at + 1], ni = n % GEN_N, nj = (n - ni) / GEN_N;
+        if (powderFarCan(ni, nj, lvl)) { w.at++; return powderSideOf(ni - i, nj - j); }
+      }
+    } else if (w.to !== c) {
+      const r = powderFarToward(i, j, lvl, w.to);
+      if (r >= 0) return r;
+    }
+  }
+  if (g) g.far = null;
+  if (!open) return -1;
+  const W = POWDER_FAR_W, R = POWDER_FAR_R;
+  if (powderFarNone && powderFarNoneL === lvl) {
+    const wi = i - powderFarNoneI + R, wj = j - powderFarNoneJ + R;
+    if (wi >= 0 && wj >= 0 && wi < W && wj < W && powderFarSeen[wj * W + wi] === powderFarNone) return -1;
+  }
+  const lt = powderFarLast, lti = lt % GEN_N;
+  if (lt >= 0 && powderFarLastL === lvl && frameCount - powderFarLastF < POWDER_FAR_SHARE && lt !== c
+      && Math.abs(lti - i) <= R && Math.abs((lt - lti) / GEN_N - j) <= R) {
+    const r = powderFarToward(i, j, lvl, lt);
+    if (r >= 0) {
+      const way = { lvl, path: null, at: 0, to: lt };
+      if (g) g.far = way; else powderFarWay = way;
+      return r;
+    }
+  }
+  if (powderFarSpent >= POWDER_FAR_BUDGET) { powderFarWait = true; return -1; }
+  if (!powderFarSeen) { powderFarSeen = new Uint32Array(W * W); powderFarFrom = new Int32Array(W * W); powderFarQ = new Int32Array(POWDER_FAR_CAP); }
+  if (++powderFarStamp > 0x7ffffff0) { powderFarSeen.fill(0); powderFarStamp = 1; }
+  const st = powderFarStamp, seen = powderFarSeen, from = powderFarFrom, q = powderFarQ, o = R * W + R;
+  seen[o] = st; q[0] = o;
+  const s0 = (Math.random() * 4) | 0;
+  let head = 0, tail = 1, n = 1, found = -1;
+  look: while (head < tail) {
+    const at = q[head++], ai = at % W, aj = (at - ai) / W;
+    for (let s = 0; s < 4; s++) {
+      const [di, dj] = POWDER_SIDES[(s0 + s) & 3], wi = ai + di, wj = aj + dj;
+      if (wi < 0 || wj < 0 || wi >= W || wj >= W) continue;
+      const wk = wj * W + wi;
+      if ((seen[wk] & 0x7fffffff) === st) continue;
+      seen[wk] = st | 0x80000000;   // looked at; plain st once it is level ground the look went over
+      if (++n > POWDER_FAR_CAP) break look;
+      const can = powderFarCan(i + wi - R, j + wj - R, lvl);
+      if (!can) continue;
+      from[wk] = at;
+      if (can === 2) { found = wk; break look; }
+      seen[wk] = st;
+      if (tail < POWDER_FAR_CAP) q[tail++] = wk;
+    }
+  }
+  powderFarSpent += n;
+  if (found < 0) { powderFarNone = st; powderFarNoneI = i; powderFarNoneJ = j; powderFarNoneL = lvl; return -1; }
+  let len = 1;
+  for (let k = found; k !== o; k = from[k]) len++;
+  const path = new Int32Array(len);
+  for (let k = found, e = len - 1; e >= 0; k = from[k], e--) path[e] = (j + (k - k % W) / W - R) * GEN_N + i + k % W - R;
+  const way = { lvl, path, at: 1, to: -1 };
+  if (g) g.far = way; else powderFarWay = way;
+  powderFarLast = path[len - 1]; powderFarLastL = lvl; powderFarLastF = frameCount;
+  const n1 = path[1], i1 = n1 % GEN_N;
+  return powderSideOf(i1 - i, (n1 - i1) / GEN_N - j);
+}
+// A cell of the ground changed: does the last look's "nothing lower" still
+// hold? Only what changes the questions powderFarCan asks of some column at its
+// level can make a way lower: a cell at that level or up to three under it.
+// Ground put in at the level only stands in the way. One taken out at the level
+// of a column the look found standing in the way, with every column round it
+// looked at too, only adds that column to the level ground.
+function powderFarTouch(i, j, lvl, m) {
+  const L = powderFarNoneL;
+  if (lvl > L || lvl < L - 3 || (lvl === L && m !== AIR)) return;
+  const W = POWDER_FAR_W, R = POWDER_FAR_R, wi = i - powderFarNoneI + R, wj = j - powderFarNoneJ + R, st = powderFarNone;
+  if (lvl === L && wi > 0 && wj > 0 && wi < W - 1 && wj < W - 1 && powderFarCan(i, j, L) === 1) {
+    const sn = powderFarSeen, wk = wj * W + wi;
+    if ((sn[wk] & 0x7fffffff) === st && (sn[wk - 1] & 0x7fffffff) === st && (sn[wk + 1] & 0x7fffffff) === st
+     && (sn[wk - W] & 0x7fffffff) === st && (sn[wk + W] & 0x7fffffff) === st) {
+      // Joined to the level ground only if beside some of it.
+      if (sn[wk - 1] === st || sn[wk + 1] === st || sn[wk - W] === st || sn[wk + W] === st) sn[wk] = st;
+      return;
+    }
+  }
+  powderFarNone = 0;
 }
 // A block taken out can leave the sand beside it standing two over the hole,
 // not just the sand above it hanging, so the columns round it want a look too:
@@ -6219,6 +6912,17 @@ function powderDirtySides(i, j) {
   if (i < GEN_N - 1) powderDirty.add(j * GEN_N + i + 1);
   if (j > 0) powderDirty.add((j - 1) * GEN_N + i);
   if (j < GEN_N - 1) powderDirty.add((j + 1) * GEN_N + i);
+  if (reposeReachAll > 1) powderDirtyFar(i, j);
+}
+// A material that looks further than one column out for its slope can be left
+// standing too steep by a hole that far away.
+function powderDirtyFar(i, j) {
+  for (let k = 2; k <= reposeReachAll; k++) {
+    if (i - k >= 0) powderDirty.add(j * GEN_N + i - k);
+    if (i + k < GEN_N) powderDirty.add(j * GEN_N + i + k);
+    if (j - k >= 0) powderDirty.add((j - k) * GEN_N + i);
+    if (j + k < GEN_N) powderDirty.add((j + k) * GEN_N + i);
+  }
 }
 // Shed whatever powder in column c has nothing under it, up to `budget` blocks.
 // Returns what is left of the budget.
@@ -6243,8 +6947,18 @@ function shedColumn(c, budget) {
     // under it, and then it rolls (powderRoll).
     if (lvl - 1 < VOX_FLOOR) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
-    const roll = voxMat[o + lvl - 1] !== AIR ? powderRoll(i, j, lvl) : -1;
-    if (voxMat[o + lvl - 1] !== AIR && roll < 0) continue;
+    let roll = voxMat[o + lvl - 1] !== AIR ? powderRoll(i, j, lvl, m) : -1;
+    // Nor off into a piece lying beside it: the piece holds it in (see catchPowder).
+    if (roll >= 0 && powderPieceBeside(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))) roll = -1;
+    const way = roll >= 0 ? powderFarWay : null;
+    if (voxMat[o + lvl - 1] !== AIR && roll < 0) {
+      if (powderFarWait) powderCarry.push(c);   // its far look waits for next frame
+      continue;
+    }
+    // It goes as a grain where it stands, or off the side it rolls to: not
+    // while a falling grain is there. It stays, and the column gets another look next pass.
+    const [ri, rj] = roll < 0 ? [i, j] : [i + POWDER_SIDES[roll][0], j + POWDER_SIDES[roll][1]];
+    if (powderGrainAt(colX(ri), (lvl + 0.5) * BLOCK, colZ(rj), null)) { powderCarry.push(c); continue; }
     // Its group may have come loose already; if that was paid for, look again.
     if (gravGuard(i, j, lvl)) { o = voxOff[c] - VOX_FLOOR; lvl++; continue; }
     editBlock(i, j, lvl, AIR);   // brings down what was above, once the pass is done
@@ -6255,19 +6969,149 @@ function shedColumn(c, budget) {
       const ni = i + di, nj = j + dj;
       if (ni >= 0 && nj >= 0 && ni < GEN_N && nj < GEN_N) powderDirty.add(nj * GEN_N + ni);
     }
+    if (reposeReachAll > 1) powderDirtyFar(i, j);
     // It is not gone, it is falling: hand it to the same grain path the rubble
     // uses — off the side it rolled to, if that is how it went.
-    const [ri, rj] = roll < 0 ? [i, j] : [i + POWDER_SIDES[roll][0], j + POWDER_SIDES[roll][1]];
-    powderGrain(colX(ri), (lvl + 0.5) * BLOCK, colZ(rj), m, null);
+    powderGrain(colX(ri), (lvl + 0.5) * BLOCK, colZ(rj), m, null).far = way;
     budget--;
   }
   return budget;
 }
-function checkTerrainPowder() {
+// ----- a weight on powder presses it out from under -----
+// Powder holds nothing up for good. A piece lying on it (a loose piece: the
+// ground and what is built on it never press) squeezes the powder cells under
+// it out to the side, a cell at a time, and sinks into each hole it leaves,
+// until what it lies on is not powder or nothing is under it. The load on a
+// cell a block of the piece lies on is the piece's weight shared over every
+// ground cell it lies on, powder or not; that, times how readily the powder
+// gives (pressEase, from its place angle), is how many cells a second go from
+// under that block. A cell that goes is a grain at the top of the nearest
+// column, along one of the four sides, that is out from under the piece and
+// reached through powder only; it lands from there as any grain does.
+const PRESS_RATE = 0.2;    // cells a second per unit of weight on the cell, at pressEase 1
+const PRESS_MAX = 10;      // cells a second, however heavy
+const PRESS_REACH = 8;     // columns out a pressed cell looks for a way up
+const PRESS_RISE = 16;     // levels up through powder it may be pushed
+const _pressAt = [];
+function pressPowder(dt) {
+  if (!dt || (!restedChunks.length && !fallingChunks.length)) return;
+  dt = Math.min(dt, 0.1);
+  // As the lists stand now: a loose group a cell's going lets off joins the end of fallingChunks.
+  const nR = restedChunks.length, nF = fallingChunks.length;
+  for (let k = 0; k < nR; k++) if (!restedChunks[k].gone) pressPiece(restedChunks[k], dt);
+  for (let k = 0; k < nF; k++) if (!fallingChunks[k].gone) pressPiece(fallingChunks[k], dt);
+}
+function pressPiece(f, dt) {
+  const b = f.body;
+  // On the move it is not lying on anything yet (and a sleeper is lying still);
+  // one held kinematic (a lone block gliding into its cell) is not lying at all.
+  if (b.type !== CANNON.Body.DYNAMIC) return;
+  if (b.sleepState !== CANNON.Body.SLEEPING && (b.velocity.lengthSquared() >= FALL_REST_V * FALL_REST_V
+   || b.angularVelocity.lengthSquared() >= FALL_REST_V * FALL_REST_V)) return;
+  const c = powderCatchBox(f.mesh);
+  // Nothing under it was powder last look and it has not moved since: nor is it now.
+  const sig = f.pressNone;
+  if (sig && sig[0] === c.px && sig[1] === c.py && sig[2] === c.pz && sig[3] === c.qw && sig[4] === c.qx
+   && sig[5] === c.qy && sig[6] === c.qz && sig[7] === c.n) return;
+  const lat = f.mesh.userData.blocks, at = _pressAt;
+  at.length = 0;
+  let w = 0, nS = 0;
+  for (let q = 0; q < c.n; q++) {
+    w += debrisWeight(lat[q].mat);
+    // The cell under the block's bottom face. A block over another of its own
+    // piece finds air there (a piece is not in the store), so only the
+    // undersides count.
+    const i = colI(c.w[q * 3]), j = colJ(c.w[q * 3 + 2]), l = Math.floor(c.w[q * 3 + 1] / BLOCK - 0.75);
+    const v = voxelAt(i, j, l);
+    if (v === AIR || v === WATER) continue;
+    nS++;
+    if (MAT_STATS[v]?.powder) at.push(i, j, l, v);
+  }
+  if (!nS && f.pressSink) { pressSink(f, c); return; }   // pressed out from under altogether: down into the holes
+  f.pressSink = false;
+  if (!at.length) {
+    f.pressNone = [c.px, c.py, c.pz, c.qw, c.qx, c.qy, c.qz, c.n];
+    if (f.pressAcc) f.pressAcc.clear();
+    return;
+  }
+  f.pressNone = null;
+  const was = f.pressAcc || new Map(), now = f.pressOld || new Map();
+  now.clear();
+  const load = w / nS, NN = GEN_N * GEN_N;
+  for (let k = 0; k < at.length; k += 4) {
+    const i = at[k], j = at[k + 1], l = at[k + 2], m = at[k + 3], key = (l - VOX_FLOOR) * NN + j * GEN_N + i;
+    const acc = (was.get(key) || 0) + Math.min(PRESS_MAX, PRESS_RATE * load * pressEase[m]) * dt;
+    // Somewhere to go, or it waits (full) for a way out.
+    if (acc >= 1 && pressOut(i, j, l, m)) { f.pressSink = true; continue; }
+    now.set(key, Math.min(acc, 1));
+  }
+  f.pressAcc = now; f.pressOld = was;
+}
+// A piece every cell under which has been pressed out goes down into the holes
+// itself, square, as far as the nearest ground under any of its blocks: left to
+// the physics, the powder flush against its sides would hold it up, since
+// cannon's friction grips a side as hard as a floor. Not before the holes are in
+// the colliders, or it would go down into the old ones and be thrown back out.
+const pressColDone = (c) => !colJob[c] && !dirtyColliders.has(c) && !colRedo.has(c) && !powderLateCols.has(c);
+function pressSink(f, c) {
+  let gap = Infinity;
+  for (let q = 0; q < c.n; q++) {
+    const i = colI(c.w[q * 3]), j = colJ(c.w[q * 3 + 2]), y = c.w[q * 3 + 1];
+    if (!pressColDone(chunkOf(i, j))) return;
+    // Down from the cell under the block (a block of its own over another finds
+    // that one's cell open, and so a longer way down) to the first that is not air.
+    const l0 = Math.floor(y / BLOCK - 0.75);
+    let l = l0;
+    while (l > l0 - 3 && voxelAt(i, j, l) === AIR) l--;
+    gap = Math.min(gap, y - HALF_BLOCK - (l + 1) * BLOCK);
+  }
+  f.pressSink = false;
+  if (!(gap > 0.001)) return;
+  const b = f.body;
+  b.position.y -= gap; b.previousPosition.y -= gap; b.interpolatedPosition.y -= gap;
+  b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
+  b.aabbNeedsUpdate = true;
+  b.wakeUp();
+  f.mesh.position.copy(b.position);
+}
+// Press the powder cell (i, j, l) out from under a piece: true if it went.
+function pressOut(i, j, l, m) {
+  const s0 = (Math.random() * 4) | 0;
+  let open = 15;   // the sides still worth looking along
+  for (let k = 1; k <= PRESS_REACH && open; k++) {
+    for (let s = 0; s < 4; s++) {
+      const d = (s0 + s) & 3;
+      if (!(open >> d & 1)) continue;
+      const ni = i + POWDER_SIDES[d][0] * k, nj = j + POWDER_SIDES[d][1] * k;
+      // Up that column through powder to its first open cell; anything else ends the side.
+      let L = l, v;
+      while (L <= l + PRESS_RISE && (v = voxelAt(ni, nj, L)) !== AIR && MAT_STATS[v]?.powder) L++;
+      if (v !== AIR || L > l + PRESS_RISE || !canBuildAt(ni, nj, L)) { open &= ~(1 << d); continue; }
+      const x = colX(ni), y = (L + 0.5) * BLOCK, z = colZ(nj);
+      // Still under a piece (in it, or with it right over: a hole another
+      // cell has just left): further out.
+      if (powderPieceBeside(x, y, z) || powderPieceBeside(x, y + BLOCK, z)) continue;
+      // Not into a falling grain: that side waits.
+      if (powderGrainAt(x, y, z, null)) { open &= ~(1 << d); continue; }
+      if (gravGuard(i, j, l) && voxelAt(i, j, l) !== m) return false;
+      editBlock(i, j, l, AIR);
+      for (const [di, dj] of POWDER_NEAR) {
+        const ai = i + di, aj = j + dj;
+        if (ai >= 0 && aj >= 0 && ai < GEN_N && aj < GEN_N) powderDirty.add(aj * GEN_N + ai);
+      }
+      if (reposeReachAll > 1) powderDirtyFar(i, j);
+      powderGrain(x, y, z, m, null);
+      return true;
+    }
+  }
+  return false;
+}
+function checkTerrainPowder(dt = 0) {
   // Every grain the pass takes out owes its gravity and face refresh until the
   // end of it (see flushGravity).
   gravDefer = true;
-  try { shedTerrainPowder(); } finally {
+  try { shedTerrainPowder(dt); } finally {
+    powderIdxLive = false;   // the grains' filing is only kept up to here
     gravDefer = false;
     flushGravity();   // what comes loose is rubble, rebuilt at once as ever
     powderLate = true;
@@ -6276,7 +7120,8 @@ function checkTerrainPowder() {
     gravAnchored.clear();
   }
 }
-function shedTerrainPowder() {
+function shedTerrainPowder(dt) {
+  powderPieceFiled = false;   // the pieces are filed afresh for this pass, if a roll asks
   // What the last pass left owed, in column order so it does not matter which
   // way round it was owed.
   if (powderCarry.length) {
@@ -6293,6 +7138,7 @@ function shedTerrainPowder() {
     const mat = voxelAt(i, j, qLvl);
     if (mat === AIR || !MAT_STATS[mat]?.powder) continue;
     if (qLvl - 1 >= VOX_FLOOR && voxelAt(i, j, qLvl - 1) !== AIR) continue;
+    if (powderGrainAt(colX(i), (qLvl + 0.5) * BLOCK, colZ(j), null)) { powderCarry.push(j * GEN_N + i); continue; }   // not into a falling grain: next pass
     if (gravGuard(i, j, qLvl) && voxelAt(i, j, qLvl) === AIR) continue;
     editBlock(i, j, qLvl, AIR);
     powderGrain(colX(i), (qLvl + 0.5) * BLOCK, colZ(j), mat, null);
@@ -6304,6 +7150,7 @@ function shedTerrainPowder() {
   }
   powderQueue.length = 0;
   powderQHead = 0;
+  pressPowder(dt);
   // Dig out from under a bank of sand and it goes this frame, not whenever the
   // sweep next comes round. editBlock re-marks the column as it empties it, so a
   // collapse that outruns the budget carries on next frame.
@@ -6924,9 +7771,24 @@ function processImpacts() {
 // leaves the piece and falls on its own, and goes back into the world wherever
 // it lands.
 const POWDER_G = 9.82, POWDER_VMAX = 40;
+// A stack of falling grains square on each other comes down faster the deeper
+// it is, so a tall one crashes down as a plug rather than hanging while it
+// feeds out one grain at a time. A grain is pushed by the deepest stack it has
+// been in this flight — the grains rolled out from under a tall one go on
+// pushed too, which is what lets the foot of it clear — and falls at no less
+// than powderPushV of that: nothing more for up to three, POWDER_PUSH_PER m/s
+// for every grain past three, with no ceiling of its own. Only POWDER_VMAX,
+// the top speed of any grain, bounds it, and every way down is swept whole at
+// that, so nothing goes through. A stack never gets near it anyway: a grain
+// that comes down onto a fast one slides off its side (powderSlide), so a heavy
+// stream spreads out as it falls rather than piling up in one column.
+const POWDER_PUSH_PER = 1;
+function powderPushV(push) {
+  return push <= 3 ? 0 : (push - 3) * POWDER_PUSH_PER;
+}
 const powderDown = new CANNON.Vec3(0, -1, 0), powderQ = new CANNON.Quaternion();
 const powderLocalDown = new CANNON.Vec3();
-const powderProbe = new THREE.Vector3(), powderZero = new THREE.Vector3();
+const powderProbe = new THREE.Vector3();
 
 function shedPowder() {
   // Awake pieces only: a sleeping one lies as it did when last looked at, and
@@ -6963,7 +7825,10 @@ function shedPowder() {
         const b = lat[q];
         if (!MAT_STATS[b.mat]?.powder) continue;
         if (grid[cell[q] + step]) continue;
-        powderGrain(0, 0, 0, b.mat, mesh).pos.copy(b.pos).applyMatrix4(mesh.matrixWorld);
+        // Not into a falling grain: it stays on for now, and the piece gets another look next frame.
+        const at = powderProbe.copy(b.pos).applyMatrix4(mesh.matrixWorld);
+        if (powderGrainAt(at.x, at.y, at.z, null)) { f.shedKey = -1; continue; }
+        powderGrain(at.x, at.y, at.z, b.mat, mesh);
         grid[cell[q]] = 0;
         cutDebrisLat(mesh, q);   // the same gap-close a dig does
         cut = true;
@@ -7043,92 +7908,419 @@ function powderCatchFile(reach) {
   powderCatchSig = chunkSeq; powderCatchRested = restedChunks.length; powderCatchFalling = fallingChunks.length;
 }
 
+// ----- falling grains keep out of each other's way -----
+// A grain in the air is a block-sized cube at its pos, and nothing else is ever
+// where it is: not another falling grain, not the ground in its own column, not
+// a block of a piece. One coming down onto another stops on it and goes down at
+// its pace; one is only shed, or rolled, into a spot no falling grain is in,
+// and waits a frame if there is one. The grains are filed by the column square
+// they are over, so a question asks only the nine round it. updatePowderBlocks
+// files them all once a frame, and through to the end of checkTerrainPowder a
+// grain made is filed by the next question (so one whose caller sets pos after
+// powderGrain is filed where it was put), and one that lands, goes, or moves
+// across is taken out or filed again.
+const POWDER_GAP = BLOCK * 0.99;   // nearer than this on every axis and two grains overlap
+const powderIdx = new Map();       // column-square key -> the falling grains over it
+const powderIdxUsed = [];          // the lists filled since the last filing, to empty for the next
+const powderIdxNew = [];           // made since the last question, not filed yet
+let powderIdxLive = false;
+function powderIdxAdd(g) {
+  const k = g.ik = (Math.floor(g.pos.x / BLOCK) + 32768) * 65536 + Math.floor(g.pos.z / BLOCK) + 32768;
+  let L = powderIdx.get(k);
+  if (!L) powderIdx.set(k, L = []);
+  if (!L.length) powderIdxUsed.push(L);
+  L.push(g);
+}
+function powderIdxDel(g) {
+  const L = powderIdx.get(g.ik), n = L ? L.indexOf(g) : -1;
+  if (n >= 0) { L[n] = L[L.length - 1]; L.pop(); }
+}
+function powderIdxFile() {
+  for (const L of powderIdxUsed) L.length = 0;
+  powderIdxUsed.length = 0;
+  if (powderIdx.size > 65536) powderIdx.clear();
+  powderIdxNew.length = 0;
+  for (const g of powderFalling) powderIdxAdd(g);
+  powderIdxLive = true;
+}
+function powderMove(g, x, y, z) {
+  powderIdxDel(g);
+  g.pos.set(x, y, z);
+  powderIdxAdd(g);
+}
+// The falling grain other than `self` a grain at x, y, z would overlap, or null;
+// with `moved`, only one already moved this frame. With `stamp`, only those
+// moved this frame, and only across, under or overlapping y: the one whose top
+// is highest is left in powderUnderTop/powderUnderG.
+let powderUnderTop = -Infinity, powderUnderG = null;
+function powderGrainAt(x, y, z, self, stamp = 0, moved = 0) {
+  if (powderIdxNew.length) {
+    for (const g of powderIdxNew) if (!powderIdx.get(g.ik)?.includes(g)) powderIdxAdd(g);
+    powderIdxNew.length = 0;
+  }
+  const ci = Math.floor(x / BLOCK) + 32768, cj = Math.floor(z / BLOCK) + 32768;
+  powderUnderTop = -Infinity; powderUnderG = null;
+  for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
+    const L = powderIdx.get((ci + a) * 65536 + cj + b);
+    if (L) for (const g of L) {
+      if (g === self || Math.abs(g.pos.x - x) >= POWDER_GAP || Math.abs(g.pos.z - z) >= POWDER_GAP) continue;
+      if (stamp) { if (g.t === stamp && g.pos.y - y < POWDER_GAP && g.pos.y + BLOCK > powderUnderTop) { powderUnderTop = g.pos.y + BLOCK; powderUnderG = g; } }
+      else if (Math.abs(g.pos.y - y) < POWDER_GAP && (!moved || g.t === moved)) return g;
+    }
+  }
+  return powderUnderG;
+}
+// Whether a grain can be put at x, y, z: 0 if so, 1 if a falling grain is in
+// the way (with `moved`, one already moved this frame), 2 if the ground in its
+// column is.
+function powderClear(x, y, z, self, moved = 0) {
+  if (powderGrainAt(x, y, z, self, 0, moved)) return 1;
+  const i = colI(x), j = colJ(z);
+  for (let l = Math.floor((y - HALF_BLOCK) / BLOCK + 0.01), l1 = Math.floor((y + HALF_BLOCK) / BLOCK - 0.01); l <= l1; l++) {
+    if (voxelAt(i, j, l) !== AIR) return 2;
+  }
+  return 0;
+}
+// How far along the way down from (x, y0, z) to (x, y1, z), 0 to 1, a grain
+// first comes to overlap a block of the piece — in the piece's own frame, where
+// its blocks are cubes — or Infinity if it never does.
+const _sweepA = new THREE.Vector3(), _sweepD = new THREE.Vector3();
+function powderSweep(mesh, x, y0, z, y1) {
+  mesh.updateWorldMatrix(true, false);
+  const A = mesh.worldToLocal(_sweepA.set(x, y0, z)), D = mesh.worldToLocal(_sweepD.set(x, y1, z)).sub(A);
+  let best = Infinity;
+  blocks: for (const b of mesh.userData.blocks) {
+    let t0 = 0, t1 = 1;
+    for (let k = 0; k < 3; k++) {
+      const o = b.pos.getComponent(k) - A.getComponent(k), d = D.getComponent(k);
+      if (Math.abs(d) < 1e-9) { if (Math.abs(o) >= POWDER_GAP) continue blocks; continue; }
+      let ta = (o - POWDER_GAP) / d, tb = (o + POWDER_GAP) / d;
+      if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+      if (t0 >= t1) continue blocks;
+    }
+    if (t0 < best) best = t0;
+  }
+  return best;
+}
+// A grain falling on past a piece goes on down the piece's own column it came
+// to — the lattice axis nearest world down — `dist` further, short of any block
+// of the piece lower in that column or of the ground, so the side of a tilted
+// piece cannot catch it again. Returns where that is in the world, or null if
+// it cannot go down that column at all.
+const _pastQ = new THREE.Quaternion(), _pastD = new THREE.Vector3(), _pastAt = new THREE.Vector3();
+function powderPast(mesh, local, dist) {
+  const lat = mesh.userData.blocks;
+  mesh.getWorldQuaternion(_pastQ).invert();
+  const d = _pastD.set(0, -1, 0).applyQuaternion(_pastQ);
+  const ax = Math.abs(d.x), ay = Math.abs(d.y), az = Math.abs(d.z);
+  const axis = ay >= ax && ay >= az ? 1 : ax >= az ? 0 : 2, sgn = Math.sign(d.getComponent(axis));
+  d.set(0, 0, 0).setComponent(axis, sgn * BLOCK);
+  for (let k = 1; (k - 1) * BLOCK < dist; k++) {
+    _pastAt.copy(local).addScaledVector(d, k);
+    if (lat.some((b) => Math.abs(b.pos.x - _pastAt.x) < 0.1 && Math.abs(b.pos.y - _pastAt.y) < 0.1 && Math.abs(b.pos.z - _pastAt.z) < 0.1)
+        || (mesh.localToWorld(_pastAt), voxelAtWorld(_pastAt.x, _pastAt.y, _pastAt.z) !== AIR)) {
+      dist = Math.min(dist, (k - 1) * BLOCK);
+      break;
+    }
+  }
+  if (dist <= 0) return null;
+  return mesh.localToWorld(_pastAt.copy(local).addScaledVector(d, dist / BLOCK));
+}
+// The cell of a piece's lattice a grain touching it is in. At first touch that
+// is never one of the piece's blocks, or it would have touched sooner; one that
+// is (the piece moved onto it, or a block was laid where it was) goes up the
+// piece's own column to the first open cell, as on the ground.
+const _cellQ = new THREE.Quaternion(), _cellUp = new THREE.Vector3(), _cellAt = new THREE.Vector3();
+function powderCell(mesh, at) {
+  const lat = mesh.userData.blocks, r = lat[0].pos;
+  const c = mesh.worldToLocal(_cellAt.copy(at));
+  c.set(r.x + Math.round((c.x - r.x) / BLOCK) * BLOCK, r.y + Math.round((c.y - r.y) / BLOCK) * BLOCK,
+        r.z + Math.round((c.z - r.z) / BLOCK) * BLOCK);
+  const filled = () => lat.some((b) => Math.abs(b.pos.x - c.x) < 0.1 && Math.abs(b.pos.y - c.y) < 0.1 && Math.abs(b.pos.z - c.z) < 0.1);
+  if (filled()) {
+    mesh.getWorldQuaternion(_cellQ).invert();
+    const u = _cellUp.set(0, 1, 0).applyQuaternion(_cellQ);
+    const ax = Math.abs(u.x), ay = Math.abs(u.y), az = Math.abs(u.z);
+    const axis = ay >= ax && ay >= az ? 1 : ax >= az ? 0 : 2;
+    u.set(0, 0, 0).setComponent(axis, Math.sign(u.getComponent(axis) || 1) * BLOCK);
+    do c.add(u); while (filled());
+  }
+  return c;
+}
+// Whether a grain at x, y, z would overlap a block of any piece (the pieces
+// filed by powderCatchFile).
+function powderInPiece(x, y, z) {
+  const near = powderCatchCells.get(debrisCellKey(Math.floor(x / CATCH_CELL), Math.floor(z / CATCH_CELL)));
+  if (near) for (let e = 0; e < near.length; e += 2) {
+    const c = near[e + 1];
+    const r = 2 * BLOCK;
+    if (y > c.maxY + r || y < c.minY - r || x < c.minX - r || x > c.maxX + r || z < c.minZ - r || z > c.maxZ + r) continue;
+    if (powderSweep(near[e], x, y, z, y) === 0) return true;
+  }
+  return false;
+}
+// The same for a grain the terrain sheds, filing the pieces once a pass.
+let powderPieceFiled = false;
+function powderPieceBeside(x, y, z) {
+  if (!restedChunks.length && !fallingChunks.length) return false;
+  if (!powderPieceFiled) { powderCatchFile(2 * BLOCK); powderPieceFiled = true; }
+  return powderInPiece(x, y, z);
+}
+// The lowest height from y up that a grain at x, z can be at without overlapping
+// a falling grain already moved this frame: on top of the one there, if any.
+function powderAbove(x, y, z, self, stamp) {
+  for (let g; (g = powderGrainAt(x, y, z, self, 0, stamp)); ) y = g.pos.y + BLOCK;
+  return y;
+}
+// A grain that comes down onto a falling grain, or finds itself inside one,
+// going at a pace POWDER_SLIDE_DV or more off its own, either of the two at
+// POWDER_SLIDE_V or more, does not go on top of it: it slides off the side,
+// at the faster of the two speeds, into the nearest spot round it, out to two
+// columns, that no falling grain, ground or piece holds, nor any ground or
+// piece on the way across. With nowhere to go it goes on top, as onto a slower
+// one. A grain at the pace of the one under it is riding it, and stays.
+const POWDER_SLIDE_V = 6, POWDER_SLIDE_DV = 2;
+const POWDER_SLIDE = [];
+for (let a = -2; a <= 2; a++) for (let b = -2; b <= 2; b++) if (a || b) POWDER_SLIDE.push([a, b, a * a + b * b]);
+POWDER_SLIDE.sort((u, w) => u[2] - w[2]);
+function powderSlide(p, x, y, z, pieces) {
+  const i = colI(x), j = colJ(z), l0 = Math.floor((y - HALF_BLOCK) / BLOCK + 0.01), l1 = Math.floor((y + HALF_BLOCK) / BLOCK - 0.01);
+  const ground = (ci, cj) => { for (let l = l0; l <= l1; l++) if (voxelAt(ci, cj, l) !== AIR) return true; return false; };
+  const blocked = (ci, cj) => ground(ci, cj) || (pieces && powderInPiece(colX(ci), y, colZ(cj)));
+  // Equally near spots are tried from a random one on, so the stream spreads evenly.
+  for (let g0 = 0; g0 < POWDER_SLIDE.length; ) {
+    let g1 = g0;
+    while (g1 < POWDER_SLIDE.length && POWDER_SLIDE[g1][2] === POWDER_SLIDE[g0][2]) g1++;
+    const n = g1 - g0, s0 = (Math.random() * n) | 0;
+    for (let s = 0; s < n; s++) {
+      const [a, b] = POWDER_SLIDE[g0 + (s0 + s) % n], ti = i + a, tj = j + b, tx = colX(ti), tz = colZ(tj);
+      if (powderGrainAt(tx, y, tz, p) || blocked(ti, tj)) continue;
+      // Across: every column between this one and that, the box they span.
+      let way = true;
+      for (let u = Math.min(0, a); u <= Math.max(0, a) && way; u++)
+        for (let w = Math.min(0, b); w <= Math.max(0, b); w++)
+          if ((u || w) && (u !== a || w !== b) && blocked(i + u, j + w)) { way = false; break; }
+      if (!way) continue;
+      powderMove(p, tx, y, tz);
+      return true;
+    }
+    g0 = g1;
+  }
+  return false;
+}
+const powderOrder = [];
+let powderStamp = 0;
+const powderSpot = new THREE.Vector3();
+
 function catchPowder(dt) {
   let filed = false;   // the cells are filed on first need, and again after anything that may move or make pieces
-  const reach = BLOCK * (1 + 1e-6);   // a hair over a block, so rounding never rejects a catch
-  // Walked from the back, as it always was; whatever stays is packed down to
-  // the end of what was walked as it goes, and closed up to the front after.
+  const reach = 2 * BLOCK;   // a grain's cube can touch a block of a turned piece from this far off across
+  // Lowest first, so whatever a grain comes down onto has moved already. What
+  // stays keeps its place in the list; what goes is closed up after.
   const a = powderFalling, len = a.length;
-  let w = len;
-  grains: for (let n = len - 1; n >= 0; n--) {
-    const p = a[n];
-    p.v = Math.min(p.v + POWDER_G * dt, POWDER_VMAX);
-    p.pos.y -= p.v * dt;
-    if (p.pos.y < FALL_KILL_Y) { powderGrainFree(p); continue; }
-    if (voxelAtWorld(p.pos.x, p.pos.y, p.pos.z) !== AIR) {
-      const i = colI(p.pos.x), j = colJ(p.pos.z);
-      let lvl = lvlOfY(p.pos.y);
-      while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) lvl++;   // the first free cell over what it hit
-      // Landing on an edge it rolls off and falls on down the lower column,
-      // where it may roll again — every roll is a level lower, so it stops.
-      const roll = powderRoll(i, j, lvl);
-      if (roll >= 0) {
-        p.pos.set(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]));
-        p.v = 0;
-        a[--w] = p;
-        continue;
-      }
-      if (canBuildAt(i, j, lvl)) {
-        powderLate = true;
-        editBlock(i, j, lvl, p.mat);
-        powderLate = false;
-        // Drawn on where it came to rest until its chunk shows it.
-        p.pos.set(colX(i), (lvl + 0.5) * BLOCK, colZ(j));
-        p.from = null;
-        p.c = chunkOf(i, j);
-        p.k = gravCell(i, j, lvl);
-        powderLanded.push(p);
-      } else powderGrainFree(p);
-      // Cascade: if the block above is powder with nothing under it, it goes next.
-      const aboveLvl = lvl + 1;
-      if (inVoxelRange(i, j, aboveLvl) && MAT_STATS[voxelAt(i, j, aboveLvl)]?.powder
-          && (aboveLvl - 1 < VOX_FLOOR || voxelAt(i, j, aboveLvl - 1) === AIR)) {
-        powderQueue.push(i, j, aboveLvl);
-      }
-      // A ground write only ever makes pieces (or moves one between the lists),
-      // never touches one there is: file again only if the lists changed.
-      if (filed && (chunkSeq !== powderCatchSig || restedChunks.length !== powderCatchRested
-                    || fallingChunks.length !== powderCatchFalling)) filed = false;
+  const ord = powderOrder;
+  ord.length = 0;
+  for (let n = 0; n < len; n++) ord.push(n);
+  ord.sort((x, y) => a[x].pos.y - a[y].pos.y || y - x);
+  const stamp = ++powderStamp;
+  let gone = 0;
+  const leave = (n) => { powderIdxDel(a[n]); a[n] = null; gone++; };
+  // How deep the stack each grain is in, from where they all are before any
+  // moves: highest first, a grain's depth from it up (d) is one more than that
+  // of the grain sitting square on it, and the grain under it is noted (dn).
+  // The whole stack goes by the depth at its foot, so it moves as one.
+  for (let o = len - 1; o >= 0; o--) {
+    const p = a[ord[o]], q = powderGrainAt(p.pos.x, p.pos.y + BLOCK, p.pos.z, p);
+    p.dn = null;
+    if (q && q.pos.y - p.pos.y < BLOCK * 1.05 && q.dn === null && q.t === -stamp) { p.d = q.d + 1; q.dn = p; }
+    else p.d = 1;
+    p.t = -stamp;
+  }
+  grains: for (let o = 0; o < len; o++) {
+    const n = ord[o], p = a[n];
+    p.t = stamp;
+    if (p.dn) p.d = p.dn.d;   // the grain under it went first and holds the stack's depth by now
+    if (p.d > p.push) p.push = p.d;
+    p.v = Math.min(Math.max(p.v + POWDER_G * dt, powderPushV(p.push)), POWDER_VMAX);
+    const px = p.pos.x, pz = p.pos.z, y0 = p.pos.y;
+    let y = y0 - p.v * dt;
+    // A grain under it that has moved: it comes down onto that and on at its
+    // pace. Overlapping one (made where one was, or one moved in under it), it
+    // goes up onto it unless the ground is there; a grain it then overlaps is
+    // higher, so comes later and goes up onto it in turn.
+    powderGrainAt(px, y0, pz, p, stamp);
+    // Coming down onto one, or made inside one, going at another pace from its
+    // own, either of them fast: off the side. Two grains of a stack go at the
+    // same pace (the same push), so a stack holds together. From there it is a
+    // grain falling like any other.
+    if (powderUnderTop > y && Math.max(powderUnderG.v, p.v) >= POWDER_SLIDE_V && Math.abs(powderUnderG.v - p.v) >= POWDER_SLIDE_DV) {
+      const pieces = restedChunks.length > 0 || fallingChunks.length > 0;
+      if (pieces && !filed) { powderCatchFile(reach); filed = true; }
+      const vq = powderUnderG.v;
+      if (powderSlide(p, px, y0, pz, pieces)) { p.v = Math.max(p.v, vq); continue; }
+      powderGrainAt(px, y0, pz, p, stamp);   // the looking round lost which one is under it
+    }
+    if (powderUnderTop > y0) {
+      const top = powderAbove(px, powderUnderTop, pz, p, stamp);
+      if (powderClear(px, top, pz, p) !== 2) powderMove(p, px, top, pz);
+      p.v = 0;
       continue;
     }
-    // Rubble lies at whatever angle the physics left it, so the grain is snapped
-    // to the piece's own lattice. Never back onto the piece it fell off: that one
-    // had no room for it, and it would only shed again next frame.
-    if (!restedChunks.length && !fallingChunks.length) { a[--w] = p; continue; }
-    if (!filed) { powderCatchFile(reach); filed = true; }
-    const px = p.pos.x, py = p.pos.y, pz = p.pos.z;
-    const near = powderCatchCells.get(debrisCellKey(Math.floor(px / CATCH_CELL), Math.floor(pz / CATCH_CELL)));
-    if (near) for (let e = 0; e < near.length; e += 2) {
-      const mesh = near[e], c = near[e + 1];
-      if (mesh === p.from) continue;
-      if (py <= c.minY || px < c.minX - reach || px > c.maxX + reach || py > c.maxY + reach
-          || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
-      let close = false;
-      for (let q = 0, cw = c.w; q < c.n; q++) {
-        if (cw[q * 3 + 1] < py && powderProbe.set(cw[q * 3], cw[q * 3 + 1], cw[q * 3 + 2]).distanceTo(p.pos) <= BLOCK) { close = true; break; }
+    if (powderUnderTop > y) { y = powderUnderTop; p.v = powderUnderG.v; }
+    // The ground on the way: the first solid cell in its column its underside
+    // comes to, all of them in turn, so it cannot pass through a thin one.
+    // Already inside one (thrown into the ground) it comes up to the first free
+    // cell over it, as it always did.
+    const i = colI(px), j = colJ(pz);
+    let land = -Infinity, yEnd = y;
+    const inside = voxelAt(i, j, lvlOfY(y0)) !== AIR;
+    if (inside) land = lvlOfY(y0);
+    else {
+      for (let l = Math.ceil((y0 - HALF_BLOCK) / BLOCK - 1e-6) - 1, l1 = Math.floor((y - HALF_BLOCK) / BLOCK + 1e-6); l >= l1; l--) {
+        if (voxelAt(i, j, l) !== AIR) { land = l + 1; yEnd = (l + 1.5) * BLOCK; break; }
       }
-      if (!close) continue;
-      // The spot depends only on the piece and the grain, not on which block was near.
-      const local = debrisSpot(mesh, p.pos, powderZero);
-      if (!local) continue;
-      const off = debrisRoll(mesh, local);
-      if (off === false) continue;   // it falls on past
-      if (off) { p.pos.copy(off); p.v = 0; break; }   // falls on from there, as on the ground
-      placeOnDebris(mesh, local, p.mat);
-      powderGrainFree(p);
-      filed = false;   // the piece grew and was rebuilt
-      continue grains;
     }
-    a[--w] = p;
+    // Rubble on the way, over the ground it would stop on. Rubble lies at
+    // whatever angle the physics left it, so the grain is snapped to the piece's
+    // own lattice. Never back onto the piece it fell off: that one had no room
+    // for it, and it would only shed again next frame.
+    if (!inside && (restedChunks.length || fallingChunks.length)) {
+      if (!filed) { powderCatchFile(reach); filed = true; }
+      const near = powderCatchCells.get(debrisCellKey(Math.floor(px / CATCH_CELL), Math.floor(pz / CATCH_CELL)));
+      let mesh = null, t = Infinity;
+      if (near) for (let e = 0; e < near.length; e += 2) {
+        const m = near[e], c = near[e + 1];
+        if (m === p.from) continue;
+        if (yEnd > c.maxY + reach || y0 < c.minY - reach || px < c.minX - reach || px > c.maxX + reach
+            || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
+        const tm = powderSweep(m, px, y0, pz, yEnd);
+        if (tm < t) { t = tm; mesh = m; }
+      }
+      if (mesh) {
+        p.pos.y = y0 + (yEnd - y0) * t;   // where it touches
+        // The spot is the piece's cell the grain is in, so a grain put on a cell
+        // asks about that cell again next frame, not a neighbour's.
+        const local = powderCell(mesh, p.pos);
+        let off = debrisRoll(mesh, local, p.mat);
+        // Nor off into another piece lying there, or onto one: debrisRoll knows
+        // only this one, and two pieces side by side sent a grain back and forth
+        // between them every frame. The other piece holds it in, as on the ground.
+        if (off && (powderInPiece(off.x, off.y, off.z) || powderInPiece(_debrisRollUnder.x, _debrisRollUnder.y, _debrisRollUnder.z))) off = null;
+        // Only a grain lower down, moved already, holds the spot against it:
+        // one higher up comes after, and keeps out of its way then. So the
+        // lowest of any that wait always goes, and they never wait on each other.
+        let to = off || (off === false ? powderPast(mesh, local, p.pos.y - yEnd) : mesh.localToWorld(powderSpot.copy(local)));
+        // Falling on past that is no lower than it was (its cell is over where
+        // it touched, or the piece's column runs aslant) with the ground right
+        // under it, it came back to the same spot every frame: it goes on to
+        // the ground instead.
+        if (off === false && to && to.y > y0 - 1e-4 && land !== -Infinity) to = null;
+        let clear = to ? powderClear(to.x, to.y, to.z, p, stamp) : 0;
+        // Rolled off into the ground's edge it stays, as debrisRoll would have had it.
+        if (off && clear === 2) { off = null; to = mesh.localToWorld(powderSpot.copy(local)); clear = powderClear(to.x, to.y, to.z, p, stamp); }
+        if (to) {
+          if (off === null) {
+            // It stays: laid into that cell, once no falling grain is in it.
+            if (clear !== 1) {
+              placeOnDebris(mesh, local, p.mat);
+              leave(n);
+              powderGrainFree(p);
+              filed = false;   // the piece grew and was rebuilt
+              continue;
+            }
+          } else if (!clear) {
+            // Rolled off, it falls on from there, as on the ground; with
+            // nothing under the cell it came to, it falls on past down it.
+            powderMove(p, to.x, to.y, to.z);
+            if (off) p.v = 0;
+            continue;
+          }
+          // Somewhere to go but a falling grain in it: it waits, in its own cell
+          // if no grain is in that, so a block laid beside it meanwhile is not in it.
+          if (clear === 1) {
+            const at = mesh.localToWorld(powderSpot.copy(local));
+            if (!powderClear(at.x, at.y, at.z, p, stamp)) powderMove(p, at.x, at.y, at.z);
+            else {
+              // Where it touched, then; if the piece has since moved into it, it goes up out of it.
+              const top = p.pos.y + 2 * BLOCK, tu = powderSweep(mesh, px, top, pz, p.pos.y);
+              if (tu > 0 && tu < 1) p.pos.y = powderAbove(px, top - 2 * BLOCK * tu, pz, p, stamp);
+            }
+            p.v = 0;
+            continue;
+          }
+        }
+        // Nothing under it on the piece and the ground right there: it goes on
+        // to the ground, as it always did.
+        p.pos.y = y0;
+      }
+    }
+    if (land === -Infinity) {
+      p.pos.y = y;
+      if (p.pos.y < FALL_KILL_Y) { leave(n); powderGrainFree(p); }
+      continue;
+    }
+    let lvl = land;
+    while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) lvl++;   // the first free cell over what it hit
+    // Landing on an edge it rolls off and falls on down the lower column,
+    // where it may roll again — every roll is a level lower, so it stops. A
+    // falling grain already moved there and it waits on top for a frame (one
+    // still to move comes after, and goes up onto it if it must).
+    let roll = powderRoll(i, j, lvl, p.mat, p);
+    const farWait = powderFarWait;
+    // Nor into a piece lying there: the piece holds it in, as the ground holds
+    // in one on a piece (debrisRoll).
+    if (roll >= 0 && (restedChunks.length || fallingChunks.length)) {
+      if (!filed) { powderCatchFile(reach); filed = true; }
+      if (powderInPiece(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))) roll = -1;
+    }
+    if (roll >= 0) {
+      const ri = i + POWDER_SIDES[roll][0], rj = j + POWDER_SIDES[roll][1];
+      const rx = colX(ri), ry = (lvl + 0.5) * BLOCK, rz = colZ(rj);
+      // One still to move there would go up onto it, but not with the ground
+      // over that cell (a face that is shedding): then it holds the spot too.
+      if (!powderGrainAt(rx, ry, rz, p, 0, stamp)
+          && !(inVoxelRange(ri, rj, lvl + 1) && voxelAt(ri, rj, lvl + 1) !== AIR && powderGrainAt(rx, ry, rz, p))) powderMove(p, rx, ry, rz);
+      else p.pos.y = powderAbove(px, ry, pz, p, stamp);
+      p.v = 0;
+      continue;
+    }
+    leave(n);
+    if (farWait) powderCarry.push(j * GEN_N + i);   // its far look waits for next frame, from where it lies
+    if (canBuildAt(i, j, lvl)) {
+      powderLate = true;
+      editBlock(i, j, lvl, p.mat);
+      powderLate = false;
+      // Drawn on where it came to rest until its chunk shows it.
+      p.pos.set(colX(i), (lvl + 0.5) * BLOCK, colZ(j));
+      p.from = null;
+      p.c = chunkOf(i, j);
+      p.k = gravCell(i, j, lvl);
+      powderLanded.push(p);
+    } else powderGrainFree(p);
+    // Cascade: if the block above is powder with nothing under it, it goes next.
+    const aboveLvl = lvl + 1;
+    if (inVoxelRange(i, j, aboveLvl) && MAT_STATS[voxelAt(i, j, aboveLvl)]?.powder
+        && (aboveLvl - 1 < VOX_FLOOR || voxelAt(i, j, aboveLvl - 1) === AIR)) {
+      powderQueue.push(i, j, aboveLvl);
+    }
+    // A ground write only ever makes pieces (or moves one between the lists),
+    // never touches one there is: file again only if the lists changed.
+    if (filed && (chunkSeq !== powderCatchSig || restedChunks.length !== powderCatchRested
+                  || fallingChunks.length !== powderCatchFalling)) filed = false;
   }
-  // [w, len) is what stayed, in order; anything spawned meanwhile is past len.
-  if (w > 0) {
-    a.copyWithin(0, w);
-    a.length -= w;
+  // Close up what went; anything spawned meanwhile is past len and stays.
+  if (gone) {
+    let w = 0;
+    for (let n = 0; n < a.length; n++) if (a[n]) a[w++] = a[n];
+    a.length = w;
   }
 }
 
 function updatePowderBlocks(dt) {
+  powderFarSpent = 0;
+  powderIdxFile();   // kept in step until checkTerrainPowder is done
   shedPowder(dt);
   catchPowder(dt);
 }
@@ -7559,7 +8751,7 @@ const _debrisRollDown = new THREE.Vector3();
 const _debrisRollSide = new THREE.Vector3();
 const _debrisRollAt = new THREE.Vector3();
 const _debrisRollUnder = new THREE.Vector3();
-function debrisRoll(mesh, local) {
+function debrisRoll(mesh, local, m) {
   const lat = mesh.userData.blocks;
   mesh.getWorldQuaternion(_debrisRollQ).invert();
   const d = _debrisRollDown.set(0, -1, 0).applyQuaternion(_debrisRollQ);
@@ -7575,6 +8767,10 @@ function debrisRoll(mesh, local) {
   };
   if (!filled(_debrisRollUnder.copy(local).add(d))) return false;
   const s0 = (Math.random() * 4) | 0;
+  // A piece is too small a lattice to read a slope off further out than its
+  // edge, so any place angle short of 90 keeps the one-step test; at 90 a grain
+  // stays where it lands, as on the ground.
+  if (!reposeReach[m]) return null;
   for (let s = 0; s < 4; s++) {
     const [u, v] = POWDER_SIDES[(s0 + s) & 3];
     // The two lattice axes across down, in turn, either way along each.
@@ -7650,7 +8846,7 @@ function placeOnDebris(mesh, local, m, rebuild = true) {
 // piece further down.
 function layOnDebris(mesh, local, m, rebuild = true) {
   if (MAT_STATS[m]?.powder) {
-    const off = debrisRoll(mesh, local);
+    const off = debrisRoll(mesh, local, m);
     if (off !== null) {
       const g = powderGrain(0, 0, 0, m, null);
       if (off) g.pos.copy(off); else mesh.localToWorld(g.pos.copy(local));
@@ -8670,6 +9866,14 @@ const customMatIds = () => {
   for (let m = CUSTOM_MAT0; m < MAT_STATS.length; m++) if (MAT_STATS[m]) ids.push(m);
   return ids;
 };
+// The place angle (degrees, 0 to 90; powder only) and transparency (0 opaque
+// to 100 unseen; debrisFaceMask packs it to the nearest whole number beside the
+// face bits, the terrain and the grains take it as it is) as a created material
+// keeps them: anything out of range comes back to it, and a definition from
+// before they existed, or no number at all, gets 45 and 0.
+const MAT_ANGLE_STD = 45;
+const matAngleOf = (v) => (v == null || v === '' || !Number.isFinite(+v) ? MAT_ANGLE_STD : Math.min(90, Math.max(0, +v)));
+const matClearOf = (v) => (v == null || v === '' || !Number.isFinite(+v) ? 0 : Math.min(100, Math.max(0, +v)));
 // A definition as stored, or null if it is not one.
 function customMatDef(d) {
   if (!d || typeof d !== 'object') return null;
@@ -8680,6 +9884,7 @@ function customMatDef(d) {
     color: /^#[0-9a-f]{6}$/i.test(d.color) ? d.color.toLowerCase() : '',
     weight: num(d.weight, 0), buoyancy: num(d.buoyancy, 0),
     strength: num(d.strength, 1e-6), pull: num(d.pull, 1e-6), powder: !!d.powder,
+    angle: matAngleOf(d.angle), transparency: matClearOf(d.transparency),
   };
   if (def.id < CUSTOM_MAT0 || def.id >= MAT_ID_LIMIT || !def.name || !def.color) return null;
   if ([def.weight, def.buoyancy, def.strength, def.pull].some(Number.isNaN)) return null;
@@ -8687,10 +9892,12 @@ function customMatDef(d) {
 }
 const customMatDefs = () => customMatIds().map((m) => ({ id: m, ...MAT_STATS[m] }));
 function customMatInstall(d) {
-  const { id, name, color, weight, buoyancy, strength, pull, powder } = d;
+  const { id, name, color, weight, buoyancy, strength, pull, powder, angle, transparency } = d;
   matTablesGrow(id + 1);
-  MAT_STATS[id] = { name, weight, buoyancy, strength, pull, powder, color };
+  MAT_STATS[id] = { name, weight, buoyancy, strength, pull, powder, color, angle, transparency };
   MAT_NAMES[id] = name.toLowerCase();
+  matReposeSet(id, powder ? angle : MAT_ANGLE_STD);
+  matClearSet(id, transparency);
   const c = TERRAIN_MATS[id].color.set(color);
   TERRAIN_BASE[id].set(c.r, c.g, c.b);
   TERRAIN_PBR[id].w = powder ? 1 : 0;
@@ -8701,8 +9908,66 @@ function customMatInstall(d) {
     if (!g) continue;
     fallingGrainGeos.delete(key);
     const L = fallingGrainLayers.get(key);
-    if (L) L.geometry = key < 0 ? fallingGrainCubeGeo(id) : fallingGrainGeo(id);
+    if (L) {
+      const lg = fallingGrainLayerGeo(key < 0 ? fallingGrainCubeGeo(id) : fallingGrainGeo(id), L.instanceMatrix.count);
+      freeGeo(L.geometry);
+      L.geometry = lg;
+    }
     g.dispose();
+  }
+}
+// An id given up: no material, and back to what the tables hold for none.
+function customMatFree(m) {
+  MAT_STATS[m] = null;
+  MAT_NAMES[m] = undefined;
+  matReposeSet(m, MAT_ANGLE_STD);
+  matClearSet(m, 0);
+}
+// Transparency into everything that draws material m. Only a change between 0
+// and not touches the terrain — which blocks are in the see-through draw, and
+// which faces they leave showing — and then only the chunks round m's blocks;
+// otherwise it is the opacity the shaders already read. Pieces holding m get
+// their masks again, which carry it.
+function matClearSet(m, tr) {
+  const on = tr > 0 ? 1 : 0, was = matClear[m], a = 1 - tr / 100;
+  matClear[m] = on;
+  clearCount += on - was;
+  TERRAIN_ALPHA[m] = a;
+  const g = debrisGrainMats.get(m);
+  for (const mt of [TERRAIN_FACE_MATS[m], fallingGrainMats.get(m), g, g && debrisLambertMats.get(g)]) {
+    if (!mt) continue;
+    if (mt.transparent !== !!on) { mt.transparent = !!on; mt.depthWrite = !on; mt.needsUpdate = true; }
+    mt.opacity = on ? a : 1;
+  }
+  if (on !== was) {
+    clearColsRecount();
+    for (let k = 0; k < GEN_N * GEN_N; k++) {
+      const o = voxOff[k];
+      if (o < 0) continue;
+      let has = false;
+      for (let p = o, end = o + voxLen(k); p < end; p++) if (voxMat[p] === m) { has = true; break; }
+      if (!has) continue;
+      const i = k % GEN_N, j = (k - i) / GEN_N;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const ii = i + di, jj = j + dj;
+        if (ii >= 0 && jj >= 0 && ii < GEN_N && jj < GEN_N) dirtyChunks.add(chunkOf(ii, jj));
+      }
+    }
+  }
+  for (const f of [...fallingChunks, ...restedChunks]) {
+    if (f.mesh?.userData.blocks?.some((b) => b.mat === m)) debrisFaceMask(f.mesh);
+  }
+  menuRedraw = true;
+}
+// A place angle changed under piles already standing: every column holding m
+// is looked at again by the powder pass, so a shallower angle spreads them out
+// to it (a steeper one leaves them as they stand).
+function matAngleSet(m, angle) {
+  matReposeSet(m, angle);
+  for (let k = 0; k < GEN_N * GEN_N; k++) {
+    const o = voxOff[k];
+    if (o < 0) continue;
+    for (let p = o, end = o + voxLen(k); p < end; p++) if (voxMat[p] === m) { powderDirty.add(k); break; }
   }
 }
 function customMatsStore() {
@@ -8733,8 +9998,7 @@ function customMatInUse(m) {
 function customMatDelete(m) {
   if (!isCustomMat(m)) return '';
   if (customMatInUse(m)) return `${MAT_STATS[m].name} is still in the world — remove its blocks first`;
-  MAT_STATS[m] = null;
-  MAT_NAMES[m] = undefined;
+  customMatFree(m);
   if (placerMat === m) { placerMat = DIRT; placerMatName.textContent = MAT_STATS[DIRT].name; }
   customMatsStore();
   customMatsChanged();
@@ -8750,7 +10014,7 @@ function customMatsAdopt(list) {
   if (!defs.length) return;
   const mine = customMatDefs();
   const names = new Set(defs.map((d) => d.name.toLowerCase()));
-  for (const d of mine) if (names.has(d.name.toLowerCase())) { MAT_STATS[d.id] = null; MAT_NAMES[d.id] = undefined; }
+  for (const d of mine) if (names.has(d.name.toLowerCase())) customMatFree(d.id);
   for (const d of defs) customMatInstall(d);
   for (const d of mine) {
     if (names.has(d.name.toLowerCase()) || !defs.some((s) => s.id === d.id)) continue;
@@ -8791,7 +10055,15 @@ function buildMatList() {
         + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
         + ` &middot; Pull: `
         + `<input class="mat-str" data-mat="${i}" data-key="pull" type="text" inputmode="decimal" autocomplete="off" value="${st.pull}">`
-        + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}</span>`
+        + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}`
+        // A built-in powder holds sand's 45 degrees, and is not to be changed.
+        + (st.powder ? ' &middot; Place angle: ' + (isCustomMat(i)
+          ? `<input class="mat-str mat-par" data-mat="${i}" data-key="angle" type="text" inputmode="decimal" autocomplete="off" value="${st.angle}">`
+          : MAT_ANGLE_STD) : '')
+        + (isCustomMat(i)
+          ? ` &middot; Transparency: <input class="mat-str mat-par" data-mat="${i}" data-key="transparency" type="text" inputmode="decimal" autocomplete="off" value="${st.transparency}">`
+          : '')
+        + '</span>'
       : '<span>no stats &mdash; not carryable</span>';
     return '<div class="mat-row">'
          + `<div class="mat-sw" style="background:${hex}"></div>`
@@ -8803,7 +10075,7 @@ function buildMatList() {
   // Strength (compression) and pull are edited in place: a number above zero goes
   // straight into MAT_STATS and the stress overlay re-solves with it; anything else
   // is left marked until the field is left, when it snaps back to the value in force.
-  for (const el of matListEl.querySelectorAll('.mat-str')) {
+  for (const el of matListEl.querySelectorAll('.mat-str:not(.mat-par)')) {
     const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
     el.addEventListener('input', () => {
       const v = parseFloat(el.value.replace(',', '.'));
@@ -8813,6 +10085,26 @@ function buildMatList() {
       st[key] = v;
       if (isCustomMat(m)) customMatsStore();
       stressInvalidate();
+    });
+    el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+  }
+  // A created material's place angle and transparency, the same way: a number
+  // goes in at once, brought into range (0 to 90, 0 to 100) — marked if it had to
+  // be — and the field shows what is in force once it is left.
+  for (const el of matListEl.querySelectorAll('.mat-par')) {
+    const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
+    const fit = key === 'angle' ? matAngleOf : matClearOf;
+    el.addEventListener('input', () => {
+      const raw = parseFloat(el.value.replace(',', '.'));
+      const num = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(raw);
+      const v = num ? fit(raw) : NaN;
+      el.classList.toggle('bad', !num || v !== raw);
+      if (!num || v === st[key]) return;
+      st[key] = v;
+      if (key === 'angle') matAngleSet(m, v);
+      else matClearSet(m, v);
+      customMatsStore();
     });
     el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
@@ -8837,23 +10129,31 @@ bindTap(document.getElementById('mn-add'), () => {
   const name = document.getElementById('mn-name').value.trim();
   let id = CUSTOM_MAT0;
   while (id < MAT_ID_LIMIT && MAT_STATS[id]) id++;
+  const powder = document.getElementById('mn-powder').checked;
+  const angle = powder ? val('mn-angle') : MAT_ANGLE_STD, clear = val('mn-clear');
   const def = customMatDef({
     id, name, color: document.getElementById('mn-color').value,
     weight: val('mn-weight'), buoyancy: val('mn-buoy'), strength: val('mn-str'), pull: val('mn-pull'),
-    powder: document.getElementById('mn-powder').checked,
+    powder, angle, transparency: clear,
   });
   let msg = '';
   if (id === MAT_ID_LIMIT) msg = `The game can hold ${MAT_ID_LIMIT - CUSTOM_MAT0} created materials and has them all — delete one first`;
   else if (!name) msg = 'Give it a name';
   else if (MAT_NAMES.some((n) => n === name.toLowerCase().slice(0, 20))) msg = 'That name is taken';
   else if (!def) msg = 'Weight and buoyancy need a number of 0 or more, compression and pull above 0';
+  else if (!Number.isFinite(angle)) msg = 'Place angle needs a number from 0 to 90';
+  else if (!Number.isFinite(clear)) msg = 'Transparency needs a number from 0 to 100';
   if (msg) { matNewMsg.textContent = msg; return; }
   customMatInstall(def);
   customMatsStore();
   customMatsChanged();
   document.getElementById('mn-name').value = '';
-  matNewMsg.textContent = `Made ${def.name}`;
+  const fitted = [def.angle !== angle && `place angle ${def.angle}`, def.transparency !== clear && `transparency ${def.transparency}`].filter(Boolean);
+  matNewMsg.textContent = `Made ${def.name}` + (fitted.length ? ` (${fitted.join(', ')})` : '');
 });
+// The place angle is a powder's alone, so it is only asked for with the box ticked.
+const mnPowder = document.getElementById('mn-powder');
+mnPowder.addEventListener('change', () => { document.getElementById('mn-angle-row').hidden = !mnPowder.checked; });
 
 // The whole table, laid out as the MAT_STATS source is, so it pastes straight back.
 function matStatsSource() {
@@ -9068,7 +10368,14 @@ if (shSlider) {
   });
 }
 function shadowProgramsChanged() {
-  scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
+  scene.traverse((o) => {
+    if (Array.isArray(o.material)) for (const m of o.material) m.needsUpdate = true;
+    else if (o.material) o.material.needsUpdate = true;
+  });
+  // The see-through draws can be out of the scene just now (no chunk or piece
+  // has a see-through block) and keep the program they were last built with,
+  // shadows and all, until they are back in it.
+  for (const m of [TERRAIN_CLEAR_MAT, fallClearMat, debrisLambertMats.get(fallClearMat)]) if (m) m.needsUpdate = true;
   menuRedraw = true;
   shadowWarm();
 }
@@ -9416,8 +10723,10 @@ function toggleSandbox() {
     sTop.fill(NO_COLUMN);
     visBits.fill(0);
     airLo.fill(VOX_FLOOR);
+    colClear.fill(0);
     powderDirty.clear();
     powderCarry.length = 0;
+    powderFarNone = 0; powderFarLast = -1;
     for (let c = 0; c < chunkMesh.length; c++) {
       if (chunkMesh[c]) rebuildChunk(c);
     }
@@ -13192,7 +14501,7 @@ function tick() {
   processImpacts();      // after the meshes have the bodies' poses, before anything is called settled
   updateFallingChunks();
   updatePowderBlocks(dt);
-  checkTerrainPowder();
+  checkTerrainPowder(dt);
   syncFallingGrains();   // after every grain this frame has spawned, moved or landed
 
   // Queue the chunks around the player for the worker and let distant ones go.
@@ -13513,6 +14822,7 @@ function collectWorldMeta() {
       pos: g.pos.toArray(),
       mat: g.mat,
       v: g.v,
+      push: g.push,   // the stack it was in: a falling plug saved goes on as fast
       // `from` is the debris mesh it fell off, which does not survive a reload:
       // a restored grain may land on any piece.
       from: null,
@@ -14234,6 +15544,7 @@ function applyWorldCore(s) {
   restoreVoxStore(vs, laid);
   if (laid) airLo.set(laid.airLo);
   else rescanAllAirLo();
+  clearColsRecount();
   worldBlocks = vs.worldBlocks;
   tint.set(vs.tint);
   if (vs.hRaw) hRaw.set(vs.hRaw);
@@ -14305,6 +15616,7 @@ function applyWorldCore(s) {
   powderQHead = 0;
   powderDirty.clear();
   powderCarry.length = 0;
+  powderFarNone = 0; powderFarLast = -1;
   impactPending.length = 0;   // a crater still being dug in the world that was left
   loneGlides.length = 0; loneScanAt = 0;   // its pieces are gone, and this world's clock starts over
 
@@ -14312,7 +15624,9 @@ function applyWorldCore(s) {
 
   // Restore powder falling
   for (const g of ds.powderFalling) {
-    powderGrain(g.pos[0], g.pos[1], g.pos[2], g.mat, g.from ? new THREE.Vector3(...g.from) : null).v = g.v;
+    const q = powderGrain(g.pos[0], g.pos[1], g.pos[2], g.mat, g.from ? new THREE.Vector3(...g.from) : null);
+    q.v = g.v;
+    q.push = g.push ?? 1;   // older saves: from the stack it is found in
   }
   syncFallingGrains();
   for (const q of ds.powderQueue) powderQueue.push(q.i, q.j, q.lvl);
@@ -14578,34 +15892,35 @@ try { await renderer.compileAsync(scene, camera); } catch (e) { console.warn('sh
 // second. One of each, shrunk to nothing, is drawn here instead, shadow and all.
 function warmFirstUse() {
   const warm = new THREE.Group(), made = [];
-  // own: the geometry is the stand-in's own (over shared buffers) and goes with it.
-  const add = (m, cast, own) => {
+  // Each stand-in's geometry is its own (over shared buffers) and goes with it.
+  const add = (m, cast) => {
     m.frustumCulled = false;
     m.castShadow = cast;
     m.receiveShadow = true;
-    m.userData.warmOwn = own;
     warm.add(m);
     made.push(m);
     return m;
   };
   const white = new THREE.Color(1, 1, 1);
-  add(debrisInstances(1), true, true).setColorAt(0, white);
+  add(debrisInstances(1), true).setColorAt(0, white);
+  // See-through pieces only once there is a see-through material to make them of.
+  if (clearCount) add(debrisInstances(1, fallGeo, debrisMatFor(fallClearMat)), true).setColorAt(0, white);
   for (let m = 0; m < TERRAIN_FACE_MATS.length; m++) {
     if (!MAT_STATS[m]?.powder || !TERRAIN_FACE_MATS[m]) continue;
-    add(debrisInstances(1, debrisGrainGeo(m), debrisGrainMat(m)), true, true).setColorAt(0, white);
-    add(new THREE.InstancedMesh(fallingGrainGeo(m), TERRAIN_FACE_MATS[m], 1), false, false);
+    add(debrisInstances(1, debrisGrainGeo(m), debrisGrainMat(m)), true).setColorAt(0, white);
+    add(new THREE.InstancedMesh(fallingGrainLayerGeo(fallingGrainGeo(m), 1), fallingGrainMat(m), 1), false);
   }
-  add(stressInstances(1), false, true).count = 1;
+  add(stressInstances(1), false).count = 1;
   warm.position.copy(camera.position);
   warm.scale.setScalar(1e-4);
   scene.add(warm);
   renderer.shadowMap.needsUpdate = true;
   renderer.render(scene, camera);
   scene.remove(warm);
-  // debrisInstances and stressInstances give each their own geometry (over
-  // shared cubes); the falling grains' is the shared one itself and stays.
+  // debrisInstances, stressInstances and the falling grains' layers give each
+  // their own geometry (over shared cubes).
   for (const m of made) {
-    if (m.userData.warmOwn) freeGeo(m.geometry);
+    freeGeo(m.geometry);
     m.dispose();
   }
   renderer.shadowMap.needsUpdate = true;

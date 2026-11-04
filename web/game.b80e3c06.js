@@ -1771,15 +1771,26 @@ const stressWeightCols = new Set();
 // walks those all the way down, since the core it skips elsewhere is only
 // buried where everything round it is opaque. Never cleared but by
 // clearColsRecount, so a stale mark costs a longer walk, never a missing face.
+// chunkClear is the same mark by chunk, for chunkStepWant; a chunk whose mark
+// changes is redrawn, and so are the ones before it, whose LOD cubes stop short
+// of it or not (lodClipOf).
 const colClear = new Uint8Array(GEN_N * GEN_N);
 function clearColsRecount() {
+  const was = chunkClear.slice();
   colClear.fill(0);
-  if (!clearCount) return;
-  for (let k = 0; k < GEN_N * GEN_N; k++) {
+  chunkClear.fill(0);
+  if (clearCount) for (let k = 0; k < GEN_N * GEN_N; k++) {
     const o = voxOff[k];
     if (o < 0) continue;
-    for (let p = o, end = o + voxLen(k); p < end; p++) if (matClear[voxMat[p]]) { colClear[k] = 1; break; }
+    for (let p = o, end = o + voxLen(k); p < end; p++) if (matClear[voxMat[p]]) {
+      colClear[k] = 1; chunkClear[chunkOf(k % GEN_N, (k / GEN_N) | 0)] = 1; break;
+    }
   }
+  for (let c = 0; c < CHUNK_N * CHUNK_N; c++) if (chunkClear[c] !== was[c]) chunkClearDirty(c);
+}
+function chunkClearDirty(c) {
+  const ci = c % CHUNK_N, cj = (c / CHUNK_N) | 0;
+  for (let b = Math.max(0, cj - 1); b <= cj; b++) for (let a = Math.max(0, ci - 1); a <= ci; a++) dirtyChunks.add(b * CHUNK_N + a);
 }
 function setVoxel(i, j, lvl, m) {
   if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return AIR;
@@ -1794,7 +1805,11 @@ function setVoxel(i, j, lvl, m) {
   if (was === m) return was;
   voxMat[p] = m;
   if (powderFarNone) powderFarTouch(i, j, lvl, m);
-  if (matClear[m]) colClear[k] = 1;
+  if (matClear[m]) {
+    colClear[k] = 1;
+    const c = chunkOf(i, j);
+    if (!chunkClear[c]) { chunkClear[c] = 1; chunkClearDirty(c); }
+  }
   stressRev++;
   stressCols.add(k);
   stressGroundCols.add(k);
@@ -1878,6 +1893,8 @@ const stressChunkLow = new Int16Array(CHUNK_N * CHUNK_N).fill(NO_DIG);
 // while nothing solid changed within its reach — no matter what else changed.
 let stressEditSeq = 0;
 const stressChunkEdit = new Float64Array(CHUNK_N * CHUNK_N);
+// Chunks holding, or that have held, a see-through block (see colClear).
+const chunkClear = new Uint8Array(CHUNK_N * CHUNK_N);
 
 // A separate, coarser grid overlay used for LOD — not the mesh chunk grid above.
 const CHUNK_GRID = 20;                          // blocks per grid chunk side
@@ -2678,7 +2695,11 @@ function clearSplit(nv) {
 // faces that touch air themselves are drawn, so the six-sided box that used to
 // stand in for every block is down to the one or two sides of it anything could
 // ever see. Returns the blocks it drew something for.
-const lodCentre = [0, 0, 0];
+const lodCentre = [0, 0, 0], lodExt = [0, 0, 0];
+// Which of the chunk's far sides (1: +i, 2: +j, 4: the +i +j corner) has a
+// chunk drawn at full detail past it (lodClipOf): a LOD cube there stops at the
+// chunk's edge rather than hanging over it into blocks drawn one by one.
+let lodClip = 0;
 function collectColumn(i, j, step = 1) {
   if (step === 1) {
     const k = colK(i, j);
@@ -2759,7 +2780,12 @@ function collectColumn(i, j, step = 1) {
   // leaving a gap, which is the right trade at the distance this only ever
   // draws at.
   const S = mergeSizeFor(step);
-  const iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
+  let iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
+  const iEnd = rbI0 + CHUNK, jEnd = rbJ0 + CHUNK;
+  const overI = iMax > iEnd, overJ = jMax > jEnd;
+  const clipI = overI && (lodClip & 1 || overJ && lodClip & 4), clipJ = overJ && (lodClip & 2 || overI && lodClip & 4);
+  if (clipI) iMax = iEnd;
+  if (clipJ) jMax = jEnd;
   let top = NO_COLUMN, bestK = -1, bestI = 0, bestJ = 0;
   for (let jj = j; jj < jMax; jj++) {
     for (let ii = i; ii < iMax; ii++) {
@@ -2790,21 +2816,25 @@ function collectColumn(i, j, step = 1) {
   // unless bedrock cut the band short; such a cube is drawn as it stands, face
   // by face, and the shader still finds it by the same arithmetic. Its centre
   // is a whole number of half-blocks either way (hc), as pushQuad wants it.
-  const cx = colX(i) + (S - 1) * HALF_BLOCK, cz = colZ(j) + (S - 1) * HALF_BLOCK;
+  // One cut short at the chunk's edge is that much narrower, and drawn as it
+  // stands too; the shader finds its column the same way.
+  const ext = lodExt;
+  ext[0] = clipI ? iMax - i : S; ext[1] = S; ext[2] = clipJ ? jMax - j : S;
+  const cx = colX(i) + (ext[0] - 1) * HALF_BLOCK, cz = colZ(j) + (ext[2] - 1) * HALF_BLOCK;
   const hc = lodCentre;
-  hc[0] = 2 * i + S; hc[1] = bandBottom + top + 1 - 2 * VOX_FLOOR; hc[2] = 2 * j + S;
+  hc[0] = 2 * i + ext[0]; hc[1] = bandBottom + top + 1 - 2 * VOX_FLOOR; hc[2] = 2 * j + ext[2];
   setColTexel(i, j, tint[bestK], top, cx, cz);
-  const onGrid = bandBottom === top - S + 1;
+  const onGrid = bandBottom === top - S + 1 && !clipI && !clipJ;
   for (let f = 0; f < 6; f++) {
     const F = FACES[f];
     let nb;
     if (F.dl > 0) nb = voxelAt(bestI, bestJ, top + 1);
     else if (F.dl < 0) nb = voxelAt(bestI, bestJ, bandBottom - 1);
-    else nb = voxelAt(i + F.di * S, j + F.dj * S, top);
+    else nb = voxelAt(i + (F.di > 0 ? ext[0] : F.di * S), j + (F.dj > 0 ? ext[2] : F.dj * S), top);
     if (nb !== AIR) continue;
     if (onGrid) { addBoxFace(f, i - rbI0, j - rbJ0, bandBottom - VOX_FLOOR, S, m); continue; }
     for (let a = 0; a < 3; a++) {
-      qLo[a] = hc[a] - S; qHi[a] = hc[a] + S;
+      qLo[a] = hc[a] - ext[a]; qHi[a] = hc[a] + ext[a];
       if (F.n[a] > 0) qLo[a] = qHi[a];
       else if (F.n[a] < 0) qHi[a] = qLo[a];
     }
@@ -2859,6 +2889,18 @@ let lodOverride = null;
 // The step each chunk's mesh was last built at — set by rebuildChunk, so any
 // rebuild (a dig, a load) counts, and updateLOD only queues the ones that lag.
 const chunkStep = new Int8Array(CHUNK_N * CHUNK_N);
+// The step chunk c is meshed at: its cell's, but always 1 for a chunk with a
+// see-through block in it. A LOD cube is one material over its whole S-block
+// band, so the glass in it either fills the cube or is lost under the rock
+// round it, and nothing behind it is drawn to show through: glass is only
+// glass at full detail, wherever it stands and whatever the LOD Override says.
+const chunkStepWant = (c) => (chunkClear[c] ? 1 : gridStep[chunkGridIdx[c]]);
+// lodClip for chunk c: which of the chunks past its far sides are full-detail
+// for their glass.
+function lodClipOf(c) {
+  const ci = c % CHUNK_N, cj = (c / CHUNK_N) | 0, ei = ci + 1 < CHUNK_N, ej = cj + 1 < CHUNK_N;
+  return (ei && chunkClear[c + 1] ? 1 : 0) | (ej && chunkClear[c + CHUNK_N] ? 2 : 0) | (ei && ej && chunkClear[c + CHUNK_N + 1] ? 4 : 0);
+}
 // Bumped for a chunk and its neighbours by every rebuild from the store (and by
 // remeshAllChunks), so a mesh worker result built from an older snapshot of the
 // store is known to be stale. meshJob is the id of the worker job a chunk's mesh
@@ -3061,7 +3103,7 @@ function rebuildChunk(c, r) {
   const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
   const i1 = Math.min(i0 + CHUNK, GEN_N), j1 = Math.min(j0 + CHUNK, GEN_N);
   let blocks = 0;
-  const step = r ? r.step : gridStep[chunkGridIdx[c]];
+  const step = r ? r.step : chunkStepWant(c);
   chunkStep[c] = step;
   const stride = mergeSizeFor(step);
   rbI0 = i0; rbJ0 = j0; rbStep = step;
@@ -3080,6 +3122,7 @@ function rebuildChunk(c, r) {
     for (let b = Math.max(0, cj - 1); b <= Math.min(CHUNK_N - 1, cj + 1); b++) {
       for (let a = Math.max(0, ci - 1); a <= Math.min(CHUNK_N - 1, ci + 1); a++) chunkRev[b * CHUNK_N + a]++;
     }
+    lodClip = step > 1 ? lodClipOf(c) : 0;
     for (let j = j0; j < j1; j += stride) for (let i = i0; i < i1; i += stride) blocks += collectColumn(i, j, step);
     mergeFaces();
   }
@@ -3242,7 +3285,7 @@ function updateLOD() {
     if (meshJob[c] !== r.id) continue;
     meshJob[c] = 0;
     if (r.rev === chunkRev[c]) rebuildChunk(c, r);
-    else if (chunkStep[c] !== gridStep[chunkGridIdx[c]]) meshDispatch(c);
+    else if (chunkStep[c] !== chunkStepWant(c)) meshDispatch(c);
   }
   meshDone.length = 0;
   const cam = camera.position;
@@ -3267,7 +3310,7 @@ function updateLOD() {
       lodHead = lodTail = 0;
       for (let c = 0; c < CHUNK_N * CHUNK_N; c++) {
         const g = chunkGridIdx[c];
-        if (!chunkMesh[c] || chunkStep[c] === gridStep[g]) continue;
+        if (!chunkMesh[c] || chunkStep[c] === chunkStepWant(c)) continue;
         const dx = cam.x - gridCenterX[g], dz = cam.z - gridCenterZ[g];
         lodDist[c] = dx * dx + dz * dz;
         lodQueue[lodTail++] = c;
@@ -3283,9 +3326,9 @@ function updateLOD() {
     if (meshWorker && meshInflight >= MESH_INFLIGHT_MAX) break;
     const c = lodQueue[lodHead++];
     // Something else (a dig, say) may have rebuilt it at the new step already.
-    if (chunkStep[c] === gridStep[chunkGridIdx[c]]) continue;
+    if (chunkStep[c] === chunkStepWant(c)) continue;
     if (!meshWorker) rebuildChunk(c);
-    else if (!meshJob[c] || meshJobStep[c] !== gridStep[chunkGridIdx[c]]) meshDispatch(c);
+    else if (!meshJob[c] || meshJobStep[c] !== chunkStepWant(c)) meshDispatch(c);
     if (performance.now() - t0 >= LOD_BUDGET_MS) break;
   }
   if (lodHead === lodTail) lodHead = lodTail = 0;
@@ -3347,7 +3390,8 @@ const palSlot = new Uint8Array(MAT_ID_LIMIT), palId = new Uint8Array(16), palSee
 let qPos = new Int32Array(16384 * 3), qInfo = new Uint16Array(16384), qN = 0;
 let rbI0 = 0, rbJ0 = 0, rbStep = 1;
 const colPatch = new Uint8Array(CHUNK * CHUNK * 8);
-const lodCentre = [0, 0, 0], qLo = [0, 0, 0], qHi = [0, 0, 0];
+const lodCentre = [0, 0, 0], lodExt = [0, 0, 0], qLo = [0, 0, 0], qHi = [0, 0, 0];
+let lodClip = 0;
 const colX = ${colX}, colZ = ${colZ};
 const voxCap = ${voxCap}, isVisible = ${isVisible}, mergeSizeFor = ${mergeSizeFor};
 const gridX = ${gridX}, gridZ = ${gridZ}, gridY = ${gridY};
@@ -3379,6 +3423,7 @@ onmessage = (e) => {
     sTop = d.sTop; topLvl = d.topLvl; airLo = d.airLo; tint = d.tint; colMaxCap = d.cap; voxOff = d.off;
     COL_ROW = d.rw; COL_K0 = d.rj0 * d.rw + d.ri0;
     clearCount = d.mc ? 1 : 0;
+    lodClip = d.clip | 0;
     if (d.mc) { matClear = d.mc; colClear = d.clr; }
     const c = d.c;
     // The snapshot goes back with the answer, for the next job to fill.
@@ -3519,9 +3564,13 @@ function meshBands(i0, j0, ri0, rj0, rw, rh, step) {
   }
   // A LOD cube: its footprint from under its band, and the four columns beside
   // it at its top.
-  const S = mergeSizeFor(step);
+  const S = mergeSizeFor(step), clip = lodClipOf(chunkOf(i0, j0));
   for (let j = j0; j < j1; j += S) for (let i = i0; i < i1; i += S) {
-    const iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
+    let iMax = Math.min(i + S, GEN_N), jMax = Math.min(j + S, GEN_N);
+    const overI = iMax > i0 + CHUNK, overJ = jMax > j0 + CHUNK;
+    const clipI = overI && (clip & 1 || overJ && clip & 4), clipJ = overJ && (clip & 2 || overI && clip & 4);
+    if (clipI) iMax = i0 + CHUNK;
+    if (clipJ) jMax = j0 + CHUNK;
     let top = NO_COLUMN;
     for (let jj = j; jj < jMax; jj++) for (let ii = i; ii < iMax; ii++) {
       const kk = jj * GEN_N + ii, ct = sTop[kk];
@@ -3530,7 +3579,7 @@ function meshBands(i0, j0, ri0, rj0, rw, rh, step) {
     if (top === NO_COLUMN) continue;
     const below = Math.max(VOX_FLOOR, top - S + 1) - 1;
     for (let jj = j; jj < jMax; jj++) for (let ii = i; ii < iMax; ii++) need(ii, jj, below);
-    need(i + S, j, top); need(i - S, j, top); need(i, j + S, top); need(i, j - S, top);
+    need(clipI ? iMax : i + S, j, top); need(i - S, j, top); need(i, clipJ ? jMax : j + S, top); need(i, j - S, top);
   }
 }
 let voxMat32 = new Int32Array(0);
@@ -3586,12 +3635,13 @@ function meshPost(s) {
 
 // Chunk c's mesh, at its cell's current step, sent off to the worker.
 function meshDispatch(c) {
-  const step = gridStep[chunkGridIdx[c]];
+  const step = chunkStepWant(c);
   const s = meshSnapshot(c, mergeSizeFor(step), step);
   s.kind = 'mesh';
   s.id = ++meshJobSeq;
   s.rev = chunkRev[c];
   s.step = step;
+  s.clip = step > 1 ? lodClipOf(c) : 0;
   if (clearCount) {
     s.mc = matClear.slice();
     s.clr = new Uint8Array(s.rw * s.rh);

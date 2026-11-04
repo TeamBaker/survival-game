@@ -2482,7 +2482,13 @@ function grainGeo(m, seed = 0) {
 const fallingGrainGeos = new Map();
 function fallingGrainGeo(m) {
   let g = fallingGrainGeos.get(m);
-  if (!g) fallingGrainGeos.set(m, g = grainGeo(m));
+  if (g) return g;
+  g = grainGeo(m);
+  // For the face mask (fallingGrainMask): grainGeo lays its faces down one
+  // after another in FACE_DIRS order.
+  const nv = g.attributes.position.count, per = nv / 6;
+  g.setAttribute('faceId', new THREE.BufferAttribute(Float32Array.from({ length: nv }, (_, v) => Math.floor(v / per)), 1));
+  fallingGrainGeos.set(m, g);
   return g;
 }
 // gfx.grainCube: a far grain's plain 24-vertex cube in the material's own colour
@@ -2494,6 +2500,7 @@ function fallingGrainCubeGeo(m) {
   const c = TERRAIN_MATS[m].color, col = new Float32Array(72);
   for (let v = 0; v < 24; v++) c.toArray(col, v * 3);
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('faceId', new THREE.BufferAttribute(Float32Array.from({ length: 24 }, (_, v) => v >> 2), 1));
   fallingGrainGeos.set(~m, g);
   return g;
 }
@@ -5662,11 +5669,8 @@ const debrisGrainGeos = new Map();
 function debrisGrainGeo(m) {
   let g = debrisGrainGeos.get(m);
   if (g) return g;
-  g = fallingGrainGeo(m).clone();
+  g = fallingGrainGeo(m).clone();   // faceId and all
   g.scale(BLOCK, BLOCK, BLOCK);
-  // grainGeo lays its faces down one after another in FACE_DIRS order too.
-  const nv = g.attributes.position.count, per = nv / 6;
-  g.setAttribute('faceId', new THREE.BufferAttribute(Float32Array.from({ length: nv }, (_, v) => Math.floor(v / per)), 1));
   debrisGrainGeos.set(m, g);
   return g;
 }
@@ -5914,7 +5918,7 @@ const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air
 // lands or leaves the field, and come out again for the next one.
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
-  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null };
+  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null };
   g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
@@ -6144,14 +6148,37 @@ function debrisBatchSync() {
 // a frame, after everything that spawns or catches grains has run, packing the
 // instances from 0 and drawing only `count` of them. A grain that landed is
 // simply not written, so nothing is left behind where it was.
+//
+// Grains come down in stacks and slabs, flush against each other, and like a
+// piece's blocks (debrisFaceMask) each draws only its outside: every instance
+// carries a mask of the faces another grain in the air sits flush against
+// (fallingGrainMask), and the material throws those off-screen — so a falling
+// block of sand draws its surface, not its volume, and a see-through powder's
+// buried faces do not show through it.
 const fallingGrainLayers = new Map();   // mat -> InstancedMesh
 const fallingGrainM4 = new THREE.Matrix4();
 const LOD_RADIUS_SQ = LOD_SPHERES.map((s) => s.radius * s.radius);
+// The terrain's white vertex-coloured material, with the mask shader on.
+const fallingGrainMats = new Map();
+function fallingGrainMat(m) {
+  let mt = fallingGrainMats.get(m);
+  if (mt) return mt;
+  mt = TERRAIN_FACE_MATS[m].clone();
+  mt.onBeforeCompile = fallMat.onBeforeCompile;
+  fallingGrainMats.set(m, mt);
+  return mt;
+}
+// A layer's geometry: the cube's buffers, and a mask per instance of its own.
+function fallingGrainLayerGeo(src, cap) {
+  const g = shareGeo(src);
+  g.setAttribute('faceHide', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1).setUsage(THREE.DynamicDrawUsage));
+  return g;
+}
 function fallingGrainLayer(m, cube = false) {
   const key = cube ? ~m : m;   // gfx.grainCube's far layer under ~m
   let L = fallingGrainLayers.get(key);
   if (L) return L;
-  L = new THREE.InstancedMesh(cube ? fallingGrainCubeGeo(m) : fallingGrainGeo(m), TERRAIN_FACE_MATS[m], 64);
+  L = new THREE.InstancedMesh(fallingGrainLayerGeo(cube ? fallingGrainCubeGeo(m) : fallingGrainGeo(m), 64), fallingGrainMat(m), 64);
   L.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   L.count = 0;
   // The grains are all over the place and move every frame: a bounding sphere
@@ -6161,8 +6188,10 @@ function fallingGrainLayer(m, cube = false) {
   fallingGrainLayers.set(key, L);
   return L;
 }
+const fallingGrainDrawn = [];   // the grain records drawn this frame
 function syncFallingGrains() {
   for (const L of fallingGrainLayers.values()) L.count = 0;
+  fallingGrainDrawn.length = 0;
   for (const p of powderFalling) fallingGrainDraw(p);
   for (const p of powderLanded) {
     // Shed again before its chunk caught up: the grain that left is drawn as
@@ -6170,9 +6199,10 @@ function syncFallingGrains() {
     const i = p.k % GEN_N, t = (p.k - i) / GEN_N, j = t % GEN_N;
     if (voxelAt(i, j, (t - j) / GEN_N + VOX_FLOOR) === p.mat) fallingGrainDraw(p);
   }
+  fallingGrainMask();
   for (const L of fallingGrainLayers.values()) {
     L.visible = L.count > 0;
-    if (L.visible) L.instanceMatrix.needsUpdate = true;
+    if (L.visible) { L.instanceMatrix.needsUpdate = true; L.geometry.attributes.faceHide.needsUpdate = true; }
   }
 }
 function fallingGrainDraw(p) {
@@ -6192,9 +6222,51 @@ function fallingGrainDraw(p) {
     grown.array.set(L.instanceMatrix.array);
     L.dispose();
     L.instanceMatrix = grown;
+    // The mask is written after every grain is down, so nothing to carry over.
+    const g = fallingGrainLayerGeo(L.geometry.userData.shared, cap * 2);
+    freeGeo(L.geometry);
+    L.geometry = g;
   }
   const s = mergeSizeFor(step) * BLOCK;
+  p.dL = L; p.dK = L.count; p.dS = s;
+  fallingGrainDrawn.push(p);
   L.setMatrixAt(L.count++, fallingGrainM4.makeScale(s, s, s).setPosition(p.pos));
+}
+// Each drawn grain's mask: bit f set where another drawn grain, at the same
+// size, sits a block off along FACE_DIRS[f] to within FALL_FLUSH. Two at
+// different sizes (either side of an LOD ring) cover different areas, so each
+// keeps its face. The grains are filed by the block-sized cell their centre is
+// in, chained through dNx; a neighbour's centre within FALL_FLUSH of a cell
+// wall can be in the cell on either side, and both are looked in.
+const FALL_FLUSH = BLOCK * 1e-3;   // a stack's grains sit within 1e-4 of a block of each other
+const fallingGrainCells = new Map();
+const fallGrainKey = (x, y, z) => ((y + 4096) * 32768 + z + 16384) * 32768 + x + 16384;
+function fallingGrainMask() {
+  const cells = fallingGrainCells, drawn = fallingGrainDrawn;
+  cells.clear();
+  for (const p of drawn) {
+    const k = fallGrainKey(Math.floor(p.pos.x / BLOCK), Math.floor(p.pos.y / BLOCK), Math.floor(p.pos.z / BLOCK));
+    p.dNx = cells.get(k) || null;
+    cells.set(k, p);
+  }
+  for (const p of drawn) {
+    let bits = 0;
+    for (let f = 0; f < 6; f++) {
+      const d = FACE_DIRS[f];
+      const tx = p.pos.x + d[0] * BLOCK, ty = p.pos.y + d[1] * BLOCK, tz = p.pos.z + d[2] * BLOCK;
+      const x0 = Math.floor((tx - FALL_FLUSH) / BLOCK), x1 = Math.floor((tx + FALL_FLUSH) / BLOCK);
+      const y0 = Math.floor((ty - FALL_FLUSH) / BLOCK), y1 = Math.floor((ty + FALL_FLUSH) / BLOCK);
+      const z0 = Math.floor((tz - FALL_FLUSH) / BLOCK), z1 = Math.floor((tz + FALL_FLUSH) / BLOCK);
+      find: for (let cy = y0; cy <= y1; cy++) for (let cz = z0; cz <= z1; cz++) for (let cx = x0; cx <= x1; cx++) {
+        for (let q = cells.get(fallGrainKey(cx, cy, cz)); q; q = q.dNx) {
+          if (q !== p && q.dS === p.dS && Math.abs(q.pos.x - tx) < FALL_FLUSH && Math.abs(q.pos.y - ty) < FALL_FLUSH
+           && Math.abs(q.pos.z - tz) < FALL_FLUSH) { bits |= 1 << f; break find; }
+        }
+      }
+    }
+    p.dL.geometry.attributes.faceHide.array[p.dK] = bits;
+  }
+  for (const p of drawn) { p.dL = null; p.dNx = null; }
 }
 // Terrain powder that a landing grain has just left unsupported. A column comes
 // down one block at a time, bottom to top: the block that lands queues whatever
@@ -9836,7 +9908,11 @@ function customMatInstall(d) {
     if (!g) continue;
     fallingGrainGeos.delete(key);
     const L = fallingGrainLayers.get(key);
-    if (L) L.geometry = key < 0 ? fallingGrainCubeGeo(id) : fallingGrainGeo(id);
+    if (L) {
+      const lg = fallingGrainLayerGeo(key < 0 ? fallingGrainCubeGeo(id) : fallingGrainGeo(id), L.instanceMatrix.count);
+      freeGeo(L.geometry);
+      L.geometry = lg;
+    }
     g.dispose();
   }
 }
@@ -9858,7 +9934,7 @@ function matClearSet(m, tr) {
   clearCount += on - was;
   TERRAIN_ALPHA[m] = a;
   const g = debrisGrainMats.get(m);
-  for (const mt of [TERRAIN_FACE_MATS[m], g, g && debrisLambertMats.get(g)]) {
+  for (const mt of [TERRAIN_FACE_MATS[m], fallingGrainMats.get(m), g, g && debrisLambertMats.get(g)]) {
     if (!mt) continue;
     if (mt.transparent !== !!on) { mt.transparent = !!on; mt.depthWrite = !on; mt.needsUpdate = true; }
     mt.opacity = on ? a : 1;
@@ -15816,36 +15892,35 @@ try { await renderer.compileAsync(scene, camera); } catch (e) { console.warn('sh
 // second. One of each, shrunk to nothing, is drawn here instead, shadow and all.
 function warmFirstUse() {
   const warm = new THREE.Group(), made = [];
-  // own: the geometry is the stand-in's own (over shared buffers) and goes with it.
-  const add = (m, cast, own) => {
+  // Each stand-in's geometry is its own (over shared buffers) and goes with it.
+  const add = (m, cast) => {
     m.frustumCulled = false;
     m.castShadow = cast;
     m.receiveShadow = true;
-    m.userData.warmOwn = own;
     warm.add(m);
     made.push(m);
     return m;
   };
   const white = new THREE.Color(1, 1, 1);
-  add(debrisInstances(1), true, true).setColorAt(0, white);
+  add(debrisInstances(1), true).setColorAt(0, white);
   // See-through pieces only once there is a see-through material to make them of.
-  if (clearCount) add(debrisInstances(1, fallGeo, debrisMatFor(fallClearMat)), true, true).setColorAt(0, white);
+  if (clearCount) add(debrisInstances(1, fallGeo, debrisMatFor(fallClearMat)), true).setColorAt(0, white);
   for (let m = 0; m < TERRAIN_FACE_MATS.length; m++) {
     if (!MAT_STATS[m]?.powder || !TERRAIN_FACE_MATS[m]) continue;
-    add(debrisInstances(1, debrisGrainGeo(m), debrisGrainMat(m)), true, true).setColorAt(0, white);
-    add(new THREE.InstancedMesh(fallingGrainGeo(m), TERRAIN_FACE_MATS[m], 1), false, false);
+    add(debrisInstances(1, debrisGrainGeo(m), debrisGrainMat(m)), true).setColorAt(0, white);
+    add(new THREE.InstancedMesh(fallingGrainLayerGeo(fallingGrainGeo(m), 1), fallingGrainMat(m), 1), false);
   }
-  add(stressInstances(1), false, true).count = 1;
+  add(stressInstances(1), false).count = 1;
   warm.position.copy(camera.position);
   warm.scale.setScalar(1e-4);
   scene.add(warm);
   renderer.shadowMap.needsUpdate = true;
   renderer.render(scene, camera);
   scene.remove(warm);
-  // debrisInstances and stressInstances give each their own geometry (over
-  // shared cubes); the falling grains' is the shared one itself and stays.
+  // debrisInstances, stressInstances and the falling grains' layers give each
+  // their own geometry (over shared cubes).
   for (const m of made) {
-    if (m.userData.warmOwn) freeGeo(m.geometry);
+    freeGeo(m.geometry);
     m.dispose();
   }
   renderer.shadowMap.needsUpdate = true;

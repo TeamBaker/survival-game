@@ -1148,7 +1148,7 @@ function fieldAt(i, j) {
 // ----- pass 2: block levels and materials -----
 // The four the island was first built out of keep their ids, so nothing that
 // already reads a voxel has to change; the variants added after them extend the
-// list rather than reorder it. Each is a real material with weight, buoyancy and
+// list rather than reorder it. Each is a real material with weight, friction and
 // strength (MAT_STATS below) — the same rock in three states of decay, the same
 // earth wet, fine or packed hard.
 const SAND = 0, DIRT = 1, ROCK = 2, WATER = 3;
@@ -1226,7 +1226,8 @@ let clearCount = 0;
 // is how much a block of it drags on you, and is read as-is by the sim — the
 // stress solver's load on the block, and (through debrisWeight) a loose piece's
 // mass and centre of mass — so the materials panel shows the real number.
-// Buoyancy is how much the water pushes it back up, strength how much work it
+// Friction is how hard it grips what rests on it — 1 for every block for now,
+// shown and kept but not yet read by the sim. Strength is how much work it
 // takes to break out of the ground — read as-is too, by the stress solver's
 // beam stiffness and overlay — powder whether it is loose and crumbly.
 // Strength is what it takes to crush it (compression, and the beam stiffness);
@@ -1239,22 +1240,22 @@ let clearCount = 0;
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 2.2,   buoyancy: 0, strength: 50,      pull: 0.5,  powder: true  },  // SAND
-  { name: 'Dirt',          weight: 2,     buoyancy: 0, strength: 100000,  pull: 50,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 6,     buoyancy: 0, strength: 1500000, pull: 5000, powder: false },  // ROCK
+  { name: 'Sand',          weight: 2.2,   friction: 1, strength: 50,      pull: 0.5,  powder: true  },  // SAND
+  { name: 'Dirt',          weight: 2,     friction: 1, strength: 100000,  pull: 50,   powder: false },  // DIRT
+  { name: 'Rock',          weight: 6,     friction: 1, strength: 1500000, pull: 5000, powder: false },  // ROCK
   null,                                                                           // WATER
-  { name: 'Fine Dirt',     weight: 2,     buoyancy: 0, strength: 50,      pull: 0.5,  powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 4,     buoyancy: 0, strength: 100000,  pull: 70,   powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 2,     buoyancy: 0, strength: 100000,  pull: 100,  powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 4,     buoyancy: 0, strength: 7000,    pull: 70,   powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 5,     buoyancy: 0, strength: 100,     pull: 1,    powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 6,     buoyancy: 0, strength: 100000,  pull: 150,  powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 5,     buoyancy: 0, strength: 500000,  pull: 2500, powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 2.4,   buoyancy: 0, strength: 120,     pull: 1.2,  powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 4.4,   buoyancy: 0, strength: 100000,  pull: 100,  powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 2.4,   buoyancy: 0, strength: 200000,  pull: 1000, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 4.2,   buoyancy: 0, strength: 100000,  pull: 0.8,  powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 2.2,   buoyancy: 0, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
+  { name: 'Fine Dirt',     weight: 2,     friction: 1, strength: 50,      pull: 0.5,  powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 4,     friction: 1, strength: 100000,  pull: 70,   powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 2,     friction: 1, strength: 100000,  pull: 100,  powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 4,     friction: 1, strength: 7000,    pull: 70,   powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 5,     friction: 1, strength: 100,     pull: 1,    powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 6,     friction: 1, strength: 100000,  pull: 150,  powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 5,     friction: 1, strength: 500000,  pull: 2500, powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 2.4,   friction: 1, strength: 120,     pull: 1.2,  powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 4.4,   friction: 1, strength: 100000,  pull: 100,  powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 2.4,   friction: 1, strength: 200000,  pull: 1000, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 4.2,   friction: 1, strength: 100000,  pull: 0.8,  powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 2.2,   friction: 1, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
 ];
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
 // AIR's row; the created materials' are added by matTablesGrow.
@@ -9874,6 +9875,8 @@ const customMatIds = () => {
 const MAT_ANGLE_STD = 45;
 const matAngleOf = (v) => (v == null || v === '' || !Number.isFinite(+v) ? MAT_ANGLE_STD : Math.min(90, Math.max(0, +v)));
 const matClearOf = (v) => (v == null || v === '' || !Number.isFinite(+v) ? 0 : Math.min(100, Math.max(0, +v)));
+// Friction is 1 unless set; a definition from before it existed gets 1.
+const MAT_FRICTION_STD = 1;
 // A definition as stored, or null if it is not one.
 function customMatDef(d) {
   if (!d || typeof d !== 'object') return null;
@@ -9882,19 +9885,19 @@ function customMatDef(d) {
     id: d.id | 0,
     name: String(d.name || '').trim().slice(0, 20),
     color: /^#[0-9a-f]{6}$/i.test(d.color) ? d.color.toLowerCase() : '',
-    weight: num(d.weight, 0), buoyancy: num(d.buoyancy, 0),
+    weight: num(d.weight, 0), friction: num(d.friction ?? MAT_FRICTION_STD, 0),
     strength: num(d.strength, 1e-6), pull: num(d.pull, 1e-6), powder: !!d.powder,
     angle: matAngleOf(d.angle), transparency: matClearOf(d.transparency),
   };
   if (def.id < CUSTOM_MAT0 || def.id >= MAT_ID_LIMIT || !def.name || !def.color) return null;
-  if ([def.weight, def.buoyancy, def.strength, def.pull].some(Number.isNaN)) return null;
+  if ([def.weight, def.friction, def.strength, def.pull].some(Number.isNaN)) return null;
   return def;
 }
 const customMatDefs = () => customMatIds().map((m) => ({ id: m, ...MAT_STATS[m] }));
 function customMatInstall(d) {
-  const { id, name, color, weight, buoyancy, strength, pull, powder, angle, transparency } = d;
+  const { id, name, color, weight, friction, strength, pull, powder, angle, transparency } = d;
   matTablesGrow(id + 1);
-  MAT_STATS[id] = { name, weight, buoyancy, strength, pull, powder, color, angle, transparency };
+  MAT_STATS[id] = { name, weight, friction, strength, pull, powder, color, angle, transparency };
   MAT_NAMES[id] = name.toLowerCase();
   matReposeSet(id, powder ? angle : MAT_ANGLE_STD);
   matClearSet(id, transparency);
@@ -10051,7 +10054,9 @@ function buildMatList() {
     const name = st ? escapeHtml(st.name) : titleCase(MAT_NAMES[i]);
     // Full width now, so the stats spell themselves out on one line.
     const stats = st
-      ? `<span>Weight: ${st.weight} &middot; Buoyancy: ${st.buoyancy} &middot; Compression: `
+      ? `<span>Weight: ${st.weight} &middot; Friction: `
+        + `<input class="mat-str" data-mat="${i}" data-key="friction" type="text" inputmode="decimal" autocomplete="off" value="${st.friction}">`
+        + ` &middot; Compression: `
         + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
         + ` &middot; Pull: `
         + `<input class="mat-str" data-mat="${i}" data-key="pull" type="text" inputmode="decimal" autocomplete="off" value="${st.pull}">`
@@ -10072,19 +10077,20 @@ function buildMatList() {
          + '</div>';
   }).join('');
 
-  // Strength (compression) and pull are edited in place: a number above zero goes
-  // straight into MAT_STATS and the stress overlay re-solves with it; anything else
-  // is left marked until the field is left, when it snaps back to the value in force.
+  // Friction, strength (compression) and pull are edited in place: a number above
+  // zero (friction may be 0) goes straight into MAT_STATS and the stress overlay
+  // re-solves with it; anything else is left marked until the field is left, when
+  // it snaps back to the value in force.
   for (const el of matListEl.querySelectorAll('.mat-str:not(.mat-par)')) {
     const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
     el.addEventListener('input', () => {
       const v = parseFloat(el.value.replace(',', '.'));
-      const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && v > 0;
+      const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && (v > 0 || key === 'friction');
       el.classList.toggle('bad', !ok);
       if (!ok || v === st[key]) return;
       st[key] = v;
       if (isCustomMat(m)) customMatsStore();
-      stressInvalidate();
+      if (key !== 'friction') stressInvalidate();
     });
     el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
@@ -10117,7 +10123,7 @@ const escapeHtml = (t) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 buildMatList();
 
 // The New material form. Strength and pull are the same numbers as the rows'
-// fields; weight and buoyancy are fixed once made, as they are for the others.
+// fields, and so is friction; weight is fixed once made, as it is for the others.
 const matNewEl = document.getElementById('mat-new');
 matNewEl.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
 matNewEl.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
@@ -10133,14 +10139,14 @@ bindTap(document.getElementById('mn-add'), () => {
   const angle = powder ? val('mn-angle') : MAT_ANGLE_STD, clear = val('mn-clear');
   const def = customMatDef({
     id, name, color: document.getElementById('mn-color').value,
-    weight: val('mn-weight'), buoyancy: val('mn-buoy'), strength: val('mn-str'), pull: val('mn-pull'),
+    weight: val('mn-weight'), friction: val('mn-fric'), strength: val('mn-str'), pull: val('mn-pull'),
     powder, angle, transparency: clear,
   });
   let msg = '';
   if (id === MAT_ID_LIMIT) msg = `The game can hold ${MAT_ID_LIMIT - CUSTOM_MAT0} created materials and has them all — delete one first`;
   else if (!name) msg = 'Give it a name';
   else if (MAT_NAMES.some((n) => n === name.toLowerCase().slice(0, 20))) msg = 'That name is taken';
-  else if (!def) msg = 'Weight and buoyancy need a number of 0 or more, compression and pull above 0';
+  else if (!def) msg = 'Weight and friction need a number of 0 or more, compression and pull above 0';
   else if (!Number.isFinite(angle)) msg = 'Place angle needs a number from 0 to 90';
   else if (!Number.isFinite(clear)) msg = 'Transparency needs a number from 0 to 100';
   if (msg) { matNewMsg.textContent = msg; return; }
@@ -10161,7 +10167,7 @@ function matStatsSource() {
     const tag = '  // ' + MAT_NAMES[i].toUpperCase().replace(/ /g, '_');
     if (!st) return '  null,'.padEnd(80) + tag;
     return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
-         + `buoyancy: ${(st.buoyancy + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(9)}`
+         + `friction: ${(st.friction + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(9)}`
          + `pull: ${(st.pull + ',').padEnd(6)}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
   // The created materials after it, as their own list: id, colour and stats.

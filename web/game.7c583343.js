@@ -801,6 +801,164 @@ world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physWorld, { fri
 world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physProp,  { friction: 0.5, restitution: 0.18 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physDebris, physDebris,{ friction: 0.6, restitution: 0.15 }));
 
+// Where a piece touches the ground or another piece, the grip is the friction
+// of the two blocks actually touching, from MAT_STATS as it stands: the
+// product of the two, cannon's own rule for combining materials, so a block of
+// friction f on ground of friction 1 slides with coefficient f, and 0 on
+// either side is ice. The colliders are boxes merged across materials, so
+// neither the shape nor the body can carry it: each contact looks up the block
+// it is in on each side. The 0.6 above is left for a contact with no block
+// behind it on one side (a level box, a prop).
+const _fricQ = new CANNON.Quaternion(), _fricP = new CANNON.Vec3(), _fricNeg = new CANNON.Vec3();
+// The block a quarter of a block inside body b past the contact point
+// (pos + r), going along n (into b), or -1 for a body with no blocks.
+function contactMatOf(b, r, n) {
+  const d = 0.25 * BLOCK;
+  const x = b.position.x + r.x + n.x * d, y = b.position.y + r.y + n.y * d, z = b.position.z + r.z + n.z * d;
+  if (b.voxelGround) {
+    const m = voxelAtWorld(x, y, z);
+    // A slanted normal at an edge can step out into the air beside the block:
+    // three quarters in is past the edge's own cell.
+    return m !== AIR ? m : voxelAtWorld(x + n.x * 2 * d, y + n.y * 2 * d, z + n.z * 2 * d);
+  }
+  const mesh = b.debrisMesh;
+  if (!mesh) return -1;
+  const lat = mesh.userData.blocks;
+  if (!lat || !lat.length) return -1;
+  // Every edit to a lattice in place goes through stressLatEdit, so its count
+  // says when the cells have to be read again.
+  const rev = mesh.userData.stressLat | 0;
+  let fc = mesh.userData.fric;
+  if (!fc || fc.lat !== lat || fc.n !== lat.length || fc.rev !== rev) fc = mesh.userData.fric = debrisFricCells(lat, rev);
+  if (fc.only >= 0) return fc.only;
+  // The lattice's own frame: the piece's cells sit at whole blocks from the
+  // first one's grid cell, wherever recentring has put the origin.
+  b.quaternion.conjugate(_fricQ).vmult(_fricP.set(x - b.position.x, y - b.position.y, z - b.position.z), _fricP);
+  const ref = lat[0];
+  const gi = ref.gi + Math.round((_fricP.x - ref.pos.x) / BLOCK);
+  const gj = ref.gj + Math.round((_fricP.z - ref.pos.z) / BLOCK);
+  const lvl = ref.lvl + Math.round((_fricP.y - ref.pos.y) / BLOCK);
+  const m = fc.cells.get(fricKey(gi, gj, lvl));
+  if (m !== undefined) return m;
+  // Stepped past an edge into an empty cell: the nearest block of the piece.
+  let best = -1, bd = Infinity;
+  for (let k = 0; k < lat.length; k++) {
+    const q = lat[k].pos, dx = q.x - _fricP.x, dy = q.y - _fricP.y, dz = q.z - _fricP.z, dd = dx * dx + dy * dy + dz * dz;
+    if (dd < bd) { bd = dd; best = lat[k].mat; }
+  }
+  return best;
+}
+// Air (the ground lookup found no block either side of an edge) grips as a
+// material left at the standard value would.
+const matFriction = (m) => MAT_STATS[m]?.friction ?? MAT_FRICTION_STD;
+const fricKey = (gi, gj, lvl) => (lvl * 8192 + gj) * 8192 + gi;
+// Materials, not friction values, are kept, so an edit in the panel is felt on
+// the next contact. A piece of one material (most of them) needs no lookup.
+function debrisFricCells(lat, rev) {
+  const cells = new Map();
+  let only = lat[0].mat;
+  for (const e of lat) {
+    cells.set(fricKey(e.gi, e.gj, e.lvl), e.mat);
+    if (e.mat !== only) only = -1;
+  }
+  return { lat, n: lat.length, rev, cells, only };
+}
+// Cannon caps each contact point's friction impulse per step at mu * g * m,
+// a force where an impulse belongs, once for every point: at 120 Hz with the
+// four to eight points a box face makes, that is a few hundred times the most
+// the ground can really push back, so any mu above 0 stopped a piece dead and
+// tilted ground never let one go. The friction made here is held to Coulomb's
+// law instead: a point's slip impulse is at most mu times the normal impulse
+// its own contact takes in the same step (frictionSolve), so mu is the real
+// coefficient — a piece shoved along level ground stops in v^2 / (2 mu g), one
+// on a slope slides once its tangent passes mu. Friction cannon makes for the
+// other contacts (props, the player) keeps cannon's own cap.
+{
+  const np = world.narrowphase, makeFriction = np.createFrictionEquationsFromContact;
+  np.createFrictionEquationsFromContact = function (c, out) {
+    const n0 = out.length;
+    let mu = -1;
+    const ma = contactMatOf(c.bi, c.ri, _fricNeg.set(-c.ni.x, -c.ni.y, -c.ni.z));
+    const mb = ma < 0 ? -1 : contactMatOf(c.bj, c.rj, c.ni);
+    let made;
+    if (mb < 0) made = makeFriction.call(this, c, out);
+    else {
+      const cm = this.currentContactMaterial, f0 = cm.friction;
+      cm.friction = mu = matFriction(ma) * matFriction(mb);
+      made = makeFriction.call(this, c, out);
+      cm.friction = f0;
+    }
+    // Equations come out of a pool: one made for a prop must not keep a
+    // block contact's link from an earlier step.
+    for (let k = n0; k < out.length; k++) { out[k].fricContact = mu < 0 ? null : c; out[k].fricMu = mu; out[k].fricPair = out[k].fricNext = null; }
+    // The contact's two directions of slip, each knowing the other, so the
+    // solver can hold them together to mu * N rather than each on its own.
+    if (mu >= 0 && out.length - n0 === 2) { out[n0].fricNext = out[n0 + 1]; out[n0 + 1].fricPair = out[n0]; }
+    return made;
+  };
+}
+// cannon's GSSolver.solve, the same sweep, with one change: a friction
+// equation tied to a block contact takes its bounds from that contact's
+// impulse so far this step rather than from the fixed cap. Friction is
+// handed to the solver ahead of the contacts, so on each sweep it reads the
+// normal impulse the sweep before built; the first sweep has none yet.
+// The two directions of slip at a point share the one bound: clamped each on
+// its own, a slide along neither axis (a diagonal) gripped sqrt(2) times too
+// hard. The first of the pair now goes in unbounded; the second then scales
+// the two together back onto the circle mu * N, keeping the direction both
+// asked for (the slip's own), so the grip opposes the slide at full mu.
+const _fsB = [], _fsInvC = [], _fsLam = [];
+function frictionSolve(h, w) {
+  const eqs = this.equations, n = eqs.length, bodies = w.bodies, nb = bodies.length;
+  if (n === 0) return 0;
+  for (let t = 0; t < nb; t++) bodies[t].updateSolveMassProperties();
+  const B = _fsB, invC = _fsInvC, lam = _fsLam;
+  B.length = invC.length = lam.length = n;
+  for (let t = 0; t < n; t++) {
+    const e = eqs[t];
+    lam[t] = 0; B[t] = e.computeB(h); invC[t] = 1 / e.computeC();
+    e.fricAt = t;
+  }
+  for (let t = 0; t < nb; t++) { bodies[t].vlambda.set(0, 0, 0); bodies[t].wlambda.set(0, 0, 0); }
+  const tol = this.tolerance * this.tolerance, iters = this.iterations;
+  let it = 0;
+  for (; it !== iters; it++) {
+    let delta = 0;
+    for (let t = 0; t < n; t++) {
+      const e = eqs[t], v = lam[t];
+      let u = invC[t] * (B[t] - e.computeGWlambda() - e.eps * v), lo = e.minForce, hi = e.maxForce;
+      const c = e.fricContact;
+      if (c) {
+        hi = eqs[c.fricAt] === c ? e.fricMu * lam[c.fricAt] : 0; lo = -hi;
+        const p = e.fricPair, q = e.fricNext;
+        if (q && eqs[q.fricAt] === q) { lo = -Infinity; hi = Infinity; }
+        else if (p && eqs[p.fricAt] === p) {
+          const pa = lam[p.fricAt], nb2 = v + u, r = Math.sqrt(pa * pa + nb2 * nb2);
+          if (r > hi) {
+            const s = hi / r, dp = pa * s - pa;
+            lam[p.fricAt] += dp; p.addToWlambda(dp); delta += dp > 0 ? dp : -dp;
+            u = nb2 * s - v;
+          }
+          lo = -Infinity; hi = Infinity;
+        }
+      }
+      if (v + u < lo) u = lo - v; else if (v + u > hi) u = hi - v;
+      lam[t] += u;
+      delta += u > 0 ? u : -u;
+      e.addToWlambda(u);
+    }
+    if (delta * delta < tol) break;
+  }
+  for (let t = 0; t < nb; t++) {
+    const b = bodies[t];
+    b.vlambda.vmul(b.linearFactor, b.vlambda); b.velocity.vadd(b.vlambda, b.velocity);
+    b.wlambda.vmul(b.angularFactor, b.wlambda); b.angularVelocity.vadd(b.wlambda, b.angularVelocity);
+  }
+  for (let t = n; t--;) eqs[t].multiplier = lam[t] / h;
+  return it;
+}
+world.solver.solve = frictionSolve;
+
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
 const syncList = [];
@@ -1226,8 +1384,9 @@ let clearCount = 0;
 // is how much a block of it drags on you, and is read as-is by the sim — the
 // stress solver's load on the block, and (through debrisWeight) a loose piece's
 // mass and centre of mass — so the materials panel shows the real number.
-// Friction is how hard it grips what rests on it — 1 for every block for now,
-// shown and kept but not yet read by the sim. Strength is how much work it
+// Friction is how hard it grips what rests on it, and what it rests on — the
+// coefficient a fallen piece slides with, multiplied by the other side's
+// (contactMatOf), 1 for every block for now. Strength is how much work it
 // takes to break out of the ground — read as-is too, by the stress solver's
 // beam stiffness and overlay — powder whether it is loose and crumbly.
 // Strength is what it takes to crush it (compression, and the beam stiffness);
@@ -4127,6 +4286,7 @@ function colliderPart(buf, n, lo, hi, always) {
   const cx = m ? (x0 + x1) / 2 : 0, cy = m ? (y0 + y1) / 2 : 0, cz = m ? (z0 + z1) / 2 : 0;
   // In the constructor, so its previous and interpolated positions agree.
   const body = new CANNON.Body({ mass: 0, material: physWorld, position: new CANNON.Vec3(cx, cy, cz) });
+  body.voxelGround = true;   // its contacts grip by the block they touch (contactMatOf)
   for (let q = 0; q < n; q++) {
     if (!colPiece(buf, q, lo, hi)) continue;
     body.addShape(colBox(p[0], p[1], p[2]), _colOff.set(p[3] - cx, p[4] - cy, p[5] - cz));
@@ -6679,6 +6839,7 @@ function spawnFallingChunk(unit) {
     collisionFilterGroup: DEBRIS_GROUP,
     collisionFilterMask: -1,
   });
+  body.debrisMesh = mesh;   // its contacts grip by the block they touch (contactMatOf)
   addDebrisColliders(body, mesh.userData.blocks);
   body.position.set(cx, cy, cz);
   for (const b of blocks) colliderSyncFor(chunkOf(b.i, b.j));
@@ -8646,6 +8807,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     collisionFilterGroup: DEBRIS_GROUP,
     collisionFilterMask: -1,
   });
+  body.debrisMesh = mesh;
   addDebrisColliders(body, mesh.userData.blocks);
   const w = c.applyMatrix4(parent.matrixWorld);
   body.position.set(w.x, w.y, w.z);
@@ -10042,6 +10204,18 @@ function customMatsChanged() {
 // created ones, which can also be deleted.
 const matListEl = document.getElementById('mat-list');
 const matNewMsg = document.getElementById('mn-msg');
+// A friction edit has to reach pieces already lying still: cannon makes no
+// contacts for a sleeping body, so one resting on a slope that is now too
+// slick for it would hang there until bumped. Which pieces touch ground of the
+// material is not known, so all of them are woken; the ones that still hold
+// go back to sleep on their own.
+function frictionWake() {
+  for (let n = 0; n < syncList.length; n++) {
+    const wb = syncList[n].body;
+    if (wb.debrisMesh && wb.sleepState === CANNON.Body.SLEEPING) wb.wakeUp();
+  }
+}
+
 function buildMatList() {
   const ids = [];
   for (let i = 0; i < N_MATS; i++) ids.push(i);
@@ -10091,6 +10265,7 @@ function buildMatList() {
       st[key] = v;
       if (isCustomMat(m)) customMatsStore();
       if (key !== 'friction') stressInvalidate();
+      else frictionWake();
     });
     el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });

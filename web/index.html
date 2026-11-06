@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 275;
+window.GAME_VERSION = 276;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -405,7 +405,7 @@ window.GAME_VERSION = 275;
   /* ---------- Materials panel ---------- */
   /* Full-screen: fourteen materials with three numbers each is a table, not a
      tooltip, and at panel size it was a column of ellipses on a phone. */
-  #materials-ui {
+  #materials-ui, #sink-ui {
     position: fixed;
     inset: 0;
     padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
@@ -418,8 +418,8 @@ window.GAME_VERSION = 275;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
   }
-  #materials-ui.on { display: block; }
-  #materials-ui .title {
+  #materials-ui.on, #sink-ui.on { display: block; }
+  #materials-ui .title, #sink-ui .title {
     display: block;
     margin-bottom: 14px;
     font-size: 12px;
@@ -445,7 +445,7 @@ window.GAME_VERSION = 275;
   .mat-txt b { display: block; color: #eaf2ff; font-weight: 700; }
   .mat-txt span { display: block; color: #7fa8d8; font-size: 11px; }
   /* Same pill as the MATS button that opens it, parked in the top corner. */
-  #mat-close {
+  #mat-close, #sink-close {
     position: absolute;
     top: calc(16px + env(safe-area-inset-top));
     right: calc(16px + env(safe-area-inset-right));
@@ -462,7 +462,7 @@ window.GAME_VERSION = 275;
     cursor: pointer;
     touch-action: manipulation;
   }
-  #mat-close:active { transform: translateY(1px); }
+  #mat-close:active, #sink-close:active { transform: translateY(1px); }
   /* Strength and pull are the numbers tuned from here. 16px keeps iOS from zooming on
      focus; the box is tall enough to hit with a thumb. */
   .mat-str {
@@ -480,7 +480,7 @@ window.GAME_VERSION = 275;
   }
   .mat-str:focus { outline: none; border-color: #9ecbff; }
   .mat-str.bad { border-color: #e06a5a; }
-  #mat-copy {
+  #mat-copy, .sink-btn {
     display: block;
     min-height: 44px;
     margin-bottom: 16px;
@@ -497,7 +497,18 @@ window.GAME_VERSION = 275;
     cursor: pointer;
     touch-action: manipulation;
   }
-  #mat-copy:active { transform: translateY(1px); }
+  #mat-copy:active, .sink-btn:active { transform: translateY(1px); }
+  /* The Sink panel: every number of the sinking code, one row each. */
+  #sink-btns { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
+  #sink-btns .sink-btn { margin-bottom: 0; }
+  .sink-group { margin: 14px 0 6px; color: #6f92bd; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; }
+  .sink-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .sink-row .mat-str { flex: 0 0 auto; }
+  .sink-row b { display: block; color: #eaf2ff; font-weight: 700; }
+  .sink-row span { display: block; color: #7fa8d8; font-size: 11px; }
+  .sink-row .mat-str.moved { border-color: #e0c25a; }
+  #sink-foot { margin-top: 14px; color: #62819f; font-size: 11px; }
+  #sink-foot b { color: #9ecbff; }
   /* The New material form, and the Delete on a created material's row. */
   #mat-new { margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(150, 195, 245, 0.25); }
   .mn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 8px; color: #7fa8d8; font-size: 11px; }
@@ -524,9 +535,9 @@ window.GAME_VERSION = 275;
   #mat-foot { margin-top: 14px; color: #62819f; font-size: 11px; }
   #mat-foot b { color: #9ecbff; }
   /* A phone has no number row — the MATS button is the whole interface there. */
-  body.touch #mat-foot .key { display: none; }
+  body.touch #mat-foot .key, body.touch #sink-foot .key { display: none; }
 
-  #btn-materials {
+  #btn-materials, #btn-sink {
     position: fixed;
     top: calc(176px + env(safe-area-inset-top));
     right: calc(10px + env(safe-area-inset-right));
@@ -544,8 +555,8 @@ window.GAME_VERSION = 275;
     touch-action: manipulation;
     z-index: 14;
   }
-  #btn-materials.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
-  #btn-materials:active { transform: translateY(1px); }
+  #btn-materials.on, #btn-sink.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  #btn-materials:active, #btn-sink:active { transform: translateY(1px); }
 
   @media (max-width: 620px) {
     #materials-ui { font-size: 12px; }
@@ -1271,6 +1282,7 @@ window.GAME_VERSION = 275;
   /* Inside the menu panel these buttons flow normally — the fixed
      positioning above is vestigial from when they were HUD buttons. */
   #menu-panel #btn-materials,
+  #menu-panel #btn-sink,
   #menu-panel #btn-chart,
   #menu-panel #btn-f2d,
   #menu-panel #btn-sandbox {
@@ -1575,6 +1587,18 @@ window.GAME_VERSION = 275;
   <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / fric / str</div>
 </div>
 
+<!-- Rows are generated from SINK_TUNE_DEFS, so the panel and the code read one table. -->
+<div id="sink-ui" class="ui-el">
+  <button id="sink-close" aria-label="Close">&times;</button>
+  <span class="title">Sink tuning</span>
+  <div id="sink-btns">
+    <button id="sink-copy" class="sink-btn">Copy values</button>
+    <button id="sink-reset" class="sink-btn">Defaults</button>
+  </div>
+  <div id="sink-list"></div>
+  <div id="sink-foot"><span class="key"><b>6</b> toggle &mdash; </span>edits apply at once and wake resting pieces; a reload brings back the defaults (copy to keep them)</div>
+</div>
+
 <div id="crosshair"></div>
 <button id="btn-noui">No UI</button>
 <div id="noui-hint"></div>
@@ -1630,6 +1654,7 @@ window.GAME_VERSION = 275;
       <div class="menu-row">
         <button id="btn-materials">Mats</button>
         <button id="btn-chart" class="ui-el">Chart</button>
+        <button id="btn-sink">Sink</button>
       </div>
       <div id="instructions"></div>
     </div>
@@ -1771,7 +1796,7 @@ window.__libsReady = (function () {
      server caches it for a year (immutable) only while the name matches the
      content. After editing it, rename it and update this tag:
        h=$(sha256sum game.*.js | cut -c1-8); mv game.*.js game.$h.js -->
-<script type="module" src="game.0632e081.js"></script>
+<script type="module" src="game.2c0398e0.js"></script>
 
 <script>
 // Surface module-load failures (bad network / blocked CDN) instead of a black screen.

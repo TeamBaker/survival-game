@@ -975,9 +975,9 @@ world.solver.solve = frictionSolve;
 // holds it up the way a fluid does, by the weight of what it has had to make
 // room for (sinkForces). Equal or lighter blocks rest as they always did — the
 // contact is cannon's, untouched. No physical number is made up here: the
-// lift is the displaced cells' MAT_STATS weight, the hold-back their drag;
-// the SINK_ constants are only tolerances (when a sinker may sleep, how far
-// out a moved cell is placed, how deep a held contact is solved at once).
+// lift is the displaced cells' MAT_STATS weight, the hold-back their drag and
+// pull; every other number the code works with is in SINK_TUNE, which the
+// Sink panel edits live, so none is out of reach.
 //
 // The lift is worked out per cell of the sinker, never as one figure for the
 // body: each cell of its hull (its blocks, and any hollow inside it the
@@ -1014,8 +1014,63 @@ function sinkBlocksPowder(i, j, l) {
   }
   return false;
 }
-const SINK_IMB = 0.002;  // fraction of its weight a sinker may be off balance and still be let sleep
-const SINK_PLACE_R = 6;  // columns out from a moved cell its new place is looked for
+// Every number of the sinking code that is not a material's own, each read
+// where it is used every time, so a Sink panel edit is in force the next step.
+// The speed pair scales the hold-back only: a cell of M holds a sinker back
+// by w_M * drag_M * dragScale * (1 + pullScale * pull_M), so a fully sunk
+// block of weight w settles to g (w - w_M) / (that) m/s — pull is how tightly
+// M holds together, and the tighter it holds the slower it lets a block
+// through. Nothing here enters the lift, so where a piece comes to rest
+// (displaced weight == its weight) is the same whatever they are set to.
+// The rest are thresholds; each has a floor (min) below which the code it is
+// in stops working, and the panel will not go under it.
+const SINK_TUNE_DEFS = [
+  { key: 'pullScale', group: 'Speed', name: 'Pull slowing', def: 0.01, min: 0,
+    help: 'Hold-back of a medium is drag x (1 + this x its pull). 0: pull plays no part (v275).' },
+  { key: 'dragScale', group: 'Speed', name: 'Drag multiplier', def: 1, min: 0,
+    help: 'Every material\'s drag times this. Speed goes as 1 / (drag x this).' },
+  { key: 'sleepImb', group: 'Settling', name: 'Sleep balance', def: 0.002, min: 0.0001,
+    help: 'Fraction of its weight a sinker may be off balance and still sleep. Smaller: rests nearer the exact depth, takes longer.' },
+  { key: 'rigidSteps', group: 'Settling', name: 'Held memory (steps)', def: 1, min: 1, int: true,
+    help: 'Steps after its last solid contact a sinker still counts as held up (and may sleep off balance).' },
+  { key: 'forgetSteps', group: 'Settling', name: 'Forget medium (steps)', def: 2, min: 1, int: true,
+    help: 'Steps without touching a medium it no longer overlaps before a sinker lets it go.' },
+  { key: 'wakeSpeed', group: 'Settling', name: 'Wake medium speed', def: 0.01, min: 0,
+    help: 'm/s a sinker must move at to wake a sleeping piece it is sinking into.' },
+  { key: 'upCut', group: 'Contacts', name: 'Up-push cutoff', def: 0.5, min: 0, max: 1,
+    help: 'A contact pushing the sinker up harder than this (normal\'s up part) always holds. 1: even straight down gives.' },
+  { key: 'probe', group: 'Contacts', name: 'Air probe (blocks)', def: 0.25, min: 0.05, max: 1,
+    help: 'How far past a contact point the ground is read when the point itself is in air.' },
+  { key: 'staleDepth', group: 'Contacts', name: 'Stale box depth (blocks)', def: 0.5, min: 0.1,
+    help: 'A contact this deep into air a sinker already cleared is a collider box not yet rebuilt: it gives.' },
+  { key: 'edgeProbe', group: 'Contacts', name: 'Edge probe (blocks)', def: 0.025, min: 0.005, max: 0.5,
+    help: 'Step below / above a pit wall\'s top edge to read the wall block.' },
+  { key: 'depthCap', group: 'Contacts', name: 'Held depth cap (m)', def: 0.01, min: 0.001,
+    help: 'A solid contact on a sinker is solved at no more than this depth per step, so it is pushed out gently.' },
+  { key: 'moveAt', group: 'Moving cells', name: 'Move cell within (blocks)', def: 0.5, min: 0.05, max: 0.95,
+    help: 'A medium cell is moved to the rim once a hull cell\'s middle is this close to its middle on every axis.' },
+  { key: 'rescanMove', group: 'Moving cells', name: 'Rescan after move (blocks)', def: 0.02, min: 0,
+    help: 'How far a sinker moves before the cells it covers are looked at again.' },
+  { key: 'rescanTurn', group: 'Moving cells', name: 'Rescan after turn (deg)', def: 0.162, min: 0,
+    help: 'How far it turns before the same.' },
+  { key: 'placeR', group: 'Moving cells', name: 'Rim search (columns)', def: 6, min: 1, max: 32, int: true,
+    help: 'Columns out from a moved cell its new place is looked for.' },
+  { key: 'rimCost', group: 'Moving cells', name: 'Rim spread cost (levels)', def: 1, min: 0,
+    help: 'Levels a moved block climbs rather than go one column further out. 0: lowest top in range.' },
+  { key: 'rimGap', group: 'Moving cells', name: 'Gap from sinker (blocks)', def: 1, min: 0.5,
+    help: 'Moved blocks go at least this far clear of the sinker\'s box (flush ones wedged mixed pieces).' },
+  { key: 'clearEps', group: 'Moving cells', name: 'Touching slack (m)', def: 0.01, min: 0.001, max: 0.25,
+    help: 'A place this close to a body\'s box still counts as clear of it (face to face).' },
+  { key: 'skipPad', group: 'Cost', name: 'Ground skip margin (blocks)', def: 0.25, min: 0.05,
+    help: 'Ground read round a sinker\'s box when deciding its ground contacts can all be skipped.' },
+  { key: 'skipCells', group: 'Cost', name: 'Ground skip cell limit', def: 4096, min: 1, int: true,
+    help: 'A sinker box over this many cells is not checked (its contacts are made and let go one by one).' },
+];
+const SINK_TUNE = {};
+for (const d of SINK_TUNE_DEFS) SINK_TUNE[d.key] = d.def;
+// What a fully sunk cell of m holds a sinker back with, per unit of its
+// weight and speed (see SINK_TUNE).
+const sinkHold = (m) => matDrag(m) * SINK_TUNE.dragScale * (1 + SINK_TUNE.pullScale * matPull(m));
 const _sinkP = new CANNON.Vec3(), _sinkN = new CANNON.Vec3(), _sinkQ = new CANNON.Quaternion();
 const _sinkV = new CANNON.Vec3(), _sinkW = new CANNON.Vec3(), _sinkR = new CANNON.Vec3();
 const sinkWeight = (m) => { const w = MAT_STATS[m]?.weight; return w > 0 ? w : 0; };
@@ -1039,7 +1094,7 @@ function sinkTouch(S, O) {
 // way into ground S is not sinking in: a collider box that deep is stale.
 function sinkPresses(S, rS, O, rO, n, sg, depth) {
   if (!O.voxelGround && !O.debrisMesh) return false;
-  if (S.type !== CANNON.Body.DYNAMIC || sg * n.y > 0.5) return false;
+  if (S.type !== CANNON.Body.DYNAMIC || sg * n.y > SINK_TUNE.upCut) return false;
   const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
   const ws = ms < 0 ? 0 : sinkWeight(ms);
   if (!(ws > 0)) return false;
@@ -1049,15 +1104,15 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
   let wo;
   const soft = (m) => m === AIR || m === WATER || !MAT_STATS[m];
   if (O.voxelGround && soft(mo)) {
-    const d = 0.25 * BLOCK;
+    const d = SINK_TUNE.probe * BLOCK;
     const x = S.position.x + rS.x + _sinkN.x * d, y = S.position.y + rS.y + _sinkN.y * d, z = S.position.z + rS.z + _sinkN.z * d;
-    if (sinkHeldCell(colI(x), colJ(z), lvlOfY(y)) || (depth > 0.5 * BLOCK && sinkers.has(S))) wo = 0;
+    if (sinkHeldCell(colI(x), colJ(z), lvlOfY(y)) || (depth > SINK_TUNE.staleDepth * BLOCK && sinkers.has(S))) wo = 0;
     else {
       // Nothing at S's point: a point on the rim of the face it is against.
       // A pit wall's top edge sits exactly at the surface, where a step into
       // the wall lands in the air over it: the wall block is a hair below
       // the ground's own point (or above, for an overhang's lower edge).
-      const e = 0.025 * BLOCK;
+      const e = SINK_TUNE.edgeProbe * BLOCK;
       mo = contactMatOf(O, _sinkW.set(rO.x, rO.y - e, rO.z), _sinkN);
       if (soft(mo)) mo = contactMatOf(O, _sinkW.set(rO.x, rO.y + e, rO.z), _sinkN);
       if (soft(mo)) return false;
@@ -1095,18 +1150,18 @@ function sinkYield(c) {
 // through, and a contact read as rock (let go) one step is read as dirt
 // (held) the next, a block's depth in. Solved as it stands, that depth comes
 // out in one step and throws the piece. It is put to the solver as no more
-// than SINK_DEPTH_CAP: the point on bj moves back along the normal, which
+// than SINK_TUNE.depthCap: the point on bj moves back along the normal, which
 // leaves the impulse's arm (r x n) as it was, so the piece is pushed clear
 // over a few steps instead. Its friction was made from the true points.
-const SINK_DEPTH_CAP = 0.01;
 function sinkDepthCap(c) {
   if (!sinkers.has(c.bi) && !sinkers.has(c.bj)) return;
   const n = c.ni, bi = c.bi, bj = c.bj;
   const d = -((bj.position.x + c.rj.x - bi.position.x - c.ri.x) * n.x
             + (bj.position.y + c.rj.y - bi.position.y - c.ri.y) * n.y
             + (bj.position.z + c.rj.z - bi.position.z - c.ri.z) * n.z);
-  if (d <= SINK_DEPTH_CAP) return;
-  c.sinkCut = d - SINK_DEPTH_CAP;
+  const cap = SINK_TUNE.depthCap;
+  if (d <= cap) return;
+  c.sinkCut = d - cap;
 }
 // A sinker deep in lighter ground overlaps every box of it round the hole
 // it is in, and cannon made some fifty contacts a step for each sinker there,
@@ -1122,12 +1177,12 @@ function sinkGroundMaxW(S, st) {
   if (st.boxAt === step) return st.boxW;
   st.boxAt = step;
   if (S.aabbNeedsUpdate) S.updateAABB();
-  const a = S.aabb, e = 0.25 * BLOCK;
+  const a = S.aabb, e = SINK_TUNE.skipPad * BLOCK;
   const i0 = colI(a.lowerBound.x - e), i1 = colI(a.upperBound.x + e);
   const j0 = colJ(a.lowerBound.z - e), j1 = colJ(a.upperBound.z + e);
   const l0 = lvlOfY(a.lowerBound.y - e), l1 = lvlOfY(a.upperBound.y + e);
   let w = 0;
-  if ((i1 - i0 + 1) * (j1 - j0 + 1) * (l1 - l0 + 1) > 4096) w = Infinity;
+  if ((i1 - i0 + 1) * (j1 - j0 + 1) * (l1 - l0 + 1) > SINK_TUNE.skipCells) w = Infinity;
   else {
     for (let l = l0; l <= l1; l++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
       const v = voxelAt(i, j, l);
@@ -1361,7 +1416,7 @@ function sinkForces(h) {
       let C = 0;
       for (let t = 0; t < _sinkLen; t++) {
         const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
-        C += share * sinkWeight(m) * K * matDrag(m);
+        C += share * sinkWeight(m) * K * sinkHold(m);
       }
       const Od = O && O.type === CANNON.Body.DYNAMIC;
       const dragK = 1 / (1 + C * h * (1 / S.mass + (Od ? 1 / O.mass : 0)));
@@ -1391,20 +1446,20 @@ function sinkForces(h) {
           const ox = px - O.position.x, oy = py - O.position.y, oz = pz - O.position.z, ow = O.angularVelocity;
           vx -= ovx + ow.y * oz - ow.z * oy; vy -= ovy + ow.z * ox - ow.x * oz; vz -= ovz + ow.x * oy - ow.y * ox;
         }
-        const cd = share * sinkWeight(m) * K * matDrag(m) * dragK;
+        const cd = share * sinkWeight(m) * K * sinkHold(m) * dragK;
         _sinkP.set(px, py, pz);
         sinkPush(S, O, Od, _sinkP, -cd * vx, -cd * vy, -cd * vz);
       }
       // A record no part of the hull reaches any more has been left behind:
       // the cell stays empty (its block is on the rim).
       for (const [rk, r] of M.rec) if (r.at !== step) sinkUnrecord(M, rk);
-      if (O && _sinkLen && O.sleepState === CANNON.Body.SLEEPING && S.velocity.lengthSquared() > 1e-4) O.wakeUp();
-      if (!_sinkLen && !M.rec.size && step - M.touchAt > 2) sinkDropMedium(st, key, M);
+      if (O && _sinkLen && O.sleepState === CANNON.Body.SLEEPING && S.velocity.lengthSquared() > SINK_TUNE.wakeSpeed ** 2) O.wakeUp();
+      if (!_sinkLen && !M.rec.size && step - M.touchAt > SINK_TUNE.forgetSteps) sinkDropMedium(st, key, M);
     }
     st.disp = disp;
     // Off balance and held by nothing rigid: still sinking or rising, however
     // slowly, so cannon may not put it to sleep part way.
-    st.busy = Math.abs(hull.W - disp) > SINK_IMB * hull.W && step - st.rigidAt > 1 && disp > 0;
+    st.busy = Math.abs(hull.W - disp) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp > 0;
     if (st.busy) { sinkBusyN++; if (S.sleepState !== CANNON.Body.AWAKE) S.wakeUp(); }
     if (!st.media.size && !st.owed.length) sinkers.delete(S);
   }
@@ -1457,8 +1512,8 @@ function sinkRelocate() {
     let moved = !st.scanQ;
     if (!moved) {
       const p = S.position, a = st.scanP, q = S.quaternion, b = st.scanQ;
-      moved = (p.x - a.x) ** 2 + (p.y - a.y) ** 2 + (p.z - a.z) ** 2 > (0.02 * BLOCK) ** 2
-           || Math.abs(q.x * b.x + q.y * b.y + q.z * b.z + q.w * b.w) < 1 - 1e-6;
+      moved = (p.x - a.x) ** 2 + (p.y - a.y) ** 2 + (p.z - a.z) ** 2 > (SINK_TUNE.rescanMove * BLOCK) ** 2
+           || Math.abs(q.x * b.x + q.y * b.y + q.z * b.z + q.w * b.w) < Math.cos(SINK_TUNE.rescanTurn * Math.PI / 360);
       for (const M of st.media.values()) if (M.body && M.body.sleepState !== CANNON.Body.SLEEPING) moved = true;
     }
     if (!moved) continue;
@@ -1469,16 +1524,17 @@ function sinkRelocate() {
       const F = sinkFrame(M);
       if (F === false) continue;
       sinkScan(S, hull, M, F);
-      const L = _sinkList, G = _sinkGC;
+      const L = _sinkList, G = _sinkGC, near = SINK_TUNE.moveAt, least = (1 - near) ** 3;
       const take = [];
       for (let t = 0; t < _sinkLen; t++) {
         const k = t * SINK_L;
         if (L[k + 7]) continue;
-        // The cell's middle inside this hull cell's cube: the hull cube is
-        // within half a block of it on every axis.
-        if (L[k + 6] <= 0.125) continue;
+        // The hull cube's middle within `near` of the cell's on every axis
+        // (half a block: the cell's middle is inside the cube). Each axis then
+        // overlaps by more than 1 - near, which rules most out cheaply first.
+        if (L[k + 6] <= least) continue;
         const c = L[k];
-        if (Math.abs(G[c * 3] - L[k + 2]) < 0.5 && Math.abs(G[c * 3 + 2] - L[k + 3]) < 0.5 && Math.abs(G[c * 3 + 1] - L[k + 4]) < 0.5) {
+        if (Math.abs(G[c * 3] - L[k + 2]) < near && Math.abs(G[c * 3 + 2] - L[k + 3]) < near && Math.abs(G[c * 3 + 1] - L[k + 4]) < near) {
           const key = fricKey(L[k + 2], L[k + 3], L[k + 4]);
           if (!take.some((e) => e.key === key)) take.push({ key, i: L[k + 2], j: L[k + 3], l: L[k + 4], m: L[k + 5] });
         }
@@ -1505,7 +1561,7 @@ function sinkRelocate() {
 
 // The bodies whose boxes reach into the box x0..x1, z0..z1 (all heights), and
 // the player: nothing is set down inside any of them. The sinker's own box
-// counts a block wider all round: a block set flush against its side is one
+// counts SINK_TUNE.rimGap wider all round: a block set flush against its side is one
 // it rests against rigidly where it is no heavier than the ground (a piece
 // part rock, part dirt), and wedged between two such the piece was thrown.
 const _sinkOwnBox = new CANNON.AABB();
@@ -1517,7 +1573,8 @@ function sinkBodiesNear(x0, x1, z0, z1, S) {
     let a = b.aabb;
     if (b === S) {
       a = _sinkOwnBox.copy(a);
-      a.lowerBound.x -= BLOCK; a.lowerBound.z -= BLOCK; a.upperBound.x += BLOCK; a.upperBound.z += BLOCK;
+      const g = SINK_TUNE.rimGap * BLOCK;
+      a.lowerBound.x -= g; a.lowerBound.z -= g; a.upperBound.x += g; a.upperBound.z += g;
     }
     if (a.upperBound.x < x0 || a.lowerBound.x > x1 || a.upperBound.z < z0 || a.lowerBound.z > z1) continue;
     out.push(a);
@@ -1527,7 +1584,7 @@ function sinkBodiesNear(x0, x1, z0, z1, S) {
   return out;
 }
 const sinkCellClear = (boxes, x, y, z) => {
-  const h = HALF_BLOCK - 0.01;
+  const h = HALF_BLOCK - SINK_TUNE.clearEps;
   for (const a of boxes) {
     if (x + h > a.lowerBound.x && x - h < a.upperBound.x && y + h > a.lowerBound.y && y - h < a.upperBound.y
      && z + h > a.lowerBound.z && z - h < a.upperBound.z) return false;
@@ -1536,10 +1593,11 @@ const sinkCellClear = (boxes, x, y, z) => {
 };
 // A ground block moved out of a sinker's way goes on top of the nearest
 // column round it that is clear of every body, rising a level for every
-// column further out, so the rim builds up as a heap does, nearest and lowest
-// first; ties go to the nearer ring, then the first found.
+// column further out (SINK_TUNE.rimCost levels per column), so the rim builds
+// up as a heap does, nearest and lowest first; ties go to the nearer ring,
+// then the first found.
 function sinkPlaceGround(i0, j0, l0, m, S) {
-  const R = SINK_PLACE_R;
+  const R = SINK_TUNE.placeR, rc = SINK_TUNE.rimCost;
   const boxes = sinkBodiesNear(colX(i0 - R) - BLOCK, colX(i0 + R) + BLOCK, colZ(j0 - R) - BLOCK, colZ(j0 + R) + BLOCK, S);
   let best = -1, bi = 0, bj = 0, bl = 0, br = 0;
   for (let r = 1; r <= R; r++) {
@@ -1551,7 +1609,7 @@ function sinkPlaceGround(i0, j0, l0, m, S) {
       if (top === NO_COLUMN) continue;
       const l = top + 1;
       if (!inVoxelRange(i, j, l) || voxelAt(i, j, l) !== AIR || sinkHeldCell(i, j, l)) continue;
-      const cost = l + r;
+      const cost = l + rc * r;
       if (best >= 0 && cost >= best) continue;
       if (!sinkCellClear(boxes, colX(i), (l + 0.5) * BLOCK, colZ(j))) continue;
       best = cost; bi = i; bj = j; bl = l; br = r;
@@ -1576,7 +1634,9 @@ function sinkRelocatePiece(S, M, F, take, step) {
   const sgn = Math.sign(axis === 0 ? _sinkV.x : axis === 1 ? _sinkV.y : _sinkV.z) || -1;
   const dn = [axis === 0 ? sgn : 0, axis === 2 ? sgn : 0, axis === 1 ? sgn : 0];   // gi, gj, lvl
   if (B.aabbNeedsUpdate) B.updateAABB();
-  const ba = B.aabb, pad = 4 * BLOCK;
+  // Every place tried is next to one of the piece's blocks, so inside its box
+  // grown by a block: only bodies reaching into that can be in the way.
+  const ba = B.aabb, pad = BLOCK;
   const boxes = sinkBodiesNear(ba.lowerBound.x - pad, ba.upperBound.x + pad, ba.lowerBound.z - pad, ba.upperBound.z + pad, S)
     .filter((a) => a !== B.aabb);
   let changed = false;
@@ -2062,7 +2122,8 @@ let clearCount = 0;
 // coefficient a fallen piece slides with, multiplied by the other side's
 // (contactMatOf), 1 for every block for now. Weight over the block's volume
 // is also its density: a block heavier than the one it presses into sinks
-// into it (sinkYield, sinkForces), and drag is how hard that one holds it back.
+// into it (sinkYield, sinkForces), and its drag and pull are how hard that
+// one holds it back.
 // Strength is how much work it
 // takes to break out of the ground — read as-is too, by the stress solver's
 // beam stiffness and overlay — powder whether it is loose and crumbly.
@@ -2095,10 +2156,16 @@ const MAT_STATS = [
 ];
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
 // Drag is how hard a material holds back a heavier block sinking through it
-// (sinkForces): a block of weight w fully sunk in material M settles to
-// g (w - w_M) / (w_M drag_M) m/s. A row pasted without one takes the standard.
+// (sinkForces), its pull scaling that up (sinkHold): a block of weight w fully
+// sunk in material M settles to
+// g (w - w_M) / (w_M drag_M dragScale (1 + pullScale pull_M)) m/s.
+// A row pasted without a drag takes the standard.
 const MAT_DRAG_STD = 20;
 const matDrag = (m) => MAT_STATS[m]?.drag ?? MAT_DRAG_STD;
+// Pull (tension) is also how tightly a material holds together against a block
+// sinking through it (SINK_TUNE.pullScale). Every row has one — a row pasted
+// without takes its strength, just above — so the 0 is for no row at all.
+const matPull = (m) => { const p = MAT_STATS[m]?.pull; return p > 0 ? p : 0; };
 // AIR's row; the created materials' are added by matTablesGrow.
 MAT_STATS.push(null);
 // The block level whose top is sea level, and the level every flooded column is
@@ -5436,6 +5503,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyX') shovelPlace();
   else if (e.code === 'Space' && camMode === CAM.FIRST) state.jumpQueued = true;
   else if (e.code === 'Digit5' || e.code === 'Numpad5') toggleMaterialsUI();
+  else if (e.code === 'Digit6' || e.code === 'Numpad6') toggleSinkUI();
   else if (e.code === 'KeyT') toggleChart();
 }, { passive: false });
 window.addEventListener('keyup', (e) => {
@@ -10608,12 +10676,12 @@ const camToggle = document.getElementById('cam-toggle');
 
 const HELP_DESKTOP = {
   [CAM.FIRST]: [['W / S', 'Walk / back'], ['A / D', 'Strafe'], ['Space', 'Jump'], ['C', 'Crouch'],
-                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
+                ['Shift', 'Sprint fwd (2&times;)'], ['Mouse', 'Look'], ['5', 'Materials'], ['6', 'Sink tuning'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Free camera'], ['R', 'Respawn'],
                 ['Click view', 'Capture mouse'], ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
   [CAM.FREE]:  [['W A S D', 'Fly'], ['E / Q', 'Up / down'], ['Shift', 'Sprint (3&times;)'],
-                ['Mouse', 'Look'], ['5', 'Materials'], ['T', 'Material chart'],
+                ['Mouse', 'Look'], ['5', 'Materials'], ['6', 'Sink tuning'], ['T', 'Material chart'],
                 ['F', 'Shovel on / off'], ['H', 'Hammer on / off'],
                 ['M', 'Terrain skin / cubes'], ['V', 'Next camera'], ['G', 'Enter game'],
                 ['Tab', 'Mouse mode (buttons)'], ['Esc', 'Pause']],
@@ -11090,6 +11158,90 @@ function setMaterialsUI(on) {
 function toggleMaterialsUI() { setMaterialsUI(!materialsOpen); }
 bindTap(materialsBtn, toggleMaterialsUI);
 bindTap(document.getElementById('mat-close'), () => setMaterialsUI(false));
+
+// ---------------------------------------------------------------------------
+// Sink panel: every SINK_TUNE number, edited in place the way a material's
+// friction is. Like the built-in materials' rows, an edit lasts the session —
+// a reload is back to the defaults in SINK_TUNE_DEFS — and Copy values gives
+// the lot as text to keep. A field off its default is marked.
+// ---------------------------------------------------------------------------
+const sinkEl = document.getElementById('sink-ui');
+const sinkBtn = document.getElementById('btn-sink');
+const sinkListEl = document.getElementById('sink-list');
+// A value only reaches a sinker that is awake and has looked again: sleeping
+// pieces are woken (the ones in balance go back to sleep on their own), and
+// each sinker's "has it moved" mark is dropped so the cells it covers are
+// read under the new thresholds the next frame.
+function sinkTuneApplied() {
+  for (const st of sinkers.values()) st.scanQ = null;
+  frictionWake();
+}
+function buildSinkList() {
+  let group = '';
+  sinkListEl.innerHTML = SINK_TUNE_DEFS.map((d) => {
+    const head = d.group !== group ? `<div class="sink-group">${(group = d.group)}</div>` : '';
+    const range = d.max != null ? `${d.min} to ${d.max}` : `${d.min} or more`;
+    return head + '<div class="sink-row">'
+      + `<input class="mat-str" data-key="${d.key}" type="text" inputmode="decimal" autocomplete="off" value="${SINK_TUNE[d.key]}">`
+      + `<div><b>${d.name}</b><span>${d.help} Default ${d.def}; ${range}${d.int ? ', whole' : ''}.</span></div></div>`;
+  }).join('');
+  for (const el of sinkListEl.querySelectorAll('input')) {
+    const d = SINK_TUNE_DEFS.find((x) => x.key === el.dataset.key);
+    const mark = () => el.classList.toggle('moved', SINK_TUNE[d.key] !== d.def);
+    mark();
+    el.addEventListener('input', () => {
+      const v = parseFloat(el.value.replace(',', '.'));
+      const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v)
+              && v >= d.min && !(d.max != null && v > d.max) && !(d.int && v !== Math.round(v));
+      el.classList.toggle('bad', !ok);
+      if (!ok || v === SINK_TUNE[d.key]) return;
+      SINK_TUNE[d.key] = v;
+      mark();
+      sinkTuneApplied();
+    });
+    el.addEventListener('change', () => { el.value = String(SINK_TUNE[d.key]); el.classList.remove('bad'); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+  }
+}
+buildSinkList();
+for (const id of ['sink-copy', 'sink-reset']) {
+  const b = document.getElementById(id);
+  b.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+  b.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
+}
+bindTap(document.getElementById('sink-reset'), () => {
+  for (const d of SINK_TUNE_DEFS) SINK_TUNE[d.key] = d.def;
+  buildSinkList();
+  sinkTuneApplied();
+});
+// As the materials' Copy stats: a plain click, for iOS's clipboard rule.
+const sinkCopyBtn = document.getElementById('sink-copy');
+let sinkCopyTimer = 0;
+sinkCopyBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const text = 'SINK_TUNE {\n' + SINK_TUNE_DEFS.map((d) => `  ${d.key}: ${SINK_TUNE[d.key]},`.padEnd(30) + `// ${d.name}`
+    + (SINK_TUNE[d.key] !== d.def ? ` (default ${d.def})` : '')).join('\n') + '\n}\n';
+  const flash = (msg) => {
+    sinkCopyBtn.textContent = msg;
+    clearTimeout(sinkCopyTimer);
+    sinkCopyTimer = setTimeout(() => { sinkCopyBtn.textContent = 'Copy values'; }, 1500);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => flash('Copied'), () => flash(copyFallback(text) ? 'Copied' : 'Copy failed'));
+  } else flash(copyFallback(text) ? 'Copied' : 'Copy failed');
+});
+let sinkOpen = false;
+function setSinkUI(on) {
+  if (!on && sinkEl.contains(document.activeElement)) document.activeElement.blur();
+  sinkOpen = on;
+  sinkEl.classList.toggle('on', on);
+  sinkBtn.classList.toggle('on', on);
+  if (on && isLocked()) enterMouseMode();
+}
+function toggleSinkUI() { setSinkUI(!sinkOpen); }
+bindTap(sinkBtn, toggleSinkUI);
+bindTap(document.getElementById('sink-close'), () => setSinkUI(false));
 
 // ---------------------------------------------------------------------------
 // Material interaction chart

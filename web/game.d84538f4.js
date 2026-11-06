@@ -973,10 +973,12 @@ world.solver.solve = frictionSolve;
 // A block heavier than the block it presses down or sideways into does not
 // rest on it: that contact is let go (sinkYield) and the lighter material
 // holds it up the way a fluid does, by the weight of what it has had to make
-// room for (sinkForces). Equal or lighter blocks rest as they always did — the
-// contact is cannon's, untouched. No physical number is made up here: the
-// lift is the displaced cells' MAT_STATS weight, the hold-back their drag and
-// pull; every other number the code works with is in SINK_TUNE, which the
+// room for (sinkForces). Only powder gives way like that: a block is pressed
+// into ground that can flow round it, and cohesive ground (dirt, clay, stone)
+// holds whatever lies on it, however heavy — its contact is cannon's,
+// untouched, as is an equal or lighter block's on powder. No physical number
+// is made up here: the lift is the displaced cells' MAT_STATS weight, the
+// hold-back their drag; every other number the code works with is in SINK_TUNE, which the
 // Sink panel edits live, so none is out of reach.
 //
 // The lift is worked out per cell of the sinker, never as one figure for the
@@ -1016,17 +1018,13 @@ function sinkBlocksPowder(i, j, l) {
 }
 // Every number of the sinking code that is not a material's own, each read
 // where it is used every time, so a Sink panel edit is in force the next step.
-// The speed pair scales the hold-back only: a cell of M holds a sinker back
-// by w_M * drag_M * dragScale * (1 + pullScale * pull_M), so a fully sunk
-// block of weight w settles to g (w - w_M) / (that) m/s — pull is how tightly
-// M holds together, and the tighter it holds the slower it lets a block
-// through. Nothing here enters the lift, so where a piece comes to rest
-// (displaced weight == its weight) is the same whatever they are set to.
+// dragScale scales the hold-back only: a cell of M holds a sinker back by
+// w_M * drag_M * dragScale, so a fully sunk block of weight w settles to
+// g (w - w_M) / (that) m/s. Nothing here enters the lift, so where a piece
+// comes to rest (displaced weight == its weight) is the same whatever it is.
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
 const SINK_TUNE_DEFS = [
-  { key: 'pullScale', group: 'Speed', name: 'Pull slowing', def: 0.01, min: 0,
-    help: 'Hold-back of a medium is drag x (1 + this x its pull). 0: pull plays no part (v275).' },
   { key: 'dragScale', group: 'Speed', name: 'Drag multiplier', def: 1, min: 0,
     help: 'Every material\'s drag times this. Speed goes as 1 / (drag x this).' },
   { key: 'sleepImb', group: 'Settling', name: 'Sleep balance', def: 0.002, min: 0.0001,
@@ -1070,10 +1068,13 @@ const SINK_TUNE = {};
 for (const d of SINK_TUNE_DEFS) SINK_TUNE[d.key] = d.def;
 // What a fully sunk cell of m holds a sinker back with, per unit of its
 // weight and speed (see SINK_TUNE).
-const sinkHold = (m) => matDrag(m) * SINK_TUNE.dragScale * (1 + SINK_TUNE.pullScale * matPull(m));
+const sinkHold = (m) => matDrag(m) * SINK_TUNE.dragScale;
 const _sinkP = new CANNON.Vec3(), _sinkN = new CANNON.Vec3(), _sinkQ = new CANNON.Quaternion();
 const _sinkV = new CANNON.Vec3(), _sinkW = new CANNON.Vec3(), _sinkR = new CANNON.Vec3();
 const sinkWeight = (m) => { const w = MAT_STATS[m]?.weight; return w > 0 ? w : 0; };
+// What a block can be pressed into at all: loose grain, which can flow round
+// it. Anything else holds a block up whatever the two weigh.
+const sinkMedium = (m) => !!MAT_STATS[m]?.powder;
 
 function sinkTouch(S, O) {
   let st = sinkers.get(S);
@@ -1084,8 +1085,8 @@ function sinkTouch(S, O) {
   M.touchAt = world.stepnumber;
 }
 // The contact between piece S (its point rS, n pointing from S into O when sg
-// is 1) and O lets go if S's block there is heavier than O's block where S's
-// block is: read at S's own point, not at O's face, because a sunk piece is
+// is 1) and O lets go if O's block where S's block is is powder and S's block
+// there is heavier than it: read at S's own point, not at O's face, because a sunk piece is
 // deep inside the old box of ground it is going through and that box's face
 // says nothing about the cells round it. Pushing up into O never sinks S into
 // it. A cell of ground that reads as air there gives way only if a sinker has
@@ -1115,11 +1116,11 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
       const e = SINK_TUNE.edgeProbe * BLOCK;
       mo = contactMatOf(O, _sinkW.set(rO.x, rO.y - e, rO.z), _sinkN);
       if (soft(mo)) mo = contactMatOf(O, _sinkW.set(rO.x, rO.y + e, rO.z), _sinkN);
-      if (soft(mo)) return false;
+      if (soft(mo) || !sinkMedium(mo)) return false;
       wo = sinkWeight(mo);
     }
   } else {
-    if (mo < 0) return false;
+    if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
   if (!(ws > wo)) return false;
@@ -1166,7 +1167,7 @@ function sinkDepthCap(c) {
 // A sinker deep in lighter ground overlaps every box of it round the hole
 // it is in, and cannon made some fifty contacts a step for each sinker there,
 // every one of them let go — most of the cost of sinking. Only ground inside
-// the sinker's own box can touch it: if every cell there is lighter than its
+// the sinker's own box can touch it: if every cell there is powder lighter than its
 // lightest block, every contact it could make with the ground is one
 // sinkYield lets go, and its pairs with the ground are not taken to the
 // narrowphase at all (but count as touched). Read once a step per sinker.
@@ -1186,7 +1187,7 @@ function sinkGroundMaxW(S, st) {
   else {
     for (let l = l0; l <= l1; l++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
       const v = voxelAt(i, j, l);
-      if (v !== AIR && v !== WATER) { const wv = sinkWeight(v); if (wv > w) w = wv; }
+      if (v !== AIR && v !== WATER) { const wv = sinkMedium(v) ? sinkWeight(v) : Infinity; if (wv > w) w = wv; }
     }
   }
   return (st.boxW = w);
@@ -1309,7 +1310,8 @@ function sinkToWorld(M, F, g, out) {
   out.vadd(b.position, out);
   return out;
 }
-// Every overlap of a hull cell with a lighter cell of medium M, written to the
+// Every overlap of a hull cell with a lighter powder cell of medium M (a cell
+// of anything else is not displaced, it holds), written to the
 // scratch list (stride SINK_L): hull cell, the cell's slot in the scan's
 // region, the cell, its material, the overlap (a fraction of a block),
 // whether the cell is only a record, and the overlap box's centre in the world.
@@ -1371,7 +1373,7 @@ function sinkScan(S, hull, M, F) {
           }
           if (m === -1) continue;
           const isRec = m <= -3, mm = isRec ? -3 - m : m;
-          if (!(sinkWeight(mm) < dens)) continue;
+          if (!sinkMedium(mm) || !(sinkWeight(mm) < dens)) continue;
           const w = ox * oy * oz;
           const k = _sinkLen++ * SINK_L;
           L[k] = c; L[k + 1] = r; L[k + 2] = ni; L[k + 3] = nj; L[k + 4] = nl; L[k + 5] = mm; L[k + 6] = w; L[k + 7] = isRec ? 1 : 0;
@@ -1551,7 +1553,7 @@ function sinkRelocate() {
           // has to meet that cell's real face, not a box the worker has yet
           // to rebuild without this one.
           const below = voxelAt(e.i, e.j, e.l - 1);
-          if (below !== AIR && !(sinkWeight(below) < hull.W / Math.max(1, hull.n))) colliderSyncFor(chunkOf(e.i, e.j));
+          if (below !== AIR && !(sinkMedium(below) && sinkWeight(below) < hull.W / Math.max(1, hull.n))) colliderSyncFor(chunkOf(e.i, e.j));
           if (!sinkPlaceGround(e.i, e.j, e.l, e.m, S)) { st.owed.push({ i: e.i, j: e.j, l: e.l, m: e.m }); sinkStats.owed++; }
         }
       } else sinkRelocatePiece(S, M, F, take, step);
@@ -2082,11 +2084,6 @@ const reposeLim = new Uint16Array(MAT_ID_LIMIT * REPOSE_REACH_MAX).fill(1);
 // reason to stop there (powderFar).
 const reposeFlat = new Uint8Array(MAT_ID_LIMIT);
 let powderFarNone = 0, powderFarNoneI = 0, powderFarNoneJ = 0, powderFarNoneL = 0;   // the last far look that found nothing, while it holds
-// Press: how readily the powder gives under a weight (pressPowder), from the
-// same angle: 1 at 0, a little over half at 45, a twentieth at 90. Steep
-// powder still gives, only slowly.
-const pressEaseOf = (angle) => 0.05 + 0.95 * Math.cos(angle * Math.PI / 180) ** 2;
-const pressEase = new Float32Array(MAT_ID_LIMIT).fill(pressEaseOf(45));
 // The furthest any material looks: a grain leaving a column can unsettle ones
 // that far off, not just its neighbours (powderDirtySides).
 let reposeReachAll = 1;
@@ -2097,7 +2094,6 @@ function matReposeSet(m, angle) {
   const R = angle >= 90 ? 0 : angle === 45 ? 1 : t >= 1 ? Math.min(8, Math.ceil(8 / t)) : REPOSE_REACH_MAX;
   reposeReach[m] = R;
   reposeFlat[m] = t <= 0 ? 1 : 0;
-  pressEase[m] = pressEaseOf(angle);
   for (let k = 1; k <= REPOSE_REACH_MAX; k++) {
     // A drop of one is level ground (a grain beside a grain), never a slope.
     reposeLim[m * REPOSE_REACH_MAX + k - 1] = Math.max(1, Math.min(65535, Math.ceil(k * t - 1e-9)));
@@ -2121,9 +2117,9 @@ let clearCount = 0;
 // Friction is how hard it grips what rests on it, and what it rests on — the
 // coefficient a fallen piece slides with, multiplied by the other side's
 // (contactMatOf), 1 for every block for now. Weight over the block's volume
-// is also its density: a block heavier than the one it presses into sinks
-// into it (sinkYield, sinkForces), and its drag and pull are how hard that
-// one holds it back.
+// is also its density: a block heavier than a powder it presses into sinks
+// into it (sinkYield, sinkForces), and the powder's drag is how hard it holds
+// it back.
 // Strength is how much work it
 // takes to break out of the ground — read as-is too, by the stress solver's
 // beam stiffness and overlay — powder whether it is loose and crumbly.
@@ -2155,17 +2151,12 @@ const MAT_STATS = [
   { name: 'Hard Sand',     weight: 2.2,   friction: 1, drag: 20, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
 ];
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
-// Drag is how hard a material holds back a heavier block sinking through it
-// (sinkForces), its pull scaling that up (sinkHold): a block of weight w fully
-// sunk in material M settles to
-// g (w - w_M) / (w_M drag_M dragScale (1 + pullScale pull_M)) m/s.
-// A row pasted without a drag takes the standard.
+// Drag is how hard a powder holds back a heavier block sinking through it
+// (sinkForces, sinkHold): a block of weight w fully sunk in powder M settles
+// to g (w - w_M) / (w_M drag_M dragScale) m/s. Only a powder's is read; a
+// row pasted without a drag takes the standard.
 const MAT_DRAG_STD = 20;
 const matDrag = (m) => MAT_STATS[m]?.drag ?? MAT_DRAG_STD;
-// Pull (tension) is also how tightly a material holds together against a block
-// sinking through it (SINK_TUNE.pullScale). Every row has one — a row pasted
-// without takes its strength, just above — so the 0 is for no row at all.
-const matPull = (m) => { const p = MAT_STATS[m]?.pull; return p > 0 ? p : 0; };
 // AIR's row; the created materials' are added by matTablesGrow.
 MAT_STATS.push(null);
 // The block level whose top is sea level, and the level every flooded column is
@@ -7568,6 +7559,7 @@ function spawnFallingChunk(unit) {
     // The crack it had where it stood goes with it (stressWriteColor).
     const e = { pos, mat: b.m, color: b.color ? b.color.clone() : null, gi: b.i, gj: b.j, lvl: b.lvl,
                 crack: b.crack ?? stressCrackAt(b.i, b.j, b.lvl) };
+    if (b.placed) e.placed = 1;   // built, for builtCut
     if (q >= nSolid) addGrain(mesh, e);
     return e;
   });
@@ -7892,135 +7884,9 @@ function shedColumn(c, budget) {
   }
   return budget;
 }
-// ----- a weight on powder presses it out from under -----
-// Powder holds nothing up for good. A piece lying on it (a loose piece: the
-// ground and what is built on it never press) squeezes the powder cells under
-// it out to the side, a cell at a time, and sinks into each hole it leaves,
-// until what it lies on is not powder or nothing is under it. The load on a
-// cell a block of the piece lies on is the piece's weight shared over every
-// ground cell it lies on, powder or not; that, times how readily the powder
-// gives (pressEase, from its place angle), is how many cells a second go from
-// under that block. A cell that goes is a grain at the top of the nearest
-// column, along one of the four sides, that is out from under the piece and
-// reached through powder only; it lands from there as any grain does.
-const PRESS_RATE = 0.2;    // cells a second per unit of weight on the cell, at pressEase 1
-const PRESS_MAX = 10;      // cells a second, however heavy
-const PRESS_REACH = 8;     // columns out a pressed cell looks for a way up
-const PRESS_RISE = 16;     // levels up through powder it may be pushed
-const _pressAt = [];
-function pressPowder(dt) {
-  if (!dt || (!restedChunks.length && !fallingChunks.length)) return;
-  dt = Math.min(dt, 0.1);
-  // As the lists stand now: a loose group a cell's going lets off joins the end of fallingChunks.
-  const nR = restedChunks.length, nF = fallingChunks.length;
-  for (let k = 0; k < nR; k++) if (!restedChunks[k].gone) pressPiece(restedChunks[k], dt);
-  for (let k = 0; k < nF; k++) if (!fallingChunks[k].gone) pressPiece(fallingChunks[k], dt);
-}
-function pressPiece(f, dt) {
-  const b = f.body;
-  // On the move it is not lying on anything yet (and a sleeper is lying still);
-  // one held kinematic (a lone block gliding into its cell) is not lying at all.
-  if (b.type !== CANNON.Body.DYNAMIC) return;
-  if (b.sleepState !== CANNON.Body.SLEEPING && (b.velocity.lengthSquared() >= FALL_REST_V * FALL_REST_V
-   || b.angularVelocity.lengthSquared() >= FALL_REST_V * FALL_REST_V)) return;
-  const c = powderCatchBox(f.mesh);
-  // Nothing under it was powder last look and it has not moved since: nor is it now.
-  const sig = f.pressNone;
-  if (sig && sig[0] === c.px && sig[1] === c.py && sig[2] === c.pz && sig[3] === c.qw && sig[4] === c.qx
-   && sig[5] === c.qy && sig[6] === c.qz && sig[7] === c.n) return;
-  const lat = f.mesh.userData.blocks, at = _pressAt;
-  at.length = 0;
-  let w = 0, nS = 0;
-  for (let q = 0; q < c.n; q++) {
-    w += debrisWeight(lat[q].mat);
-    // The cell under the block's bottom face. A block over another of its own
-    // piece finds air there (a piece is not in the store), so only the
-    // undersides count.
-    const i = colI(c.w[q * 3]), j = colJ(c.w[q * 3 + 2]), l = Math.floor(c.w[q * 3 + 1] / BLOCK - 0.75);
-    const v = voxelAt(i, j, l);
-    if (v === AIR || v === WATER) continue;
-    nS++;
-    if (MAT_STATS[v]?.powder) at.push(i, j, l, v);
-  }
-  if (!nS && f.pressSink) { pressSink(f, c); return; }   // pressed out from under altogether: down into the holes
-  f.pressSink = false;
-  if (!at.length) {
-    f.pressNone = [c.px, c.py, c.pz, c.qw, c.qx, c.qy, c.qz, c.n];
-    if (f.pressAcc) f.pressAcc.clear();
-    return;
-  }
-  f.pressNone = null;
-  const was = f.pressAcc || new Map(), now = f.pressOld || new Map();
-  now.clear();
-  const load = w / nS, NN = GEN_N * GEN_N;
-  for (let k = 0; k < at.length; k += 4) {
-    const i = at[k], j = at[k + 1], l = at[k + 2], m = at[k + 3], key = (l - VOX_FLOOR) * NN + j * GEN_N + i;
-    const acc = (was.get(key) || 0) + Math.min(PRESS_MAX, PRESS_RATE * load * pressEase[m]) * dt;
-    // Somewhere to go, or it waits (full) for a way out.
-    if (acc >= 1 && pressOut(i, j, l, m)) { f.pressSink = true; continue; }
-    now.set(key, Math.min(acc, 1));
-  }
-  f.pressAcc = now; f.pressOld = was;
-}
-// A piece every cell under which has been pressed out goes down into the holes
-// itself, square, as far as the nearest ground under any of its blocks: left to
-// the physics, the powder flush against its sides would hold it up, since
-// cannon's friction grips a side as hard as a floor. Not before the holes are in
-// the colliders, or it would go down into the old ones and be thrown back out.
-const pressColDone = (c) => !colJob[c] && !dirtyColliders.has(c) && !colRedo.has(c) && !powderLateCols.has(c);
-function pressSink(f, c) {
-  let gap = Infinity;
-  for (let q = 0; q < c.n; q++) {
-    const i = colI(c.w[q * 3]), j = colJ(c.w[q * 3 + 2]), y = c.w[q * 3 + 1];
-    if (!pressColDone(chunkOf(i, j))) return;
-    // Down from the cell under the block (a block of its own over another finds
-    // that one's cell open, and so a longer way down) to the first that is not air.
-    const l0 = Math.floor(y / BLOCK - 0.75);
-    let l = l0;
-    while (l > l0 - 3 && voxelAt(i, j, l) === AIR) l--;
-    gap = Math.min(gap, y - HALF_BLOCK - (l + 1) * BLOCK);
-  }
-  f.pressSink = false;
-  if (!(gap > 0.001)) return;
-  const b = f.body;
-  b.position.y -= gap; b.previousPosition.y -= gap; b.interpolatedPosition.y -= gap;
-  b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
-  b.aabbNeedsUpdate = true;
-  b.wakeUp();
-  f.mesh.position.copy(b.position);
-}
-// Press the powder cell (i, j, l) out from under a piece: true if it went.
-function pressOut(i, j, l, m) {
-  const s0 = (Math.random() * 4) | 0;
-  let open = 15;   // the sides still worth looking along
-  for (let k = 1; k <= PRESS_REACH && open; k++) {
-    for (let s = 0; s < 4; s++) {
-      const d = (s0 + s) & 3;
-      if (!(open >> d & 1)) continue;
-      const ni = i + POWDER_SIDES[d][0] * k, nj = j + POWDER_SIDES[d][1] * k;
-      // Up that column through powder to its first open cell; anything else ends the side.
-      let L = l, v;
-      while (L <= l + PRESS_RISE && (v = voxelAt(ni, nj, L)) !== AIR && MAT_STATS[v]?.powder) L++;
-      if (v !== AIR || L > l + PRESS_RISE || !canBuildAt(ni, nj, L)) { open &= ~(1 << d); continue; }
-      const x = colX(ni), y = (L + 0.5) * BLOCK, z = colZ(nj);
-      // Still under a piece (in it, or with it right over: a hole another
-      // cell has just left): further out.
-      if (powderPieceBeside(x, y, z) || powderPieceBeside(x, y + BLOCK, z)) continue;
-      // Not into a falling grain: that side waits.
-      if (powderGrainAt(x, y, z, null)) { open &= ~(1 << d); continue; }
-      if (gravGuard(i, j, l) && voxelAt(i, j, l) !== m) return false;
-      editBlock(i, j, l, AIR);
-      for (const [di, dj] of POWDER_NEAR) {
-        const ai = i + di, aj = j + dj;
-        if (ai >= 0 && aj >= 0 && ai < GEN_N && aj < GEN_N) powderDirty.add(aj * GEN_N + ai);
-      }
-      if (reposeReachAll > 1) powderDirtyFar(i, j);
-      powderGrain(x, y, z, m, null);
-      return true;
-    }
-  }
-  return false;
-}
+// (v277) No "press powder out from under" rule any more: a loose piece on powder
+// moves only by density (the sink rules) — a lighter or equal piece rests on top,
+// a floater rests where the powder it displaces weighs what it does.
 function checkTerrainPowder(dt = 0) {
   // Every grain the pass takes out owes its gravity and face refresh until the
   // end of it (see flushGravity).
@@ -8065,7 +7931,6 @@ function shedTerrainPowder(dt) {
   }
   powderQueue.length = 0;
   powderQHead = 0;
-  pressPowder(dt);
   // Dig out from under a bank of sand and it goes this frame, not whenever the
   // sweep next comes round. editBlock re-marks the column as it empties it, so a
   // collapse that outruns the budget carries on next frame.
@@ -9541,6 +9406,7 @@ function spawnDebrisPart(parent, blocks, pbody) {
     if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
     if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
     const e = { pos: p, mat: b.mat, color: b.color || null, gi: b.gi, gj: b.gj, lvl: b.lvl, crack: b.crack || 0 };
+    if (b.placed) e.placed = 1;
     if (q >= nSolid) addGrain(mesh, e);
     return e;
   });
@@ -9710,7 +9576,7 @@ function debrisRoll(mesh, local, m) {
 // more in the grain layer for its material.
 // `rebuild` false is for a caller placing many at once (the volume fill): it
 // owes the piece one debrisFaceMask and one rebuildDebrisBody when it is done.
-function placeOnDebris(mesh, local, m, rebuild = true) {
+function placeOnDebris(mesh, local, m, rebuild = true, placed = false) {
   const lat = mesh.userData.blocks;
   // The greedy collider merge keys blocks by grid index, so a placed block
   // needs one too: derive it from the piece's own lattice (block 0's grid
@@ -9719,6 +9585,7 @@ function placeOnDebris(mesh, local, m, rebuild = true) {
   const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
   const gi = Math.round((local.x - kx) / BLOCK), gj = Math.round((local.z - kz) / BLOCK), lvl = Math.round((local.y - ky) / BLOCK - 0.5);
   const e = { pos: local.clone(), mat: m, color: null, gi, gj, lvl };
+  if (placed) e.placed = 1;   // built by hand, for builtCut
   stressRev++;
   stressLatEdit(mesh);
   if (MAT_STATS[m]?.powder) {
@@ -9770,8 +9637,57 @@ function layOnDebris(mesh, local, m, rebuild = true) {
       if (off) g.pos.copy(off); else mesh.localToWorld(g.pos.copy(local));
       return;
     }
+  } else if (!debrisBuildApart(mesh, [local], m).length) return;
+  placeOnDebris(mesh, local, m, rebuild, true);
+}
+
+// settleBuilt for a piece: of the cells (in the piece's frame) about to be
+// built onto it in m, every joined run that stands on powder of another
+// material in the piece — its lattice step nearest world down — or touches
+// the piece only through such powder is not glued on but set there as a
+// piece of its own, at rest in the piece's pose. Hands back the cells still
+// to be built into the piece.
+function debrisBuildApart(mesh, locals, m) {
+  if (MAT_STATS[m]?.powder || !locals.length) return locals;
+  const lat = mesh.userData.blocks, ref = lat[0];
+  const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
+  const key = (a, b, c) => `${a},${b},${c}`;
+  const at = new Map();
+  for (const e of lat) at.set(key(e.gi, e.gj, e.lvl), e.mat);
+  mesh.updateWorldMatrix(true, false);
+  const dn = new THREE.Vector3(0, -1, 0).applyQuaternion(mesh.getWorldQuaternion(new THREE.Quaternion()).invert());
+  const ax = Math.abs(dn.x), ay = Math.abs(dn.y), az = Math.abs(dn.z);
+  const down = ay >= ax && ay >= az ? [0, 0, Math.sign(dn.y)] : ax >= az ? [Math.sign(dn.x), 0, 0] : [0, Math.sign(dn.z), 0];
+  const cells = locals.map((p) => {
+    const gi = Math.round((p.x - kx) / BLOCK), gj = Math.round((p.z - kz) / BLOCK), lvl = Math.round((p.y - ky) / BLOCK - 0.5);
+    return { p, gi, gj, lvl, k: key(gi, gj, lvl) };
+  });
+  const mine = new Map(cells.map((c) => [c.k, c]));
+  const apartFrom = (u) => u !== undefined && u !== m && !!MAT_STATS[u]?.powder;
+  const keep = [], seen = new Set();
+  for (const c0 of cells) {
+    if (seen.has(c0.k)) continue;
+    const run = [c0], stack = [c0];
+    seen.add(c0.k);
+    let onPowder = false, held = false;
+    while (stack.length) {
+      const c = stack.pop();
+      if (apartFrom(at.get(key(c.gi + down[0], c.gj + down[1], c.lvl + down[2])))) onPowder = true;
+      for (const [di, dj, dl] of GRAV_DIRS) {
+        const k = key(c.gi + di, c.gj + dj, c.lvl + dl), u = at.get(k);
+        if (u !== undefined && !apartFrom(u)) held = true;
+        const n = mine.get(k);
+        if (n && !seen.has(k)) { seen.add(k); run.push(n); stack.push(n); }
+      }
+    }
+    if (held && !onPowder) { for (const c of run) keep.push(c.p); continue; }
+    const f = chunkOfMesh(mesh);
+    spawnDebrisPart(mesh, run.map((c) => ({ pos: c.p.clone(), mat: m, color: null, gi: c.gi, gj: c.gj, lvl: c.lvl, placed: 1 })), f ? f.body : null);
+    const g = fallingChunks[fallingChunks.length - 1];
+    g.body.angularVelocity.set(0, 0, 0);
+    if (!f) g.body.velocity.set(0, 0, 0);
   }
-  placeOnDebris(mesh, local, m, rebuild);
+  return keep;
 }
 
 // The six face neighbours, with the one below last so a stack pops it first: a
@@ -9820,7 +9736,7 @@ function adriftGroup(i, j, lvl, topOf) {
       // Off the field is air, and has no key of its own.
       if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
       const key = gravCell(ii, jj, ll);
-      if (adriftSeen.has(key) || !gravSolid(ii, jj, ll)) continue;
+      if (adriftSeen.has(key) || !gravSolid(ii, jj, ll) || builtCutCells(bi, bj, bl, ii, jj, ll)) continue;
       if (adriftAnchored(ii, jj, ll)) return null;   // sitting on bedrock: the whole group is held up
       adriftSeen.add(key);
       adriftCells.push(ii, jj, ll, voxelAt(ii, jj, ll));
@@ -9838,7 +9754,8 @@ function adriftGroup(i, j, lvl, topOf) {
   const unit = new Map();
   for (let q = 0; q < adriftCells.length; q += 4) {
     const bi = adriftCells[q], bj = adriftCells[q + 1], bl = adriftCells[q + 2], m = adriftCells[q + 3];
-    unit.set(gravCell(bi, bj, bl), { i: bi, j: bj, lvl: bl, m, color: terrainBlockColor(bi, bj, bl, m, topOf?.(bj * GEN_N + bi)) });
+    unit.set(gravCell(bi, bj, bl), { i: bi, j: bj, lvl: bl, m, color: terrainBlockColor(bi, bj, bl, m, topOf?.(bj * GEN_N + bi)),
+                                     placed: isPlacedCell(bi, bj, bl) ? 1 : 0 });
   }
   return unit;
 }
@@ -9972,7 +9889,7 @@ function gravFate(i, j, lvl, stop, keepStart) {
     const bk = gravCell(bi, bj, bl);
     for (const [di, dj, dl] of GRAV_DIRS) {
       const ii = bi + di, jj = bj + dj, ll = bl + dl;
-      if (!gravSolid(ii, jj, ll)) continue;
+      if (!gravSolid(ii, jj, ll) || builtCutCells(bi, bj, bl, ii, jj, ll)) continue;
       const key = gravCell(ii, jj, ll);
       if (gravFrom.has(key)) continue;
       gravFrom.set(key, bk);
@@ -10087,6 +10004,7 @@ function flushGravTouched() {
 
 function editBlock(i, j, lvl, m) {
   const was = setVoxel(i, j, lvl, m);
+  if (m === AIR) unmarkPlaced(i, j, lvl);
   const k = j * GEN_N + i;
   colDug[k] = 1;
   if (m === AIR && lvl < colDugLo[k]) colDugLo[k] = lvl;
@@ -10454,6 +10372,7 @@ function shovelPlace() {
       || spotBlocked(i, j, lvl)) return false;
   editBlock(i, j, lvl, shovel.held.pop());
   markPlaced(i, j, lvl);
+  settleBuilt([i, j, lvl]);
   refreshShovelUI();
   return true;
 }
@@ -12197,7 +12116,7 @@ function volumeFill(box, m) {
   const f = volumeC1 && volumeC1.mesh && volumeC1.mesh.parent && chunkOfMesh(volumeC1.mesh);
   if (f) return volumeFillDebris(f, box, m);
   let placed = 0;
-  const chunks = new Set();
+  const chunks = new Set(), built = [];
   for (let j = box.j1; j <= box.j2; j++) {
     for (let i = box.i1; i <= box.i2; i++) {
       if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) continue;
@@ -12209,6 +12128,7 @@ function volumeFill(box, m) {
         if (voxelAt(i, j, lvl) !== AIR || spotBlocked(i, j, lvl)) continue;
         setVoxel(i, j, lvl, m);
         markPlaced(i, j, lvl);
+        built.push(i, j, lvl);
         placed++;
         any = true;
       }
@@ -12232,6 +12152,7 @@ function volumeFill(box, m) {
     }
   }
   for (const c of chunks) markColliderDirty(c);
+  settleBuilt(built);
   return placed;
 }
 
@@ -12244,19 +12165,24 @@ function volumeFillDebris(f, box, m) {
   if (!lat || !lat.length) return 0;
   const { x: kx, y: ky, z: kz } = volumeLattice(mesh);
   const taken = new Set(lat.map((b) => `${b.gi},${b.gj},${b.lvl}`));
-  let placed = 0;
+  let todo = [];
   for (let gl = box.l1; gl <= box.l2; gl++) {
     for (let gj = box.j1; gj <= box.j2; gj++) {
       for (let gi = box.i1; gi <= box.i2; gi++) {
         const key = `${gi},${gj},${gl}`;
         if (taken.has(key)) continue;
         taken.add(key);
-        layOnDebris(mesh, new THREE.Vector3(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK), m, false);
-        placed++;
+        todo.push(new THREE.Vector3(kx + gi * BLOCK, ky + (gl + 0.5) * BLOCK, kz + gj * BLOCK));
       }
     }
   }
-  if (!placed) return 0;
+  if (!todo.length) return 0;
+  const placed = todo.length;
+  // The box as a whole: a part of it on powder goes apart as one piece.
+  todo = debrisBuildApart(mesh, todo, m);
+  const solid = !MAT_STATS[m]?.powder;
+  for (const p of todo) { if (solid) placeOnDebris(mesh, p, m, false, true); else layOnDebris(mesh, p, m, false); }
+  if (!todo.length) return placed;
   debrisFaceMask(mesh);
   rebuildDebrisBody(mesh, f.body);
   f.still = 0;
@@ -12333,6 +12259,7 @@ bindTap(placerDo, () => {
     if (topLvl[k] !== NO_COLUMN && voxelAt(i, j, lvl) === AIR) {
       editBlock(i, j, lvl, placerMat);
       markPlaced(i, j, lvl);
+      settleBuilt([i, j, lvl]);
     }
   } else if (creative.debris && creative.debris.local) {
     layOnDebris(creative.debris.mesh, creative.debris.local, placerMat);
@@ -12487,6 +12414,73 @@ function markPlaced(i, j, lvl) {
   const c = chunkOf(i, j);
   (placedByChunk[c] || (placedByChunk[c] = new Set())).add(gravCell(i, j, lvl));
   stressRev++;
+}
+const isPlacedCell = (i, j, lvl) => !!placedByChunk[chunkOf(i, j)]?.has(gravCell(i, j, lvl));
+// A cell emptied stops being built: a grain that lands in it later is not.
+function unmarkPlaced(i, j, lvl) { placedByChunk[chunkOf(i, j)]?.delete(gravCell(i, j, lvl)); }
+// A block built against powder of another material is not joined to it — no
+// beam between them in the tension solve, no path for gravity through them —
+// so it stands on whatever else it was built on, or comes away. Powder of its
+// own material joins it as always, and ground that was never built keeps the
+// joins it was generated with (pa / pb: that side was built).
+function builtCut(ma, pa, mb, pb) {
+  if (ma === mb || !(pa || pb)) return false;
+  return (pa && !!MAT_STATS[mb]?.powder) || (pb && !!MAT_STATS[ma]?.powder);
+}
+function builtCutCells(i, j, l, ii, jj, ll) {
+  const a = voxelAt(i, j, l), b = voxelAt(ii, jj, ll);
+  if (a === b || !(MAT_STATS[a]?.powder || MAT_STATS[b]?.powder)) return false;
+  return builtCut(a, isPlacedCell(i, j, l), b, isPlacedCell(ii, jj, ll));
+}
+// What the player has just built, as flat i, j, lvl: a non-powder block set
+// straight on powder of another material is not built into the ground but
+// stands on it as a piece of its own, free to sink in (sinkYield). Blocks of
+// the same build joined to it come with it, as one piece — a wall built on a
+// beach is one wall on the sand — and nothing else does, however it touches.
+// Whatever is left that touches such powder anywhere else has lost that join
+// (builtCut), and comes down if nothing else holds it.
+function settleBuilt(cells) {
+  const mine = new Map();
+  for (let q = 0; q < cells.length; q += 3) {
+    const i = cells[q], j = cells[q + 1], l = cells[q + 2];
+    if (gravSolid(i, j, l)) mine.set(gravCell(i, j, l), q);
+  }
+  if (!mine.size) return;
+  const onPowder = (i, j, l) => {
+    const m = voxelAt(i, j, l), u = voxelAt(i, j, l - 1);
+    return !MAT_STATS[m]?.powder && u !== m && !!MAT_STATS[u]?.powder && !mine.has(gravCell(i, j, l - 1));
+  };
+  const taken = new Set();
+  for (const [k0, q0] of mine) {
+    if (taken.has(k0) || !onPowder(cells[q0], cells[q0 + 1], cells[q0 + 2])) continue;
+    const unit = new Map(), stack = [q0];
+    taken.add(k0);
+    while (stack.length) {
+      const q = stack.pop(), i = cells[q], j = cells[q + 1], l = cells[q + 2], m = voxelAt(i, j, l);
+      unit.set(gravCell(i, j, l), { i, j, lvl: l, m, color: terrainBlockColor(i, j, l, m), placed: 1 });
+      for (const [di, dj, dl] of GRAV_DIRS) {
+        const k = gravCell(i + di, j + dj, l + dl), nq = mine.get(k);
+        if (nq === undefined || taken.has(k) || builtCutCells(i, j, l, i + di, j + dj, l + dl)) continue;
+        taken.add(k);
+        stack.push(nq);
+      }
+    }
+    // Set down where it was built, not thrown: adriftFrame's nudge of spin is
+    // for ground that breaks away.
+    for (const b of unit.values()) unmarkPlaced(b.i, b.j, b.lvl);
+    adriftFrame(unit);
+    const f = fallingChunks[fallingChunks.length - 1];
+    f.body.velocity.set(0, 0, 0);
+    f.body.angularVelocity.set(0, 0, 0);
+  }
+  for (const [k, q] of mine) {
+    if (taken.has(k)) continue;
+    const i = cells[q], j = cells[q + 1], l = cells[q + 2];
+    if (!gravSolid(i, j, l)) continue;   // came down with an earlier one
+    let cut = false;
+    for (const [di, dj, dl] of GRAV_DIRS) if (builtCutCells(i, j, l, i + di, j + dj, l + dl)) { cut = true; break; }
+    if (cut) breakOffAdrift(i, j, l);
+  }
 }
 function collectPlaced() {
   const out = [];
@@ -14407,7 +14401,7 @@ function stressRebuild() {
   // --- loads, beams ---
   S.f.fill(0, 0, stN * 6);
   for (let n = 0; n < stNTerr; n++) {
-    const key = S.key[n], m = S.mat[n];
+    const key = S.key[n], m = S.mat[n], built = n < stNBuilt;
     S.f[n * 6 + 1] = -(MAT_STATS[m]?.weight ?? 0);
     const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
     for (let d = 0; d < 6; d++) {
@@ -14416,6 +14410,7 @@ function stressRebuild() {
       if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N || ll < VOX_FLOOR) continue;
       const nb = stressNodeAt(jj * GEN_N + ii, ll);
       if (nb >= 0) {
+        if (builtCut(m, built, S.mat[nb], nb < stNBuilt)) continue;
         if (sg > 0) {
           stressAddEdge(n, nb, ax, m, S.mat[nb]);
           if (ax === 1) stEN0[stNE - 1] = stressSettledN(i, j, lvl);
@@ -14424,7 +14419,7 @@ function stressRebuild() {
       }
       // Solid and not a node: ground standing on bedrock, and it holds.
       const m2 = voxelAt(ii, jj, ll);
-      if (solidMat(m2)) {
+      if (solidMat(m2) && !builtCut(m, built, m2, false)) {
         if (sg > 0) stressAddEdge(n, -1, ax, m, m2); else stressAddEdge(-1, n, ax, m2, m);
         stEG[stNE - 1] = gravCell(ii, jj, ll);
         if (ax === 1) stEN0[stNE - 1] = stressSettledN(i, j, Math.min(lvl, ll));
@@ -14442,7 +14437,7 @@ function stressRebuild() {
       pc.load += w;
       for (let ax = 0; ax < 3; ax++) {
         const nb = stKeyMap.get(stPieceKey(pc.mesh, b.gi + (ax === 0), b.gj + (ax === 2), b.lvl + (ax === 1)));
-        if (nb !== undefined) stressAddEdge(n, nb, ax, m, S.mat[nb]);
+        if (nb !== undefined && !builtCut(m, !!b.placed, S.mat[nb], !!lat[nb - pc.start]?.placed)) stressAddEdge(n, nb, ax, m, S.mat[nb]);
       }
     }
   }
@@ -16459,7 +16454,7 @@ function restoreSavedPiece(pc) {
     else if (Number.isFinite(b.gi) && TERRAIN_MATS[b.mat]) {
       color = TERRAIN_MATS[b.mat].color.clone().multiplyScalar(0.85 + nhash3(b.gi, b.gj, b.lvl) * 0.30);
     }
-    return { pos: new THREE.Vector3(...b.pos), mat: b.mat, color, gi: b.gi, gj: b.gj, lvl: b.lvl, crack: b.crack || 0 };
+    return { pos: new THREE.Vector3(...b.pos), mat: b.mat, color, gi: b.gi, gj: b.gj, lvl: b.lvl, crack: b.crack || 0, ...(b.placed ? { placed: 1 } : {}) };
   });
   spawnDebrisPart(savedPose, blocks, null);
   const f = fallingChunks[fallingChunks.length - 1];

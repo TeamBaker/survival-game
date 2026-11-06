@@ -876,6 +876,10 @@ function debrisFricCells(lat, rev) {
 {
   const np = world.narrowphase, makeFriction = np.createFrictionEquationsFromContact;
   np.createFrictionEquationsFromContact = function (c, out) {
+    // A heavier block pressing into a lighter one is not held by it: the
+    // contact goes, and with it its friction (sinkYield, sinkForces).
+    if (sinkYield(c)) { c.enabled = false; return false; }
+    if (sinkers.size) sinkDepthCap(c);
     const n0 = out.length;
     let mu = -1;
     const ma = contactMatOf(c.bi, c.ri, _fricNeg.set(-c.ni.x, -c.ni.y, -c.ni.z));
@@ -894,6 +898,11 @@ function debrisFricCells(lat, rev) {
     // The contact's two directions of slip, each knowing the other, so the
     // solver can hold them together to mu * N rather than each on its own.
     if (mu >= 0 && out.length - n0 === 2) { out[n0].fricNext = out[n0 + 1]; out[n0 + 1].fricPair = out[n0]; }
+    if (c.sinkCut) {
+      const k = c.sinkCut;
+      c.rj.x += c.ni.x * k; c.rj.y += c.ni.y * k; c.rj.z += c.ni.z * k;
+      c.sinkCut = 0;
+    }
     return made;
   };
 }
@@ -909,6 +918,7 @@ function debrisFricCells(lat, rev) {
 // asked for (the slip's own), so the grip opposes the slide at full mu.
 const _fsB = [], _fsInvC = [], _fsLam = [];
 function frictionSolve(h, w) {
+  sinkForces(h);
   const eqs = this.equations, n = eqs.length, bodies = w.bodies, nb = bodies.length;
   if (n === 0) return 0;
   for (let t = 0; t < nb; t++) bodies[t].updateSolveMassProperties();
@@ -958,6 +968,670 @@ function frictionSolve(h, w) {
   return it;
 }
 world.solver.solve = frictionSolve;
+
+// ----- sinking: weight over volume decides who gives way to whom -----
+// A block heavier than the block it presses down or sideways into does not
+// rest on it: that contact is let go (sinkYield) and the lighter material
+// holds it up the way a fluid does, by the weight of what it has had to make
+// room for (sinkForces). Equal or lighter blocks rest as they always did — the
+// contact is cannon's, untouched. No physical number is made up here: the
+// lift is the displaced cells' MAT_STATS weight, the hold-back their drag;
+// the SINK_ constants are only tolerances (when a sinker may sleep, how far
+// out a moved cell is placed, how deep a held contact is solved at once).
+//
+// The lift is worked out per cell of the sinker, never as one figure for the
+// body: each cell of its hull (its blocks, and any hollow inside it the
+// material cannot get into — a boat's hold) takes the overlap of its own cube
+// with the lighter cells round it, so a piece sunk deeper at one end is lifted
+// harder there and tips, and a hollow piece displaces its hold as well as its
+// walls and floats higher than a solid one of the same blocks.
+//
+// A cell it has sunk past the middle of is moved out of its way (sinkRelocate)
+// and set down on the rim, or on the lighter piece's own top. The cell is
+// still counted as displaced for as long as any of the hull overlaps it (the
+// record), so the lift and drag never see a cell come or go: the motion is as
+// smooth as the overlap, which moves continuously with the body.
+const SINK_GROUND = { ground: true };   // the voxel grid, as a medium
+const sinkers = new Map();              // sinker body -> { media: Map(medium -> M), rigidAt, busy, disp, owed }
+let sinkBusyN = 0;                      // sinkers awake and still on their way, as of the last step
+// Ground cells some sinker has moved out of its way and is sitting in, with
+// how many records hold each: powder beside one does not roll into it.
+const sinkHeld = new Map();
+const sinkHeldCell = (i, j, l) => sinkHeld.size > 0 && sinkHeld.has(fricKey(i, j, l));
+// Nor, while a sinker is still on its way down, into the shaft it leaves
+// over itself: sand poured in lands on it, is caught (catchPowder), and the
+// grains it carries down grip the shaft walls and hold it back. Once it has
+// stopped the shaft fills by the powder's own rules.
+function sinkBlocksPowder(i, j, l) {
+  if (!sinkers.size) return false;
+  if (sinkHeldCell(i, j, l)) return true;
+  if (!sinkBusyN) return false;
+  const x = colX(i), y = (l + 0.5) * BLOCK, z = colZ(j);
+  for (const [S, st] of sinkers) {
+    if (!st.busy || S.sleepState === CANNON.Body.SLEEPING) continue;
+    const a = S.aabb;
+    if (x > a.lowerBound.x && x < a.upperBound.x && z > a.lowerBound.z && z < a.upperBound.z && y > a.lowerBound.y) return true;
+  }
+  return false;
+}
+const SINK_IMB = 0.002;  // fraction of its weight a sinker may be off balance and still be let sleep
+const SINK_PLACE_R = 6;  // columns out from a moved cell its new place is looked for
+const _sinkP = new CANNON.Vec3(), _sinkN = new CANNON.Vec3(), _sinkQ = new CANNON.Quaternion();
+const _sinkV = new CANNON.Vec3(), _sinkW = new CANNON.Vec3(), _sinkR = new CANNON.Vec3();
+const sinkWeight = (m) => { const w = MAT_STATS[m]?.weight; return w > 0 ? w : 0; };
+
+function sinkTouch(S, O) {
+  let st = sinkers.get(S);
+  if (!st) sinkers.set(S, st = { media: new Map(), rigidAt: -1, busy: false, disp: 0, owed: [] });
+  const key = O.voxelGround ? SINK_GROUND : O;
+  let M = st.media.get(key);
+  if (!M) st.media.set(key, M = { body: O.voxelGround ? null : O, rec: new Map(), touchAt: 0 });
+  M.touchAt = world.stepnumber;
+}
+// The contact between piece S (its point rS, n pointing from S into O when sg
+// is 1) and O lets go if S's block there is heavier than O's block where S's
+// block is: read at S's own point, not at O's face, because a sunk piece is
+// deep inside the old box of ground it is going through and that box's face
+// says nothing about the cells round it. Pushing up into O never sinks S into
+// it. A cell of ground that reads as air there gives way only if a sinker has
+// already moved it out (the collider is a frame or two behind the store); any
+// other air is an edge stepped off, and the contact holds. So does one a good
+// way into ground S is not sinking in: a collider box that deep is stale.
+function sinkPresses(S, rS, O, rO, n, sg, depth) {
+  if (!O.voxelGround && !O.debrisMesh) return false;
+  if (S.type !== CANNON.Body.DYNAMIC || sg * n.y > 0.5) return false;
+  const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
+  const ws = ms < 0 ? 0 : sinkWeight(ms);
+  if (!(ws > 0)) return false;
+  _sinkP.set(S.position.x + rS.x - O.position.x, S.position.y + rS.y - O.position.y, S.position.z + rS.z - O.position.z);
+  _sinkN.set(sg * n.x, sg * n.y, sg * n.z);
+  let mo = contactMatOf(O, _sinkP, _sinkN);
+  let wo;
+  const soft = (m) => m === AIR || m === WATER || !MAT_STATS[m];
+  if (O.voxelGround && soft(mo)) {
+    const d = 0.25 * BLOCK;
+    const x = S.position.x + rS.x + _sinkN.x * d, y = S.position.y + rS.y + _sinkN.y * d, z = S.position.z + rS.z + _sinkN.z * d;
+    if (sinkHeldCell(colI(x), colJ(z), lvlOfY(y)) || (depth > 0.5 * BLOCK && sinkers.has(S))) wo = 0;
+    else {
+      // Nothing at S's point: a point on the rim of the face it is against.
+      // A pit wall's top edge sits exactly at the surface, where a step into
+      // the wall lands in the air over it: the wall block is a hair below
+      // the ground's own point (or above, for an overhang's lower edge).
+      const e = 0.025 * BLOCK;
+      mo = contactMatOf(O, _sinkW.set(rO.x, rO.y - e, rO.z), _sinkN);
+      if (soft(mo)) mo = contactMatOf(O, _sinkW.set(rO.x, rO.y + e, rO.z), _sinkN);
+      if (soft(mo)) return false;
+      wo = sinkWeight(mo);
+    }
+  } else {
+    if (mo < 0) return false;
+    wo = sinkWeight(mo);
+  }
+  if (!(ws > wo)) return false;
+  sinkTouch(S, O);
+  return true;
+}
+function sinkYield(c) {
+  const bi = c.bi, bj = c.bj;
+  if (!bi.debrisMesh && !bj.debrisMesh) return false;
+  const ni = c.ni;
+  const depth = -((bj.position.x + c.rj.x - bi.position.x - c.ri.x) * ni.x
+                + (bj.position.y + c.rj.y - bi.position.y - c.ri.y) * ni.y
+                + (bj.position.z + c.rj.z - bi.position.z - c.ri.z) * ni.z);
+  if (bi.debrisMesh && sinkPresses(bi, c.ri, bj, c.rj, ni, 1, depth)) return true;
+  if (bj.debrisMesh && sinkPresses(bj, c.rj, bi, c.ri, ni, -1, depth)) return true;
+  // A contact that holds: a sinker leaning on it is held up by more than the
+  // lift, and may sleep there even off balance.
+  if (sinkers.size) {
+    const a = sinkers.get(bi), b = sinkers.get(bj);
+    if (a) a.rigidAt = world.stepnumber;
+    if (b) b.rigidAt = world.stepnumber;
+  }
+  return false;
+}
+
+// A contact on a sinker that holds can come up already deep: a piece part
+// rock, part dirt has its dirt dragged into ground the rock has half made way
+// through, and a contact read as rock (let go) one step is read as dirt
+// (held) the next, a block's depth in. Solved as it stands, that depth comes
+// out in one step and throws the piece. It is put to the solver as no more
+// than SINK_DEPTH_CAP: the point on bj moves back along the normal, which
+// leaves the impulse's arm (r x n) as it was, so the piece is pushed clear
+// over a few steps instead. Its friction was made from the true points.
+const SINK_DEPTH_CAP = 0.01;
+function sinkDepthCap(c) {
+  if (!sinkers.has(c.bi) && !sinkers.has(c.bj)) return;
+  const n = c.ni, bi = c.bi, bj = c.bj;
+  const d = -((bj.position.x + c.rj.x - bi.position.x - c.ri.x) * n.x
+            + (bj.position.y + c.rj.y - bi.position.y - c.ri.y) * n.y
+            + (bj.position.z + c.rj.z - bi.position.z - c.ri.z) * n.z);
+  if (d <= SINK_DEPTH_CAP) return;
+  c.sinkCut = d - SINK_DEPTH_CAP;
+}
+// A sinker deep in lighter ground overlaps every box of it round the hole
+// it is in, and cannon made some fifty contacts a step for each sinker there,
+// every one of them let go — most of the cost of sinking. Only ground inside
+// the sinker's own box can touch it: if every cell there is lighter than its
+// lightest block, every contact it could make with the ground is one
+// sinkYield lets go, and its pairs with the ground are not taken to the
+// narrowphase at all (but count as touched). Read once a step per sinker.
+// Not a box over the sinker's middle: a piece pressing up into ground is held
+// by it whatever it weighs.
+function sinkGroundMaxW(S, st) {
+  const step = world.stepnumber;
+  if (st.boxAt === step) return st.boxW;
+  st.boxAt = step;
+  if (S.aabbNeedsUpdate) S.updateAABB();
+  const a = S.aabb, e = 0.25 * BLOCK;
+  const i0 = colI(a.lowerBound.x - e), i1 = colI(a.upperBound.x + e);
+  const j0 = colJ(a.lowerBound.z - e), j1 = colJ(a.upperBound.z + e);
+  const l0 = lvlOfY(a.lowerBound.y - e), l1 = lvlOfY(a.upperBound.y + e);
+  let w = 0;
+  if ((i1 - i0 + 1) * (j1 - j0 + 1) * (l1 - l0 + 1) > 4096) w = Infinity;
+  else {
+    for (let l = l0; l <= l1; l++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const v = voxelAt(i, j, l);
+      if (v !== AIR && v !== WATER) { const wv = sinkWeight(v); if (wv > w) w = wv; }
+    }
+  }
+  return (st.boxW = w);
+}
+function sinkSkipBox(S, G, shape, x) {
+  if (S.sleepState === CANNON.Body.SLEEPING || !shape.halfExtents) return false;
+  const st = sinkers.get(S), M = st.media.get(SINK_GROUND);
+  if (!M) return false;
+  if (x.y - shape.halfExtents.y > S.position.y) return false;
+  if (!(sinkGroundMaxW(S, st) < sinkHull(S.debrisMesh, S).minW)) return false;
+  M.touchAt = world.stepnumber;
+  return true;
+}
+{
+  const np = world.narrowphase, boxBox = np.boxBox;
+  np.boxBox = function (si, sj, xi, xj, qi, qj, bi, bj, rsi, rsj, justTest) {
+    if (sinkers.size && !justTest) {
+      if (bi.voxelGround) { if (sinkers.has(bj) && sinkSkipBox(bj, bi, si, xi)) return false; }
+      else if (bj.voxelGround && sinkers.has(bi) && sinkSkipBox(bi, bj, sj, xj)) return false;
+    }
+    return boxBox.call(this, si, sj, xi, xj, qi, qj, bi, bj, rsi, rsj, justTest);
+  };
+}
+// A piece's hull in its own lattice: every block, and every empty cell inside
+// its box that the material round it could not get into by flowing in from a
+// side or rising from below — it does not pour down over a rim. So an
+// open-topped box is a hold, a box with a hole in its floor or wall fills.
+// "Up" is the lattice axis nearest the world's up, so a hull capsized onto its
+// side floods. Each cell carries how heavy it presses: a block its own weight,
+// a hold the piece's average. Kept until the lattice is edited or turns over.
+function sinkHull(mesh, body) {
+  const lat = mesh.userData.blocks, rev = mesh.userData.stressLat | 0;
+  body.quaternion.conjugate(_sinkQ).vmult(_sinkV.set(0, 1, 0), _sinkV);
+  const ax = Math.abs(_sinkV.x), ay = Math.abs(_sinkV.y), az = Math.abs(_sinkV.z);
+  const axis = ay >= ax && ay >= az ? 1 : ax >= az ? 0 : 2;
+  const up = axis * 2 + (_sinkV[axis === 0 ? 'x' : axis === 1 ? 'y' : 'z'] > 0 ? 1 : 0);
+  let h = mesh.userData.sinkHull;
+  if (h && h.lat === lat && h.n === lat.length && h.rev === rev && h.up === up) return h;
+  const n = lat.length;
+  let i0 = Infinity, i1 = -Infinity, j0 = Infinity, j1 = -Infinity, l0 = Infinity, l1 = -Infinity, W = 0;
+  for (const e of lat) {
+    if (e.gi < i0) i0 = e.gi; if (e.gi > i1) i1 = e.gi;
+    if (e.gj < j0) j0 = e.gj; if (e.gj > j1) j1 = e.gj;
+    if (e.lvl < l0) l0 = e.lvl; if (e.lvl > l1) l1 = e.lvl;
+    W += debrisWeight(e.mat);
+  }
+  // Padded by one all round, so the flood starts from every side at once.
+  const wi = i1 - i0 + 3, wj = j1 - j0 + 3, wl = l1 - l0 + 3, N = wi * wj * wl;
+  const idx = (a, b, c) => ((c * wj) + b) * wi + a;   // a: gi, b: gj, c: lvl, from the padded corner
+  const occ = new Uint8Array(N);   // 1 block, 2 reached by the flood
+  for (const e of lat) occ[idx(e.gi - i0 + 1, e.gj - j0 + 1, e.lvl - l0 + 1)] = 1;
+  const stack = [];
+  for (let c = 0; c < wl; c++) for (let b = 0; b < wj; b++) for (let a = 0; a < wi; a++) {
+    if (a && b && c && a < wi - 1 && b < wj - 1 && c < wl - 1) continue;
+    const q = idx(a, b, c);
+    if (!occ[q]) { occ[q] = 2; stack.push(a, b, c); }
+  }
+  // Moves along the lattice axes: both ways across up, and up only. Axis 0
+  // is gi (a), 1 is lvl (c), 2 is gj (b).
+  const moves = [];
+  for (let k = 0; k < 3; k++) for (const s of [-1, 1]) {
+    if (k === axis && (s > 0 ? 1 : 0) !== (up & 1)) continue;
+    moves.push([k === 0 ? s : 0, k === 2 ? s : 0, k === 1 ? s : 0]);
+  }
+  while (stack.length) {
+    const c = stack.pop(), b = stack.pop(), a = stack.pop();
+    for (const [da, db, dc] of moves) {
+      const na = a + da, nb = b + db, nc = c + dc;
+      if (na < 0 || nb < 0 || nc < 0 || na >= wi || nb >= wj || nc >= wl) continue;
+      const q = idx(na, nb, nc);
+      if (occ[q]) continue;
+      occ[q] = 2;
+      stack.push(na, nb, nc);
+    }
+  }
+  const ref = lat[0];
+  const kx = ref.pos.x - ref.gi * BLOCK, ky = ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz = ref.pos.z - ref.gj * BLOCK;
+  const cells = [], avg = n ? W / n : 0;
+  for (const e of lat) cells.push(e.pos.x, e.pos.y, e.pos.z, debrisWeight(e.mat));
+  let hold = 0;
+  for (let c = 1; c < wl - 1; c++) for (let b = 1; b < wj - 1; b++) for (let a = 1; a < wi - 1; a++) {
+    if (occ[idx(a, b, c)]) continue;
+    const gi = a - 1 + i0, gj = b - 1 + j0, lvl = c - 1 + l0;
+    cells.push(gi * BLOCK + kx, (lvl + 0.5) * BLOCK + ky, gj * BLOCK + kz, avg);
+    hold++;
+  }
+  let minW = Infinity;
+  for (const e of lat) minW = Math.min(minW, debrisWeight(e.mat));
+  h = mesh.userData.sinkHull = { lat, n, rev, up, cells: Float32Array.from(cells), count: cells.length / 4, hold, W, minW };
+  return h;
+}
+
+// Where a world point is in a medium's own grid, as continuous cell
+// coordinates: a cell's centre is at whole numbers. The ground's grid is the
+// world's; a piece's is its lattice, carried round by its body.
+function sinkFrame(M) {
+  if (!M.body) return null;
+  const mesh = M.body.debrisMesh, lat = mesh?.userData.blocks;
+  if (!lat || !lat.length) return false;
+  const ref = lat[0];
+  const fc = mesh.userData.fric?.lat === lat && mesh.userData.fric.n === lat.length
+          && mesh.userData.fric.rev === (mesh.userData.stressLat | 0)
+    ? mesh.userData.fric : (mesh.userData.fric = debrisFricCells(lat, mesh.userData.stressLat | 0));
+  return { kx: ref.pos.x - ref.gi * BLOCK, ky: ref.pos.y - (ref.lvl + 0.5) * BLOCK, kz: ref.pos.z - ref.gj * BLOCK, cells: fc.cells };
+}
+function sinkToGrid(M, F, p, out) {
+  if (!F) {
+    out.x = (p.x + GEN_R) / BLOCK - 0.5; out.y = p.y / BLOCK - 0.5; out.z = (p.z + GEN_R) / BLOCK - 0.5;
+    return out;
+  }
+  const b = M.body;
+  b.quaternion.conjugate(_sinkQ).vmult(_sinkW.set(p.x - b.position.x, p.y - b.position.y, p.z - b.position.z), _sinkW);
+  out.x = (_sinkW.x - F.kx) / BLOCK; out.y = (_sinkW.y - F.ky) / BLOCK - 0.5; out.z = (_sinkW.z - F.kz) / BLOCK;
+  return out;
+}
+function sinkToWorld(M, F, g, out) {
+  if (!F) { out.set(g.x * BLOCK + BLOCK * 0.5 - GEN_R, (g.y + 0.5) * BLOCK, g.z * BLOCK + BLOCK * 0.5 - GEN_R); return out; }
+  const b = M.body;
+  b.quaternion.vmult(_sinkW.set(g.x * BLOCK + F.kx, (g.y + 0.5) * BLOCK + F.ky, g.z * BLOCK + F.kz), out);
+  out.vadd(b.position, out);
+  return out;
+}
+// Every overlap of a hull cell with a lighter cell of medium M, written to the
+// scratch list (stride SINK_L): hull cell, the cell's slot in the scan's
+// region, the cell, its material, the overlap (a fraction of a block),
+// whether the cell is only a record, and the overlap box's centre in the world.
+// A rotated piece's cells are taken as cubes square to the medium's grid:
+// overlaps stay continuous in the pose, the volume is kept, and where two of
+// them reach into one cell their share is scaled back to the one cell there is
+// (_sinkAcc, the overlap summed per cell). Each cell of the region is read
+// from the store once however many hull cells reach into it.
+const SINK_L = 11;
+const _sinkList = [];
+let _sinkLen = 0;
+let _sinkGC = new Float64Array(3 * 64), _sinkAcc = new Float64Array(512), _sinkMat = new Int32Array(512);
+const _sinkG = { x: 0, y: 0, z: 0 }, _sinkC = { x: 0, y: 0, z: 0 };
+let _sinkI0 = 0, _sinkJ0 = 0, _sinkL0 = 0, _sinkDI = 0, _sinkDJ = 0;
+function sinkScan(S, hull, M, F) {
+  _sinkLen = 0;
+  const L = _sinkList, cells = hull.cells, q = S.quaternion, x = S.position, nc = hull.count;
+  if (_sinkGC.length < nc * 3) _sinkGC = new Float64Array(nc * 6);
+  const G = _sinkGC;
+  let i0 = Infinity, i1 = -Infinity, j0 = Infinity, j1 = -Infinity, l0 = Infinity, l1 = -Infinity;
+  for (let c = 0; c < nc; c++) {
+    q.vmult(_sinkV.set(cells[c * 4], cells[c * 4 + 1], cells[c * 4 + 2]), _sinkV);
+    _sinkV.vadd(x, _sinkV);
+    const g = sinkToGrid(M, F, _sinkV, _sinkG);
+    G[c * 3] = g.x; G[c * 3 + 1] = g.y; G[c * 3 + 2] = g.z;
+    const fi = Math.floor(g.x), fj = Math.floor(g.z), fl = Math.floor(g.y);
+    if (fi < i0) i0 = fi; if (fi + 1 > i1) i1 = fi + 1;
+    if (fj < j0) j0 = fj; if (fj + 1 > j1) j1 = fj + 1;
+    if (fl < l0) l0 = fl; if (fl + 1 > l1) l1 = fl + 1;
+  }
+  const di = i1 - i0 + 1, dj = j1 - j0 + 1, size = di * dj * (l1 - l0 + 1);
+  if (_sinkAcc.length < size) { _sinkAcc = new Float64Array(size * 2); _sinkMat = new Int32Array(size * 2); }
+  const acc = _sinkAcc, mats = _sinkMat;
+  acc.fill(0, 0, size);
+  mats.fill(-2, 0, size);
+  _sinkI0 = i0; _sinkJ0 = j0; _sinkL0 = l0; _sinkDI = di; _sinkDJ = dj;
+  const ground = !F, rec = M.rec;
+  for (let c = 0; c < nc; c++) {
+    const gx = G[c * 3], gy = G[c * 3 + 1], gz = G[c * 3 + 2], dens = cells[c * 4 + 3];
+    const fi = Math.floor(gx), fj = Math.floor(gz), fl = Math.floor(gy);
+    for (let a = 0; a < 2; a++) {
+      const ni = fi + a, ox = 1 - Math.abs(gx - ni);
+      if (ox <= 0) continue;
+      for (let b = 0; b < 2; b++) {
+        const nj = fj + b, oz = 1 - Math.abs(gz - nj);
+        if (oz <= 0) continue;
+        for (let d = 0; d < 2; d++) {
+          const nl = fl + d, oy = 1 - Math.abs(gy - nl);
+          if (oy <= 0) continue;
+          const r = ((nl - l0) * dj + (nj - j0)) * di + (ni - i0);
+          let m = mats[r];
+          if (m === -2) {
+            // The store or the lattice as it is; else a record (stored as
+            // -3 - m, so it is told apart); else nothing (-1).
+            if (ground) { const v = voxelAt(ni, nj, nl); m = v !== AIR && v !== WATER && MAT_STATS[v] ? v : -1; }
+            else { const v = F.cells.get(fricKey(ni, nj, nl)); m = v === undefined ? -1 : v; }
+            if (m < 0 && rec.size) { const e = rec.get(fricKey(ni, nj, nl)); if (e) m = -3 - e.m; }
+            mats[r] = m;
+          }
+          if (m === -1) continue;
+          const isRec = m <= -3, mm = isRec ? -3 - m : m;
+          if (!(sinkWeight(mm) < dens)) continue;
+          const w = ox * oy * oz;
+          const k = _sinkLen++ * SINK_L;
+          L[k] = c; L[k + 1] = r; L[k + 2] = ni; L[k + 3] = nj; L[k + 4] = nl; L[k + 5] = mm; L[k + 6] = w; L[k + 7] = isRec ? 1 : 0;
+          // The overlap's own middle, so the lift acts where the cube is in.
+          _sinkC.x = (Math.max(gx, ni) + Math.min(gx, ni)) * 0.5;
+          _sinkC.y = (Math.max(gy, nl) + Math.min(gy, nl)) * 0.5;
+          _sinkC.z = (Math.max(gz, nj) + Math.min(gz, nj)) * 0.5;
+          const p = sinkToWorld(M, F, _sinkC, _sinkP);
+          L[k + 8] = p.x; L[k + 9] = p.y; L[k + 10] = p.z;
+          acc[r] += w;
+        }
+      }
+    }
+  }
+}
+// Called by the solver ahead of its sweep, every step, after gravity is in the
+// forces: the contacts are solved against the lift just as against gravity.
+// Lift and drag are in the body's own kilograms per unit of weight (its mass
+// over its blocks' weight, which the mass cap can make less than
+// FALL_KG_PER_WEIGHT), so a piece floats where its blocks' weight equals the
+// weight of what it displaces whatever the cap does to its mass. The drag is
+// applied as the implicit step would, divided by 1 + c h (1/m_S + 1/m_O), so a
+// high drag holds a piece back without ever throwing it the other way.
+function sinkForces(h) {
+  sinkBusyN = 0;
+  if (!sinkers.size) return;
+  const step = world.stepnumber, gx = world.gravity.x, gy = world.gravity.y, gz = world.gravity.z;
+  for (const [S, st] of sinkers) {
+    if (S.world !== world || !S.debrisMesh) { sinkForget(S, st); continue; }
+    if (S.sleepState === CANNON.Body.SLEEPING || S.type !== CANNON.Body.DYNAMIC) continue;
+    const hull = sinkHull(S.debrisMesh, S);
+    if (!(hull.W > 0)) continue;
+    const K = S.mass / hull.W;
+    let disp = 0;
+    for (const [key, M] of st.media) {
+      const O = M.body;
+      if (O && (O.world !== world || !O.debrisMesh)) { sinkDropMedium(st, key, M); continue; }
+      const F = sinkFrame(M);
+      if (F === false) { sinkDropMedium(st, key, M); continue; }
+      sinkScan(S, hull, M, F);
+      const L = _sinkList, acc = _sinkAcc;
+      let C = 0;
+      for (let t = 0; t < _sinkLen; t++) {
+        const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
+        C += share * sinkWeight(m) * K * matDrag(m);
+      }
+      const Od = O && O.type === CANNON.Body.DYNAMIC;
+      const dragK = 1 / (1 + C * h * (1 / S.mass + (Od ? 1 / O.mass : 0)));
+      // Lift first, then drag against the velocity the step is heading for
+      // with the lift and gravity in (v + h F / m): the implicit step's own
+      // answer, so the drag balances the rest at exactly F / C. Only the
+      // sinker's: a medium piece is mostly held by contacts this sweep has
+      // yet to solve, and the push its forces alone predict is not its motion.
+      for (let t = 0; t < _sinkLen; t++) {
+        const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
+        const wm = sinkWeight(m), kg = share * wm * K;
+        disp += share * wm;
+        _sinkP.set(L[k + 8], L[k + 9], L[k + 10]);
+        sinkPush(S, O, Od, _sinkP, -gx * kg, -gy * kg, -gz * kg);
+        if (L[k + 7]) { const r = M.rec.get(fricKey(L[k + 2], L[k + 3], L[k + 4])); if (r) r.at = step; }
+      }
+      const ih = h / S.mass, svx = S.velocity.x + S.force.x * ih, svy = S.velocity.y + S.force.y * ih, svz = S.velocity.z + S.force.z * ih;
+      let ovx = 0, ovy = 0, ovz = 0;
+      if (O) { ovx = O.velocity.x; ovy = O.velocity.y; ovz = O.velocity.z; }
+      for (let t = 0; t < _sinkLen; t++) {
+        const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
+        const px = L[k + 8], py = L[k + 9], pz = L[k + 10];
+        // Velocity of the point on S, less the medium's own there.
+        const rx = px - S.position.x, ry = py - S.position.y, rz = pz - S.position.z, w = S.angularVelocity;
+        let vx = svx + w.y * rz - w.z * ry, vy = svy + w.z * rx - w.x * rz, vz = svz + w.x * ry - w.y * rx;
+        if (O) {
+          const ox = px - O.position.x, oy = py - O.position.y, oz = pz - O.position.z, ow = O.angularVelocity;
+          vx -= ovx + ow.y * oz - ow.z * oy; vy -= ovy + ow.z * ox - ow.x * oz; vz -= ovz + ow.x * oy - ow.y * ox;
+        }
+        const cd = share * sinkWeight(m) * K * matDrag(m) * dragK;
+        _sinkP.set(px, py, pz);
+        sinkPush(S, O, Od, _sinkP, -cd * vx, -cd * vy, -cd * vz);
+      }
+      // A record no part of the hull reaches any more has been left behind:
+      // the cell stays empty (its block is on the rim).
+      for (const [rk, r] of M.rec) if (r.at !== step) sinkUnrecord(M, rk);
+      if (O && _sinkLen && O.sleepState === CANNON.Body.SLEEPING && S.velocity.lengthSquared() > 1e-4) O.wakeUp();
+      if (!_sinkLen && !M.rec.size && step - M.touchAt > 2) sinkDropMedium(st, key, M);
+    }
+    st.disp = disp;
+    // Off balance and held by nothing rigid: still sinking or rising, however
+    // slowly, so cannon may not put it to sleep part way.
+    st.busy = Math.abs(hull.W - disp) > SINK_IMB * hull.W && step - st.rigidAt > 1 && disp > 0;
+    if (st.busy) { sinkBusyN++; if (S.sleepState !== CANNON.Body.AWAKE) S.wakeUp(); }
+    if (!st.media.size && !st.owed.length) sinkers.delete(S);
+  }
+}
+// Force f at world point p on S, and its opposite on a moving medium O.
+function sinkPush(S, O, Od, p, fx, fy, fz) {
+  const rx = p.x - S.position.x, ry = p.y - S.position.y, rz = p.z - S.position.z;
+  S.force.x += fx; S.force.y += fy; S.force.z += fz;
+  S.torque.x += ry * fz - rz * fy; S.torque.y += rz * fx - rx * fz; S.torque.z += rx * fy - ry * fx;
+  if (!Od) return;
+  const ox = p.x - O.position.x, oy = p.y - O.position.y, oz = p.z - O.position.z;
+  O.force.x -= fx; O.force.y -= fy; O.force.z -= fz;
+  O.torque.x -= oy * fz - oz * fy; O.torque.y -= oz * fx - ox * fz; O.torque.z -= ox * fy - oy * fx;
+}
+const sinkBusy = (b) => !!sinkers.get(b)?.busy;
+function sinkUnrecord(M, key) {
+  M.rec.delete(key);
+  if (M.body) return;
+  const n = sinkHeld.get(key);
+  if (n > 1) sinkHeld.set(key, n - 1); else sinkHeld.delete(key);
+}
+function sinkDropMedium(st, key, M) {
+  for (const rk of [...M.rec.keys()]) sinkUnrecord(M, rk);
+  st.media.delete(key);
+}
+function sinkForget(S, st) {
+  for (const [key, M] of st.media) sinkDropMedium(st, key, M);
+  // Blocks it had taken up and not yet found a place for still go down.
+  for (const o of st.owed) sinkPlaceGround(o.i, o.j, o.l, o.m, null);
+  sinkers.delete(S);
+}
+
+// Once a frame, after the step: every lighter cell whose middle a hull cell
+// of a sinker now covers is taken out of the medium and put down somewhere
+// else. Its record goes in first, so the lift it gave goes on unbroken.
+const sinkStats = { moved: 0, placedGround: 0, placedPiece: 0, owed: 0 };
+function sinkRelocate() {
+  if (!sinkers.size) return;
+  const step = world.stepnumber;
+  for (const [S, st] of sinkers) {
+    if (S.world !== world || !S.debrisMesh) continue;
+    // Blocks taken up earlier with nowhere to go then.
+    for (let n = st.owed.length - 1; n >= 0; n--) {
+      const o = st.owed[n];
+      if (sinkPlaceGround(o.i, o.j, o.l, o.m, S)) { st.owed.splice(n, 1); sinkStats.owed--; }
+    }
+    if (S.sleepState === CANNON.Body.SLEEPING) continue;
+    // Nothing new can have come inside it if it has not moved (nor has a
+    // medium piece it is in).
+    let moved = !st.scanQ;
+    if (!moved) {
+      const p = S.position, a = st.scanP, q = S.quaternion, b = st.scanQ;
+      moved = (p.x - a.x) ** 2 + (p.y - a.y) ** 2 + (p.z - a.z) ** 2 > (0.02 * BLOCK) ** 2
+           || Math.abs(q.x * b.x + q.y * b.y + q.z * b.z + q.w * b.w) < 1 - 1e-6;
+      for (const M of st.media.values()) if (M.body && M.body.sleepState !== CANNON.Body.SLEEPING) moved = true;
+    }
+    if (!moved) continue;
+    (st.scanP ||= new CANNON.Vec3()).copy(S.position);
+    (st.scanQ ||= new CANNON.Quaternion()).copy(S.quaternion);
+    const hull = sinkHull(S.debrisMesh, S);
+    for (const [key, M] of st.media) {
+      const F = sinkFrame(M);
+      if (F === false) continue;
+      sinkScan(S, hull, M, F);
+      const L = _sinkList, G = _sinkGC;
+      const take = [];
+      for (let t = 0; t < _sinkLen; t++) {
+        const k = t * SINK_L;
+        if (L[k + 7]) continue;
+        // The cell's middle inside this hull cell's cube: the hull cube is
+        // within half a block of it on every axis.
+        if (L[k + 6] <= 0.125) continue;
+        const c = L[k];
+        if (Math.abs(G[c * 3] - L[k + 2]) < 0.5 && Math.abs(G[c * 3 + 2] - L[k + 3]) < 0.5 && Math.abs(G[c * 3 + 1] - L[k + 4]) < 0.5) {
+          const key = fricKey(L[k + 2], L[k + 3], L[k + 4]);
+          if (!take.some((e) => e.key === key)) take.push({ key, i: L[k + 2], j: L[k + 3], l: L[k + 4], m: L[k + 5] });
+        }
+      }
+      if (!take.length) continue;
+      if (!M.body) {
+        for (const e of take) {
+          if (voxelAt(e.i, e.j, e.l) !== e.m) continue;
+          editBlock(e.i, e.j, e.l, AIR);
+          M.rec.set(e.key, { m: e.m, at: step });
+          sinkHeld.set(e.key, (sinkHeld.get(e.key) || 0) + 1);
+          sinkStats.moved++;
+          // Right on top of something it does not sink into: the next step
+          // has to meet that cell's real face, not a box the worker has yet
+          // to rebuild without this one.
+          const below = voxelAt(e.i, e.j, e.l - 1);
+          if (below !== AIR && !(sinkWeight(below) < hull.W / Math.max(1, hull.n))) colliderSyncFor(chunkOf(e.i, e.j));
+          if (!sinkPlaceGround(e.i, e.j, e.l, e.m, S)) { st.owed.push({ i: e.i, j: e.j, l: e.l, m: e.m }); sinkStats.owed++; }
+        }
+      } else sinkRelocatePiece(S, M, F, take, step);
+    }
+  }
+}
+
+// The bodies whose boxes reach into the box x0..x1, z0..z1 (all heights), and
+// the player: nothing is set down inside any of them. The sinker's own box
+// counts a block wider all round: a block set flush against its side is one
+// it rests against rigidly where it is no heavier than the ground (a piece
+// part rock, part dirt), and wedged between two such the piece was thrown.
+const _sinkOwnBox = new CANNON.AABB();
+function sinkBodiesNear(x0, x1, z0, z1, S) {
+  const out = [];
+  for (let n = 0; n < syncList.length; n++) {
+    const b = syncList[n].body;
+    if (b.aabbNeedsUpdate) b.updateAABB();
+    let a = b.aabb;
+    if (b === S) {
+      a = _sinkOwnBox.copy(a);
+      a.lowerBound.x -= BLOCK; a.lowerBound.z -= BLOCK; a.upperBound.x += BLOCK; a.upperBound.z += BLOCK;
+    }
+    if (a.upperBound.x < x0 || a.lowerBound.x > x1 || a.upperBound.z < z0 || a.lowerBound.z > z1) continue;
+    out.push(a);
+  }
+  if (playerBody.aabbNeedsUpdate) playerBody.updateAABB();
+  out.push(playerBody.aabb);
+  return out;
+}
+const sinkCellClear = (boxes, x, y, z) => {
+  const h = HALF_BLOCK - 0.01;
+  for (const a of boxes) {
+    if (x + h > a.lowerBound.x && x - h < a.upperBound.x && y + h > a.lowerBound.y && y - h < a.upperBound.y
+     && z + h > a.lowerBound.z && z - h < a.upperBound.z) return false;
+  }
+  return true;
+};
+// A ground block moved out of a sinker's way goes on top of the nearest
+// column round it that is clear of every body, rising a level for every
+// column further out, so the rim builds up as a heap does, nearest and lowest
+// first; ties go to the nearer ring, then the first found.
+function sinkPlaceGround(i0, j0, l0, m, S) {
+  const R = SINK_PLACE_R;
+  const boxes = sinkBodiesNear(colX(i0 - R) - BLOCK, colX(i0 + R) + BLOCK, colZ(j0 - R) - BLOCK, colZ(j0 + R) + BLOCK, S);
+  let best = -1, bi = 0, bj = 0, bl = 0, br = 0;
+  for (let r = 1; r <= R; r++) {
+    for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) {
+      if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+      const i = i0 + di, j = j0 + dj;
+      if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) continue;
+      const top = sTop[j * GEN_N + i];
+      if (top === NO_COLUMN) continue;
+      const l = top + 1;
+      if (!inVoxelRange(i, j, l) || voxelAt(i, j, l) !== AIR || sinkHeldCell(i, j, l)) continue;
+      const cost = l + r;
+      if (best >= 0 && cost >= best) continue;
+      if (!sinkCellClear(boxes, colX(i), (l + 0.5) * BLOCK, colZ(j))) continue;
+      best = cost; bi = i; bj = j; bl = l; br = r;
+    }
+  }
+  if (best < 0) return false;
+  editBlock(bi, bj, bl, m);
+  sinkStats.placedGround++;
+  return true;
+}
+// A lighter piece's block moved out of a sinker's way stays part of that
+// piece: it goes into the open cell of the piece's lattice nearest where it
+// was that has a block of the piece under it (the lattice axis nearest the
+// world's down), is clear of the ground and of every body bar the piece
+// itself, so the piece keeps its weight and the block sits on its top or rim.
+// One with no such cell goes down on the ground beside instead.
+function sinkRelocatePiece(S, M, F, take, step) {
+  const B = M.body, mesh = B.debrisMesh, lat = mesh.userData.blocks;
+  B.quaternion.conjugate(_sinkQ).vmult(_sinkV.set(0, -1, 0), _sinkV);
+  const ax = Math.abs(_sinkV.x), ay = Math.abs(_sinkV.y), az = Math.abs(_sinkV.z);
+  const axis = ay >= ax && ay >= az ? 1 : ax >= az ? 0 : 2;
+  const sgn = Math.sign(axis === 0 ? _sinkV.x : axis === 1 ? _sinkV.y : _sinkV.z) || -1;
+  const dn = [axis === 0 ? sgn : 0, axis === 2 ? sgn : 0, axis === 1 ? sgn : 0];   // gi, gj, lvl
+  if (B.aabbNeedsUpdate) B.updateAABB();
+  const ba = B.aabb, pad = 4 * BLOCK;
+  const boxes = sinkBodiesNear(ba.lowerBound.x - pad, ba.upperBound.x + pad, ba.lowerBound.z - pad, ba.upperBound.z + pad, S)
+    .filter((a) => a !== B.aabb);
+  let changed = false;
+  for (const e of take) {
+    // A piece of one block has nowhere of its own to put it: the sinker only
+    // bears it down.
+    if (lat.length <= 1) break;
+    const q = lat.findIndex((b) => b.gi === e.i && b.gj === e.j && b.lvl === e.l);
+    if (q < 0) continue;
+    cutDebrisLat(mesh, q);
+    M.rec.set(e.key, { m: e.m, at: step });
+    sinkStats.moved++;
+    changed = true;
+    const cells = new Set();
+    for (const b of lat) cells.add(fricKey(b.gi, b.gj, b.lvl));
+    let best = null, bd = Infinity;
+    for (const b of lat) {
+      for (const [di, dj, dl] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+        const gi = b.gi + di, gj = b.gj + dj, gl = b.lvl + dl, k = fricKey(gi, gj, gl);
+        if (cells.has(k) || M.rec.has(k)) continue;
+        if (!cells.has(fricKey(gi + dn[0], gj + dn[1], gl + dn[2]))) continue;
+        const d = (gi - e.i) ** 2 + (gj - e.j) ** 2 + (gl - e.l) ** 2;
+        if (d >= bd) continue;
+        _sinkC.x = gi; _sinkC.y = gl; _sinkC.z = gj;
+        const p = sinkToWorld(M, F, _sinkC, _sinkR);
+        if (voxelAtWorld(p.x, p.y, p.z) !== AIR || !sinkCellClear(boxes, p.x, p.y, p.z)) continue;
+        bd = d; best = { gi, gj, gl };
+      }
+    }
+    if (best) {
+      placeOnDebris(mesh, new THREE.Vector3(best.gi * BLOCK + F.kx, (best.gl + 0.5) * BLOCK + F.ky, best.gj * BLOCK + F.kz), e.m, false);
+      sinkStats.placedPiece++;
+    } else {
+      _sinkC.x = e.i; _sinkC.y = e.l; _sinkC.z = e.j;
+      const p = sinkToWorld(M, F, _sinkC, _sinkR);
+      if (!sinkPlaceGround(colI(p.x), colJ(p.z), lvlOfY(p.y), e.m, S)) {
+        sinkers.get(S).owed.push({ i: colI(p.x), j: colJ(p.z), l: lvlOfY(p.y), m: e.m });
+        sinkStats.owed++;
+      }
+    }
+  }
+  if (!changed) return;
+  if (!lat.length) return;
+  debrisFaceMask(mesh);
+  const f = chunkOfMesh(mesh);
+  if (!f) return;
+  // The rebuild moves the body's origin onto the new centre of mass; the
+  // velocity cannon keeps is the origin's, so a turning piece has to be given
+  // the new origin's own (v + w x shift) or every block of it jumps.
+  const px = B.position.x, py = B.position.y, pz = B.position.z;
+  rebuildDebrisBody(mesh, f.body);
+  f.still = 0;
+  const w = B.angularVelocity, dx = B.position.x - px, dy = B.position.y - py, dz = B.position.z - pz;
+  B.velocity.x += w.y * dz - w.z * dy; B.velocity.y += w.z * dx - w.x * dz; B.velocity.z += w.x * dy - w.y * dx;
+}
 
 // Meshes that need to follow their body every frame (dynamic + kinematic only —
 // static bodies never move, so syncing them would be pure overhead).
@@ -1386,7 +2060,10 @@ let clearCount = 0;
 // mass and centre of mass — so the materials panel shows the real number.
 // Friction is how hard it grips what rests on it, and what it rests on — the
 // coefficient a fallen piece slides with, multiplied by the other side's
-// (contactMatOf), 1 for every block for now. Strength is how much work it
+// (contactMatOf), 1 for every block for now. Weight over the block's volume
+// is also its density: a block heavier than the one it presses into sinks
+// into it (sinkYield, sinkForces), and drag is how hard that one holds it back.
+// Strength is how much work it
 // takes to break out of the ground — read as-is too, by the stress solver's
 // beam stiffness and overlay — powder whether it is loose and crumbly.
 // Strength is what it takes to crush it (compression, and the beam stiffness);
@@ -1399,24 +2076,29 @@ let clearCount = 0;
 // Water is the one entry with none — it is a block in the store but it is not a
 // thing you can carry.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 2.2,   friction: 1, strength: 50,      pull: 0.5,  powder: true  },  // SAND
-  { name: 'Dirt',          weight: 2,     friction: 1, strength: 100000,  pull: 50,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 6,     friction: 1, strength: 1500000, pull: 5000, powder: false },  // ROCK
+  { name: 'Sand',          weight: 2.2,   friction: 1, drag: 20, strength: 50,      pull: 0.5,  powder: true  },  // SAND
+  { name: 'Dirt',          weight: 2,     friction: 1, drag: 20, strength: 100000,  pull: 50,   powder: false },  // DIRT
+  { name: 'Rock',          weight: 6,     friction: 1, drag: 20, strength: 1500000, pull: 5000, powder: false },  // ROCK
   null,                                                                           // WATER
-  { name: 'Fine Dirt',     weight: 2,     friction: 1, strength: 50,      pull: 0.5,  powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 4,     friction: 1, strength: 100000,  pull: 70,   powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 2,     friction: 1, strength: 100000,  pull: 100,  powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 4,     friction: 1, strength: 7000,    pull: 70,   powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 5,     friction: 1, strength: 100,     pull: 1,    powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 6,     friction: 1, strength: 100000,  pull: 150,  powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 5,     friction: 1, strength: 500000,  pull: 2500, powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 2.4,   friction: 1, strength: 120,     pull: 1.2,  powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 4.4,   friction: 1, strength: 100000,  pull: 100,  powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 2.4,   friction: 1, strength: 200000,  pull: 1000, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 4.2,   friction: 1, strength: 100000,  pull: 0.8,  powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 2.2,   friction: 1, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
+  { name: 'Fine Dirt',     weight: 2,     friction: 1, drag: 20, strength: 50,      pull: 0.5,  powder: true  },  // FINE_DIRT
+  { name: 'Mud',           weight: 4,     friction: 1, drag: 20, strength: 100000,  pull: 70,   powder: false },  // MUD
+  { name: 'Hard Dirt',     weight: 2,     friction: 1, drag: 20, strength: 100000,  pull: 100,  powder: false },  // HARD_DIRT
+  { name: 'Fine Mud',      weight: 4,     friction: 1, drag: 20, strength: 7000,    pull: 70,   powder: false },  // FINE_MUD
+  { name: 'Stone Dust',    weight: 5,     friction: 1, drag: 20, strength: 100,     pull: 1,    powder: true  },  // STONE_DUST
+  { name: 'Stone Mud',     weight: 6,     friction: 1, drag: 20, strength: 100000,  pull: 150,  powder: false },  // STONE_MUD
+  { name: 'Brittle Stone', weight: 5,     friction: 1, drag: 20, strength: 500000,  pull: 2500, powder: false },  // BRITTLE_STONE
+  { name: 'Clay',          weight: 2.4,   friction: 1, drag: 20, strength: 120,     pull: 1.2,  powder: true  },  // CLAY
+  { name: 'Clay Mud',      weight: 4.4,   friction: 1, drag: 20, strength: 100000,  pull: 100,  powder: false },  // CLAY_MUD
+  { name: 'Hard Clay',     weight: 2.4,   friction: 1, drag: 20, strength: 200000,  pull: 1000, powder: false },  // HARD_CLAY
+  { name: 'Wet Sand',      weight: 4.2,   friction: 1, drag: 20, strength: 100000,  pull: 0.8,  powder: false },  // WET_SAND
+  { name: 'Hard Sand',     weight: 2.2,   friction: 1, drag: 20, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
 ];
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
+// Drag is how hard a material holds back a heavier block sinking through it
+// (sinkForces): a block of weight w fully sunk in material M settles to
+// g (w - w_M) / (w_M drag_M) m/s. A row pasted without one takes the standard.
+const MAT_DRAG_STD = 20;
+const matDrag = (m) => MAT_STATS[m]?.drag ?? MAT_DRAG_STD;
 // AIR's row; the created materials' are added by matTablesGrow.
 MAT_STATS.push(null);
 // The block level whose top is sea level, and the level every flooded column is
@@ -6887,7 +7569,10 @@ function powderRoll(i, j, lvl, m, g = null) {
   if (reposeStd[m]) {
     for (let s = 0; s < 4; s++) {
       const [di, dj] = POWDER_SIDES[(s0 + s) & 3], ni = i + di, nj = j + dj;
-      if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR && voxelAt(ni, nj, lvl - 1) === AIR) return (s0 + s) & 3;
+      // A cell a sinking piece has made room for is the piece's, not a hole
+      // (sinkBlocksPowder).
+      if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR && voxelAt(ni, nj, lvl - 1) === AIR
+       && !sinkBlocksPowder(ni, nj, lvl) && !sinkBlocksPowder(ni, nj, lvl - 1)) return (s0 + s) & 3;
     }
     return -1;
   }
@@ -6899,12 +7584,12 @@ function powderRoll(i, j, lvl, m, g = null) {
     for (let k = 1; k < bestK; k++) {
       const ni = i + di * k, nj = j + dj * k;
       // The way out is along this level: anything standing in it ends the look.
-      if (!canBuildAt(ni, nj, lvl - 1) || voxelAt(ni, nj, lvl) !== AIR) break;
+      if (!canBuildAt(ni, nj, lvl - 1) || voxelAt(ni, nj, lvl) !== AIR || sinkBlocksPowder(ni, nj, lvl)) break;
       // The open levels under lvl in that column, as far as either question
       // below needs them counted.
       const L = reposeLim[L0 + k - 1], cap = Math.max(L, dPrev + L1 + 1);
       let d = 0;
-      while (d < cap && lvl - 1 - d >= VOX_FLOOR && voxelAt(ni, nj, lvl - 1 - d) === AIR) d++;
+      while (d < cap && lvl - 1 - d >= VOX_FLOOR && voxelAt(ni, nj, lvl - 1 - d) === AIR && !sinkBlocksPowder(ni, nj, lvl - 1 - d)) d++;
       // A fall off the side of the slope, further out than its first column, is
       // not the slope: the grain only finds it once the slope has brought it to
       // the edge, as on flat ground by a cliff it never feels the cliff at all.
@@ -7368,6 +8053,8 @@ function updateFallingChunks() {
     if (b.sleepState === CANNON.Body.SLEEPING) { f.calm = 0; continue; }
     if (b.velocity.lengthSquared() >= FALL_REST_V * FALL_REST_V
      || b.angularVelocity.lengthSquared() >= FALL_REST_V * FALL_REST_V) { f.calm = 0; continue; }
+    // Sinking slowly is getting somewhere, however little it moves a window.
+    if (sinkBusy(b)) { f.calm = 0; continue; }
     if (!f.calm) {
       (f.calmPos ||= new CANNON.Vec3()).copy(b.position);
       (f.calmQuat ||= new CANNON.Quaternion()).copy(b.quaternion);
@@ -10047,19 +10734,19 @@ function customMatDef(d) {
     id: d.id | 0,
     name: String(d.name || '').trim().slice(0, 20),
     color: /^#[0-9a-f]{6}$/i.test(d.color) ? d.color.toLowerCase() : '',
-    weight: num(d.weight, 0), friction: num(d.friction ?? MAT_FRICTION_STD, 0),
+    weight: num(d.weight, 0), friction: num(d.friction ?? MAT_FRICTION_STD, 0), drag: num(d.drag ?? MAT_DRAG_STD, 0),
     strength: num(d.strength, 1e-6), pull: num(d.pull, 1e-6), powder: !!d.powder,
     angle: matAngleOf(d.angle), transparency: matClearOf(d.transparency),
   };
   if (def.id < CUSTOM_MAT0 || def.id >= MAT_ID_LIMIT || !def.name || !def.color) return null;
-  if ([def.weight, def.friction, def.strength, def.pull].some(Number.isNaN)) return null;
+  if ([def.weight, def.friction, def.drag, def.strength, def.pull].some(Number.isNaN)) return null;
   return def;
 }
 const customMatDefs = () => customMatIds().map((m) => ({ id: m, ...MAT_STATS[m] }));
 function customMatInstall(d) {
-  const { id, name, color, weight, friction, strength, pull, powder, angle, transparency } = d;
+  const { id, name, color, weight, friction, drag, strength, pull, powder, angle, transparency } = d;
   matTablesGrow(id + 1);
-  MAT_STATS[id] = { name, weight, friction, strength, pull, powder, color, angle, transparency };
+  MAT_STATS[id] = { name, weight, friction, drag, strength, pull, powder, color, angle, transparency };
   MAT_NAMES[id] = name.toLowerCase();
   matReposeSet(id, powder ? angle : MAT_ANGLE_STD);
   matClearSet(id, transparency);
@@ -10204,7 +10891,7 @@ function customMatsChanged() {
 // created ones, which can also be deleted.
 const matListEl = document.getElementById('mat-list');
 const matNewMsg = document.getElementById('mn-msg');
-// A friction edit has to reach pieces already lying still: cannon makes no
+// A friction or drag edit has to reach pieces already lying still: cannon makes no
 // contacts for a sleeping body, so one resting on a slope that is now too
 // slick for it would hang there until bumped. Which pieces touch ground of the
 // material is not known, so all of them are woken; the ones that still hold
@@ -10230,6 +10917,8 @@ function buildMatList() {
     const stats = st
       ? `<span>Weight: ${st.weight} &middot; Friction: `
         + `<input class="mat-str" data-mat="${i}" data-key="friction" type="text" inputmode="decimal" autocomplete="off" value="${st.friction}">`
+        + ` &middot; Drag: `
+        + `<input class="mat-str" data-mat="${i}" data-key="drag" type="text" inputmode="decimal" autocomplete="off" value="${matDrag(i)}">`
         + ` &middot; Compression: `
         + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
         + ` &middot; Pull: `
@@ -10259,12 +10948,12 @@ function buildMatList() {
     const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
     el.addEventListener('input', () => {
       const v = parseFloat(el.value.replace(',', '.'));
-      const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && (v > 0 || key === 'friction');
+      const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && (v > 0 || key === 'friction' || key === 'drag');
       el.classList.toggle('bad', !ok);
       if (!ok || v === st[key]) return;
       st[key] = v;
       if (isCustomMat(m)) customMatsStore();
-      if (key !== 'friction') stressInvalidate();
+      if (key !== 'friction' && key !== 'drag') stressInvalidate();
       else frictionWake();
     });
     el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
@@ -10314,14 +11003,14 @@ bindTap(document.getElementById('mn-add'), () => {
   const angle = powder ? val('mn-angle') : MAT_ANGLE_STD, clear = val('mn-clear');
   const def = customMatDef({
     id, name, color: document.getElementById('mn-color').value,
-    weight: val('mn-weight'), friction: val('mn-fric'), strength: val('mn-str'), pull: val('mn-pull'),
+    weight: val('mn-weight'), friction: val('mn-fric'), drag: val('mn-drag'), strength: val('mn-str'), pull: val('mn-pull'),
     powder, angle, transparency: clear,
   });
   let msg = '';
   if (id === MAT_ID_LIMIT) msg = `The game can hold ${MAT_ID_LIMIT - CUSTOM_MAT0} created materials and has them all — delete one first`;
   else if (!name) msg = 'Give it a name';
   else if (MAT_NAMES.some((n) => n === name.toLowerCase().slice(0, 20))) msg = 'That name is taken';
-  else if (!def) msg = 'Weight and friction need a number of 0 or more, compression and pull above 0';
+  else if (!def) msg = 'Weight, friction and drag need a number of 0 or more, compression and pull above 0';
   else if (!Number.isFinite(angle)) msg = 'Place angle needs a number from 0 to 90';
   else if (!Number.isFinite(clear)) msg = 'Transparency needs a number from 0 to 100';
   if (msg) { matNewMsg.textContent = msg; return; }
@@ -10342,7 +11031,7 @@ function matStatsSource() {
     const tag = '  // ' + MAT_NAMES[i].toUpperCase().replace(/ /g, '_');
     if (!st) return '  null,'.padEnd(80) + tag;
     return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
-         + `friction: ${(st.friction + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(9)}`
+         + `friction: ${(st.friction + ',').padEnd(3)}drag: ${(matDrag(i) + ',').padEnd(4)}strength: ${(st.strength + ',').padEnd(9)}`
          + `pull: ${(st.pull + ',').padEnd(6)}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
   // The created materials after it, as their own list: id, colour and stats.
@@ -14679,6 +15368,7 @@ function tick() {
     s.mesh.position.copy(s.body.position);
     s.mesh.quaternion.copy(s.body.quaternion);
   }
+  sinkRelocate();        // the cells sinkers have sunk past this frame go to the rim
   processImpacts();      // after the meshes have the bodies' poses, before anything is called settled
   updateFallingChunks();
   updatePowderBlocks(dt);

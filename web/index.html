@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 274;
+window.GAME_VERSION = 275;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1562,6 +1562,7 @@ window.GAME_VERSION = 274;
     <div class="mn-row">
       <label>Weight <input id="mn-weight" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="2"></label>
       <label>Friction <input id="mn-fric" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="1"></label>
+      <label>Drag <input id="mn-drag" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="20"></label>
       <label>Compression <input id="mn-str" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="100000"></label>
       <label>Pull <input id="mn-pull" class="mat-str" type="text" inputmode="decimal" autocomplete="off" value="100"></label>
       <label class="mn-chk"><input id="mn-powder" type="checkbox"> Powder</label>
@@ -1770,7 +1771,7 @@ window.__libsReady = (function () {
      server caches it for a year (immutable) only while the name matches the
      content. After editing it, rename it and update this tag:
        h=$(sha256sum game.*.js | cut -c1-8); mv game.*.js game.$h.js -->
-<script type="module" src="game.7c583343.js"></script>
+<script type="module" src="game.0632e081.js"></script>
 
 <script>
 // Surface module-load failures (bad network / blocked CDN) instead of a black screen.

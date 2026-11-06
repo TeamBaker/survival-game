@@ -1018,15 +1018,20 @@ function sinkBlocksPowder(i, j, l) {
 }
 // Every number of the sinking code that is not a material's own, each read
 // where it is used every time, so a Sink panel edit is in force the next step.
-// dragScale scales the hold-back only: a cell of M holds a sinker back by
-// w_M * drag_M * dragScale, so a fully sunk block of weight w settles to
-// g (w - w_M) / (that) m/s. Nothing here enters the lift, so where a piece
-// comes to rest (displaced weight == its weight) is the same whatever it is.
+// dragScale and frictionScale scale the hold-back only: a cell of M holds a
+// sinker back by w_M * drag_M * dragScale * (1 + frictionScale * friction_M),
+// so a fully sunk block of weight w settles to g (w - w_M) / (that) m/s. The
+// grains rub on the sinker as it pushes past, so a grippier powder holds it
+// back harder; friction 0 (or frictionScale 0) leaves the drag alone. Nothing
+// here enters the lift, so where a piece comes to rest (displaced weight ==
+// its weight) is the same whatever it is.
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
 const SINK_TUNE_DEFS = [
   { key: 'dragScale', group: 'Speed', name: 'Drag multiplier', def: 1, min: 0,
     help: 'Every material\'s drag times this. Speed goes as 1 / (drag x this).' },
+  { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 0.5, min: 0,
+    help: 'How much the friction of the powder sunk into slows a sinker: hold-back times (1 + this x friction). 0: friction has no effect on sinking.' },
   { key: 'sleepImb', group: 'Settling', name: 'Sleep balance', def: 0.002, min: 0.0001,
     help: 'Fraction of its weight a sinker may be off balance and still sleep. Smaller: rests nearer the exact depth, takes longer.' },
   { key: 'rigidSteps', group: 'Settling', name: 'Held memory (steps)', def: 1, min: 1, int: true,
@@ -1068,7 +1073,7 @@ const SINK_TUNE = {};
 for (const d of SINK_TUNE_DEFS) SINK_TUNE[d.key] = d.def;
 // What a fully sunk cell of m holds a sinker back with, per unit of its
 // weight and speed (see SINK_TUNE).
-const sinkHold = (m) => matDrag(m) * SINK_TUNE.dragScale;
+const sinkHold = (m) => matDrag(m) * SINK_TUNE.dragScale * (1 + SINK_TUNE.frictionScale * matFriction(m));
 const _sinkP = new CANNON.Vec3(), _sinkN = new CANNON.Vec3(), _sinkQ = new CANNON.Quaternion();
 const _sinkV = new CANNON.Vec3(), _sinkW = new CANNON.Vec3(), _sinkR = new CANNON.Vec3();
 const sinkWeight = (m) => { const w = MAT_STATS[m]?.weight; return w > 0 ? w : 0; };
@@ -2153,7 +2158,7 @@ const MAT_STATS = [
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
 // Drag is how hard a powder holds back a heavier block sinking through it
 // (sinkForces, sinkHold): a block of weight w fully sunk in powder M settles
-// to g (w - w_M) / (w_M drag_M dragScale) m/s. Only a powder's is read; a
+// to g (w - w_M) / (w_M drag_M dragScale (1 + frictionScale friction_M)) m/s. Only a powder's is read; a
 // row pasted without a drag takes the standard.
 const MAT_DRAG_STD = 20;
 const matDrag = (m) => MAT_STATS[m]?.drag ?? MAT_DRAG_STD;

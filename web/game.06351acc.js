@@ -1025,6 +1025,17 @@ function sinkBlocksPowder(i, j, l) {
 // back harder; friction 0 (or frictionScale 0) leaves the drag alone. Nothing
 // here enters the lift, so where a piece comes to rest (displaced weight ==
 // its weight) is the same whatever it is.
+// weightSpeed divides that whole hold-back, so the speed the weight difference
+// drives is weightSpeed times what it was: g (w - floatScale w_M) weightSpeed /
+// (the hold-back). It is a divisor of the drag rather than a factor on the
+// forces so that nothing it does reaches the balance, a load carried on the
+// sinker included: drag is zero at rest, so the rest depth cannot move. At 0
+// the drag holds the sinker to the medium outright and the weight moves it
+// nowhere.
+// floatScale multiplies the lift (the displaced weight) and nothing else, so
+// a piece rests where floatScale x displaced weight == its weight: higher
+// rides shallower, 0 lifts nothing and every piece that has gone in sinks to
+// whatever solid is under the powder.
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
 const SINK_TUNE_DEFS = [
@@ -1032,6 +1043,10 @@ const SINK_TUNE_DEFS = [
     help: 'Every material\'s drag times this. Speed goes as 1 / (drag x this).' },
   { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 0.5, min: 0,
     help: 'How much the friction of the powder sunk into slows a sinker: hold-back times (1 + this x friction). 0: friction has no effect on sinking.' },
+  { key: 'weightSpeed', group: 'Speed', name: 'Weight speed importance', def: 1, min: 0,
+    help: 'How strongly the weight difference (sinker vs powder) drives sinking and rising speed: speed times this. Where a piece stops is not changed. 0: weight moves nothing, a piece stays where it first went in.' },
+  { key: 'floatScale', group: 'Floating', name: 'Float importance', def: 1, min: 0,
+    help: 'Push-back from the weight of the powder a piece has displaced, times this. Rests where this x displaced weight == its weight: higher floats higher. 0: nothing floats, every piece that goes in sinks to the solid under the powder.' },
   { key: 'sleepImb', group: 'Settling', name: 'Sleep balance', def: 0.002, min: 0.0001,
     help: 'Fraction of its weight a sinker may be off balance and still sleep. Smaller: rests nearer the exact depth, takes longer.' },
   { key: 'rigidSteps', group: 'Settling', name: 'Held memory (steps)', def: 1, min: 1, int: true,
@@ -1399,9 +1414,10 @@ function sinkScan(S, hull, M, F) {
 // Lift and drag are in the body's own kilograms per unit of weight (its mass
 // over its blocks' weight, which the mass cap can make less than
 // FALL_KG_PER_WEIGHT), so a piece floats where its blocks' weight equals the
-// weight of what it displaces whatever the cap does to its mass. The drag is
-// applied as the implicit step would, divided by 1 + c h (1/m_S + 1/m_O), so a
-// high drag holds a piece back without ever throwing it the other way.
+// weight of what it displaces (times floatScale) whatever the cap does to its
+// mass. The drag is applied as the implicit step would, divided by
+// weightSpeed + c h (1/m_S + 1/m_O), so a high drag holds a piece back
+// without ever throwing it the other way.
 function sinkForces(h) {
   sinkBusyN = 0;
   if (!sinkers.size) return;
@@ -1426,7 +1442,12 @@ function sinkForces(h) {
         C += share * sinkWeight(m) * K * sinkHold(m);
       }
       const Od = O && O.type === CANNON.Body.DYNAMIC;
-      const dragK = 1 / (1 + C * h * (1 / S.mass + (Od ? 1 / O.mass : 0)));
+      // The implicit drag with the hold-back over weightSpeed, multiplied
+      // through by weightSpeed so 0 is the limit (the medium's speed taken
+      // outright) rather than a division by zero. Holding nothing back at
+      // all (C 0) stays nothing whatever weightSpeed is.
+      const dragD = SINK_TUNE.weightSpeed + C * h * (1 / S.mass + (Od ? 1 / O.mass : 0));
+      const dragK = dragD > 0 ? 1 / dragD : 0;
       // Lift first, then drag against the velocity the step is heading for
       // with the lift and gravity in (v + h F / m): the implicit step's own
       // answer, so the drag balances the rest at exactly F / C. Only the
@@ -1434,7 +1455,7 @@ function sinkForces(h) {
       // yet to solve, and the push its forces alone predict is not its motion.
       for (let t = 0; t < _sinkLen; t++) {
         const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
-        const wm = sinkWeight(m), kg = share * wm * K;
+        const wm = sinkWeight(m), kg = share * wm * K * SINK_TUNE.floatScale;
         disp += share * wm;
         _sinkP.set(L[k + 8], L[k + 9], L[k + 10]);
         sinkPush(S, O, Od, _sinkP, -gx * kg, -gy * kg, -gz * kg);
@@ -1443,7 +1464,8 @@ function sinkForces(h) {
       const ih = h / S.mass, svx = S.velocity.x + S.force.x * ih, svy = S.velocity.y + S.force.y * ih, svz = S.velocity.z + S.force.z * ih;
       let ovx = 0, ovy = 0, ovz = 0;
       if (O) { ovx = O.velocity.x; ovy = O.velocity.y; ovz = O.velocity.z; }
-      for (let t = 0; t < _sinkLen; t++) {
+      const stiff = sinkDragStiff(S, O, Od, h, L, acc, K, dragK);
+      for (let t = 0; !stiff && t < _sinkLen; t++) {
         const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
         const px = L[k + 8], py = L[k + 9], pz = L[k + 10];
         // Velocity of the point on S, less the medium's own there.
@@ -1465,11 +1487,133 @@ function sinkForces(h) {
     }
     st.disp = disp;
     // Off balance and held by nothing rigid: still sinking or rising, however
-    // slowly, so cannon may not put it to sleep part way.
-    st.busy = Math.abs(hull.W - disp) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp > 0;
+    // slowly, so cannon may not put it to sleep part way. The balance is
+    // against the lift as felt (floatScale), while being in the powder at all
+    // is the raw overlap, so a piece lifted by nothing still counts as on its
+    // way down. With weightSpeed 0 the weight moves it nowhere, so it is not.
+    st.busy = Math.abs(hull.W - disp * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp > 0
+      && SINK_TUNE.weightSpeed > 0;
     if (st.busy) { sinkBusyN++; if (S.sleepState !== CANNON.Body.AWAKE) S.wakeUp(); }
     if (!st.media.size && !st.owed.length) sinkers.delete(S);
   }
+}
+// The drag above is the implicit step for the body's straight-line motion
+// only: each cell's share is divided by the same 1 + C h / m. A cell off the
+// middle also turns the body, and once the hold-back is stiff enough (a small
+// weightSpeed, a huge drag) the cells near one face take out more than the
+// motion there is, every step, and the tilt grows instead of dying (a full
+// hold on a sliver of bottom face over-corrects about 2.3x). Whenever some
+// motion of the body would be over-corrected (a gain past 1 on any mode of
+// h dragK W D, W the inverse masses and D the cells' drag on the six motions),
+// the drag is solved instead as one implicit step of the rigid body,
+// (weightSpeed W^-1 + h D) dU = -h D U, which can never overshoot and at
+// weightSpeed 0 takes the medium's motion outright. The stock values sit far
+// under that gain (~0.2), so they never take this path.
+const _skD = new Float64Array(36), _skA = new Float64Array(42), _skX = new Float64Array(6), _skY = new Float64Array(6);
+const _skIw = new Float64Array(9), _skU = new Float64Array(6), _skR = new Float64Array(9), _skDead = [false, false, false, false, false, false];
+function sinkDragStiff(S, O, Od, h, L, acc, K, dragK) {
+  if (!_sinkLen || !(dragK > 0)) return false;
+  let c0 = 0, mx = 0, my = 0, mz = 0, xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
+  for (let t = 0; t < _sinkLen; t++) {
+    const k = t * SINK_L, m = L[k + 5], c = L[k + 6] / Math.max(1, acc[L[k + 1]]) * sinkWeight(m) * K * sinkHold(m);
+    const rx = L[k + 8] - S.position.x, ry = L[k + 9] - S.position.y, rz = L[k + 10] - S.position.z;
+    c0 += c; mx += c * rx; my += c * ry; mz += c * rz;
+    xx += c * rx * rx; yy += c * ry * ry; zz += c * rz * rz; xy += c * rx * ry; xz += c * rx * rz; yz += c * ry * rz;
+  }
+  if (!(c0 > 0)) return false;
+  // D on (v, w): point velocity v + w x r, so D_vv = c0, D_vw = -[m1]x, D_wv = [m1]x,
+  // D_ww = tr(m2) - m2.
+  const D = _skD, tr = xx + yy + zz;
+  D.fill(0);
+  D[0] = D[7] = D[14] = c0;
+  // [m1]x rows (0 -mz my), (mz 0 -mx), (-my mx 0).
+  D[3] = 0; D[4] = mz; D[5] = -my; D[9] = -mz; D[10] = 0; D[11] = mx; D[15] = my; D[16] = -mx; D[17] = 0;
+  D[18] = 0; D[19] = -mz; D[20] = my; D[24] = mz; D[25] = 0; D[26] = -mx; D[30] = -my; D[31] = mx; D[32] = 0;
+  D[21] = tr - xx; D[22] = -xy; D[23] = -xz; D[27] = -xy; D[28] = tr - yy; D[29] = -yz; D[33] = -xz; D[34] = -yz; D[35] = tr - zz;
+  const wl = 1 / S.mass + (Od ? 1 / O.mass : 0), Iw = S.invInertiaWorld.elements;
+  // Largest gain of h dragK W D by power iteration (its eigenvalues are real and
+  // not negative); a gain past 2 is the one that grows, and it dominates fast.
+  const x = _skX, y = _skY;
+  x[0] = 1; x[1] = 0.7; x[2] = 0.4; x[3] = 0.9; x[4] = 0.3; x[5] = 0.6;
+  let g = 0;
+  for (let it = 0; it < 24; it++) {
+    for (let a = 0; a < 6; a++) { let v = 0; for (let b = 0; b < 6; b++) v += D[a * 6 + b] * x[b]; _skU[a] = v; }
+    for (let a = 0; a < 3; a++) y[a] = wl * _skU[a];
+    for (let a = 0; a < 3; a++) y[3 + a] = Iw[a * 3] * _skU[3] + Iw[a * 3 + 1] * _skU[4] + Iw[a * 3 + 2] * _skU[5];
+    let n = 0; for (let a = 0; a < 6; a++) n = Math.max(n, Math.abs(y[a]));
+    if (!(n > 0)) return false;
+    g = n;
+    for (let a = 0; a < 6; a++) x[a] = y[a] / n;
+  }
+  if (!(h * dragK * g > 1)) return false;
+  // Inertia in world axes, R diag(I) R^T, the inverse of the one cannon steps with.
+  const q = S.quaternion, I = S.inertia, R = _skR;
+  const qx = q.x, qy = q.y, qz = q.z, qw = q.w;
+  R[0] = 1 - 2 * (qy * qy + qz * qz); R[1] = 2 * (qx * qy - qz * qw); R[2] = 2 * (qx * qz + qy * qw);
+  R[3] = 2 * (qx * qy + qz * qw); R[4] = 1 - 2 * (qx * qx + qz * qz); R[5] = 2 * (qy * qz - qx * qw);
+  R[6] = 2 * (qx * qz - qy * qw); R[7] = 2 * (qy * qz + qx * qw); R[8] = 1 - 2 * (qx * qx + qy * qy);
+  for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) _skIw[a * 3 + b] = R[a * 3] * I.x * R[b * 3] + R[a * 3 + 1] * I.y * R[b * 3 + 1] + R[a * 3 + 2] * I.z * R[b * 3 + 2];
+  // U: the sinker's motion the step is heading for, gravity, lift and their
+  // turn in, less the medium's at the same place.
+  const U = _skU, T = S.torque, w = S.angularVelocity;
+  U[0] = S.velocity.x + S.force.x * h / S.mass; U[1] = S.velocity.y + S.force.y * h / S.mass; U[2] = S.velocity.z + S.force.z * h / S.mass;
+  U[3] = w.x + h * (Iw[0] * T.x + Iw[1] * T.y + Iw[2] * T.z);
+  U[4] = w.y + h * (Iw[3] * T.x + Iw[4] * T.y + Iw[5] * T.z);
+  U[5] = w.z + h * (Iw[6] * T.x + Iw[7] * T.y + Iw[8] * T.z);
+  let dpx = 0, dpy = 0, dpz = 0;
+  if (O) {
+    const ow = O.angularVelocity;
+    dpx = S.position.x - O.position.x; dpy = S.position.y - O.position.y; dpz = S.position.z - O.position.z;
+    U[0] -= O.velocity.x + ow.y * dpz - ow.z * dpy; U[1] -= O.velocity.y + ow.z * dpx - ow.x * dpz; U[2] -= O.velocity.z + ow.x * dpy - ow.y * dpx;
+    U[3] -= ow.x; U[4] -= ow.y; U[5] -= ow.z;
+  }
+  // (weightSpeed W^-1 + h D) dU = -h D U, symmetric; a pivot of nothing is a
+  // motion the cells cannot hold at all (turning about a lone cell), left be.
+  const k1 = SINK_TUNE.weightSpeed, A = _skA;
+  let big = 0;
+  for (let a = 0; a < 6; a++) {
+    let r = 0;
+    for (let b = 0; b < 6; b++) {
+      const mi = a < 3 ? (a === b ? 1 / wl : 0) : (b < 3 ? 0 : _skIw[(a - 3) * 3 + b - 3]);
+      A[a * 7 + b] = k1 * mi + h * D[a * 6 + b];
+      r -= h * D[a * 6 + b] * U[b];
+    }
+    A[a * 7 + 6] = r;
+    big = Math.max(big, Math.abs(A[a * 7 + a]));
+  }
+  const dead = _skDead;
+  for (let c = 0; c < 6; c++) {
+    let p = c;
+    for (let r = c + 1; r < 6; r++) if (Math.abs(A[r * 7 + c]) > Math.abs(A[p * 7 + c])) p = r;
+    if (p !== c) for (let b = 0; b < 7; b++) { const t = A[c * 7 + b]; A[c * 7 + b] = A[p * 7 + b]; A[p * 7 + b] = t; }
+    dead[c] = !(Math.abs(A[c * 7 + c]) > 1e-12 * big);
+    if (dead[c]) continue;
+    for (let r = c + 1; r < 6; r++) {
+      const f = A[r * 7 + c] / A[c * 7 + c];
+      if (f) for (let b = c; b < 7; b++) A[r * 7 + b] -= f * A[c * 7 + b];
+    }
+  }
+  const dU = _skX;
+  for (let c = 5; c >= 0; c--) {
+    if (dead[c]) { dU[c] = 0; continue; }
+    let v = A[c * 7 + 6];
+    for (let b = c + 1; b < 6; b++) v -= A[c * 7 + b] * dU[b];
+    dU[c] = v / A[c * 7 + c];
+  }
+  // Back to forces: straight-line impulse over the pair's inverse mass, turn
+  // impulse through the sinker's inertia; the medium piece gets the opposite.
+  const px = dU[0] / wl / h, py = dU[1] / wl / h, pz = dU[2] / wl / h;
+  const lx = (_skIw[0] * dU[3] + _skIw[1] * dU[4] + _skIw[2] * dU[5]) / h;
+  const ly = (_skIw[3] * dU[3] + _skIw[4] * dU[4] + _skIw[5] * dU[5]) / h;
+  const lz = (_skIw[6] * dU[3] + _skIw[7] * dU[4] + _skIw[8] * dU[5]) / h;
+  S.force.x += px; S.force.y += py; S.force.z += pz;
+  S.torque.x += lx; S.torque.y += ly; S.torque.z += lz;
+  if (Od) {
+    O.force.x -= px; O.force.y -= py; O.force.z -= pz;
+    O.torque.x -= dpy * pz - dpz * py + lx; O.torque.y -= dpz * px - dpx * pz + ly; O.torque.z -= dpx * py - dpy * px + lz;
+  }
+  sinkStats.stiff++;
+  return true;
 }
 // Force f at world point p on S, and its opposite on a moving medium O.
 function sinkPush(S, O, Od, p, fx, fy, fz) {
@@ -1502,7 +1646,7 @@ function sinkForget(S, st) {
 // Once a frame, after the step: every lighter cell whose middle a hull cell
 // of a sinker now covers is taken out of the medium and put down somewhere
 // else. Its record goes in first, so the lift it gave goes on unbroken.
-const sinkStats = { moved: 0, placedGround: 0, placedPiece: 0, owed: 0 };
+const sinkStats = { moved: 0, placedGround: 0, placedPiece: 0, owed: 0, stiff: 0 };
 function sinkRelocate() {
   if (!sinkers.size) return;
   const step = world.stepnumber;
@@ -2158,7 +2302,7 @@ const MAT_STATS = [
 for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
 // Drag is how hard a powder holds back a heavier block sinking through it
 // (sinkForces, sinkHold): a block of weight w fully sunk in powder M settles
-// to g (w - w_M) / (w_M drag_M dragScale (1 + frictionScale friction_M)) m/s. Only a powder's is read; a
+// to g (w - floatScale w_M) weightSpeed / (w_M drag_M dragScale (1 + frictionScale friction_M)) m/s. Only a powder's is read; a
 // row pasted without a drag takes the standard.
 const MAT_DRAG_STD = 20;
 const matDrag = (m) => MAT_STATS[m]?.drag ?? MAT_DRAG_STD;

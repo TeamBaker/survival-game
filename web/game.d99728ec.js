@@ -918,6 +918,7 @@ function debrisFricCells(lat, rev) {
 // asked for (the slip's own), so the grip opposes the slide at full mu.
 const _fsB = [], _fsInvC = [], _fsLam = [];
 function frictionSolve(h, w) {
+  pieceGyro(h);
   sinkForces(h);
   const eqs = this.equations, n = eqs.length, bodies = w.bodies, nb = bodies.length;
   if (n === 0) return 0;
@@ -1039,30 +1040,27 @@ function sinkBlocksPowder(i, j, l) {
 // a piece rests where floatScale x displaced weight == its weight: higher
 // rides shallower, 0 lifts nothing and every piece that has gone in sinks to
 // whatever solid is under the powder.
-// speedDiv slows the whole of a free sinker's motion through powder by that
-// factor, as if time ran D times slower for it: the net push on it (gravity
-// and lift) is divided by D^2 and the hold-back by D, so every path it would
-// have taken is taken the same, D times slower, at 1/D the speed. Only the
-// sinker feels it: what it rests on still carries its full weight, and one
-// held by anything solid is not slowed (it would press on that solid at
-// 1/D^2 of its weight). Being only a change of pace it moves no rest depth,
-// and it cannot change how far a piece overshoots on the way there either:
-// that is set by the hold-back against the float's spring, which it divides
-// alike.
-// The stock pair, friction effect 20 with divider 1.5, is the one that both
-// sinks a rock at about 0.56 m/s and settles a floater at its displaced-weight
-// depth without passing it, even dropped from 20 blocks: below about 6 the
-// hold-back is too weak against the float's spring and a floater dives past
-// its depth into a shaft the rise cannot refill, and a divider much past
-// friction effect / 10 weakens the hold-back on a dropped piece's entry speed
-// enough to do the same.
+// speedDiv divides every steady speed through powder, sinking and rising,
+// by that factor: it multiplies the hold-back, the one force in the sinking
+// that answers speed, so the speed at which the weight difference balances it
+// is 1/D of what it was. It is the only way a speed can be divided while the
+// body keeps its own momentum: gravity, the lift and the body's mass are what
+// they are. So it also stops a piece's fall into the powder D times harder,
+// and a stronger hold-back damps a floater's bob more; it moves no rest depth.
+// friction effect x divider is the strength; they are two dials on one force.
+// The stock pair, friction effect 20 with divider 1.5 (hold-back 30), sinks a
+// rock at about 0.56 m/s. Its floaters settle at their displaced-weight depth
+// without passing it even dropped from 20 blocks: their fall is spent in the
+// first few tenths of a metre. Below about 6 the hold-back is too weak against
+// the float's spring and a floater dropped in dives past its depth; once it
+// goes fully under it leaves a shaft the rise cannot refill.
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
 const SINK_TUNE_DEFS = [
   { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 20, min: 0,
-    help: 'How much the friction of the powder slows a sinker, the whole time it touches the powder (from first touch, not only once in): held back by this x friction x the weight it would displace fully under, per m/s. 0: nothing slows sinking but the piece\'s own damping.' },
+    help: 'How much the friction of the powder slows a sinker, the whole time it touches the powder (from first touch, not only once in): held back by this x the divider x friction x the weight it would displace fully under, per m/s. 0: nothing slows sinking but the piece\'s own damping.' },
   { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1.5, min: 1, max: 1000,
-    help: 'Divides the speed of everything sinking or rising through powder: 2 is half as fast at every point of the way. 1: as without it. Where a piece rests is not changed; a piece held by something solid is not slowed.' },
+    help: 'Divides the steady speed of everything sinking or rising through powder (2: half as fast) by holding it back this many times harder: it multiplies the friction hold-back, so it also stops a falling piece sooner and damps a bob more. 1: as without it. Where a piece rests is not changed.' },
   { key: 'weightSpeed', group: 'Speed', name: 'Weight speed importance', def: 1, min: 0,
     help: 'How strongly the weight difference (sinker vs powder) drives sinking and rising speed: speed times this. Where a piece stops is not changed. 0: weight moves nothing, a piece stays where it first went in.' },
   { key: 'floatScale', group: 'Floating', name: 'Float importance', def: 1, min: 0,
@@ -1108,7 +1106,7 @@ const SINK_TUNE = {};
 for (const d of SINK_TUNE_DEFS) SINK_TUNE[d.key] = d.def;
 // What a fully sunk cell of m holds a sinker back with, per unit of its
 // weight and speed (see SINK_TUNE).
-const sinkHold = (m) => SINK_TUNE.frictionScale * matFriction(m);
+const sinkHold = (m) => SINK_TUNE.frictionScale * SINK_TUNE.speedDiv * matFriction(m);
 const _sinkP = new CANNON.Vec3(), _sinkN = new CANNON.Vec3(), _sinkQ = new CANNON.Quaternion();
 const _sinkV = new CANNON.Vec3(), _sinkW = new CANNON.Vec3(), _sinkR = new CANNON.Vec3();
 const sinkWeight = (m) => { const w = MAT_STATS[m]?.weight; return w > 0 ? w : 0; };
@@ -1480,9 +1478,13 @@ function sinkContactHold(S, hull, M, nC) {
 // mass over its blocks' weight, which the mass cap can make less than
 // FALL_KG_PER_WEIGHT), so a piece floats where its blocks' weight equals the
 // weight of what it displaces (times floatScale) whatever the cap does to its
-// mass. The hold-back is applied as the implicit step would, divided by
-// weightSpeed + c h (1/m_S + 1/m_O), so a grippy powder holds a piece back
-// without ever throwing it the other way.
+// mass, and gravity, lift and hold-back keep the same proportion to the
+// body's momentum. Nothing here writes a velocity or scales the motion: lift
+// and hold-back are forces and torques on the body, cannon integrates them
+// with gravity and the contacts into its momentum, and whatever the piece
+// does — carrying a fall in past its balance depth and coming back, a heavy
+// one going in further than a light one at the same speed, a spin dying out
+// in the grains — is that momentum answering those forces.
 function sinkForces(h) {
   sinkBusyN = 0;
   if (!sinkers.size) return;
@@ -1493,13 +1495,6 @@ function sinkForces(h) {
     const hull = sinkHull(S.debrisMesh, S);
     if (!(hull.W > 0)) continue;
     const K = S.mass / hull.W;
-    // Free: touching powder and held by nothing rigid now (this step's
-    // contacts are in by the time the solver calls here). From the first touch,
-    // not the first overlap: a step or two at full gravity before it is in
-    // would carry in a speed the divider never takes back out.
-    const D = st.media.size && step - st.rigidAt > SINK_TUNE.rigidSteps ? SINK_TUNE.speedDiv : 1;
-    const KH = K / D, lD = 1 / (D * D) - 1;
-    if (lD) { S.force.x += lD * S.mass * gx; S.force.y += lD * S.mass * gy; S.force.z += lD * S.mass * gz; }
     let disp = 0, nC = 0;
     for (const M of st.media.values()) if (M.touchAt === step || M.overAt === step - 1) nC++;
     for (const [key, M] of st.media) {
@@ -1511,50 +1506,18 @@ function sinkForces(h) {
       const L = _sinkList, acc = _sinkAcc, nIn = _sinkLen;
       if (nIn) M.overAt = step;
       if (nIn || M.touchAt === step) sinkContactHold(S, hull, M, Math.max(1, nC));
-      let C = 0;
-      for (let t = 0; t < _sinkLen; t++) {
-        const k = t * SINK_L;
-        C += sinkShare(L, k, acc) * KH * sinkCellHold(L, k);
-      }
       const Od = O && O.type === CANNON.Body.DYNAMIC;
-      // The implicit hold-back over weightSpeed, multiplied
-      // through by weightSpeed so 0 is the limit (the medium's speed taken
-      // outright) rather than a division by zero. Holding nothing back at
-      // all (C 0) stays nothing whatever weightSpeed is.
-      const holdD = SINK_TUNE.weightSpeed + C * h * (1 / S.mass + (Od ? 1 / O.mass : 0));
-      const holdK = holdD > 0 ? 1 / holdD : 0;
-      // Lift first, then the hold-back against the velocity the step is heading
-      // for with the lift and gravity in (v + h F / m): the implicit step's own
-      // answer, so it balances the rest at exactly F / C. Only the
-      // sinker's: a medium piece is mostly held by contacts this sweep has
-      // yet to solve, and the push its forces alone predict is not its motion.
+      // Lift first, so the hold-back is solved against the motion the step is
+      // heading for with it in.
       for (let t = 0; t < nIn; t++) {
         const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
         const wm = sinkWeight(m), kg = share * wm * K * SINK_TUNE.floatScale;
         disp += share * wm;
         _sinkP.set(L[k + 8], L[k + 9], L[k + 10]);
         sinkPush(S, O, Od, _sinkP, -gx * kg, -gy * kg, -gz * kg);
-        if (lD) sinkPush(S, null, false, _sinkP, -gx * kg * lD, -gy * kg * lD, -gz * kg * lD);
         if (L[k + 7]) { const r = M.rec.get(fricKey(L[k + 2], L[k + 3], L[k + 4])); if (r) r.at = step; }
       }
-      const ih = h / S.mass, svx = S.velocity.x + S.force.x * ih, svy = S.velocity.y + S.force.y * ih, svz = S.velocity.z + S.force.z * ih;
-      let ovx = 0, ovy = 0, ovz = 0;
-      if (O) { ovx = O.velocity.x; ovy = O.velocity.y; ovz = O.velocity.z; }
-      const stiff = sinkHoldStiff(S, O, Od, h, L, acc, KH, holdK);
-      for (let t = 0; !stiff && t < _sinkLen; t++) {
-        const k = t * SINK_L;
-        const px = L[k + 8], py = L[k + 9], pz = L[k + 10];
-        // Velocity of the point on S, less the medium's own there.
-        const rx = px - S.position.x, ry = py - S.position.y, rz = pz - S.position.z, w = S.angularVelocity;
-        let vx = svx + w.y * rz - w.z * ry, vy = svy + w.z * rx - w.x * rz, vz = svz + w.x * ry - w.y * rx;
-        if (O) {
-          const ox = px - O.position.x, oy = py - O.position.y, oz = pz - O.position.z, ow = O.angularVelocity;
-          vx -= ovx + ow.y * oz - ow.z * oy; vy -= ovy + ow.z * ox - ow.x * oz; vz -= ovz + ow.x * oy - ow.y * ox;
-        }
-        const cd = sinkShare(L, k, acc) * KH * sinkCellHold(L, k) * holdK;
-        _sinkP.set(px, py, pz);
-        sinkPush(S, O, Od, _sinkP, -cd * vx, -cd * vy, -cd * vz);
-      }
+      sinkHoldSolve(S, O, Od, h, L, acc, K);
       // A record no part of the hull reaches any more has been left behind:
       // the cell stays empty (its block is on the rim).
       for (const [rk, r] of M.rec) if (r.at !== step) sinkUnrecord(M, rk);
@@ -1573,22 +1536,25 @@ function sinkForces(h) {
     if (!st.media.size && !st.owed.length) sinkers.delete(S);
   }
 }
-// The hold-back above is the implicit step for the body's straight-line motion
-// only: each cell's share is divided by the same 1 + C h / m. A cell off the
-// middle also turns the body, and once the hold-back is stiff enough (a small
-// weightSpeed, a huge friction effect) the cells near one face take out more than the
-// motion there is, every step, and the tilt grows instead of dying (a full
-// hold on a sliver of bottom face over-corrects about 2.3x). Whenever some
-// motion of the body would be over-corrected (a gain past 1 on any mode of
-// h holdK W D, W the inverse masses and D the cells' hold-back on the six motions),
-// the hold-back is solved instead as one implicit step of the rigid body,
-// (weightSpeed W^-1 + h D) dU = -h D U, which can never overshoot and at
-// weightSpeed 0 takes the medium's motion outright. The stock values sit far
-// under that gain, so they never take this path.
-const _skD = new Float64Array(36), _skA = new Float64Array(42), _skX = new Float64Array(6), _skY = new Float64Array(6);
-const _skIw = new Float64Array(9), _skU = new Float64Array(6), _skR = new Float64Array(9), _skDead = [false, false, false, false, false, false];
-function sinkHoldStiff(S, O, Od, h, L, acc, K, holdK) {
-  if (!_sinkLen || !(holdK > 0)) return false;
+// The hold-back, as one implicit (backward Euler) step of the whole rigid
+// body. Each listed cell is held back by c per unit of its point's speed
+// through the powder (c = its share x K x the cell's hold-back), and together
+// they make D, a 6x6 matrix on the body's motion U = (v, w) less the medium's
+// there. The step solves
+//   (weightSpeed M + h D) dU = -h D U,
+// M the body's mass and its inertia tensor, so how much of a sliding or a
+// turning one step takes out is set by how much momentum, straight-line and
+// angular, the body has in that motion, and the coupling between them (a
+// cell held off the middle turns a sliding body) is in the same solve. That
+// is the force law -D U / weightSpeed integrated implicitly: it never throws
+// the body the other way at any strength, and at weightSpeed 0 the medium's
+// motion is taken outright (a perfectly inelastic grip, its impulse going
+// into the medium piece). The result goes on as force and torque, which
+// cannon integrates with everything else.
+const _skD = new Float64Array(36), _skA = new Float64Array(42), _skX = new Float64Array(6);
+const _skIw = new Float64Array(9), _skU = new Float64Array(6), _skDead = [false, false, false, false, false, false];
+function sinkHoldSolve(S, O, Od, h, L, acc, K) {
+  if (!_sinkLen) return;
   let c0 = 0, mx = 0, my = 0, mz = 0, xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
   for (let t = 0; t < _sinkLen; t++) {
     const k = t * SINK_L, c = sinkShare(L, k, acc) * K * sinkCellHold(L, k);
@@ -1596,46 +1562,24 @@ function sinkHoldStiff(S, O, Od, h, L, acc, K, holdK) {
     c0 += c; mx += c * rx; my += c * ry; mz += c * rz;
     xx += c * rx * rx; yy += c * ry * ry; zz += c * rz * rz; xy += c * rx * ry; xz += c * rx * rz; yz += c * ry * rz;
   }
-  if (!(c0 > 0)) return false;
+  if (!(c0 > 0)) return;
   // D on (v, w): point velocity v + w x r, so D_vv = c0, D_vw = -[m1]x, D_wv = [m1]x,
   // D_ww = tr(m2) - m2.
   const D = _skD, tr = xx + yy + zz;
   D.fill(0);
   D[0] = D[7] = D[14] = c0;
-  // [m1]x rows (0 -mz my), (mz 0 -mx), (-my mx 0).
   D[3] = 0; D[4] = mz; D[5] = -my; D[9] = -mz; D[10] = 0; D[11] = mx; D[15] = my; D[16] = -mx; D[17] = 0;
   D[18] = 0; D[19] = -mz; D[20] = my; D[24] = mz; D[25] = 0; D[26] = -mx; D[30] = -my; D[31] = mx; D[32] = 0;
   D[21] = tr - xx; D[22] = -xy; D[23] = -xz; D[27] = -xy; D[28] = tr - yy; D[29] = -yz; D[33] = -xz; D[34] = -yz; D[35] = tr - zz;
-  const wl = 1 / S.mass + (Od ? 1 / O.mass : 0), Iw = S.invInertiaWorld.elements;
-  // Largest gain of h holdK W D by power iteration (its eigenvalues are real and
-  // not negative); a gain past 2 is the one that grows, and it dominates fast.
-  const x = _skX, y = _skY;
-  x[0] = 1; x[1] = 0.7; x[2] = 0.4; x[3] = 0.9; x[4] = 0.3; x[5] = 0.6;
-  let g = 0;
-  for (let it = 0; it < 24; it++) {
-    for (let a = 0; a < 6; a++) { let v = 0; for (let b = 0; b < 6; b++) v += D[a * 6 + b] * x[b]; _skU[a] = v; }
-    for (let a = 0; a < 3; a++) y[a] = wl * _skU[a];
-    for (let a = 0; a < 3; a++) y[3 + a] = Iw[a * 3] * _skU[3] + Iw[a * 3 + 1] * _skU[4] + Iw[a * 3 + 2] * _skU[5];
-    let n = 0; for (let a = 0; a < 6; a++) n = Math.max(n, Math.abs(y[a]));
-    if (!(n > 0)) return false;
-    g = n;
-    for (let a = 0; a < 6; a++) x[a] = y[a] / n;
-  }
-  if (!(h * holdK * g > 1)) return false;
-  // Inertia in world axes, R diag(I) R^T, the inverse of the one cannon steps with.
-  const q = S.quaternion, I = S.inertia, R = _skR;
-  const qx = q.x, qy = q.y, qz = q.z, qw = q.w;
-  R[0] = 1 - 2 * (qy * qy + qz * qz); R[1] = 2 * (qx * qy - qz * qw); R[2] = 2 * (qx * qz + qy * qw);
-  R[3] = 2 * (qx * qy + qz * qw); R[4] = 1 - 2 * (qx * qx + qz * qz); R[5] = 2 * (qy * qz - qx * qw);
-  R[6] = 2 * (qx * qz - qy * qw); R[7] = 2 * (qy * qz + qx * qw); R[8] = 1 - 2 * (qx * qx + qy * qy);
-  for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) _skIw[a * 3 + b] = R[a * 3] * I.x * R[b * 3] + R[a * 3 + 1] * I.y * R[b * 3 + 1] + R[a * 3 + 2] * I.z * R[b * 3 + 2];
+  const wl = 1 / S.mass + (Od ? 1 / O.mass : 0);
+  debrisInertiaWorld(S, _skIw, false);
   // U: the sinker's motion the step is heading for, gravity, lift and their
   // turn in, less the medium's at the same place.
-  const U = _skU, T = S.torque, w = S.angularVelocity;
+  const U = _skU, T = S.torque, w = S.angularVelocity, Iv = S.invInertiaWorld.elements;
   U[0] = S.velocity.x + S.force.x * h / S.mass; U[1] = S.velocity.y + S.force.y * h / S.mass; U[2] = S.velocity.z + S.force.z * h / S.mass;
-  U[3] = w.x + h * (Iw[0] * T.x + Iw[1] * T.y + Iw[2] * T.z);
-  U[4] = w.y + h * (Iw[3] * T.x + Iw[4] * T.y + Iw[5] * T.z);
-  U[5] = w.z + h * (Iw[6] * T.x + Iw[7] * T.y + Iw[8] * T.z);
+  U[3] = w.x + h * (Iv[0] * T.x + Iv[1] * T.y + Iv[2] * T.z);
+  U[4] = w.y + h * (Iv[3] * T.x + Iv[4] * T.y + Iv[5] * T.z);
+  U[5] = w.z + h * (Iv[6] * T.x + Iv[7] * T.y + Iv[8] * T.z);
   let dpx = 0, dpy = 0, dpz = 0;
   if (O) {
     const ow = O.angularVelocity;
@@ -1643,8 +1587,8 @@ function sinkHoldStiff(S, O, Od, h, L, acc, K, holdK) {
     U[0] -= O.velocity.x + ow.y * dpz - ow.z * dpy; U[1] -= O.velocity.y + ow.z * dpx - ow.x * dpz; U[2] -= O.velocity.z + ow.x * dpy - ow.y * dpx;
     U[3] -= ow.x; U[4] -= ow.y; U[5] -= ow.z;
   }
-  // (weightSpeed W^-1 + h D) dU = -h D U, symmetric; a pivot of nothing is a
-  // motion the cells cannot hold at all (turning about a lone cell), left be.
+  // Symmetric; a pivot of nothing (only at weightSpeed 0) is a motion the
+  // cells cannot hold at all (turning about a lone cell), left be.
   const k1 = SINK_TUNE.weightSpeed, A = _skA;
   let big = 0;
   for (let a = 0; a < 6; a++) {
@@ -1688,8 +1632,6 @@ function sinkHoldStiff(S, O, Od, h, L, acc, K, holdK) {
     O.force.x -= px; O.force.y -= py; O.force.z -= pz;
     O.torque.x -= dpy * pz - dpz * py + lx; O.torque.y -= dpz * px - dpx * pz + ly; O.torque.z -= dpx * py - dpy * px + lz;
   }
-  sinkStats.stiff++;
-  return true;
 }
 // Force f at world point p on S, and its opposite on a moving medium O.
 function sinkPush(S, O, Od, p, fx, fy, fz) {
@@ -1722,7 +1664,7 @@ function sinkForget(S, st) {
 // Once a frame, after the step: every lighter cell whose middle a hull cell
 // of a sinker now covers is taken out of the medium and put down somewhere
 // else. Its record goes in first, so the lift it gave goes on unbroken.
-const sinkStats = { moved: 0, placedGround: 0, placedPiece: 0, owed: 0, stiff: 0 };
+const sinkStats = { moved: 0, placedGround: 0, placedPiece: 0, owed: 0 };
 function sinkRelocate() {
   if (!sinkers.size) return;
   const step = world.stepnumber;
@@ -6661,6 +6603,118 @@ function debrisMass(lat) {
   for (const b of lat) w += debrisWeight(b.mat);
   return Math.min(w * FALL_KG_PER_WEIGHT, FALL_MASS_CAP);
 }
+// A piece's inertia from its blocks: each a cube carrying its material's
+// share of the body's mass, where it sits about the body's centre of mass.
+// cannon's own is a solid box the size of the body's world box, neither
+// weighted by what the blocks are (a hollow hull, a heavy end) nor fixed (a
+// piece rebuilt while turned got its tilted box's, up to about twice too
+// big). The tensor is kept whole in the piece's own axes, where few pieces
+// are symmetric, and turned into the world's every step in place of cannon's
+// diagonal one, so a push or a turn on a piece is answered by the angular
+// momentum its blocks really have.
+function debrisMassProps(body) {
+  const lat = body.debrisMesh?.userData.blocks;
+  if (!lat || !lat.length || !(body.mass > 0)) { delete body.debrisIb; return; }
+  let tw = 0;
+  for (const b of lat) tw += debrisWeight(b.mat);
+  const kg = body.mass / tw, c6 = BLOCK * BLOCK / 6;
+  let xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
+  for (const b of lat) {
+    const m = debrisWeight(b.mat) * kg, x = b.pos.x, y = b.pos.y, z = b.pos.z;
+    xx += m * (y * y + z * z + c6); yy += m * (x * x + z * z + c6); zz += m * (x * x + y * y + c6);
+    xy -= m * x * y; xz -= m * x * z; yz -= m * y * z;
+  }
+  const I = body.debrisIb ||= new Float64Array(9), J = body.debrisIbInv ||= new Float64Array(9);
+  I[0] = xx; I[1] = xy; I[2] = xz; I[3] = xy; I[4] = yy; I[5] = yz; I[6] = xz; I[7] = yz; I[8] = zz;
+  const a0 = yy * zz - yz * yz, a1 = xz * yz - xy * zz, a2 = xy * yz - xz * yy;
+  const det = xx * a0 + xy * a1 + xz * a2;
+  J[0] = a0 / det; J[1] = a1 / det; J[2] = a2 / det;
+  J[3] = a1 / det; J[4] = (xx * zz - xz * xz) / det; J[5] = (xy * xz - xx * yz) / det;
+  J[6] = a2 / det; J[7] = J[5]; J[8] = (xx * yy - xy * xy) / det;
+  body.inertia.set(xx, yy, zz);
+  body.invInertia.set(1 / xx, 1 / yy, 1 / zz);
+  body.updateInertiaWorld(true);
+}
+// R M R^T for the body's turn R, M one of its body-axis tensors.
+const _diR = new Float64Array(9);
+function debrisTurnTensor(q, M, out) {
+  const R = _diR, qx = q.x, qy = q.y, qz = q.z, qw = q.w;
+  R[0] = 1 - 2 * (qy * qy + qz * qz); R[1] = 2 * (qx * qy - qz * qw); R[2] = 2 * (qx * qz + qy * qw);
+  R[3] = 2 * (qx * qy + qz * qw); R[4] = 1 - 2 * (qx * qx + qz * qz); R[5] = 2 * (qy * qz - qx * qw);
+  R[6] = 2 * (qx * qz - qy * qw); R[7] = 2 * (qy * qz + qx * qw); R[8] = 1 - 2 * (qx * qx + qy * qy);
+  for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) {
+    let v = 0;
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) v += R[a * 3 + i] * M[i * 3 + j] * R[b * 3 + j];
+    out[a * 3 + b] = v;
+  }
+  return out;
+}
+// The world inertia (inv false) or its inverse (inv true) of a piece now.
+function debrisInertiaWorld(body, out, inv) {
+  if (body.debrisIb) return debrisTurnTensor(body.quaternion, inv ? body.debrisIbInv : body.debrisIb, out);
+  const I = body.inertia, q = body.quaternion;
+  _diM[0] = inv ? body.invInertia.x : I.x; _diM[4] = inv ? body.invInertia.y : I.y; _diM[8] = inv ? body.invInertia.z : I.z;
+  return debrisTurnTensor(q, _diM, out);
+}
+const _diM = new Float64Array(9);
+function debrisUpdateMassProperties() {
+  CANNON.Body.prototype.updateMassProperties.call(this);
+  debrisMassProps(this);
+}
+function debrisUpdateInertiaWorld(force) {
+  if (!this.debrisIbInv) { CANNON.Body.prototype.updateInertiaWorld.call(this, force); return; }
+  debrisTurnTensor(this.quaternion, this.debrisIbInv, this.invInertiaWorld.elements);
+}
+// From when it is made, a piece's body works out its mass properties and
+// turns its inertia this way (cannon calls both on itself).
+function debrisBodyMass(body) {
+  body.updateMassProperties = debrisUpdateMassProperties;
+  body.updateInertiaWorld = debrisUpdateInertiaWorld;
+}
+// cannon steps a body's spin as I dw/dt = torque, which keeps w, not the
+// angular momentum L = I w, when nothing turns it: a piece whose inertia is
+// not the same about every axis would gain or lose L as it tumbles. The
+// missing gyroscopic part, -w x (I w), goes on as a torque before the step,
+// solved implicitly in the body's axes (one Newton step of
+// I (w2 - w1) + h w2 x (I w2) = 0) so a fast spin cannot gain energy from it.
+const _gyW = new Float64Array(3), _gyJ = new Float64Array(9), _gyI = new Float64Array(9), _gyR = new Float64Array(9);
+function pieceGyro(h) {
+  const bodies = world.bodies;
+  for (let n = 0; n < bodies.length; n++) {
+    const b = bodies[n], I = b.debrisIb;
+    if (!I || b.type !== CANNON.Body.DYNAMIC || b.sleepState === CANNON.Body.SLEEPING) continue;
+    const q = b.quaternion, w = b.angularVelocity;
+    if (w.x === 0 && w.y === 0 && w.z === 0) continue;
+    const R = _gyR, qx = q.x, qy = q.y, qz = q.z, qw = q.w;
+    R[0] = 1 - 2 * (qy * qy + qz * qz); R[1] = 2 * (qx * qy - qz * qw); R[2] = 2 * (qx * qz + qy * qw);
+    R[3] = 2 * (qx * qy + qz * qw); R[4] = 1 - 2 * (qx * qx + qz * qz); R[5] = 2 * (qy * qz - qx * qw);
+    R[6] = 2 * (qx * qz - qy * qw); R[7] = 2 * (qy * qz + qx * qw); R[8] = 1 - 2 * (qx * qx + qy * qy);
+    // w and L = I w in the body's axes.
+    const x = R[0] * w.x + R[3] * w.y + R[6] * w.z, y = R[1] * w.x + R[4] * w.y + R[7] * w.z, z = R[2] * w.x + R[5] * w.y + R[8] * w.z;
+    const lx = I[0] * x + I[1] * y + I[2] * z, ly = I[3] * x + I[4] * y + I[5] * z, lz = I[6] * x + I[7] * y + I[8] * z;
+    // f = h w x L; J = I + h ([w]x I - [L]x).
+    const fx = h * (y * lz - z * ly), fy = h * (z * lx - x * lz), fz = h * (x * ly - y * lx);
+    const J = _gyJ;
+    for (let c = 0; c < 3; c++) {
+      const i0 = I[c], i1 = I[3 + c], i2 = I[6 + c];
+      J[c] = i0 + h * (y * i2 - z * i1);
+      J[3 + c] = i1 + h * (z * i0 - x * i2);
+      J[6 + c] = i2 + h * (x * i1 - y * i0);
+    }
+    J[1] += h * lz; J[2] -= h * ly; J[3] -= h * lz; J[5] += h * lx; J[6] += h * ly; J[7] -= h * lx;
+    const a0 = J[4] * J[8] - J[5] * J[7], a1 = J[5] * J[6] - J[3] * J[8], a2 = J[3] * J[7] - J[4] * J[6];
+    const det = J[0] * a0 + J[1] * a1 + J[2] * a2;
+    if (!(Math.abs(det) > 0)) continue;
+    // dw = -J^-1 f (Cramer), then I dw / h back in the world's axes.
+    const dx = -(fx * a0 + fy * (J[2] * J[7] - J[1] * J[8]) + fz * (J[1] * J[5] - J[2] * J[4])) / det;
+    const dy = -(fx * a1 + fy * (J[0] * J[8] - J[2] * J[6]) + fz * (J[2] * J[3] - J[0] * J[5])) / det;
+    const dz = -(fx * a2 + fy * (J[1] * J[6] - J[0] * J[7]) + fz * (J[0] * J[4] - J[1] * J[3])) / det;
+    const tx = (I[0] * dx + I[1] * dy + I[2] * dz) / h, ty = (I[3] * dx + I[4] * dy + I[5] * dz) / h, tz = (I[6] * dx + I[7] * dy + I[8] * dz) / h;
+    b.torque.x += R[0] * tx + R[1] * ty + R[2] * tz;
+    b.torque.y += R[3] * tx + R[4] * ty + R[5] * tz;
+    b.torque.z += R[6] * tx + R[7] * ty + R[8] * tz;
+  }
+}
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
 const FALL_REST_TICKS = 30;   // frames of that before its body is retired
 const FALL_FREEZE_TICKS = 120; // frames a settled piece cannon will not put to sleep may fidget before it is put to sleep by hand
@@ -7801,8 +7855,10 @@ function spawnFallingChunk(unit) {
     collisionFilterMask: -1,
   });
   body.debrisMesh = mesh;   // its contacts grip by the block they touch (contactMatOf)
+  debrisBodyMass(body);
   addDebrisColliders(body, mesh.userData.blocks);
   body.position.set(cx, cy, cz);
+  debrisWeighCentre(mesh, body);
   for (const b of blocks) colliderSyncFor(chunkOf(b.i, b.j));
   // A nudge of spin, so a piece topples off the face it broke from instead of
   // sitting dead flat all the way down.
@@ -9384,6 +9440,23 @@ function recentreDebris(mesh, body) {
   mesh.position.copy(body.position);
 }
 
+// A piece is made about the plain middle of its blocks; cannon takes the
+// body's origin for its centre of mass, so a piece whose blocks weigh
+// differently is moved onto its weighted one (the blocks stay where they are
+// in the world), or gravity would act at the wrong place and its heavy end
+// would not lead. True if it moved.
+function debrisWeighCentre(mesh, body) {
+  const lat = mesh.userData.blocks;
+  let tw = 0, x = 0, y = 0, z = 0;
+  for (const b of lat) { const w = debrisWeight(b.mat); tw += w; x += b.pos.x * w; y += b.pos.y * w; z += b.pos.z * w; }
+  if (!(tw > 0) || (x * x + y * y + z * z) / (tw * tw) < 1e-18) return false;
+  recentreDebris(mesh, body);
+  body.updateMassProperties();
+  body.updateBoundingRadius();
+  body.aabbNeedsUpdate = true;
+  return true;
+}
+
 // Greedy-merged collision boxes for a debris piece, added to the body as
 // compound shapes. Every block counts, buried or not (as with the terrain
 // collider): merging through the interior gives a few deep boxes instead of a
@@ -9648,11 +9721,13 @@ function spawnDebrisPart(parent, blocks, pbody) {
     collisionFilterMask: -1,
   });
   body.debrisMesh = mesh;
+  debrisBodyMass(body);
   addDebrisColliders(body, mesh.userData.blocks);
   const w = c.applyMatrix4(parent.matrixWorld);
   body.position.set(w.x, w.y, w.z);
   parent.getWorldQuaternion(partQuat);
   body.quaternion.set(partQuat.x, partQuat.y, partQuat.z, partQuat.w);
+  if (debrisWeighCentre(mesh, body)) w.set(body.position.x, body.position.y, body.position.z);
   if (pbody) {
     // v + w x r: the parent's velocity where this part of it was.
     const r = new CANNON.Vec3(w.x - pbody.position.x, w.y - pbody.position.y, w.z - pbody.position.z);

@@ -1058,16 +1058,18 @@ function sinkBlocksPowder(i, j, l) {
 // they are. So it also stops a piece's fall into the powder D times harder,
 // and a stronger hold-back damps a floater's bob more; it moves no rest depth.
 // friction effect x divider is the strength; they are two dials on one force.
+// Friction is a speed dial and nothing else: two powders of one weight, one
+// grippy and one slippery, hold a piece at the same depth, and it only gets
+// there faster (both ways, sinking and rising) in the slippery one. However
+// deep a fast fall takes a floater, the powder closes over it (sinkRelocate)
+// and its lift turns it back up through it, so no friction strands one.
 // The same force sets how slowly a piece sinks and how hard a bob is damped,
-// so a slow pace and a floater that is turned back up cannot both be had:
-// at hold-back 30 (rock ~0.55 m/s) a dropped floater's fall is spent before
-// its depth and it creeps down onto it. The stock pair is friction effect 9,
+// so a slow pace and a floater that overshoots and is turned back up cannot
+// both be had: at hold-back 30 (rock ~0.55 m/s) a dropped floater's fall is
+// spent before its depth and it creeps down onto it; at low hold-back it
+// dives past it and springs back. The stock pair is friction effect 9,
 // divider 1: a floater dropped from about 10 blocks up carries past its depth
-// and is pushed back up, and a rock sinks at about 1.36 m/s. It is the
-// lowest hold at which every floater tried (4, 5 and 6 block hollow cubes)
-// still comes back from a 40-block drop: lower, the reversal shows from
-// shorter drops, but a hard one takes a small floater fully under, and a
-// floater that goes fully under leaves a shaft the rise cannot refill.
+// and is pushed back up, and a rock sinks at about 1.36 m/s.
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
 const SINK_TUNE_DEFS = [
@@ -1088,7 +1090,7 @@ const SINK_TUNE_DEFS = [
   { key: 'wakeSpeed', group: 'Settling', name: 'Wake medium speed', def: 0.01, min: 0,
     help: 'm/s a sinker must move at to wake a sleeping piece it is sinking into.' },
   { key: 'upCut', group: 'Contacts', name: 'Up-push cutoff', def: 0.5, min: 0, max: 1,
-    help: 'A contact pushing the sinker up harder than this (normal\'s up part) always holds. 1: even straight down gives.' },
+    help: 'A contact pushing the sinker up harder than this (normal\'s up part) holds, unless the sinker is in powder (a floater rises through it; any other piece goes block for block, as sideways). 1: even straight down gives.' },
   { key: 'probe', group: 'Contacts', name: 'Air probe (blocks)', def: 0.25, min: 0.05, max: 1,
     help: 'How far past a contact point the ground is read when the point itself is in air.' },
   { key: 'staleDepth', group: 'Contacts', name: 'Stale box depth (blocks)', def: 0.5, min: 0.1,
@@ -1145,12 +1147,48 @@ function sinkTouch(S, O) {
 // already moved it out (the collider is a frame or two behind the store); any
 // other air is an edge stepped off, and the contact holds. So does one a good
 // way into ground S is not sinking in: a collider box that deep is stale.
+// Pushing up into O, a piece that is in powder is let through it: a floater
+// as a whole, lighter than it cell for cell of its hull (the lift pushes it
+// up through what lies over it as it pushes a sinker down through what lies
+// under), any other piece block for block as sideways (what moves it up
+// through powder is its own momentum, and the hold-back answers it there as
+// in any direction). A piece not in powder is held by powder over it.
 function sinkPresses(S, rS, O, rO, n, sg, depth) {
   if (!O.voxelGround && !O.debrisMesh) return false;
-  if (S.type !== CANNON.Body.DYNAMIC || sg * n.y > SINK_TUNE.upCut) return false;
-  const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
-  const ws = ms < 0 ? 0 : sinkWeight(ms);
-  if (!(ws > 0)) return false;
+  if (S.type !== CANNON.Body.DYNAMIC) return false;
+  let fl = null, ws = 0;
+  const up = sg * n.y > SINK_TUNE.upCut;
+  if (up) {
+    const st = sinkers.get(S);
+    if (!st || !(st.disp > 0) || !(st.vol > 0)) return false;
+    fl = sinkHull(S.debrisMesh, S);
+    // Not a floater: a piece in powder moving up into it (a sunk rock
+    // toppling, its top corner swinging up into the sand that closed over
+    // it) goes block for block, as sideways. Held as a lid instead, that sand
+    // wedges it against the floor and it never comes to rest.
+    if (!(fl.W < SINK_TUNE.floatScale * (st.disp / st.vol) * fl.count)) fl = null;
+  }
+  if (fl) {
+    if (O.voxelGround) {
+      const w = sinkGroundAround(S, rS, n, sg);
+      if (w < 0 || (w > 0 && !(fl.W < SINK_TUNE.floatScale * w * fl.count))) return false;
+      sinkTouch(S, O);
+      return true;
+    }
+  } else {
+    const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
+    ws = ms < 0 ? 0 : sinkWeight(ms);
+    if (!(ws > 0)) return false;
+    // A piece in powder pushed sideways or up against the ground: the same
+    // read round the point as a floater's (see sinkGroundAround), its blocks
+    // against the powder there as going down.
+    if (O.voxelGround && sg * n.y >= -SINK_TUNE.upCut && sinkers.get(S)?.disp > 0) {
+      const w = sinkGroundAround(S, rS, n, sg);
+      if (w < 0 || (w > 0 && !(ws > w))) return false;
+      sinkTouch(S, O);
+      return true;
+    }
+  }
   _sinkP.set(S.position.x + rS.x - O.position.x, S.position.y + rS.y - O.position.y, S.position.z + rS.z - O.position.z);
   _sinkN.set(sg * n.x, sg * n.y, sg * n.z);
   let mo = contactMatOf(O, _sinkP, _sinkN);
@@ -1175,9 +1213,29 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
-  if (!(ws > wo)) return false;
+  if (fl ? !(wo === 0 || fl.W < SINK_TUNE.floatScale * wo * fl.count) : !(ws > wo)) return false;
   sinkTouch(S, O);
   return true;
+}
+// What a sinker in powder pushes into at a contact with the ground. The
+// ground's boxes are merged, so a point of one on a piece's face often lies
+// on the box's edge, over a cell that is open there: the eight cells round
+// the point a probe on along the normal are what it is pushing into.
+// -1: something solid (holds); else the heaviest powder there, 0 for none
+// at all (a box a step behind the store, which gives).
+function sinkGroundAround(S, rS, n, sg) {
+  const d = SINK_TUNE.probe * BLOCK, e = SINK_TUNE.edgeProbe * BLOCK;
+  const x = S.position.x + rS.x + sg * n.x * d, y = S.position.y + rS.y + sg * n.y * d, z = S.position.z + rS.z + sg * n.z * d;
+  let w = 0;
+  for (const ex of [-e, e]) for (const ey of [-e, e]) for (const ez of [-e, e]) {
+    const i = colI(x + ex), j = colJ(z + ez), l = lvlOfY(y + ey);
+    if (sinkHeldCell(i, j, l)) continue;
+    const v = voxelAt(i, j, l);
+    if (v === AIR || v === WATER || !MAT_STATS[v]) continue;
+    if (!sinkMedium(v)) return -1;
+    w = Math.max(w, sinkWeight(v));
+  }
+  return w;
 }
 function sinkYield(c) {
   const bi = c.bi, bj = c.bj;
@@ -1468,7 +1526,7 @@ function sinkForces(h) {
     const hull = sinkHull(S.debrisMesh, S);
     if (!(hull.W > 0)) continue;
     const K = S.mass / hull.W;
-    let disp = 0;
+    let disp = 0, vol = 0;
     for (const [key, M] of st.media) {
       const O = M.body;
       if (O && (O.world !== world || !O.debrisMesh)) { sinkDropMedium(st, key, M); continue; }
@@ -1483,19 +1541,20 @@ function sinkForces(h) {
       for (let t = 0; t < nIn; t++) {
         const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
         const wm = sinkWeight(m), kg = share * wm * K * SINK_TUNE.floatScale;
-        disp += share * wm;
+        disp += share * wm; vol += share;
         _sinkP.set(L[k + 8], L[k + 9], L[k + 10]);
         sinkPush(S, O, Od, _sinkP, -gx * kg, -gy * kg, -gz * kg);
         if (L[k + 7]) { const r = M.rec.get(fricKey(L[k + 2], L[k + 3], L[k + 4])); if (r) r.at = step; }
       }
       sinkHoldSolve(S, O, Od, h, L, acc, K, hull);
       // A record no part of the hull reaches any more has been left behind:
-      // the cell stays empty (its block is on the rim).
-      for (const [rk, r] of M.rec) if (r.at !== step) sinkUnrecord(M, rk);
+      // it is room the powder the piece pushes out of its way flows back into
+      // (sinkFillBehind), and stays the piece's until it does.
+      for (const [rk, r] of M.rec) if (r.at !== step) sinkLeave(M, rk, r);
       if (O && nIn && O.sleepState === CANNON.Body.SLEEPING && S.velocity.lengthSquared() > SINK_TUNE.wakeSpeed ** 2) O.wakeUp();
       if (!nIn && !M.rec.size && step - M.touchAt > SINK_TUNE.forgetSteps) sinkDropMedium(st, key, M);
     }
-    st.disp = disp;
+    st.disp = disp; st.vol = vol;
     // Off balance and held by nothing rigid: still sinking or rising, however
     // slowly, so cannon may not put it to sleep part way. The balance is
     // against the lift as felt (floatScale), while being in the powder at all
@@ -1680,7 +1739,25 @@ function sinkUnrecord(M, key) {
 }
 function sinkDropMedium(st, key, M) {
   for (const rk of [...M.rec.keys()]) sinkUnrecord(M, rk);
+  if (M.behind) for (const [rk, b] of M.behind) sinkUnbehind(M, rk, b);
+  // Its carried blocks go down by the old rule, the medium has no room for them now.
+  for (const o of st.owed) if (o.M === M) o.M = null;
   st.media.delete(key);
+}
+// A cell the piece has passed wholly through: the room behind it. Held
+// (powder does not roll into it, and powder over it stays up) until the
+// powder the piece pushes aside is put into it, or the piece lets the medium go.
+function sinkLeave(M, key, r) {
+  M.rec.delete(key);
+  (M.behind ||= new Map()).set(key, { i: r.i, j: r.j, l: r.l });
+}
+function sinkUnbehind(M, key, b) {
+  M.behind.delete(key);
+  if (M.body) return;
+  const n = sinkHeld.get(key);
+  if (n > 1) sinkHeld.set(key, n - 1); else sinkHeld.delete(key);
+  // What was held up over it, or kept from rolling into it, may go now.
+  if (b.i >= 0 && b.j >= 0 && b.i < GEN_N && b.j < GEN_N) powderDirty.add(b.j * GEN_N + b.i);
 }
 function sinkForget(S, st) {
   for (const [key, M] of st.media) sinkDropMedium(st, key, M);
@@ -1692,56 +1769,106 @@ function sinkForget(S, st) {
 // Once a frame, after the step: every lighter cell whose middle a hull cell
 // of a sinker now covers is taken out of the medium and put down somewhere
 // else. Its record goes in first, so the lift it gave goes on unbroken.
-const sinkStats = { moved: 0, placedGround: 0, placedPiece: 0, owed: 0 };
+// Where it goes is where powder pushed aside goes: round the piece into the
+// room the piece is leaving behind it (sinkFillBehind). A piece whose
+// trailing face is in powder it has displaced (sinkCovered: fully under, or
+// ploughing through sideways) carries the block until that room opens, a step
+// or so later; one still breaking the surface on the way in leaves nothing
+// behind it, and the block goes on the rim. So the rim is what a piece's going in from the surface pushed up,
+// sand closes over a piece once it is under, and a floater rising goes up
+// through that sand and puts it back under itself: the powder round and over
+// a piece is there for it to displace from any depth, so where it comes to
+// rest is set by the weights alone, never by how deep its fall took it.
+const sinkStats = { moved: 0, placedGround: 0, placedPiece: 0, owed: 0, placedBehind: 0, pulled: 0 };
 function sinkRelocate() {
   if (!sinkers.size) return;
   const step = world.stepnumber;
   for (const [S, st] of sinkers) {
     if (S.world !== world || !S.debrisMesh) continue;
-    // Blocks taken up earlier with nowhere to go then.
+    // Blocks owed a place (none found yet, or carried for room that is not
+    // coming: the medium is gone, or the piece has stopped).
+    const going = S.sleepState !== CANNON.Body.SLEEPING && st.busy;
     for (let n = st.owed.length - 1; n >= 0; n--) {
       const o = st.owed[n];
+      if (o.M && ![...st.media.values()].includes(o.M)) o.M = null;
+      if (o.M) continue;
+      if (o.piece && o.piece.body && sinkPieceSpot(S, o.piece, o, step)) {
+        st.owed.splice(n, 1); sinkStats.owed--;
+        sinkPieceRebuild(o.piece);
+        continue;
+      }
+      o.piece = null;
       if (sinkPlaceGround(o.i, o.j, o.l, o.m, S)) { st.owed.splice(n, 1); sinkStats.owed--; }
     }
-    if (S.sleepState === CANNON.Body.SLEEPING) continue;
-    // Nothing new can have come inside it if it has not moved (nor has a
-    // medium piece it is in).
-    let moved = !st.scanQ;
-    if (!moved) {
-      const p = S.position, a = st.scanP, q = S.quaternion, b = st.scanQ;
-      moved = (p.x - a.x) ** 2 + (p.y - a.y) ** 2 + (p.z - a.z) ** 2 > (SINK_TUNE.rescanMove * BLOCK) ** 2
-           || Math.abs(q.x * b.x + q.y * b.y + q.z * b.z + q.w * b.w) < Math.cos(SINK_TUNE.rescanTurn * Math.PI / 360);
-      for (const M of st.media.values()) if (M.body && M.body.sleepState !== CANNON.Body.SLEEPING) moved = true;
-    }
-    if (!moved) continue;
-    (st.scanP ||= new CANNON.Vec3()).copy(S.position);
-    (st.scanQ ||= new CANNON.Quaternion()).copy(S.quaternion);
     const hull = sinkHull(S.debrisMesh, S);
-    for (const [key, M] of st.media) {
+    const scanned = sinkRelocateScan(S, st, hull, step);
+    // Room and carried blocks a piece still has when it stops: the room is
+    // filled first (from what it carries, else from the surface round it)
+    // even with nothing new taken, then what it carries goes down by the old
+    // rule, and room no powder could get into is let go to the powder's own
+    // rules, as an open shaft over a stopped piece is.
+    for (const M of st.media.values()) {
+      const left = M.behind && M.behind.size, carried = st.owed.some((o) => o.M === M);
+      if (scanned.has(M) || (!left && (going || !carried))) continue;
       const F = sinkFrame(M);
       if (F === false) continue;
       sinkScan(S, hull, M, F);
-      const L = _sinkList, G = _sinkGC, near = SINK_TUNE.moveAt, least = (1 - near) ** 3;
-      const take = [];
-      for (let t = 0; t < _sinkLen; t++) {
-        const k = t * SINK_L;
-        if (L[k + 7]) continue;
-        // The hull cube's middle within `near` of the cell's on every axis
-        // (half a block: the cell's middle is inside the cube). Each axis then
-        // overlaps by more than 1 - near, which rules most out cheaply first.
-        if (L[k + 6] <= least) continue;
-        const c = L[k];
-        if (Math.abs(G[c * 3] - L[k + 2]) < near && Math.abs(G[c * 3 + 2] - L[k + 3]) < near && Math.abs(G[c * 3 + 1] - L[k + 4]) < near) {
-          const key = fricKey(L[k + 2], L[k + 3], L[k + 4]);
-          if (!take.some((e) => e.key === key)) take.push({ key, i: L[k + 2], j: L[k + 3], l: L[k + 4], m: L[k + 5] });
-        }
+      sinkFillLeft(S, st, M, F, hull);
+      if (M.grown) sinkPieceRebuild(M);
+    }
+    if (!going) {
+      for (const o of st.owed) o.M = null;
+      if (S.sleepState === CANNON.Body.SLEEPING) for (const M of st.media.values()) if (M.behind) for (const [bk, b] of [...M.behind]) sinkUnbehind(M, bk, b);
+    }
+  }
+}
+// The cells sinker S has newly come to cover go out of its way. Returns the
+// media it scanned.
+const _sinkNone = new Set();
+function sinkRelocateScan(S, st, hull, step) {
+  if (S.sleepState === CANNON.Body.SLEEPING) return _sinkNone;
+  // Nothing new can have come inside it if it has not moved (nor has a
+  // medium piece it is in).
+  let moved = !st.scanQ;
+  if (!moved) {
+    const p = S.position, a = st.scanP, q = S.quaternion, b = st.scanQ;
+    moved = (p.x - a.x) ** 2 + (p.y - a.y) ** 2 + (p.z - a.z) ** 2 > (SINK_TUNE.rescanMove * BLOCK) ** 2
+         || Math.abs(q.x * b.x + q.y * b.y + q.z * b.z + q.w * b.w) < Math.cos(SINK_TUNE.rescanTurn * Math.PI / 360);
+    for (const M of st.media.values()) if (M.body && M.body.sleepState !== CANNON.Body.SLEEPING) moved = true;
+  }
+  if (!moved) return _sinkNone;
+  (st.scanP ||= new CANNON.Vec3()).copy(S.position);
+  (st.scanQ ||= new CANNON.Quaternion()).copy(S.quaternion);
+  const scanned = new Set();
+  for (const [key, M] of st.media) {
+    const F = sinkFrame(M);
+    if (F === false) continue;
+    scanned.add(M);
+    sinkScan(S, hull, M, F);
+    M.grown = false;
+    // Carried blocks first: the room they were waiting for may have opened.
+    sinkFillCarried(S, st, M, F, hull);
+    const L = _sinkList, G = _sinkGC, near = SINK_TUNE.moveAt, least = (1 - near) ** 3;
+    const take = [];
+    for (let t = 0; t < _sinkLen; t++) {
+      const k = t * SINK_L;
+      if (L[k + 7]) continue;
+      // The hull cube's middle within `near` of the cell's on every axis
+      // (half a block: the cell's middle is inside the cube). Each axis then
+      // overlaps by more than 1 - near, which rules most out cheaply first.
+      if (L[k + 6] <= least) continue;
+      const c = L[k];
+      if (Math.abs(G[c * 3] - L[k + 2]) < near && Math.abs(G[c * 3 + 2] - L[k + 3]) < near && Math.abs(G[c * 3 + 1] - L[k + 4]) < near) {
+        const key = fricKey(L[k + 2], L[k + 3], L[k + 4]);
+        if (!take.some((e) => e.key === key)) take.push({ key, i: L[k + 2], j: L[k + 3], l: L[k + 4], m: L[k + 5] });
       }
-      if (!take.length) continue;
+    }
+    if (take.length) {
       if (!M.body) {
         for (const e of take) {
           if (voxelAt(e.i, e.j, e.l) !== e.m) continue;
           editBlock(e.i, e.j, e.l, AIR);
-          M.rec.set(e.key, { m: e.m, at: step });
+          M.rec.set(e.key, { m: e.m, at: step, i: e.i, j: e.j, l: e.l });
           sinkHeld.set(e.key, (sinkHeld.get(e.key) || 0) + 1);
           sinkStats.moved++;
           // Right on top of something it does not sink into: the next step
@@ -1749,13 +1876,145 @@ function sinkRelocate() {
           // to rebuild without this one.
           const below = voxelAt(e.i, e.j, e.l - 1);
           if (below !== AIR && !(sinkMedium(below) && sinkWeight(below) < hull.W / Math.max(1, hull.n))) colliderSyncFor(chunkOf(e.i, e.j));
+          if (sinkFillBehind(S, M, F, hull, e.i, e.j, e.l, e.m)) continue;
+          if (sinkCovered(S, M, F, hull, e)) { st.owed.push({ i: e.i, j: e.j, l: e.l, m: e.m, M, gi: e.i, gj: e.j, gl: e.l }); sinkStats.owed++; continue; }
           if (!sinkPlaceGround(e.i, e.j, e.l, e.m, S)) { st.owed.push({ i: e.i, j: e.j, l: e.l, m: e.m }); sinkStats.owed++; }
         }
-      } else sinkRelocatePiece(S, M, F, take, step);
+      } else sinkRelocatePiece(S, M, F, hull, take, step);
     }
+    sinkFillLeft(S, st, M, F, hull);
+    if (M.grown) sinkPieceRebuild(M);
+  }
+  return scanned;
+}
+function sinkFillCarried(S, st, M, F, hull) {
+  if (!M.behind || !M.behind.size) return;
+  for (let n = st.owed.length - 1; n >= 0; n--) {
+    const o = st.owed[n];
+    if (o.M !== M || !sinkFillBehind(S, M, F, hull, o.gi, o.gj, o.gl, o.m)) continue;
+    st.owed.splice(n, 1); sinkStats.owed--;
   }
 }
-
+// Room behind a piece is filled with what it carries; room still open with
+// nothing carried for it is under a piece coming up out of the surface (or
+// one skidding along it, or one that has stopped), and the powder going into
+// it comes down from the surface round it.
+function sinkFillLeft(S, st, M, F, hull) {
+  sinkFillCarried(S, st, M, F, hull);
+  if (!M.body && M.behind && M.behind.size && !st.owed.some((o) => o.M === M)) {
+    for (const [bk, b] of [...M.behind]) sinkPullSurface(S, M, F, hull, bk, b);
+  }
+}
+// Fills room b behind sinker S with the top block of the nearest, highest
+// column round it (SINK_TUNE.rimCost levels per column out, as the rim is
+// built, run the other way) that is powder the piece is heavier than, stands
+// higher than the room, and has nothing on it: the heap round a hole slides
+// into it.
+function sinkPullSurface(S, M, F, hull, bk, b) {
+  const G = _sinkGC, nc = hull.count;
+  for (let c = 0; c < nc; c++) if (Math.abs(G[c * 3] - b.i) < 1 && Math.abs(G[c * 3 + 1] - b.l) < 1 && Math.abs(G[c * 3 + 2] - b.j) < 1) return false;
+  if (!inVoxelRange(b.i, b.j, b.l) || voxelAt(b.i, b.j, b.l) !== AIR) return false;
+  const R = SINK_TUNE.placeR, rc = SINK_TUNE.rimCost;
+  const boxes = sinkBodiesNear(colX(b.i - R) - BLOCK, colX(b.i + R) + BLOCK, colZ(b.j - R) - BLOCK, colZ(b.j + R) + BLOCK, S).filter((a) => a !== _sinkOwnBox);
+  if (!sinkCellClear(boxes, colX(b.i), (b.l + 0.5) * BLOCK, colZ(b.j))) return false;
+  // Only from where the rim could have been built (clear of the piece's box
+  // by SINK_TUNE.rimGap), so it is the rim's mirror: what a bob pushes out
+  // comes back from the same heap, and the ground right by the piece stays
+  // as it was. Not from the columns the piece stands in either: that is the
+  // powder over it, which it rises through and puts back under itself.
+  if (S.aabbNeedsUpdate) S.updateAABB();
+  const own = S.aabb, ce = SINK_TUNE.clearEps - SINK_TUNE.rimGap * BLOCK;
+  let best = -Infinity, bi = 0, bj = 0, bl = 0;
+  for (let r = 0; r <= R; r++) {
+    for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) {
+      if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+      const i = b.i + di, j = b.j + dj;
+      if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) continue;
+      const l = sTop[j * GEN_N + i];
+      if (l === NO_COLUMN || l <= b.l) continue;
+      const x = colX(i), z = colZ(j);
+      if (x > own.lowerBound.x + ce && x < own.upperBound.x - ce && z > own.lowerBound.z + ce && z < own.upperBound.z - ce) continue;
+      const cost = l - rc * r;
+      if (cost <= best) continue;
+      const v = voxelAt(i, j, l);
+      if (!sinkMedium(v) || !(sinkWeight(v) < hull.minW) || sinkHeldCell(i, j, l)) continue;
+      if (!sinkCellClear(boxes, colX(i), (l + 1.5) * BLOCK, colZ(j))) continue;
+      best = cost; bi = i; bj = j; bl = l;
+    }
+  }
+  if (best === -Infinity) return false;
+  const m = voxelAt(bi, bj, bl);
+  editBlock(bi, bj, bl, AIR);
+  editBlock(b.i, b.j, b.l, m);
+  sinkStats.moved++; sinkStats.placedGround++; sinkStats.placedBehind++; sinkStats.pulled++;
+  sinkUnbehind(M, bk, b);
+  return true;
+}
+// Will taking e out of the piece's way open room behind it? Read along the
+// axis it moves most on through the medium, from e back through the cells it
+// is in (its records): if its trailing face is among them, the cell past
+// them is outside it, and as it goes on it leaves those records behind. If
+// that cell is still inside the hull, the piece's trailing part is in air
+// (breaking the surface on the way in): nothing it holds will be left behind.
+function sinkCovered(S, M, F, hull, e) {
+  const O = M.body;
+  _sinkV.copy(S.velocity);
+  if (O) { _sinkV.vsub(O.velocity, _sinkV); O.quaternion.conjugate(_sinkQ).vmult(_sinkV, _sinkV); }
+  const v = [_sinkV.x, _sinkV.y, _sinkV.z], ax = Math.abs(v[0]) >= Math.abs(v[1]) && Math.abs(v[0]) >= Math.abs(v[2]) ? 0 : Math.abs(v[1]) >= Math.abs(v[2]) ? 1 : 2;
+  if (!v[ax]) return false;
+  const s = -Math.sign(v[ax]), di = ax === 0 ? s : 0, dl = ax === 1 ? s : 0, dj = ax === 2 ? s : 0;
+  const G = _sinkGC, nc = hull.count;
+  let i = e.i, j = e.j, l = e.l;
+  for (let n = 0; n <= M.rec.size; n++) {
+    i += di; j += dj; l += dl;
+    const k = fricKey(i, j, l);
+    if (M.rec.has(k)) continue;
+    if (M.behind && M.behind.has(k)) return true;
+    for (let c = 0; c < nc; c++) if (Math.abs(G[c * 3] - i) < 1 && Math.abs(G[c * 3 + 1] - l) < 1 && Math.abs(G[c * 3 + 2] - j) < 1) return false;
+    return n > 0;
+  }
+  return false;
+}
+// Puts block m, moved from cell (gi, gj, gl) of M, into the nearest room
+// behind the sinker that no part of its hull is in now and nothing else
+// stands in. True if it went in.
+function sinkFillBehind(S, M, F, hull, gi, gj, gl, m) {
+  if (!M.behind || !M.behind.size) return false;
+  const G = _sinkGC, nc = hull.count, O = M.body;
+  let boxes = null, best = null, bk = 0, bd = Infinity;
+  for (const [k, b] of M.behind) {
+    const d = (b.i - gi) ** 2 + (b.j - gj) ** 2 + (b.l - gl) ** 2;
+    if (d >= bd) continue;
+    let inHull = false;
+    for (let c = 0; c < nc && !inHull; c++) inHull = Math.abs(G[c * 3] - b.i) < 1 && Math.abs(G[c * 3 + 1] - b.l) < 1 && Math.abs(G[c * 3 + 2] - b.j) < 1;
+    if (inHull) continue;
+    _sinkC.x = b.i; _sinkC.y = b.l; _sinkC.z = b.j;
+    const p = sinkToWorld(M, F, _sinkC, _sinkR);
+    if (O ? F.cells.has(k) || voxelAtWorld(p.x, p.y, p.z) !== AIR : !inVoxelRange(b.i, b.j, b.l) || voxelAt(b.i, b.j, b.l) !== AIR) continue;
+    // Clear of every body but the sinker (whose hull was just checked) and
+    // the medium piece the block goes back into.
+    if (!boxes) {
+      if (S.aabbNeedsUpdate) S.updateAABB();
+      const a = S.aabb, e = 2 * BLOCK;
+      boxes = sinkBodiesNear(a.lowerBound.x - e, a.upperBound.x + e, a.lowerBound.z - e, a.upperBound.z + e, S).filter((x) => x !== _sinkOwnBox && (!O || x !== O.aabb));
+    }
+    if (!sinkCellClear(boxes, p.x, p.y, p.z)) continue;
+    bd = d; best = b; bk = k;
+  }
+  if (!best) return false;
+  if (O) {
+    placeOnDebris(O.debrisMesh, new THREE.Vector3(best.i * BLOCK + F.kx, (best.l + 0.5) * BLOCK + F.ky, best.j * BLOCK + F.kz), m, false);
+    sinkStats.placedPiece++;
+    F.cells.set(bk, m);
+    M.grown = true;
+  } else {
+    editBlock(best.i, best.j, best.l, m);
+    sinkStats.placedGround++;
+  }
+  sinkStats.placedBehind++;
+  sinkUnbehind(M, bk, best);
+  return true;
+}
 // The bodies whose boxes reach into the box x0..x1, z0..z1 (all heights), and
 // the player: nothing is set down inside any of them. The sinker's own box
 // counts SINK_TUNE.rimGap wider all round: a block set flush against its side is one
@@ -1818,13 +2077,51 @@ function sinkPlaceGround(i0, j0, l0, m, S) {
   return true;
 }
 // A lighter piece's block moved out of a sinker's way stays part of that
-// piece: it goes into the open cell of the piece's lattice nearest where it
-// was that has a block of the piece under it (the lattice axis nearest the
-// world's down), is clear of the ground and of every body bar the piece
-// itself, so the piece keeps its weight and the block sits on its top or rim.
-// One with no such cell goes down on the ground beside instead.
-function sinkRelocatePiece(S, M, F, take, step) {
-  const B = M.body, mesh = B.debrisMesh, lat = mesh.userData.blocks;
+// piece. It goes into the room the sinker leaves behind in the piece, as on
+// the ground (sinkFillBehind), or is carried until that opens; else
+// (sinkPieceSpot) into the open cell of the piece's lattice nearest where it
+// was that has a block of the piece under it, so the piece keeps its weight
+// and the block sits on its top or rim.
+function sinkRelocatePiece(S, M, F, hull, take, step) {
+  const B = M.body, lat = B.debrisMesh.userData.blocks;
+  for (const e of take) {
+    // A piece of one block has nowhere of its own to put it: the sinker only
+    // bears it down.
+    if (lat.length <= 1) break;
+    const q = lat.findIndex((b) => b.gi === e.i && b.gj === e.j && b.lvl === e.l);
+    if (q < 0) continue;
+    cutDebrisLat(B.debrisMesh, q);
+    F.cells.delete(e.key);
+    M.rec.set(e.key, { m: e.m, at: step, i: e.i, j: e.j, l: e.l });
+    sinkStats.moved++;
+    M.grown = true;
+    if (sinkFillBehind(S, M, F, hull, e.i, e.j, e.l, e.m)) continue;
+    if (sinkCovered(S, M, F, hull, e)) {
+      _sinkC.x = e.i; _sinkC.y = e.l; _sinkC.z = e.j;
+      const p = sinkToWorld(M, F, _sinkC, _sinkR);
+      sinkers.get(S).owed.push({ i: colI(p.x), j: colJ(p.z), l: lvlOfY(p.y), m: e.m, M, piece: M, gi: e.i, gj: e.j, gl: e.l });
+      sinkStats.owed++;
+      continue;
+    }
+    if (!sinkPieceSpot(S, M, { m: e.m, gi: e.i, gj: e.j, gl: e.l }, step)) {
+      _sinkC.x = e.i; _sinkC.y = e.l; _sinkC.z = e.j;
+      const p = sinkToWorld(M, F, _sinkC, _sinkR);
+      if (!sinkPlaceGround(colI(p.x), colJ(p.z), lvlOfY(p.y), e.m, S)) {
+        sinkers.get(S).owed.push({ i: colI(p.x), j: colJ(p.z), l: lvlOfY(p.y), m: e.m });
+        sinkStats.owed++;
+      }
+    }
+  }
+}
+// Block o.m, from lattice cell (o.gi, o.gj, o.gl) of medium piece M, into the
+// nearest open cell of the piece with one of its blocks under it (the lattice
+// axis nearest the world's down), clear of the ground and of every body bar
+// the piece itself. True if it went in.
+function sinkPieceSpot(S, M, o, step) {
+  const B = M.body, mesh = B.debrisMesh, lat = mesh?.userData.blocks;
+  if (!lat || !lat.length || B.world !== world) return false;
+  const F = sinkFrame(M);
+  if (!F) return false;
   B.quaternion.conjugate(_sinkQ).vmult(_sinkV.set(0, -1, 0), _sinkV);
   const ax = Math.abs(_sinkV.x), ay = Math.abs(_sinkV.y), az = Math.abs(_sinkV.z);
   const axis = ay >= ax && ay >= az ? 1 : ax >= az ? 0 : 2;
@@ -1836,47 +2133,33 @@ function sinkRelocatePiece(S, M, F, take, step) {
   const ba = B.aabb, pad = BLOCK;
   const boxes = sinkBodiesNear(ba.lowerBound.x - pad, ba.upperBound.x + pad, ba.lowerBound.z - pad, ba.upperBound.z + pad, S)
     .filter((a) => a !== B.aabb);
-  let changed = false;
-  for (const e of take) {
-    // A piece of one block has nowhere of its own to put it: the sinker only
-    // bears it down.
-    if (lat.length <= 1) break;
-    const q = lat.findIndex((b) => b.gi === e.i && b.gj === e.j && b.lvl === e.l);
-    if (q < 0) continue;
-    cutDebrisLat(mesh, q);
-    M.rec.set(e.key, { m: e.m, at: step });
-    sinkStats.moved++;
-    changed = true;
-    const cells = new Set();
-    for (const b of lat) cells.add(fricKey(b.gi, b.gj, b.lvl));
-    let best = null, bd = Infinity;
-    for (const b of lat) {
-      for (const [di, dj, dl] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
-        const gi = b.gi + di, gj = b.gj + dj, gl = b.lvl + dl, k = fricKey(gi, gj, gl);
-        if (cells.has(k) || M.rec.has(k)) continue;
-        if (!cells.has(fricKey(gi + dn[0], gj + dn[1], gl + dn[2]))) continue;
-        const d = (gi - e.i) ** 2 + (gj - e.j) ** 2 + (gl - e.l) ** 2;
-        if (d >= bd) continue;
-        _sinkC.x = gi; _sinkC.y = gl; _sinkC.z = gj;
-        const p = sinkToWorld(M, F, _sinkC, _sinkR);
-        if (voxelAtWorld(p.x, p.y, p.z) !== AIR || !sinkCellClear(boxes, p.x, p.y, p.z)) continue;
-        bd = d; best = { gi, gj, gl };
-      }
-    }
-    if (best) {
-      placeOnDebris(mesh, new THREE.Vector3(best.gi * BLOCK + F.kx, (best.gl + 0.5) * BLOCK + F.ky, best.gj * BLOCK + F.kz), e.m, false);
-      sinkStats.placedPiece++;
-    } else {
-      _sinkC.x = e.i; _sinkC.y = e.l; _sinkC.z = e.j;
+  const cells = new Set();
+  for (const b of lat) cells.add(fricKey(b.gi, b.gj, b.lvl));
+  let best = null, bd = Infinity;
+  for (const b of lat) {
+    for (const [di, dj, dl] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+      const gi = b.gi + di, gj = b.gj + dj, gl = b.lvl + dl, k = fricKey(gi, gj, gl);
+      if (cells.has(k) || M.rec.has(k) || (M.behind && M.behind.has(k))) continue;
+      if (!cells.has(fricKey(gi + dn[0], gj + dn[1], gl + dn[2]))) continue;
+      const d = (gi - o.gi) ** 2 + (gj - o.gj) ** 2 + (gl - o.gl) ** 2;
+      if (d >= bd) continue;
+      _sinkC.x = gi; _sinkC.y = gl; _sinkC.z = gj;
       const p = sinkToWorld(M, F, _sinkC, _sinkR);
-      if (!sinkPlaceGround(colI(p.x), colJ(p.z), lvlOfY(p.y), e.m, S)) {
-        sinkers.get(S).owed.push({ i: colI(p.x), j: colJ(p.z), l: lvlOfY(p.y), m: e.m });
-        sinkStats.owed++;
-      }
+      if (voxelAtWorld(p.x, p.y, p.z) !== AIR || !sinkCellClear(boxes, p.x, p.y, p.z)) continue;
+      bd = d; best = { gi, gj, gl };
     }
   }
-  if (!changed) return;
-  if (!lat.length) return;
+  if (!best) return false;
+  placeOnDebris(mesh, new THREE.Vector3(best.gi * BLOCK + F.kx, (best.gl + 0.5) * BLOCK + F.ky, best.gj * BLOCK + F.kz), o.m, false);
+  sinkStats.placedPiece++;
+  M.grown = true;
+  return true;
+}
+// After blocks of medium piece M were cut out or put in.
+function sinkPieceRebuild(M) {
+  const B = M.body, mesh = B.debrisMesh, lat = mesh?.userData.blocks;
+  M.grown = false;
+  if (!lat || !lat.length) return;
   debrisFaceMask(mesh);
   const f = chunkOfMesh(mesh);
   if (!f) return;
@@ -8157,6 +8440,10 @@ function shedColumn(c, budget) {
     // under it, and then it rolls (powderRoll).
     if (lvl - 1 < VOX_FLOOR) continue;
     const i = c % GEN_N, j = (c - i) / GEN_N;
+    // Air under it that a sinker holds is the sinker's: the piece is in it, or
+    // it is the room just behind the piece that the powder pushed out of its
+    // way is going back into (sinkFillBehind). The piece holds it up.
+    if (voxMat[o + lvl - 1] === AIR && sinkHeldCell(i, j, lvl - 1)) continue;
     let roll = voxMat[o + lvl - 1] !== AIR ? powderRoll(i, j, lvl, m) : -1;
     // Nor off into a piece lying beside it: the piece holds it in (see catchPowder).
     if (roll >= 0 && powderPieceBeside(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))) roll = -1;
@@ -15835,7 +16122,7 @@ function tick() {
     s.mesh.position.copy(s.body.position);
     s.mesh.quaternion.copy(s.body.quaternion);
   }
-  sinkRelocate();        // the cells sinkers have sunk past this frame go to the rim
+  sinkRelocate();        // the cells sinkers have sunk past this frame go behind them or to the rim
   processImpacts();      // after the meshes have the bodies' poses, before anything is called settled
   updateFallingChunks();
   updatePowderBlocks(dt);

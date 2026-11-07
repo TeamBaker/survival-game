@@ -1024,13 +1024,23 @@ function sinkBlocksPowder(i, j, l) {
 // rubbing on it as it pushes past. That rub is the hold-back: a cell of M holds
 // a sinker back by w_M * frictionScale * friction_M per unit of its speed
 // through the powder, so a grippier powder slows it harder, and with
-// frictionScale (or the powder's friction) at 0 nothing does. It acts the
-// whole time the sinker is in contact with the powder, at the strength it has
-// fully under (sinkContactHold), so a piece falling in is slowed from the
-// moment it touches, not only once it is in. It is zero at
-// rest and never enters the lift, so where a piece comes to rest (displaced
-// weight == its weight) is the same whatever it is.
-// weightSpeed divides the hold-back, so the speed the weight difference
+// frictionScale (or the powder's friction) at 0 nothing does. It rubs on the
+// part of the sinker that is in the powder, cell by cell, so it grows as a
+// piece goes in: held at full strength from the first touch, a fall stopped
+// in two or three frames, as if the piece hit a floor.
+// The other thing the powder does to a sinker is take its momentum: grains in
+// the way of a moving piece are pushed out of it, and they leave with its
+// speed. That is the plow (sinkHoldSolve): the mass of fresh powder the
+// piece's leading faces sweep per second, times its velocity. It is there from
+// the first touch, grows with the square of the speed, so it eats a hard fall
+// fast and a slow sink hardly at all, and it is zero at rest. It is made of
+// the medium's weight and the piece's own motion only, so no knob scales it.
+// Neither ever enters the lift, so where a piece comes to rest (displaced
+// weight == its weight) is the same whatever it is. A floater that reaches its
+// depth still moving carries past it, and the lift, now more than its weight,
+// turns it back up.
+// weightSpeed divides the hold-back (and the plow by its square, see
+// sinkHoldSolve), so the speed the weight difference
 // drives against it is weightSpeed times what it was. It is a divisor of the
 // hold-back rather than a factor on the forces so that nothing it does reaches
 // the balance, a load carried on the sinker included. At 0 the hold-back holds
@@ -1041,26 +1051,30 @@ function sinkBlocksPowder(i, j, l) {
 // rides shallower, 0 lifts nothing and every piece that has gone in sinks to
 // whatever solid is under the powder.
 // speedDiv divides every steady speed through powder, sinking and rising,
-// by that factor: it multiplies the hold-back, the one force in the sinking
-// that answers speed, so the speed at which the weight difference balances it
-// is 1/D of what it was. It is the only way a speed can be divided while the
+// by that factor: it multiplies the hold-back and (by its square) the plow,
+// the forces in the sinking that answer speed, so the speed at which the
+// weight difference balances them is 1/D of what it was. It is the only way a speed can be divided while the
 // body keeps its own momentum: gravity, the lift and the body's mass are what
 // they are. So it also stops a piece's fall into the powder D times harder,
 // and a stronger hold-back damps a floater's bob more; it moves no rest depth.
 // friction effect x divider is the strength; they are two dials on one force.
-// The stock pair, friction effect 20 with divider 1.5 (hold-back 30), sinks a
-// rock at about 0.56 m/s. Its floaters settle at their displaced-weight depth
-// without passing it even dropped from 20 blocks: their fall is spent in the
-// first few tenths of a metre. Below about 6 the hold-back is too weak against
-// the float's spring and a floater dropped in dives past its depth; once it
-// goes fully under it leaves a shaft the rise cannot refill.
+// The same force sets how slowly a piece sinks and how hard a bob is damped,
+// so a slow pace and a floater that is turned back up cannot both be had:
+// at hold-back 30 (rock ~0.55 m/s) a dropped floater's fall is spent before
+// its depth and it creeps down onto it. The stock pair is friction effect 9,
+// divider 1: a floater dropped from about 10 blocks up carries past its depth
+// and is pushed back up, and a rock sinks at about 1.36 m/s. It is the
+// lowest hold at which every floater tried (4, 5 and 6 block hollow cubes)
+// still comes back from a 40-block drop: lower, the reversal shows from
+// shorter drops, but a hard one takes a small floater fully under, and a
+// floater that goes fully under leaves a shaft the rise cannot refill.
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
 const SINK_TUNE_DEFS = [
-  { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 20, min: 0,
-    help: 'How much the friction of the powder slows a sinker, the whole time it touches the powder (from first touch, not only once in): held back by this x the divider x friction x the weight it would displace fully under, per m/s. 0: nothing slows sinking but the piece\'s own damping.' },
-  { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1.5, min: 1, max: 1000,
-    help: 'Divides the steady speed of everything sinking or rising through powder (2: half as fast) by holding it back this many times harder: it multiplies the friction hold-back, so it also stops a falling piece sooner and damps a bob more. 1: as without it. Where a piece rests is not changed.' },
+  { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 9, min: 0,
+    help: 'How much the friction of the powder slows a sinker, on the part of it that is in the powder: held back by this x the divider x friction x the weight it displaces there, per m/s, so the hold grows as it goes in. 0: nothing slows sinking but the momentum the grains take (always there) and the piece\'s own damping.' },
+  { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1, min: 1, max: 1000,
+    help: 'Divides the steady speed of everything sinking or rising through powder (2: half as fast) by holding it back this many times harder: it multiplies the friction hold-back (and the grains\' momentum take by its square), so it also stops a falling piece sooner and damps a bob more (a dropped floater pushed back up from past its depth stops short of it instead). 1: as without it. Where a piece rests is not changed.' },
   { key: 'weightSpeed', group: 'Speed', name: 'Weight speed importance', def: 1, min: 0,
     help: 'How strongly the weight difference (sinker vs powder) drives sinking and rising speed: speed times this. Where a piece stops is not changed. 0: weight moves nothing, a piece stays where it first went in.' },
   { key: 'floatScale', group: 'Floating', name: 'Float importance', def: 1, min: 0,
@@ -1114,16 +1128,13 @@ const sinkWeight = (m) => { const w = MAT_STATS[m]?.weight; return w > 0 ? w : 0
 // it. Anything else holds a block up whatever the two weigh.
 const sinkMedium = (m) => !!MAT_STATS[m]?.powder;
 
-// mo: the powder S is pressing into there, so a piece only grazing the
-// surface (no cell of it in yet) is held back by that powder's friction.
-function sinkTouch(S, O, mo) {
+function sinkTouch(S, O) {
   let st = sinkers.get(S);
   if (!st) sinkers.set(S, st = { media: new Map(), rigidAt: -1, busy: false, disp: 0, owed: [] });
   const key = O.voxelGround ? SINK_GROUND : O;
   let M = st.media.get(key);
-  if (!M) st.media.set(key, M = { body: O.voxelGround ? null : O, rec: new Map(), touchAt: 0, overAt: -1, touchMat: -1 });
+  if (!M) st.media.set(key, M = { body: O.voxelGround ? null : O, rec: new Map(), touchAt: 0, overAt: -1 });
   M.touchAt = world.stepnumber;
-  if (mo >= 0) M.touchMat = mo;
 }
 // The contact between piece S (its point rS, n pointing from S into O when sg
 // is 1) and O lets go if O's block where S's block is is powder and S's block
@@ -1165,7 +1176,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     wo = sinkWeight(mo);
   }
   if (!(ws > wo)) return false;
-  sinkTouch(S, O, mo);
+  sinkTouch(S, O);
   return true;
 }
 function sinkYield(c) {
@@ -1361,17 +1372,16 @@ function sinkToWorld(M, F, g, out) {
 // them reach into one cell their share is scaled back to the one cell there is
 // (_sinkAcc, the overlap summed per cell). Each cell of the region is read
 // from the store once however many hull cells reach into it.
-const SINK_L = 12;
+const SINK_L = 11;
 const _sinkList = [];
 let _sinkLen = 0;
 let _sinkGC = new Float64Array(3 * 64), _sinkAcc = new Float64Array(512), _sinkMat = new Int32Array(512);
 const _sinkG = { x: 0, y: 0, z: 0 }, _sinkC = { x: 0, y: 0, z: 0 };
 // An entry's share of its cell, and the hold-back it carries per unit of that
-// share and of the sinker's kg-per-weight and speed. Flag 2 marks a contact
-// entry (sinkContactHold): its share is its own and its hold-back is stored.
-const sinkShare = (L, k, acc) => L[k + 7] === 2 ? L[k + 6] : L[k + 6] / Math.max(1, acc[L[k + 1]]);
-const sinkCellHold = (L, k) => L[k + 7] === 2 ? L[k + 11] : sinkWeight(L[k + 5]) * sinkHold(L[k + 5]);
-let _sinkI0 = 0, _sinkJ0 = 0, _sinkL0 = 0, _sinkDI = 0, _sinkDJ = 0;
+// share and of the sinker's kg-per-weight and speed.
+const sinkShare = (L, k, acc) => L[k + 6] / Math.max(1, acc[L[k + 1]]);
+const sinkCellHold = (L, k) => sinkWeight(L[k + 5]) * sinkHold(L[k + 5]);
+let _sinkSz = 0, _sinkI0 = 0, _sinkJ0 = 0, _sinkL0 = 0, _sinkDI = 0, _sinkDJ = 0;
 function sinkScan(S, hull, M, F) {
   _sinkLen = 0;
   const L = _sinkList, cells = hull.cells, q = S.quaternion, x = S.position, nc = hull.count;
@@ -1393,7 +1403,7 @@ function sinkScan(S, hull, M, F) {
   const acc = _sinkAcc, mats = _sinkMat;
   acc.fill(0, 0, size);
   mats.fill(-2, 0, size);
-  _sinkI0 = i0; _sinkJ0 = j0; _sinkL0 = l0; _sinkDI = di; _sinkDJ = dj;
+  _sinkI0 = i0; _sinkJ0 = j0; _sinkL0 = l0; _sinkDI = di; _sinkDJ = dj; _sinkSz = size;
   const ground = !F, rec = M.rec;
   for (let c = 0; c < nc; c++) {
     const gx = G[c * 3], gy = G[c * 3 + 1], gz = G[c * 3 + 2], dens = cells[c * 4 + 3];
@@ -1435,43 +1445,6 @@ function sinkScan(S, hull, M, F) {
     }
   }
 }
-// The grains rub on a sinker the whole time it is in contact with them, not
-// only on the part of it that is in: from the first block grazing the surface,
-// through partial submersion, until it comes clear, the hold-back is what it
-// would be fully under (each hull cell held as a cell of the powder). The
-// part of each hull cell not in the powder is added to the list (after the
-// sinkScan entries, flag 2) at the cell's middle, held back by this medium's
-// hold-back per unit volume: the mean of the cells it is in, or while none
-// is in yet the powder it is pressing on (M.touchMat). It carries no lift
-// (that stays the displaced weight alone) and is shared out between the media
-// the sinker is in contact with now, nC, so two of them do not double it.
-// Fully under, nothing is added and the hold-back is as before.
-let _sinkCov = new Float64Array(64);
-function sinkContactHold(S, hull, M, nC) {
-  const L = _sinkList, acc = _sinkAcc, n = _sinkLen, nc = hull.count, cells = hull.cells;
-  if (_sinkCov.length < nc) _sinkCov = new Float64Array(nc * 2);
-  const cov = _sinkCov;
-  cov.fill(0, 0, nc);
-  let sw = 0, sh = 0;
-  for (let t = 0; t < n; t++) {
-    const k = t * SINK_L, share = sinkShare(L, k, acc);
-    cov[L[k]] += share; sw += share; sh += share * sinkCellHold(L, k);
-  }
-  let hv;
-  if (sw > 0) hv = sh / sw;
-  else if (M.touchMat >= 0 && sinkMedium(M.touchMat)) hv = sinkWeight(M.touchMat) * sinkHold(M.touchMat);
-  else return;
-  if (!(hv > 0)) return;
-  const q = S.quaternion, x = S.position;
-  for (let c = 0; c < nc; c++) {
-    const rest = (1 - Math.min(1, cov[c])) / nC;
-    if (rest <= 1e-9) continue;
-    q.vmult(_sinkV.set(cells[c * 4], cells[c * 4 + 1], cells[c * 4 + 2]), _sinkV);
-    const k = _sinkLen++ * SINK_L;
-    L[k] = c; L[k + 1] = -1; L[k + 2] = L[k + 3] = L[k + 4] = 0; L[k + 5] = -1; L[k + 6] = rest; L[k + 7] = 2;
-    L[k + 8] = _sinkV.x + x.x; L[k + 9] = _sinkV.y + x.y; L[k + 10] = _sinkV.z + x.z; L[k + 11] = hv;
-  }
-}
 // Called by the solver ahead of its sweep, every step, after gravity is in the
 // forces: the contacts are solved against the lift just as against gravity.
 // Lift and hold-back are in the body's own kilograms per unit of weight (its
@@ -1495,8 +1468,7 @@ function sinkForces(h) {
     const hull = sinkHull(S.debrisMesh, S);
     if (!(hull.W > 0)) continue;
     const K = S.mass / hull.W;
-    let disp = 0, nC = 0;
-    for (const M of st.media.values()) if (M.touchAt === step || M.overAt === step - 1) nC++;
+    let disp = 0;
     for (const [key, M] of st.media) {
       const O = M.body;
       if (O && (O.world !== world || !O.debrisMesh)) { sinkDropMedium(st, key, M); continue; }
@@ -1505,7 +1477,6 @@ function sinkForces(h) {
       sinkScan(S, hull, M, F);
       const L = _sinkList, acc = _sinkAcc, nIn = _sinkLen;
       if (nIn) M.overAt = step;
-      if (nIn || M.touchAt === step) sinkContactHold(S, hull, M, Math.max(1, nC));
       const Od = O && O.type === CANNON.Body.DYNAMIC;
       // Lift first, so the hold-back is solved against the motion the step is
       // heading for with it in.
@@ -1517,7 +1488,7 @@ function sinkForces(h) {
         sinkPush(S, O, Od, _sinkP, -gx * kg, -gy * kg, -gz * kg);
         if (L[k + 7]) { const r = M.rec.get(fricKey(L[k + 2], L[k + 3], L[k + 4])); if (r) r.at = step; }
       }
-      sinkHoldSolve(S, O, Od, h, L, acc, K);
+      sinkHoldSolve(S, O, Od, h, L, acc, K, hull);
       // A record no part of the hull reaches any more has been left behind:
       // the cell stays empty (its block is on the rim).
       for (const [rk, r] of M.rec) if (r.at !== step) sinkUnrecord(M, rk);
@@ -1536,11 +1507,10 @@ function sinkForces(h) {
     if (!st.media.size && !st.owed.length) sinkers.delete(S);
   }
 }
-// The hold-back, as one implicit (backward Euler) step of the whole rigid
-// body. Each listed cell is held back by c per unit of its point's speed
-// through the powder (c = its share x K x the cell's hold-back), and together
-// they make D, a 6x6 matrix on the body's motion U = (v, w) less the medium's
-// there. The step solves
+// The hold-back and the plow, as one implicit (backward Euler) step of the
+// whole rigid body. Each listed cell is held back by c per unit of its point's
+// speed through the powder, and together they make D, a 6x6 matrix on the
+// body's motion U = (v, w) less the medium's there. The step solves
 //   (weightSpeed M + h D) dU = -h D U,
 // M the body's mass and its inertia tensor, so how much of a sliding or a
 // turning one step takes out is set by how much momentum, straight-line and
@@ -1551,26 +1521,32 @@ function sinkForces(h) {
 // motion is taken outright (a perfectly inelastic grip, its impulse going
 // into the medium piece). The result goes on as force and torque, which
 // cannon integrates with everything else.
+// A cell's c is its friction hold-back (its share x K x the cell's
+// hold-back) plus its plow: the mass of fresh powder it is taking into the
+// piece's way per second. Times the point's velocity that is the momentum per
+// second the grains pushed aside leave with, so as a force it needs no
+// strength of its own. The two speed dials still have to mean what they say
+// with it in: every steady speed / speedDiv, and x weightSpeed. The hold-back
+// goes as the speed and the plow as its square, so a resistance R(v) that
+// gives speed v becomes R(D v / k) for speed v k / D: the hold-back by D / k
+// (as it always was) and the plow by (D / k)^2. In the solve, whose D is
+// weightSpeed times the force law, that is speedDiv^2 / weightSpeed on the
+// plow. At stock (both 1) it is the plain momentum flux. What is swept is
+// read off the overlap itself: each powder cell's overlap with the hull
+// changes at a rate set by the hull cells' motion through it, and only a cell
+// whose overlap in total is growing is being pushed into. An interior hull
+// cell moving into the cell its neighbour has just left adds as much as the
+// neighbour takes away, so only the leading faces sweep, from the first
+// touch on; and a cell already wholly in the hull (overlap 1) has nothing
+// left to give. c is taken from the motion the piece has now (not the one
+// the step is heading for, which has a step of gravity in it: at a slow
+// steady sink that would be most of it) and the step is solved implicitly
+// with it, so the plow can stop a piece but never turn it round.
 const _skD = new Float64Array(36), _skA = new Float64Array(42), _skX = new Float64Array(6);
-const _skIw = new Float64Array(9), _skU = new Float64Array(6), _skDead = [false, false, false, false, false, false];
-function sinkHoldSolve(S, O, Od, h, L, acc, K) {
+const _skIw = new Float64Array(9), _skU = new Float64Array(6), _skV = new Float64Array(6), _skDead = [false, false, false, false, false, false];
+let _skUG = new Float64Array(192), _skDW = new Float64Array(512), _skRate = new Float64Array(512), _skPos = new Float64Array(512);
+function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
   if (!_sinkLen) return;
-  let c0 = 0, mx = 0, my = 0, mz = 0, xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
-  for (let t = 0; t < _sinkLen; t++) {
-    const k = t * SINK_L, c = sinkShare(L, k, acc) * K * sinkCellHold(L, k);
-    const rx = L[k + 8] - S.position.x, ry = L[k + 9] - S.position.y, rz = L[k + 10] - S.position.z;
-    c0 += c; mx += c * rx; my += c * ry; mz += c * rz;
-    xx += c * rx * rx; yy += c * ry * ry; zz += c * rz * rz; xy += c * rx * ry; xz += c * rx * rz; yz += c * ry * rz;
-  }
-  if (!(c0 > 0)) return;
-  // D on (v, w): point velocity v + w x r, so D_vv = c0, D_vw = -[m1]x, D_wv = [m1]x,
-  // D_ww = tr(m2) - m2.
-  const D = _skD, tr = xx + yy + zz;
-  D.fill(0);
-  D[0] = D[7] = D[14] = c0;
-  D[3] = 0; D[4] = mz; D[5] = -my; D[9] = -mz; D[10] = 0; D[11] = mx; D[15] = my; D[16] = -mx; D[17] = 0;
-  D[18] = 0; D[19] = -mz; D[20] = my; D[24] = mz; D[25] = 0; D[26] = -mx; D[30] = -my; D[31] = mx; D[32] = 0;
-  D[21] = tr - xx; D[22] = -xy; D[23] = -xz; D[27] = -xy; D[28] = tr - yy; D[29] = -yz; D[33] = -xz; D[34] = -yz; D[35] = tr - zz;
   const wl = 1 / S.mass + (Od ? 1 / O.mass : 0);
   debrisInertiaWorld(S, _skIw, false);
   // U: the sinker's motion the step is heading for, gravity, lift and their
@@ -1587,9 +1563,61 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K) {
     U[0] -= O.velocity.x + ow.y * dpz - ow.z * dpy; U[1] -= O.velocity.y + ow.z * dpx - ow.x * dpz; U[2] -= O.velocity.z + ow.x * dpy - ow.y * dpx;
     U[3] -= ow.x; U[4] -= ow.y; U[5] -= ow.z;
   }
+  const k1 = SINK_TUNE.weightSpeed, n = _sinkLen;
+  // Each hull cell's speed through the medium, in the medium's cells per
+  // second along its grid's axes (x, level, z: the order sinkScan keeps).
+  const nc = hull.count, cells = hull.cells, q = S.quaternion, G = _sinkGC;
+  if (_skUG.length < nc * 3) _skUG = new Float64Array(nc * 6);
+  if (_skDW.length < n) _skDW = new Float64Array(n * 2);
+  if (_skRate.length < _sinkSz) { _skRate = new Float64Array(_sinkSz * 2); _skPos = new Float64Array(_sinkSz * 2); }
+  const UG = _skUG, DW = _skDW, rate = _skRate, pos = _skPos;
+  if (k1 > 0) {
+    const V = _skV;
+    V[0] = S.velocity.x; V[1] = S.velocity.y; V[2] = S.velocity.z; V[3] = w.x; V[4] = w.y; V[5] = w.z;
+    if (O) {
+      const ow = O.angularVelocity;
+      V[0] -= O.velocity.x + ow.y * dpz - ow.z * dpy; V[1] -= O.velocity.y + ow.z * dpx - ow.x * dpz; V[2] -= O.velocity.z + ow.x * dpy - ow.y * dpx;
+      V[3] -= ow.x; V[4] -= ow.y; V[5] -= ow.z;
+    }
+    for (let c = 0; c < nc; c++) {
+      q.vmult(_sinkV.set(cells[c * 4], cells[c * 4 + 1], cells[c * 4 + 2]), _sinkV);
+      _sinkW.set(V[0] + V[4] * _sinkV.z - V[5] * _sinkV.y, V[1] + V[5] * _sinkV.x - V[3] * _sinkV.z, V[2] + V[3] * _sinkV.y - V[4] * _sinkV.x);
+      if (O) O.quaternion.conjugate(_sinkQ).vmult(_sinkW, _sinkW);
+      UG[c * 3] = _sinkW.x / BLOCK; UG[c * 3 + 1] = _sinkW.y / BLOCK; UG[c * 3 + 2] = _sinkW.z / BLOCK;
+    }
+    for (let t = 0; t < n; t++) { const r = L[t * SINK_L + 1]; rate[r] = 0; pos[r] = 0; }
+    for (let t = 0; t < n; t++) {
+      const k = t * SINK_L, c = L[k], r = L[k + 1];
+      const ex = G[c * 3] - L[k + 2], ey = G[c * 3 + 1] - L[k + 4], ez = G[c * 3 + 2] - L[k + 3];
+      const ox = 1 - Math.abs(ex), oy = 1 - Math.abs(ey), oz = 1 - Math.abs(ez);
+      const dw = -(Math.sign(ex) * UG[c * 3] * oy * oz + Math.sign(ey) * UG[c * 3 + 1] * ox * oz + Math.sign(ez) * UG[c * 3 + 2] * ox * oy);
+      DW[t] = dw;
+      rate[r] += dw;
+      if (dw > 0) pos[r] += dw;
+    }
+  }
+  const pd = k1 > 0 ? SINK_TUNE.speedDiv ** 2 / k1 : 0;
+  let c0 = 0, mx = 0, my = 0, mz = 0, xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
+  for (let t = 0; t < n; t++) {
+    const k = t * SINK_L, r = L[k + 1];
+    let c = sinkShare(L, k, acc) * K * sinkCellHold(L, k);
+    if (k1 > 0 && DW[t] > 0 && rate[r] > 0 && acc[r] < 1) c += pd * K * sinkWeight(L[k + 5]) * DW[t] * rate[r] / pos[r];
+    const rx = L[k + 8] - S.position.x, ry = L[k + 9] - S.position.y, rz = L[k + 10] - S.position.z;
+    c0 += c; mx += c * rx; my += c * ry; mz += c * rz;
+    xx += c * rx * rx; yy += c * ry * ry; zz += c * rz * rz; xy += c * rx * ry; xz += c * rx * rz; yz += c * ry * rz;
+  }
+  if (!(c0 > 0)) return;
+  // D on (v, w): point velocity v + w x r, so D_vv = c0, D_vw = -[m1]x, D_wv = [m1]x,
+  // D_ww = tr(m2) - m2.
+  const D = _skD, tr = xx + yy + zz;
+  D.fill(0);
+  D[0] = D[7] = D[14] = c0;
+  D[3] = 0; D[4] = mz; D[5] = -my; D[9] = -mz; D[10] = 0; D[11] = mx; D[15] = my; D[16] = -mx; D[17] = 0;
+  D[18] = 0; D[19] = -mz; D[20] = my; D[24] = mz; D[25] = 0; D[26] = -mx; D[30] = -my; D[31] = mx; D[32] = 0;
+  D[21] = tr - xx; D[22] = -xy; D[23] = -xz; D[27] = -xy; D[28] = tr - yy; D[29] = -yz; D[33] = -xz; D[34] = -yz; D[35] = tr - zz;
   // Symmetric; a pivot of nothing (only at weightSpeed 0) is a motion the
   // cells cannot hold at all (turning about a lone cell), left be.
-  const k1 = SINK_TUNE.weightSpeed, A = _skA;
+  const A = _skA;
   let big = 0;
   for (let a = 0; a < 6; a++) {
     let r = 0;

@@ -1076,7 +1076,7 @@ function sinkBlocksPowder(i, j, l) {
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
 const SINK_TUNE_DEFS = [
-  { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 9, min: 0,
+  { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 1000, min: 0,
     help: 'How much the friction of the powder slows a sinker, on the part of it that is in the powder: held back by this x the divider x friction x the weight it displaces there, per m/s, so the hold grows as it goes in. 0: nothing slows sinking but the momentum the grains take (always there) and the piece\'s own damping.' },
   { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1, min: 1, max: 1000,
     help: 'Divides the steady speed of everything sinking or rising through powder (2: half as fast) by holding it back this many times harder: it multiplies the friction hold-back (and the grains\' momentum take by its square), so it also stops a falling piece sooner and damps a bob more (a dropped floater pushed back up from past its depth stops short of it instead). 1: as without it. Where a piece rests is not changed.' },

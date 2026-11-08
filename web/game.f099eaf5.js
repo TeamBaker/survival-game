@@ -7415,8 +7415,8 @@ const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air
 // lands or leaves the field, and come out again for the next one.
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
-  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null };
-  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1;
+  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null, thru: false };
+  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1; g.thru = false;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
   return g;
@@ -9173,6 +9173,11 @@ const powderDown = new CANNON.Vec3(0, -1, 0), powderQ = new CANNON.Quaternion();
 const powderLocalDown = new CANNON.Vec3();
 const powderProbe = new THREE.Vector3();
 
+// Powder is only ever seen square to the world. A piece holds it for as long as
+// the piece itself is unturned; once turned at all, every powder block it has
+// leaves as a loose grain, and a grain coming down on a turned piece slides off
+// it rather than being laid in. A turned piece is left all solid.
+const pieceSquare = (q) => q.x * q.x + q.y * q.y + q.z * q.z < 1e-10;
 function shedPowder() {
   // Awake pieces only: a sleeping one lies as it did when last looked at, and
   // anything that changes its lattice wakes it (rebuildDebrisBody).
@@ -9194,7 +9199,8 @@ function shedPowder() {
       const dz = az > ax && az > ay ? Math.sign(powderLocalDown.z) * BLOCK : 0;
       // Nothing to shed unless the lattice or the way down has changed since the
       // last look — a resting piece would otherwise be walked every frame.
-      const shedKey = (Math.sign(dx) + 1) * 9 + (Math.sign(dy) + 1) * 3 + (Math.sign(dz) + 1) + 27 * lat.length;
+      const turned = !pieceSquare(f.body.quaternion);
+      const shedKey = (Math.sign(dx) + 1) * 9 + (Math.sign(dy) + 1) * 3 + (Math.sign(dz) + 1) + 27 * (lat.length * 2 + (turned ? 1 : 0));
       if (f.shedKey === shedKey) continue;
       f.shedKey = shedKey;
       if (!lat.some((b) => MAT_STATS[b.mat]?.powder)) continue;
@@ -9207,11 +9213,13 @@ function shedPowder() {
       for (let q = lat.length - 1; q >= 0; q--) {
         const b = lat[q];
         if (!MAT_STATS[b.mat]?.powder) continue;
-        if (grid[cell[q] + step]) continue;
+        if (!turned && grid[cell[q] + step]) continue;
         // Not into a falling grain: it stays on for now, and the piece gets another look next frame.
         const at = powderProbe.copy(b.pos).applyMatrix4(mesh.matrixWorld);
-        if (powderGrainAt(at.x, at.y, at.z, null)) { f.shedKey = -1; continue; }
-        powderGrain(at.x, at.y, at.z, b.mat, mesh);
+        if (!turned && powderGrainAt(at.x, at.y, at.z, null)) { f.shedKey = -1; continue; }
+        // Off a turned piece it is not barred from the piece: one with solid under
+        // it is caught and sent off the side (powderOffPiece), not dropped through.
+        powderGrain(at.x, at.y, at.z, b.mat, turned ? null : mesh);
         grid[cell[q]] = 0;
         cutDebrisLat(mesh, q);   // the same gap-close a dig does
         cut = true;
@@ -9411,6 +9419,32 @@ function powderPast(mesh, local, dist) {
   if (dist <= 0) return null;
   return mesh.localToWorld(_pastAt.copy(local).addScaledVector(d, dist / BLOCK));
 }
+// The nearest column to x, z, within POWDER_OFF_R blocks, a grain at height y
+// can go to and fall from without meeting any piece; null if there is none. Into
+// powderSpot. Columns clear all the way down, so grains cannot be passed to and
+// fro between two pieces lying together.
+const POWDER_OFF_R = 12;
+function powderOffPiece(x, y, z, self, stamp) {
+  const i0 = colI(x), j0 = colJ(z), r = 2 * BLOCK;
+  for (let d = 1; d <= POWDER_OFF_R; d++) {
+    for (let dj = -d; dj <= d; dj++) for (let di = -d; di <= d; di++) {
+      if (Math.max(Math.abs(di), Math.abs(dj)) !== d) continue;
+      const i = i0 + di, j = j0 + dj;
+      if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) continue;
+      const cx = colX(i), cz = colZ(j);
+      if (powderClear(cx, y, cz, self, stamp)) continue;
+      const near = powderCatchCells.get(debrisCellKey(Math.floor(cx / CATCH_CELL), Math.floor(cz / CATCH_CELL)));
+      let free = true;
+      if (near) for (let e = 0; e < near.length && free; e += 2) {
+        const c = near[e + 1];
+        if (cx < c.minX - r || cx > c.maxX + r || cz < c.minZ - r || cz > c.maxZ + r || y < c.minY - r) continue;
+        if (powderSweep(near[e], cx, y, cz, FALL_KILL_Y) < Infinity) free = false;
+      }
+      if (free) return powderSpot.set(cx, y, cz);
+    }
+  }
+  return null;
+}
 // The cell of a piece's lattice a grain touching it is in. At first touch that
 // is never one of the piece's blocks, or it would have touched sooner; one that
 // is (the piece moved onto it, or a block was laid where it was) goes up the
@@ -9569,7 +9603,7 @@ function catchPowder(dt) {
     // whatever angle the physics left it, so the grain is snapped to the piece's
     // own lattice. Never back onto the piece it fell off: that one had no room
     // for it, and it would only shed again next frame.
-    if (!inside && (restedChunks.length || fallingChunks.length)) {
+    if (!inside && !p.thru && (restedChunks.length || fallingChunks.length)) {
       if (!filed) { powderCatchFile(reach); filed = true; }
       const near = powderCatchCells.get(debrisCellKey(Math.floor(px / CATCH_CELL), Math.floor(pz / CATCH_CELL)));
       let mesh = null, t = Infinity;
@@ -9580,6 +9614,14 @@ function catchPowder(dt) {
             || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
         const tm = powderSweep(m, px, y0, pz, yEnd);
         if (tm < t) { t = tm; mesh = m; }
+      }
+      if (mesh && !pieceSquare(mesh.quaternion)) {
+        // A turned piece holds no powder: off its side to fall on from there. No
+        // clear column in reach, and it goes on down past the pieces to the ground.
+        const off = powderOffPiece(px, y0 + (yEnd - y0) * t, pz, p, stamp);
+        if (off) { powderMove(p, off.x, off.y, off.z); p.v = 0; continue; }
+        p.thru = true;
+        mesh = null;
       }
       if (mesh) {
         p.pos.y = y0 + (yEnd - y0) * t;   // where it touches
@@ -10251,6 +10293,7 @@ function placeOnDebris(mesh, local, m, rebuild = true, placed = false) {
 // piece further down.
 function layOnDebris(mesh, local, m, rebuild = true) {
   if (MAT_STATS[m]?.powder) {
+    if (!pieceSquare(mesh.quaternion)) { mesh.localToWorld(powderGrain(0, 0, 0, m, null).pos.copy(local)); return; }
     const off = debrisRoll(mesh, local, m);
     if (off !== null) {
       const g = powderGrain(0, 0, 0, m, null);
@@ -17122,7 +17165,8 @@ async function restoreSavedPieces(ds, split) {
       if (f) {
         if (list === ds.fallingChunks) f.still = pc.still;
         else restFallingChunk(fallingChunks.length - 1);
-        if (pc.vel.every((v) => v === 0) && pc.angVel.every((v) => v === 0)) {
+        if (pc.vel.every((v) => v === 0) && pc.angVel.every((v) => v === 0)
+            && (pieceSquare(f.body.quaternion) || !f.mesh.userData.blocks.some((b) => MAT_STATS[b.mat]?.powder))) {   // or it would never get to shed its powder
           f.body.sleep();
           f.body.dispatchEvent(CANNON.Body.sleepEvent);
         }

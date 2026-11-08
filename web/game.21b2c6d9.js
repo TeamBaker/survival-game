@@ -876,7 +876,7 @@ function debrisFricCells(lat, rev) {
 {
   const np = world.narrowphase, makeFriction = np.createFrictionEquationsFromContact;
   np.createFrictionEquationsFromContact = function (c, out) {
-    // A heavier block pressing into a lighter one is not held by it: the
+    // A block pressing into powder of another weight is not held by it: the
     // contact goes, and with it its friction (sinkYield, sinkForces).
     if (sinkYield(c)) { c.enabled = false; return false; }
     if (sinkers.size) sinkDepthCap(c);
@@ -971,13 +971,16 @@ function frictionSolve(h, w) {
 world.solver.solve = frictionSolve;
 
 // ----- sinking: weight over volume decides who gives way to whom -----
-// A block heavier than the block it presses down or sideways into does not
-// rest on it: that contact is let go (sinkYield) and the lighter material
-// holds it up the way a fluid does, by the weight of what it has had to make
-// room for (sinkForces). Only powder gives way like that: a block is pressed
-// into ground that can flow round it, and cohesive ground (dirt, clay, stone)
-// holds whatever lies on it, however heavy — its contact is cannon's,
-// untouched, as is an equal or lighter block's on powder. No physical number
+// A block pressed down or sideways into powder of another weight does not
+// rest on it: that contact is let go (sinkYield) and the powder holds it up
+// the way a fluid does, by the weight of what it has had to make room for
+// (sinkForces). Heavier or lighter makes no difference to how: a light piece
+// coming down with momentum goes in, is slowed by the same hold-back and plow,
+// and the lift (more than its weight once it is deep enough) pushes it back up
+// to rest high, where a heavy one rests deep. Only powder gives way like that:
+// a block is pressed into ground that can flow round it, and cohesive ground
+// (dirt, clay, stone) holds whatever lies on it, however heavy — its contact
+// is cannon's, untouched, as is a block's on powder of its own weight. No physical number
 // is made up here: the lift is the displaced cells' MAT_STATS weight, the
 // hold-back their friction; every other number the code works with is in SINK_TUNE, which the
 // Sink panel edits live, so none is out of reach.
@@ -985,7 +988,7 @@ world.solver.solve = frictionSolve;
 // The lift is worked out per cell of the sinker, never as one figure for the
 // body: each cell of its hull (its blocks, and any hollow inside it the
 // material cannot get into — a boat's hold) takes the overlap of its own cube
-// with the lighter cells round it, so a piece sunk deeper at one end is lifted
+// with the powder cells round it, so a piece sunk deeper at one end is lifted
 // harder there and tips, and a hollow piece displaces its hold as well as its
 // walls and floats higher than a solid one of the same blocks.
 //
@@ -1129,6 +1132,12 @@ const sinkWeight = (m) => { const w = MAT_STATS[m]?.weight; return w > 0 ? w : 0
 // What a block can be pressed into at all: loose grain, which can flow round
 // it. Anything else holds a block up whatever the two weigh.
 const sinkMedium = (m) => !!MAT_STATS[m]?.powder;
+// Whether powder of weight w gives way to every block of hull h: lighter than
+// the lightest, or heavier than the heaviest. A lighter piece goes into heavier
+// powder by the same rules a heavier one does, and is lifted back out by the
+// same displaced weight: weight only decides where it comes to rest. Of equal
+// weight it is neither, and the powder holds it as ground does.
+const sinkGives = (h, w) => w < h.minW || w > h.maxW;
 
 function sinkTouch(S, O) {
   let st = sinkers.get(S);
@@ -1140,7 +1149,8 @@ function sinkTouch(S, O) {
 }
 // The contact between piece S (its point rS, n pointing from S into O when sg
 // is 1) and O lets go if O's block where S's block is is powder and S's block
-// there is heavier than it: read at S's own point, not at O's face, because a sunk piece is
+// there is not of its weight (heavier sinks in; lighter goes in too, and the
+// lift turns it back up to its own depth; equal weight holds): read at S's own point, not at O's face, because a sunk piece is
 // deep inside the old box of ground it is going through and that box's face
 // says nothing about the cells round it. Pushing up into O never sinks S into
 // it. A cell of ground that reads as air there gives way only if a sinker has
@@ -1184,7 +1194,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     // against the powder there as going down.
     if (O.voxelGround && sg * n.y >= -SINK_TUNE.upCut && sinkers.get(S)?.disp > 0) {
       const w = sinkGroundAround(S, rS, n, sg);
-      if (w < 0 || (w > 0 && !(ws > w))) return false;
+      if (w < 0 || (w > 0 && ws === w)) return false;
       sinkTouch(S, O);
       return true;
     }
@@ -1213,7 +1223,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
-  if (fl ? !(wo === 0 || fl.W < SINK_TUNE.floatScale * wo * fl.count) : !(ws > wo)) return false;
+  if (fl ? !(wo === 0 || fl.W < SINK_TUNE.floatScale * wo * fl.count) : ws === wo) return false;
   sinkTouch(S, O);
   return true;
 }
@@ -1274,40 +1284,37 @@ function sinkDepthCap(c) {
   if (d <= cap) return;
   c.sinkCut = d - cap;
 }
-// A sinker deep in lighter ground overlaps every box of it round the hole
+// A sinker deep in powder overlaps every box of it round the hole
 // it is in, and cannon made some fifty contacts a step for each sinker there,
 // every one of them let go — most of the cost of sinking. Only ground inside
-// the sinker's own box can touch it: if every cell there is powder lighter than its
-// lightest block, every contact it could make with the ground is one
+// the sinker's own box can touch it: if every cell there is powder that gives
+// way to all its blocks (sinkGives), every contact it could make with the ground is one
 // sinkYield lets go, and its pairs with the ground are not taken to the
 // narrowphase at all (but count as touched). Read once a step per sinker.
 // Not a box over the sinker's middle: a piece pressing up into ground is held
 // by it whatever it weighs.
-function sinkGroundMaxW(S, st) {
+function sinkGroundGives(S, st, hull) {
   const step = world.stepnumber;
-  if (st.boxAt === step) return st.boxW;
+  if (st.boxAt === step) return st.boxGives;
   st.boxAt = step;
   if (S.aabbNeedsUpdate) S.updateAABB();
   const a = S.aabb, e = SINK_TUNE.skipPad * BLOCK;
   const i0 = colI(a.lowerBound.x - e), i1 = colI(a.upperBound.x + e);
   const j0 = colJ(a.lowerBound.z - e), j1 = colJ(a.upperBound.z + e);
   const l0 = lvlOfY(a.lowerBound.y - e), l1 = lvlOfY(a.upperBound.y + e);
-  let w = 0;
-  if ((i1 - i0 + 1) * (j1 - j0 + 1) * (l1 - l0 + 1) > SINK_TUNE.skipCells) w = Infinity;
-  else {
-    for (let l = l0; l <= l1; l++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
-      const v = voxelAt(i, j, l);
-      if (v !== AIR && v !== WATER) { const wv = sinkMedium(v) ? sinkWeight(v) : Infinity; if (wv > w) w = wv; }
-    }
+  let gives = (i1 - i0 + 1) * (j1 - j0 + 1) * (l1 - l0 + 1) <= SINK_TUNE.skipCells;
+  for (let l = l0; l <= l1 && gives; l++) for (let j = j0; j <= j1 && gives; j++) for (let i = i0; i <= i1; i++) {
+    const v = voxelAt(i, j, l);
+    if (v !== AIR && v !== WATER && !(sinkMedium(v) && sinkGives(hull, sinkWeight(v)))) { gives = false; break; }
   }
-  return (st.boxW = w);
+  return (st.boxGives = gives);
 }
 function sinkSkipBox(S, G, shape, x) {
   if (S.sleepState === CANNON.Body.SLEEPING || !shape.halfExtents) return false;
   const st = sinkers.get(S), M = st.media.get(SINK_GROUND);
   if (!M) return false;
   if (x.y - shape.halfExtents.y > S.position.y) return false;
-  if (!(sinkGroundMaxW(S, st) < sinkHull(S.debrisMesh, S).minW)) return false;
+  if (!sinkGroundGives(S, st, sinkHull(S.debrisMesh, S))) return false;
   M.touchAt = world.stepnumber;
   return true;
 }
@@ -1384,9 +1391,9 @@ function sinkHull(mesh, body) {
     cells.push(gi * BLOCK + kx, (lvl + 0.5) * BLOCK + ky, gj * BLOCK + kz, avg);
     hold++;
   }
-  let minW = Infinity;
-  for (const e of lat) minW = Math.min(minW, debrisWeight(e.mat));
-  h = mesh.userData.sinkHull = { lat, n, rev, up, cells: Float32Array.from(cells), count: cells.length / 4, hold, W, minW };
+  let minW = Infinity, maxW = -Infinity;
+  for (const e of lat) { const w = debrisWeight(e.mat); minW = Math.min(minW, w); maxW = Math.max(maxW, w); }
+  h = mesh.userData.sinkHull = { lat, n, rev, up, cells: Float32Array.from(cells), count: cells.length / 4, hold, W, minW, maxW };
   return h;
 }
 
@@ -1420,8 +1427,9 @@ function sinkToWorld(M, F, g, out) {
   out.vadd(b.position, out);
   return out;
 }
-// Every overlap of a hull cell with a lighter powder cell of medium M (a cell
-// of anything else is not displaced, it holds), written to the
+// Every overlap of a hull cell with a powder cell of medium M of another
+// weight, lighter or heavier (a cell of anything else, or of powder of the
+// cell's own weight, is not displaced, it holds), written to the
 // scratch list (stride SINK_L): hull cell, the cell's slot in the scan's
 // region, the cell, its material, the overlap (a fraction of a block),
 // whether the cell is only a record, and the overlap box's centre in the world.
@@ -1487,7 +1495,10 @@ function sinkScan(S, hull, M, F) {
           }
           if (m === -1) continue;
           const isRec = m <= -3, mm = isRec ? -3 - m : m;
-          if (!sinkMedium(mm) || !(sinkWeight(mm) < dens)) continue;
+          // dens is float32: a powder of a block's own weight can read as a
+          // hair lighter than it, never heavier, so heavier is tested at float32.
+          const wm = sinkWeight(mm);
+          if (!sinkMedium(mm) || !(wm < dens || Math.fround(wm) > dens)) continue;
           const w = ox * oy * oz;
           const k = _sinkLen++ * SINK_L;
           L[k] = c; L[k + 1] = r; L[k + 2] = ni; L[k + 3] = nj; L[k + 4] = nl; L[k + 5] = mm; L[k + 6] = w; L[k + 7] = isRec ? 1 : 0;
@@ -1766,7 +1777,7 @@ function sinkForget(S, st) {
   sinkers.delete(S);
 }
 
-// Once a frame, after the step: every lighter cell whose middle a hull cell
+// Once a frame, after the step: every displaced cell whose middle a hull cell
 // of a sinker now covers is taken out of the medium and put down somewhere
 // else. Its record goes in first, so the lift it gave goes on unbroken.
 // Where it goes is where powder pushed aside goes: round the piece into the
@@ -1875,7 +1886,7 @@ function sinkRelocateScan(S, st, hull, step) {
           // has to meet that cell's real face, not a box the worker has yet
           // to rebuild without this one.
           const below = voxelAt(e.i, e.j, e.l - 1);
-          if (below !== AIR && !(sinkMedium(below) && sinkWeight(below) < hull.W / Math.max(1, hull.n))) colliderSyncFor(chunkOf(e.i, e.j));
+          if (below !== AIR && !(sinkMedium(below) && sinkGives(hull, sinkWeight(below)))) colliderSyncFor(chunkOf(e.i, e.j));
           if (sinkFillBehind(S, M, F, hull, e.i, e.j, e.l, e.m)) continue;
           if (sinkCovered(S, M, F, hull, e)) { st.owed.push({ i: e.i, j: e.j, l: e.l, m: e.m, M, gi: e.i, gj: e.j, gl: e.l }); sinkStats.owed++; continue; }
           if (!sinkPlaceGround(e.i, e.j, e.l, e.m, S)) { st.owed.push({ i: e.i, j: e.j, l: e.l, m: e.m }); sinkStats.owed++; }
@@ -1907,7 +1918,7 @@ function sinkFillLeft(S, st, M, F, hull) {
 }
 // Fills room b behind sinker S with the top block of the nearest, highest
 // column round it (SINK_TUNE.rimCost levels per column out, as the rim is
-// built, run the other way) that is powder the piece is heavier than, stands
+// built, run the other way) that is powder that gives way to the piece, stands
 // higher than the room, and has nothing on it: the heap round a hole slides
 // into it.
 function sinkPullSurface(S, M, F, hull, bk, b) {
@@ -1937,7 +1948,7 @@ function sinkPullSurface(S, M, F, hull, bk, b) {
       const cost = l - rc * r;
       if (cost <= best) continue;
       const v = voxelAt(i, j, l);
-      if (!sinkMedium(v) || !(sinkWeight(v) < hull.minW) || sinkHeldCell(i, j, l)) continue;
+      if (!sinkMedium(v) || !sinkGives(hull, sinkWeight(v)) || sinkHeldCell(i, j, l)) continue;
       if (!sinkCellClear(boxes, colX(i), (l + 1.5) * BLOCK, colZ(j))) continue;
       best = cost; bi = i; bj = j; bl = l;
     }
@@ -9129,7 +9140,7 @@ function processImpacts() {
       const bites = Es >= s.cost;   // false: not even the block it struck
       // Before the crater or the chip: either can take the struck block away.
       impactLoad(s, sign, other, h, F, bites);
-      if (!bites) continue;
+      if (!bites || !impactBreakOn) continue;
       impactSolidLeft -= s.cell ? craterGround(s, Es, h.vn) : chipPiece(s, Es, h.vn);
     }
   } });
@@ -13097,6 +13108,8 @@ function collectPlaced() {
 function restorePlaced(ss) {
   placedByChunk.fill(null);
   if (ss && typeof ss.on === 'boolean') setStress(ss.on, typeof ss.shown === 'boolean' ? ss.shown : ss.on);
+  // A save from before the switch was made with impacts breaking.
+  if (ss && typeof ss.on === 'boolean') setImpactBreak(typeof ss.impactBreak === 'boolean' ? ss.impactBreak : true);
   if (ss && Array.isArray(ss.placed)) {
     for (const key of ss.placed) {
       if (!Number.isInteger(key) || key < 0) continue;
@@ -14052,6 +14065,15 @@ camera.layers.enable(STRESS_LAYER);
 // it, and the cracks on loaded blocks); stressShown draws the coloured overlay.
 // Independent: shown with the solver off draws the last answers in hand.
 let stressOn = true, stressShown = false;
+// Impact breaking: a hard landing digging its crater and chipping a lone
+// cube (processImpacts), and the hit solve breaking what only the hit turned
+// red. Off, the hit is still solved and shown — the struck blocks go red for
+// that one check — but nothing breaks from it; what the world's own weight
+// overloads (the follow-up check, every other check) breaks as ever.
+let impactBreakOn = true;
+// Off, the nodes a hit's answer found red before the hit (stressApply's
+// wasRed) for as long as that answer is the one in hand: only those may break.
+let stHitSpare = null;
 let stressTimer = 0, stressLastRebuild = -Infinity, stressDrawSig = NaN;
 // A break pass held some of its red back (STRESS_BREAK_PER): the next wave comes
 // from the same answers on the next tick, before the world is laid out again.
@@ -14878,6 +14900,7 @@ function stressHitFly(S, pc, L) {
 function stressRebuild() {
   stBuildSeq++;
   stHeldPieces.clear();   // what a wave held back is read from the new answers
+  stHitSpare = null;      // numbered for the layout being replaced
   const old = stCur; stCur = stOld; stOld = old; stOldN = stN;
   const prevMap = stKeyMap; stKeyMap = stKeyMapPrev; stKeyMapPrev = prevMap;
   stKeyMap.clear();
@@ -15225,6 +15248,7 @@ function stressApply(r) {
   // on that answer, and the colours settle back to what the world carries. It
   // never grows the solve: a hard landing would otherwise bring chunks in for
   // good, every one paid for on every check after, for a force long gone.
+  stHitSpare = hit && !impactBreakOn ? wasRed : null;
   if (hit) { stressBreakSaturated(wasRed); stressRev++; }
   else if (!stressEscalate(nodes)) stressBreakSaturated();
 }
@@ -15257,6 +15281,11 @@ function stressBreakSaturated(wasRed = null) {
   if (!stressOn) return;   // not solving, so nothing reads red
   const S = stCur, top = STRESS_LUT_N - 1, per = STRESS_BREAK_PER;
   const hitOnly = (n) => wasRed !== null && n >= 0 && !wasRed[n];
+  // Impact breaking off: a hit's answer, while it is the one in hand (any
+  // pass of it: the drain, the sweep), breaks only what was red without the
+  // hit. Settled ground has no node to tell by, so it waits for the
+  // follow-up check, which is solved without the hit.
+  const spare = stHitSpare;
   // Ground goes in as node (-1 for settled ground), over, i, j, lvl, material.
   const cells = [];
   // A fallen piece's red blocks are gathered here and broken together after
@@ -15275,6 +15304,7 @@ function stressBreakSaturated(wasRed = null) {
     // something holding it up, it would shed as a grain, land back in the very
     // cell it left, read red again and be broken again, forever.
     if (MAT_STATS[S.mat[n]]?.powder) continue;
+    if (spare && !spare[n]) continue;
     if (n < stNTerr) {
       const key = S.key[n];
       const i = key % GEN_N, t = (key - i) / GEN_N, j = t % GEN_N, lvl = (t - j) / GEN_N + VOX_FLOOR;
@@ -15311,7 +15341,7 @@ function stressBreakSaturated(wasRed = null) {
     if (stressHasGroundR(k)) continue;
     if (!stressGroundRedIn(k, gHit)) stressGroundCols.delete(k);
   }
-  for (let q = 0; q < gHit.length; q += 5) cells.push(-1, gHit[q], gHit[q + 1], gHit[q + 2], gHit[q + 3], gHit[q + 4]);
+  if (!spare) for (let q = 0; q < gHit.length; q += 5) cells.push(-1, gHit[q], gHit[q + 1], gHit[q + 2], gHit[q + 3], gHit[q + 4]);
   // The ground's wave: only cells still as laid out count towards it, or a
   // wave of stale ones would break nothing and the rest would wait for good.
   const ord = [], hitOrd = [];
@@ -15761,7 +15791,7 @@ function setStress(on, shown = on) {
   stressOn = !!on;
   stressShown = !!shown;
   stressShowU.value = stressShown ? 1 : 0;
-  if (!stressOn) { impactLoads.length = 0; impactStruck = false; }   // a hit is felt by the next check, not one long after
+  if (!stressOn) { impactLoads.length = 0; impactStruck = false; stHitSpare = null; }   // a hit is felt by the next check, not one long after
   stressCrackU.value = stressOn ? 1 : 0;
   // Only cracks left to draw: the next layout shows the cubes that have one.
   stressTerr.visible = stressShown;
@@ -15781,6 +15811,16 @@ function stressInvalidate() {
   stressRecolor();
   stressBreakSaturated();
 }
+// Impact breaking on or off (impactBreakOn). Turned off with a hit's answer
+// in hand, that answer stops breaking what only the hit turned red at once;
+// on again, the next hit breaks as ever.
+function setImpactBreak(on) {
+  impactBreakOn = !!on;
+  if (impactBreakOn) stHitSpare = null;
+  impactBreakBtn.textContent = impactBreakOn ? 'Impact Breaks: On' : 'Impact Breaks: Off';
+}
+const impactBreakBtn = document.getElementById('btn-impact-break');
+bindTap(impactBreakBtn, () => setImpactBreak(!impactBreakOn));
 const stressBtn = document.getElementById('btn-stress');
 const stressShowBtn = document.getElementById('btn-stress-show');
 bindTap(stressBtn, () => setStress(!stressOn, stressShown));
@@ -16479,7 +16519,7 @@ function collectWorldMeta() {
 
   // Stress overlay: which cells the player built. Optional on load — a save
   // without it just has no placed blocks to tint.
-  const stressState = { on: stressOn, shown: stressShown, placed: collectPlaced() };
+  const stressState = { on: stressOn, shown: stressShown, impactBreak: impactBreakOn, placed: collectPlaced() };
 
   return {
     version: SAVE_VERSION,
@@ -17471,7 +17511,7 @@ window.hermes = {
   // The stress system — setStress(on, shown): run the solver (and crack
   // loaded blocks), and draw the colours or not, independently. markPlaced tags a cell as player-built; ground counts the hanging
   // ground in the solve.
-  setStress, markPlaced,
+  setStress, markPlaced, setImpactBreak, impactBreak: () => impactBreakOn,
   // solvedChunks: chunks whose ground is solved for real this layout; grownChunks:
   // how many of all of them a yellow pull brought in.
   stress: () => ({ on: stressOn, shown: stressShown, nodes: stN, built: stNBuilt, ground: stNTerr - stNBuilt, beams: stNE, structures: stNComp,

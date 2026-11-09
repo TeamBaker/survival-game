@@ -1075,7 +1075,12 @@ function sinkBlocksPowder(i, j, l) {
 // and is pushed back up, and a rock sinks at about 1.36 m/s.
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
+// The player's default weight, per block of its hull in MAT_STATS units: what
+// the body's 6 kg comes to over the capsule's blocks (a piece's 5 kg per weight).
+const PLAYER_WEIGHT_DEF = 0.015, PLAYER_WEIGHT_KG = 6 / PLAYER_WEIGHT_DEF;
 const SINK_TUNE_DEFS = [
+  { key: 'playerWeight', group: 'Player', name: 'Player weight', def: PLAYER_WEIGHT_DEF, min: 0.001,
+    help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 2.2, Fine Dirt 2): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper; of a powder\'s own weight he stands on it as ground. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
   { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 1000, min: 0,
     help: 'How much the friction of the powder slows a sinker, on the part of it that is in the powder: held back by this x the divider x friction x the weight it displaces there, per m/s, so the hold grows as it goes in. 0: nothing slows sinking but the momentum the grains take (always there) and the piece\'s own damping.' },
   { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1, min: 1, max: 1000,
@@ -1127,6 +1132,7 @@ for (const d of SINK_TUNE_DEFS) SINK_TUNE[d.key] = d.def;
 // weight and speed (see SINK_TUNE).
 const sinkHold = (m) => SINK_TUNE.frictionScale * SINK_TUNE.speedDiv * matFriction(m);
 const _sinkP = new CANNON.Vec3(), _sinkN = new CANNON.Vec3(), _sinkQ = new CANNON.Quaternion();
+const _sinkZ = new CANNON.Vec3();
 const _sinkV = new CANNON.Vec3(), _sinkW = new CANNON.Vec3(), _sinkR = new CANNON.Vec3();
 const sinkWeight = (m) => { const w = MAT_STATS[m]?.weight; return w > 0 ? w : 0; };
 // What a block can be pressed into at all: loose grain, which can flow round
@@ -1139,6 +1145,8 @@ const sinkMedium = (m) => !!MAT_STATS[m]?.powder;
 // weight it is neither, and the powder holds it as ground does.
 const sinkGives = (h, w) => w < h.minW || w > h.maxW;
 
+// What can sink: a piece, or the player.
+const sinkBody = (b) => !!b.debrisMesh || b === playerBody;
 function sinkTouch(S, O) {
   let st = sinkers.get(S);
   if (!st) sinkers.set(S, st = { media: new Map(), rigidAt: -1, busy: false, disp: 0, owed: [] });
@@ -1163,6 +1171,17 @@ function sinkTouch(S, O) {
 // under), any other piece block for block as sideways (what moves it up
 // through powder is its own momentum, and the hold-back answers it there as
 // in any direction). A piece not in powder is held by powder over it.
+// Powder heavier than the player is a wall to him where he is walking into it
+// near the surface, on a contact steeper than ground he could walk on: he
+// goes down into powder by his weight, but a light body does not push through
+// a sand bank side on, and his rounded feet ride up it as up any step. Only
+// where his legs are taking him: the rim of the hole he is sinking into, which
+// is as steep, is no wall to him. nx, nz: from him into the powder.
+function sinkPlayerWall(S, ws, wo, nx, ny, nz) {
+  if (S !== playerBody || !(ws < wo) || Math.abs(ny) >= GROUND_DOT) return false;
+  if (sinkDriveX * nx + sinkDriveZ * nz <= 0) return false;
+  return !(sinkers.get(S)?.vol >= playerSinkHull().count * 0.5);
+}
 function sinkPresses(S, rS, O, rO, n, sg, depth) {
   if (!O.voxelGround && !O.debrisMesh) return false;
   if (S.type !== CANNON.Body.DYNAMIC) return false;
@@ -1186,22 +1205,28 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
       return true;
     }
   } else {
-    const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
-    ws = ms < 0 ? 0 : sinkWeight(ms);
+    if (S === playerBody) ws = SINK_TUNE.playerWeight;
+    else {
+      const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
+      ws = ms < 0 ? 0 : sinkWeight(ms);
+    }
     if (!(ws > 0)) return false;
     // A piece in powder pushed sideways or up against the ground: the same
     // read round the point as a floater's (see sinkGroundAround), its blocks
     // against the powder there as going down.
     if (O.voxelGround && sg * n.y >= -SINK_TUNE.upCut && sinkers.get(S)?.disp > 0) {
       const w = sinkGroundAround(S, rS, n, sg);
-      if (w < 0 || (w > 0 && ws === w)) return false;
+      if (w < 0 || (w > 0 && (ws === w || sinkPlayerWall(S, ws, w, sg * n.x, sg * n.y, sg * n.z)))) return false;
       sinkTouch(S, O);
       return true;
     }
   }
   _sinkP.set(S.position.x + rS.x - O.position.x, S.position.y + rS.y - O.position.y, S.position.z + rS.z - O.position.z);
   _sinkN.set(sg * n.x, sg * n.y, sg * n.z);
-  let mo = contactMatOf(O, _sinkP, _sinkN);
+  // The player's spheres touch with their lowest point, already inside the
+  // cell they are in: read there, not a probe further on, or powder lying
+  // on rock reads as the rock under it and holds him above the floor.
+  let mo = contactMatOf(O, _sinkP, S === playerBody ? _sinkZ : _sinkN);
   let wo;
   const soft = (m) => m === AIR || m === WATER || !MAT_STATS[m];
   if (O.voxelGround && soft(mo)) {
@@ -1223,7 +1248,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
-  if (fl ? !(wo === 0 || fl.W < SINK_TUNE.floatScale * wo * fl.count) : ws === wo) return false;
+  if (fl ? !(wo === 0 || fl.W < SINK_TUNE.floatScale * wo * fl.count) : ws === wo || sinkPlayerWall(S, ws, wo, _sinkN.x, _sinkN.y, _sinkN.z)) return false;
   sinkTouch(S, O);
   return true;
 }
@@ -1249,13 +1274,13 @@ function sinkGroundAround(S, rS, n, sg) {
 }
 function sinkYield(c) {
   const bi = c.bi, bj = c.bj;
-  if (!bi.debrisMesh && !bj.debrisMesh) return false;
+  if (!sinkBody(bi) && !sinkBody(bj)) return false;
   const ni = c.ni;
   const depth = -((bj.position.x + c.rj.x - bi.position.x - c.ri.x) * ni.x
                 + (bj.position.y + c.rj.y - bi.position.y - c.ri.y) * ni.y
                 + (bj.position.z + c.rj.z - bi.position.z - c.ri.z) * ni.z);
-  if (bi.debrisMesh && sinkPresses(bi, c.ri, bj, c.rj, ni, 1, depth)) return true;
-  if (bj.debrisMesh && sinkPresses(bj, c.rj, bi, c.ri, ni, -1, depth)) return true;
+  if (sinkBody(bi) && sinkPresses(bi, c.ri, bj, c.rj, ni, 1, depth)) return true;
+  if (sinkBody(bj) && sinkPresses(bj, c.rj, bi, c.ri, ni, -1, depth)) return true;
   // A contact that holds: a sinker leaning on it is held up by more than the
   // lift, and may sleep there even off balance.
   if (sinkers.size) {
@@ -1280,9 +1305,28 @@ function sinkDepthCap(c) {
   const d = -((bj.position.x + c.rj.x - bi.position.x - c.ri.x) * n.x
             + (bj.position.y + c.rj.y - bi.position.y - c.ri.y) * n.y
             + (bj.position.z + c.rj.z - bi.position.z - c.ri.z) * n.z);
-  const cap = SINK_TUNE.depthCap;
+  let cap = SINK_TUNE.depthCap;
+  // The player on the floor under powder: the box of ground he touches can
+  // stand higher than the solid in it (a stale box, the powder he has sunk
+  // through still in it), and pushed out of all of it he bounces off the
+  // floor for good, as he never sleeps. Only his depth into the solid itself.
+  if (c.bi === playerBody || c.bj === playerBody) {
+    const real = sinkPlayerFloorDepth(c);
+    if (real < cap) cap = real;
+  }
   if (d <= cap) return;
   c.sinkCut = d - cap;
+}
+function sinkPlayerFloorDepth(c) {
+  const sg = c.bi === playerBody ? 1 : -1, O = sg > 0 ? c.bj : c.bi, r = sg > 0 ? c.ri : c.rj;
+  if (!O.voxelGround || -sg * c.ni.y < GROUND_DOT) return Infinity;
+  const x = playerBody.position.x + r.x, y = playerBody.position.y + r.y, z = playerBody.position.z + r.z;
+  const i = colI(x), j = colJ(z), l = lvlOfY(y);
+  const solid = (v) => v !== AIR && v !== WATER && !!MAT_STATS[v] && !sinkMedium(v);
+  if (!solid(voxelAt(i, j, l))) return Infinity;
+  let t = l;
+  while (t < l + 4 && solid(voxelAt(i, j, t + 1))) t++;
+  return Math.max(0, (t + 1) * BLOCK - y);
 }
 // A sinker deep in powder overlaps every box of it round the hole
 // it is in, and cannon made some fifty contacts a step for each sinker there,
@@ -1336,6 +1380,7 @@ function sinkSkipBox(S, G, shape, x) {
 // side floods. Each cell carries how heavy it presses: a block its own weight,
 // a hold the piece's average. Kept until the lattice is edited or turns over.
 function sinkHull(mesh, body) {
+  if (body === playerBody) return playerSinkHull();
   const lat = mesh.userData.blocks, rev = mesh.userData.stressLat | 0;
   body.quaternion.conjugate(_sinkQ).vmult(_sinkV.set(0, 1, 0), _sinkV);
   const ax = Math.abs(_sinkV.x), ay = Math.abs(_sinkV.y), az = Math.abs(_sinkV.z);
@@ -1397,6 +1442,25 @@ function sinkHull(mesh, body) {
   return h;
 }
 
+// The player's hull: the blocks of his capsule (or, crouched, his one sphere),
+// square to the world as he never turns, each of his weight. The hollow-hold
+// reading of a piece's hull has nothing to do here.
+let _playerHull = null, _playerHullCrouch = false, _playerHullW = 0;
+function playerSinkHull() {
+  const w = SINK_TUNE.playerWeight;
+  if (_playerHull && _playerHullCrouch === crouched && _playerHullW === w) return _playerHull;
+  const seg = crouched ? 0 : 0.4, r = PLAYER.radius, c = [];
+  for (let iy = -Math.ceil((seg + r) / BLOCK); iy < Math.ceil((seg + r) / BLOCK); iy++) {
+    const y = (iy + 0.5) * BLOCK, dy = Math.max(Math.abs(y) - seg, 0);
+    for (let iz = -Math.ceil(r / BLOCK); iz < Math.ceil(r / BLOCK); iz++) for (let ix = -Math.ceil(r / BLOCK); ix < Math.ceil(r / BLOCK); ix++) {
+      const x = (ix + 0.5) * BLOCK, z = (iz + 0.5) * BLOCK;
+      if (x * x + z * z + dy * dy <= r * r) c.push(x, y, z, w);
+    }
+  }
+  const count = c.length / 4;
+  _playerHullCrouch = crouched; _playerHullW = w;
+  return (_playerHull = { cells: Float32Array.from(c), count, hold: 0, W: w * count, minW: w, maxW: w });
+}
 // Where a world point is in a medium's own grid, as continuous cell
 // coordinates: a cell's centre is at whole numbers. The ground's grid is the
 // world's; a piece's is its lattice, carried round by its body.
@@ -1532,7 +1596,7 @@ function sinkForces(h) {
   if (!sinkers.size) return;
   const step = world.stepnumber, gx = world.gravity.x, gy = world.gravity.y, gz = world.gravity.z;
   for (const [S, st] of sinkers) {
-    if (S.world !== world || !S.debrisMesh) { sinkForget(S, st); continue; }
+    if (S.world !== world || !sinkBody(S)) { sinkForget(S, st); continue; }
     if (S.sleepState === CANNON.Body.SLEEPING || S.type !== CANNON.Body.DYNAMIC) continue;
     const hull = sinkHull(S.debrisMesh, S);
     if (!(hull.W > 0)) continue;
@@ -1612,6 +1676,7 @@ function sinkForces(h) {
 // the step is heading for, which has a step of gravity in it: at a slow
 // steady sink that would be most of it) and the step is solved implicitly
 // with it, so the plow can stop a piece but never turn it round.
+let sinkDriveX = 0, sinkDriveZ = 0;   // the velocity the player's legs are asking for, world x and z
 const _skD = new Float64Array(36), _skA = new Float64Array(42), _skX = new Float64Array(6);
 const _skIw = new Float64Array(9), _skU = new Float64Array(6), _skV = new Float64Array(6), _skDead = [false, false, false, false, false, false];
 let _skUG = new Float64Array(192), _skDW = new Float64Array(512), _skRate = new Float64Array(512), _skPos = new Float64Array(512);
@@ -1626,6 +1691,9 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
   U[3] = w.x + h * (Iv[0] * T.x + Iv[1] * T.y + Iv[2] * T.z);
   U[4] = w.y + h * (Iv[3] * T.x + Iv[4] * T.y + Iv[5] * T.z);
   U[5] = w.z + h * (Iv[6] * T.x + Iv[7] * T.y + Iv[8] * T.z);
+  // The player's legs: where he is walking is the motion the powder holds him
+  // to, not still, so friction answers his sinking and rising, not his stride.
+  if (S === playerBody) { U[0] -= sinkDriveX; U[2] -= sinkDriveZ; }
   let dpx = 0, dpy = 0, dpz = 0;
   if (O) {
     const ow = O.angularVelocity;
@@ -1644,6 +1712,7 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
   if (k1 > 0) {
     const V = _skV;
     V[0] = S.velocity.x; V[1] = S.velocity.y; V[2] = S.velocity.z; V[3] = w.x; V[4] = w.y; V[5] = w.z;
+    if (S === playerBody) { V[0] -= sinkDriveX; V[2] -= sinkDriveZ; }
     if (O) {
       const ow = O.angularVelocity;
       V[0] -= O.velocity.x + ow.y * dpz - ow.z * dpy; V[1] -= O.velocity.y + ow.z * dpx - ow.x * dpz; V[2] -= O.velocity.z + ow.x * dpy - ow.y * dpx;
@@ -1687,11 +1756,13 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
   D[21] = tr - xx; D[22] = -xy; D[23] = -xz; D[27] = -xy; D[28] = tr - yy; D[29] = -yz; D[33] = -xz; D[34] = -yz; D[35] = tr - zz;
   // Symmetric; a pivot of nothing (only at weightSpeed 0) is a motion the
   // cells cannot hold at all (turning about a lone cell), left be.
-  const A = _skA;
+  const A = _skA, fixedTurn = S.fixedRotation;
   let big = 0;
   for (let a = 0; a < 6; a++) {
     let r = 0;
     for (let b = 0; b < 6; b++) {
+      // A body that cannot turn (the player) has only its straight-line rows.
+      if (fixedTurn && (a >= 3 || b >= 3)) { A[a * 7 + b] = 0; continue; }
       const mi = a < 3 ? (a === b ? 1 / wl : 0) : (b < 3 ? 0 : _skIw[(a - 3) * 3 + b - 3]);
       A[a * 7 + b] = k1 * mi + h * D[a * 6 + b];
       r -= h * D[a * 6 + b] * U[b];
@@ -1718,6 +1789,9 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
     for (let b = c + 1; b < 6; b++) v -= A[c * 7 + b] * dU[b];
     dU[c] = v / A[c * 7 + c];
   }
+  // A jump from near the surface is the legs too: the hold-back does not take
+  // it. From deeper it answers a jump as any other motion.
+  if (S === playerBody && jumpLock > 0 && !(sinkers.get(S).vol >= hull.count * 0.5)) dU[1] = 0;
   // Back to forces: straight-line impulse over the pair's inverse mass, turn
   // impulse through the sinker's inertia; the medium piece gets the opposite.
   const px = dU[0] / wl / h, py = dU[1] / wl / h, pz = dU[2] / wl / h;
@@ -1795,7 +1869,7 @@ function sinkRelocate() {
   if (!sinkers.size) return;
   const step = world.stepnumber;
   for (const [S, st] of sinkers) {
-    if (S.world !== world || !S.debrisMesh) continue;
+    if (S.world !== world || !sinkBody(S)) continue;
     // Blocks owed a place (none found yet, or carried for room that is not
     // coming: the medium is gone, or the piece has stopped).
     const going = S.sleepState !== CANNON.Body.SLEEPING && st.busy;
@@ -2047,7 +2121,12 @@ function sinkBodiesNear(x0, x1, z0, z1, S) {
     out.push(a);
   }
   if (playerBody.aabbNeedsUpdate) playerBody.updateAABB();
-  out.push(playerBody.aabb);
+  if (S === playerBody) {
+    // The player as the sinker: his own box, widened, as for a piece's above.
+    const g = SINK_TUNE.rimGap * BLOCK;
+    out.push(_sinkOwnBox.copy(playerBody.aabb));
+    _sinkOwnBox.lowerBound.x -= g; _sinkOwnBox.lowerBound.z -= g; _sinkOwnBox.upperBound.x += g; _sinkOwnBox.upperBound.z += g;
+  } else out.push(playerBody.aabb);
   return out;
 }
 const sinkCellClear = (boxes, x, y, z) => {
@@ -6309,9 +6388,18 @@ function setPlayerShape(crouch) {
     playerBody.addShape(new CANNON.Sphere(r), new CANNON.Vec3(0,  0.4, 0));
   }
   playerBody.updateBoundingRadius();
-  playerBody.updateMassProperties();   // honours fixedRotation, keeps mass = 1
+  playerBody.updateMassProperties();   // honours fixedRotation, leaves the mass as it is
 }
 setPlayerShape(false);
+// Sink panel's Player weight to the body's mass. At the default that is the
+// 6 kg above; heavier, capped where the heaviest piece is, so the solver sees
+// nothing it does not already handle. The sinking reads the weight itself.
+function applyPlayerWeight() {
+  const m = Math.min(PLAYER_WEIGHT_KG * SINK_TUNE.playerWeight, FALL_MASS_CAP);
+  if (playerBody.mass === m) return;
+  playerBody.mass = m;
+  playerBody.updateMassProperties();
+}
 // Find a valid spawn height by raycasting downward, in case the heightmap
 // was wrong or the spawn chunk hasn't been generated correctly yet.
 // Uses synchronous CANNON.RaycastResult (not callback) for reliable hit detection.
@@ -6521,6 +6609,7 @@ function updatePlayer(dt) {
     tx += sy * over;                        // i.e. t -= over * forward
     tz += cy * over;
   }
+  sinkDriveX = tx; sinkDriveZ = tz;
 
   if (grounded) {
     // A hard landing takes the grip away for a moment (impactJolt): the speed
@@ -11803,6 +11892,7 @@ const sinkListEl = document.getElementById('sink-list');
 // each sinker's "has it moved" mark is dropped so the cells it covers are
 // read under the new thresholds the next frame.
 function sinkTuneApplied() {
+  applyPlayerWeight();
   for (const st of sinkers.values()) st.scanQ = null;
   frictionWake();
 }
@@ -16223,6 +16313,7 @@ function tick() {
     // Nobody is driving the character — park it so it does not creep away.
     playerBody.velocity.x = 0;
     playerBody.velocity.z = 0;
+    sinkDriveX = sinkDriveZ = 0;
   } else {
     updatePlayer(dt);
   }
@@ -16533,6 +16624,7 @@ function collectWorldMeta() {
     crouched,
     eyeH,
     sprint: state.sprint,
+    weight: SINK_TUNE.playerWeight,
   };
 
   // Camera state
@@ -17322,6 +17414,16 @@ function applyWorldCore(s) {
 
   // Restore player state
   const ps = s.playerState;
+  // Whatever he was sunk in belongs to the world just replaced: its cells are
+  // gone, and nothing he owed goes into this one.
+  {
+    const st = sinkers.get(playerBody);
+    if (st) { st.owed.length = 0; sinkForget(playerBody, st); }
+  }
+  // An older save has no weight: the default.
+  SINK_TUNE.playerWeight = Number.isFinite(ps.weight) && ps.weight >= 0.001 ? ps.weight : PLAYER_WEIGHT_DEF;
+  applyPlayerWeight();
+  buildSinkList();
   playerBody.position.set(...ps.pos);
   playerBody.velocity.set(...ps.vel);
   playerBody.angularVelocity.set(...ps.angVel);

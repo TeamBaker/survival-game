@@ -7253,12 +7253,20 @@ function grainLayer(mesh, m) {
   return L;
 }
 const debrisM4 = new THREE.Matrix4(), debrisCol = new THREE.Color();
+// A grain's instance matrix: at its place in the piece, and on a piece holding
+// hand-placed powder at a tilt (powderHold) turned back so it is seen square to
+// the world.
+const _grainQ = new THREE.Quaternion(), _grainS = new THREE.Vector3(1, 1, 1);
+function grainMatrix(mesh, pos, m4) {
+  const hold = mesh.userData.powderHold;
+  return hold ? m4.compose(pos, _grainQ.copy(hold).invert(), _grainS) : m4.makeTranslation(pos.x, pos.y, pos.z);
+}
 // Draw lattice entry e as a grain on its piece.
 function addGrain(mesh, e) {
   const L = grainLayer(mesh, e.mat), k = L.count;
   debrisReserve(L, k + 1);
   L.count = k + 1;
-  L.setMatrixAt(k, debrisM4.makeTranslation(e.pos.x, e.pos.y, e.pos.z));
+  L.setMatrixAt(k, grainMatrix(mesh, e.pos, debrisM4));
   // Same range as terrain's per-block tint.
   L.setColorAt(k, debrisCol.setScalar(0.85 + Math.random() * 0.30));
   L.userData.owners[k] = e;
@@ -7371,6 +7379,7 @@ function debrisFaceMask(mesh) {
         if (q < mesh.count) clear = true;
       }
     }
+    if (q >= mesh.count && mesh.userData.powderHold) bits = 0;   // seen square to the world, not along the lattice
     if (q < mesh.count) attr.array[q] = bits;
     else mesh.userData.grains[lat[q].mat].geometry.attributes.faceHide.array[lat[q].k] = bits;
   }
@@ -8455,9 +8464,15 @@ function shedColumn(c, budget) {
     // it is the room just behind the piece that the powder pushed out of its
     // way is going back into (sinkFillBehind). The piece holds it up.
     if (voxMat[o + lvl - 1] === AIR && sinkHeldCell(i, j, lvl - 1)) continue;
+    // Placed by hand straight on solid ground it stays where it was put, whatever
+    // the slope (on powder it still rolls, so a hand-built pile keeps its angle;
+    // angle 0 still runs). With the ground gone from under it, it falls as any.
+    if (voxMat[o + lvl - 1] !== AIR && !MAT_STATS[voxMat[o + lvl - 1]]?.powder && !reposeFlat[m] && isPlacedCell(i, j, lvl)) continue;
     let roll = voxMat[o + lvl - 1] !== AIR ? powderRoll(i, j, lvl, m) : -1;
     // Nor off into a piece lying beside it: the piece holds it in (see catchPowder).
-    if (roll >= 0 && powderPieceBeside(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))) roll = -1;
+    // Nor down onto one: a piece in the cell under the side is ground to the slope, not a hole.
+    if (roll >= 0 && (powderPieceBeside(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))
+                   || powderPieceBeside(colX(i + POWDER_SIDES[roll][0]), (lvl - 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1])))) roll = -1;
     const way = roll >= 0 ? powderFarWay : null;
     if (voxMat[o + lvl - 1] !== AIR && roll < 0) {
       if (powderFarWait) powderCarry.push(c);   // its far look waits for next frame
@@ -9174,10 +9189,16 @@ const powderLocalDown = new CANNON.Vec3();
 const powderProbe = new THREE.Vector3();
 
 // Powder is only ever seen square to the world. A piece holds it for as long as
-// the piece itself is unturned; once turned at all, every powder block it has
-// leaves as a loose grain, and a grain coming down on a turned piece slides off
-// it rather than being laid in. A turned piece is left all solid.
-const pieceSquare = (q) => q.x * q.x + q.y * q.y + q.z * q.z < 1e-10;
+// the piece itself is unturned, a settled piece's few degrees of residual tilt
+// included (POWDER_TURN: 1 - cos^2 of the half angle, so about 3.6 degrees); once
+// turned past that, every powder block it has leaves as a loose grain, and a
+// grain coming down on a turned piece slides off it rather than being laid in.
+// The one exception is powder placed by hand on a piece lying at a tilt: the
+// piece keeps that pose in userData.powderHold and holds the powder until it
+// turns away from the pose or a solid block is taken out of it.
+const POWDER_TURN = 1e-3;
+const pieceSquare = (q) => q.x * q.x + q.y * q.y + q.z * q.z < POWDER_TURN;
+const pieceInPose = (q, r) => { const d = q.x * r.x + q.y * r.y + q.z * r.z + q.w * r.w; return 1 - d * d < POWDER_TURN; };
 function shedPowder() {
   // Awake pieces only: a sleeping one lies as it did when last looked at, and
   // anything that changes its lattice wakes it (rebuildDebrisBody).
@@ -9189,6 +9210,10 @@ function shedPowder() {
       // A piece still travelling is mid-break: leave it, or it dissolves in the air.
       // Actually, shed powder always — it should fall when unsupported regardless.
       const mesh = f.mesh, lat = mesh.userData.blocks;
+      if (mesh.userData.powderHold) {
+        if (pieceInPose(f.body.quaternion, mesh.userData.powderHold)) continue;
+        mesh.userData.powderHold = null;
+      }
       // World down in the piece's own frame, snapped to the axis it leans on most,
       // so a tilted piece sheds down one of its own columns rather than diagonally.
       f.body.quaternion.inverse(powderQ);
@@ -9424,11 +9449,19 @@ function powderPast(mesh, local, dist) {
 // powderSpot. Columns clear all the way down, so grains cannot be passed to and
 // fro between two pieces lying together.
 const POWDER_OFF_R = 12;
+const POWDER_OFF_RING = [];
+for (let a = -POWDER_OFF_R; a <= POWDER_OFF_R; a++) for (let b = -POWDER_OFF_R; b <= POWDER_OFF_R; b++) if (a || b) POWDER_OFF_RING.push([a, b, a * a + b * b]);
+POWDER_OFF_RING.sort((u, w) => u[2] - w[2]);
 function powderOffPiece(x, y, z, self, stamp) {
   const i0 = colI(x), j0 = colJ(z), r = 2 * BLOCK;
-  for (let d = 1; d <= POWDER_OFF_R; d++) {
-    for (let dj = -d; dj <= d; dj++) for (let di = -d; di <= d; di++) {
-      if (Math.max(Math.abs(di), Math.abs(dj)) !== d) continue;
+  // Nearest first by real distance, from a random side among equals: walking a
+  // square ring from its corner sent every grain to the same diagonal.
+  const s0 = (Math.random() * 4) | 0;
+  for (let g0 = 0; g0 < POWDER_OFF_RING.length; ) {
+    let g1 = g0;
+    while (g1 < POWDER_OFF_RING.length && POWDER_OFF_RING[g1][2] === POWDER_OFF_RING[g0][2]) g1++;
+    for (let n = g1 - g0, s = 0; s < n; s++) {
+      const [di, dj] = POWDER_OFF_RING[g0 + (s0 + s) % n];
       const i = i0 + di, j = j0 + dj;
       if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) continue;
       const cx = colX(i), cz = colZ(j);
@@ -9442,6 +9475,7 @@ function powderOffPiece(x, y, z, self, stamp) {
       }
       if (free) return powderSpot.set(cx, y, cz);
     }
+    g0 = g1;
   }
   return null;
 }
@@ -9698,7 +9732,8 @@ function catchPowder(dt) {
     // in one on a piece (debrisRoll).
     if (roll >= 0 && (restedChunks.length || fallingChunks.length)) {
       if (!filed) { powderCatchFile(reach); filed = true; }
-      if (powderInPiece(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))) roll = -1;
+      if (powderInPiece(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))
+       || powderInPiece(colX(i + POWDER_SIDES[roll][0]), (lvl - 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))) roll = -1;
     }
     if (roll >= 0) {
       const ri = i + POWDER_SIDES[roll][0], rj = j + POWDER_SIDES[roll][1];
@@ -9786,9 +9821,8 @@ function recentreDebris(mesh, body) {
   for (let q = 0; q < lat.length; q++) {
     const b = lat[q];
     b.pos.sub(c);
-    m4.makeTranslation(b.pos.x, b.pos.y, b.pos.z);
-    if (q < mesh.count) mesh.setMatrixAt(q, m4);
-    else mesh.userData.grains[b.mat].setMatrixAt(b.k, m4);
+    if (q < mesh.count) mesh.setMatrixAt(q, m4.makeTranslation(b.pos.x, b.pos.y, b.pos.z));
+    else mesh.userData.grains[b.mat].setMatrixAt(b.k, grainMatrix(mesh, b.pos, m4));
   }
   mesh.instanceMatrix.needsUpdate = true;
   for (const L of Object.values(mesh.userData.grains || {})) {
@@ -9960,6 +9994,7 @@ function cutDebrisLat(mesh, q) {
   if (q >= mesh.count) {
     removeGrain(mesh, lat[q]);
   } else {
+    mesh.userData.powderHold = null;   // what held it is being cut away: its powder goes (shedPowder)
     const last = mesh.count - 1;
     if (q !== last) {
       mesh.getMatrixAt(last, debrisM4); mesh.setMatrixAt(q, debrisM4);
@@ -10293,8 +10328,23 @@ function placeOnDebris(mesh, local, m, rebuild = true, placed = false) {
 // piece further down.
 function layOnDebris(mesh, local, m, rebuild = true) {
   if (MAT_STATS[m]?.powder) {
-    if (!pieceSquare(mesh.quaternion)) { mesh.localToWorld(powderGrain(0, 0, 0, m, null).pos.copy(local)); return; }
-    const off = debrisRoll(mesh, local, m);
+    if (!pieceSquare(mesh.quaternion)) {
+      // A piece lying at a tilt keeps it where it was aimed; one still moving does not.
+      const f = reposeFlat[m] ? null : chunkOfMesh(mesh);
+      if (!f || !(restedChunks.includes(f) || f.body.sleepState === 2 || f.body.type === CANNON.Body.STATIC)) {
+        mesh.localToWorld(powderGrain(0, 0, 0, m, null).pos.copy(local));
+        return;
+      }
+      mesh.userData.powderHold ??= mesh.quaternion.clone();
+      f.shedKey = -1;
+      placeOnDebris(mesh, local, m, rebuild, true);
+      return;
+    }
+    // Straight on a solid block of the piece it stays where it was aimed, as on
+    // solid ground; on the piece's powder it rolls, so a pile keeps its angle.
+    const solidUnder = !reposeFlat[m] && mesh.userData.blocks.some((b) => !MAT_STATS[b.mat]?.powder
+      && Math.abs(b.pos.x - local.x) < 0.1 && Math.abs(b.pos.y - (local.y - BLOCK)) < 0.1 && Math.abs(b.pos.z - local.z) < 0.1);
+    const off = solidUnder ? null : debrisRoll(mesh, local, m);
     if (off !== null) {
       const g = powderGrain(0, 0, 0, m, null);
       if (off) g.pos.copy(off); else mesh.localToWorld(g.pos.copy(local));
@@ -16517,6 +16567,7 @@ function collectWorldMeta() {
       quat: f.body.quaternion.toArray(),
       vel: f.body.velocity.toArray(),
       angVel: f.body.angularVelocity.toArray(),
+      hold: f.mesh.userData.powderHold?.toArray(),
       still: f.still,
     })),
     restedChunks: restedChunks.map(f => ({
@@ -16525,6 +16576,7 @@ function collectWorldMeta() {
       quat: f.body.quaternion.toArray(),
       vel: f.body.velocity.toArray(),
       angVel: f.body.angularVelocity.toArray(),
+      hold: f.mesh.userData.powderHold?.toArray(),
     })),
     powderFalling: powderFalling.map(g => ({
       pos: g.pos.toArray(),
@@ -17151,6 +17203,13 @@ function restoreSavedPiece(pc) {
   f.body.velocity.set(...pc.vel);
   f.body.angularVelocity.set(...pc.angVel);
   f.body.updateAABB();
+  if (pc.hold) {
+    const mesh = f.mesh;
+    mesh.userData.powderHold = new THREE.Quaternion(...pc.hold);
+    for (const b of mesh.userData.blocks) if (MAT_STATS[b.mat]?.powder) mesh.userData.grains[b.mat].setMatrixAt(b.k, grainMatrix(mesh, b.pos, debrisM4));
+    for (const L of Object.values(mesh.userData.grains || {})) L.instanceMatrix.needsUpdate = true;
+    debrisFaceMask(mesh);
+  }
   return f;
 }
 // The falling pieces, then the rested ones — under the menu RESTORE_BATCH at a
@@ -17166,7 +17225,7 @@ async function restoreSavedPieces(ds, split) {
         if (list === ds.fallingChunks) f.still = pc.still;
         else restFallingChunk(fallingChunks.length - 1);
         if (pc.vel.every((v) => v === 0) && pc.angVel.every((v) => v === 0)
-            && (pieceSquare(f.body.quaternion) || !f.mesh.userData.blocks.some((b) => MAT_STATS[b.mat]?.powder))) {   // or it would never get to shed its powder
+            && (pieceSquare(f.body.quaternion) || f.mesh.userData.powderHold || !f.mesh.userData.blocks.some((b) => MAT_STATS[b.mat]?.powder))) {   // or it would never get to shed its powder
           f.body.sleep();
           f.body.dispatchEvent(CANNON.Body.sleepEvent);
         }

@@ -1602,6 +1602,7 @@ function sinkForces(h) {
     if (!(hull.W > 0)) continue;
     const K = S.mass / hull.W;
     let disp = 0, vol = 0;
+    if (S === playerBody) { playerPowderVol = 0; playerPowderAt = step; }
     for (const [key, M] of st.media) {
       const O = M.body;
       if (O && (O.world !== world || !O.debrisMesh)) { sinkDropMedium(st, key, M); continue; }
@@ -1621,6 +1622,9 @@ function sinkForces(h) {
         sinkPush(S, O, Od, _sinkP, -gx * kg, -gy * kg, -gz * kg);
         if (L[k + 7]) { const r = M.rec.get(fricKey(L[k + 2], L[k + 3], L[k + 4])); if (r) r.at = step; }
       }
+      // The player's volume in the ground's powder (cells of it he has pushed
+      // aside and is sitting in count, as they do for his lift).
+      if (S === playerBody && !O) for (let t = 0; t < nIn; t++) playerPowderVol += sinkShare(L, t * SINK_L, acc);
       sinkHoldSolve(S, O, Od, h, L, acc, K, hull);
       // A record no part of the hull reaches any more has been left behind:
       // it is room the powder the piece pushes out of its way flows back into
@@ -1677,6 +1681,12 @@ function sinkForces(h) {
 // steady sink that would be most of it) and the step is solved implicitly
 // with it, so the plow can stop a piece but never turn it round.
 let sinkDriveX = 0, sinkDriveZ = 0;   // the velocity the player's legs are asking for, world x and z
+// ... and up, while he swims (updatePlayer): 0 on land, so nothing changes there.
+let sinkDriveY = 0;
+// How much of his hull is in the ground's powder (cells, as the lift counts
+// them), as of the last step that measured it (sinkForces): the swim depth is
+// read from it (playerSwimDepth).
+let playerPowderVol = 0, playerPowderAt = -1;
 const _skD = new Float64Array(36), _skA = new Float64Array(42), _skX = new Float64Array(6);
 const _skIw = new Float64Array(9), _skU = new Float64Array(6), _skV = new Float64Array(6), _skDead = [false, false, false, false, false, false];
 let _skUG = new Float64Array(192), _skDW = new Float64Array(512), _skRate = new Float64Array(512), _skPos = new Float64Array(512);
@@ -1693,7 +1703,7 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
   U[5] = w.z + h * (Iv[6] * T.x + Iv[7] * T.y + Iv[8] * T.z);
   // The player's legs: where he is walking is the motion the powder holds him
   // to, not still, so friction answers his sinking and rising, not his stride.
-  if (S === playerBody) { U[0] -= sinkDriveX; U[2] -= sinkDriveZ; }
+  if (S === playerBody) { U[0] -= sinkDriveX; U[1] -= sinkDriveY; U[2] -= sinkDriveZ; }
   let dpx = 0, dpy = 0, dpz = 0;
   if (O) {
     const ow = O.angularVelocity;
@@ -1712,7 +1722,7 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
   if (k1 > 0) {
     const V = _skV;
     V[0] = S.velocity.x; V[1] = S.velocity.y; V[2] = S.velocity.z; V[3] = w.x; V[4] = w.y; V[5] = w.z;
-    if (S === playerBody) { V[0] -= sinkDriveX; V[2] -= sinkDriveZ; }
+    if (S === playerBody) { V[0] -= sinkDriveX; V[1] -= sinkDriveY; V[2] -= sinkDriveZ; }
     if (O) {
       const ow = O.angularVelocity;
       V[0] -= O.velocity.x + ow.y * dpz - ow.z * dpy; V[1] -= O.velocity.y + ow.z * dpx - ow.x * dpz; V[2] -= O.velocity.z + ow.x * dpy - ow.y * dpx;
@@ -6556,11 +6566,37 @@ function respawn() {
   }
   playerBody.position.set(SPAWN.x, spawnY, SPAWN.z);
   playerBody.velocity.setZero();
+  sinkDriveY = 0;                       // a stroke in progress does not come along
   playerBody.wakeUp();
   state.yaw = SPAWN_YAW * DEG;
   state.pitch = 0;
 }
 
+// Swimming: the player SWIM_DEPTH blocks or more into powder of the world's
+// ground (a piece's powder does not count). Under that he walks as he does
+// anywhere. The depth is his volume in it as the sink step last read it, laid
+// level from his feet up through his hull a level at a time: under a flat
+// surface exactly how far his soles are below it, and a grain heaped on his
+// rim moves it by its own share of a level, not a whole block.
+const SWIM_DEPTH = 3;
+let swimming = false;
+function playerSwimDepth() {
+  if (!(playerPowderVol > 0) || world.stepnumber - playerPowderAt > 1) return 0;
+  const h = playerSinkHull();
+  if (!h.levels) {
+    // Hull cells per level from the feet up (cell centres sit on half-blocks).
+    const lv = [], c = h.cells, bot = -centerOffset();
+    for (let k = 0; k < h.count; k++) { const l = Math.round((c[k * 4 + 1] - bot) / BLOCK - 0.5); lv[l] = (lv[l] || 0) + 1; }
+    h.levels = Array.from(lv, (n) => n || 0);
+  }
+  let v = playerPowderVol, d = 0;
+  for (const n of h.levels) {
+    if (v >= n) { v -= n; d++; continue; }
+    d += v / n;
+    break;
+  }
+  return d * BLOCK;
+}
 function updatePlayer(dt) {
   const p = playerBody.position, v = playerBody.velocity;
 
@@ -6611,7 +6647,40 @@ function updatePlayer(dt) {
   }
   sinkDriveX = tx; sinkDriveZ = tz;
 
-  if (grounded) {
+  // --- swim: SWIM_DEPTH blocks into the ground's powder, the input follows the
+  // look, pitch and all. Steered as the legs are on the ground (the same speeds
+  // and grip), but in three dimensions: the drive is what the powder holds him
+  // to (sinkHoldSolve), so his weight against its lift still sinks or floats
+  // him under it, as slowly as the powder lets anything. The vertical drive
+  // eases in and out at that grip and the body takes its every change, so a
+  // swim up and out carries on a little past the line and settles, never
+  // jumps; on land it is 0 and stays 0.
+  swimming = playerSwimDepth() >= (SWIM_DEPTH - 1e-4) * BLOCK;   // the volume is a float sum
+  const ka = 1 - Math.exp(-PLAYER.groundAccel * dt);
+  if (swimming) {
+    const sp = Math.sin(state.pitch), cp = Math.cos(state.pitch);
+    const fx = -sy * cp, fy = sp, fz = -cy * cp;          // the look, unit length
+    let wx = fx * fwd + cy * str, wy = fy * fwd, wz = fz * fwd - sy * str;
+    const w3 = Math.hypot(wx, wy, wz);
+    if (w3 > 1) { wx /= w3; wy /= w3; wz /= w3; }
+    let sx = wx * speed, sY = wy * speed, sz = wz * speed;
+    const back = sx * fx + sY * fy + sz * fz;
+    if (back < -backCap) { const over = back + backCap; sx -= over * fx; sY -= over * fy; sz -= over * fz; }
+    sinkDriveX = sx; sinkDriveZ = sz;
+    v.x += (sx - v.x) * ka;
+    v.z += (sz - v.z) * ka;
+    const dy = (sY - sinkDriveY) * ka;
+    sinkDriveY += dy;
+    v.y += dy;
+  } else if (sinkDriveY !== 0) {
+    // Out of the swim: the stroke runs out at the same rate it came in.
+    sinkDriveY -= sinkDriveY * ka;
+    if (Math.abs(sinkDriveY) < 1e-4) sinkDriveY = 0;
+  }
+
+  if (swimming) {
+    // steered above
+  } else if (grounded) {
     // A hard landing takes the grip away for a moment (impactJolt): the speed
     // you came in with carries on rather than being caught at once.
     const k = 1 - Math.exp(-PLAYER.groundAccel * (1 - PLAYER_STAGGER * impactJolt) * dt);
@@ -6751,6 +6820,176 @@ function updateCamera(dt) {
     blobShadow.position.set(p.x, gy + 0.01, p.z);
     blobShadow.material.opacity = 1 - (feet - gy) / 6;
   }
+}
+
+// ---------------------------------------------------------------------------
+// The view from inside powder
+// ---------------------------------------------------------------------------
+// The camera inside a block of the ground's powder sees that powder over the
+// whole screen: its colour, speckled as its faces are. An opaque one is all
+// there is to see. A see-through one is the look-through every see-through
+// block gives (terrain clear draw: a look L blocks deep lets through the
+// transparency to the L-th power), the look starting at the camera: per pixel,
+// the distance from the eye along that pixel's ray until it leaves the powder,
+// marched through the same see-through atlas the terrain's own draw reads. A
+// cell the player has pushed aside and is sitting in is still that powder
+// (the room is his, the powder is all round it): those come in as a bit box
+// around him. Decided again every drawn frame, so it is gone the frame the eye
+// leaves, and it reads the material's transparency and colour as they stand.
+// A piece's powder does not count (the world's grid only).
+const PV_BOX = [7, 7, 12];                           // cells x, z, levels of the player's room box
+const PV_WORDS = Math.ceil(PV_BOX[0] * PV_BOX[1] * PV_BOX[2] / 32);
+const PV_CELLS = 24;                                 // speckle cells up the screen
+const pvHeldBits = new Int32Array(PV_WORDS);
+const pvU = {
+  clearAtlas: clearAtlasU, clearIdx: clearIdxU,
+  pvMat: { value: 0 }, pvT: { value: 0 }, pvOpaque: { value: 1 },
+  pvBase: { value: new THREE.Vector3() },
+  pvCam: { value: new THREE.Vector3() },
+  pvProjInv: { value: new THREE.Matrix4() }, pvCamWorld: { value: new THREE.Matrix4() },
+  pvHeld: { value: pvHeldBits }, pvHeldO: { value: new THREE.Vector3() },
+  pvCell: { value: 10 },
+};
+const pvMaterial = new THREE.ShaderMaterial({
+  uniforms: pvU,
+  depthTest: false, depthWrite: false, transparent: true, toneMapped: false,
+  vertexShader: `varying vec2 vNdc;
+void main() { vNdc = position.xy; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `precision highp float;
+precision highp int;
+varying vec2 vNdc;
+uniform int pvMat;
+uniform float pvT;
+uniform int pvOpaque;
+uniform vec3 pvBase;
+uniform vec3 pvCam;
+uniform mat4 pvProjInv;
+uniform mat4 pvCamWorld;
+uniform int pvHeld[${PV_WORDS}];
+uniform vec3 pvHeldO;
+uniform float pvCell;
+${clearDepthGlsl}
+bool pvIn(ivec3 b) {
+  if (clearMatAt(b) == pvMat) return true;
+  ivec3 q = b - ivec3(pvHeldO);
+  if (q.x < 0 || q.y < 0 || q.z < 0 || q.x >= ${PV_BOX[0]} || q.z >= ${PV_BOX[1]} || q.y >= ${PV_BOX[2]}) return false;
+  int n = (q.y * ${PV_BOX[1]} + q.z) * ${PV_BOX[0]} + q.x;
+  return ((pvHeld[n >> 5] >> (n & 31)) & 1) != 0;
+}
+// From the eye, along d, for as long as the cells are this powder: how far, in blocks.
+float pvDepth(vec3 d) {
+  vec3 p = vec3((pvCam.x + ${glf(GEN_R)}) / ${glf(BLOCK)}, pvCam.y / ${glf(BLOCK)}, (pvCam.z + ${glf(GEN_R)}) / ${glf(BLOCK)});
+  ivec3 b = ivec3(floor(p));
+  vec3 ad = max(abs(d), vec3(1e-6));
+  ivec3 st = ivec3(d.x < 0.0 ? -1 : 1, d.y < 0.0 ? -1 : 1, d.z < 0.0 ? -1 : 1);
+  vec3 tMax = (vec3(b) + step(0.0, d) - p) * vec3(st) / ad, tD = 1.0 / ad;
+  float t = 0.0;
+  for (int k = 0; k < 96; k++) {
+    if (tMax.x <= tMax.y && tMax.x <= tMax.z) { t = tMax.x; b.x += st.x; tMax.x += tD.x; }
+    else if (tMax.y <= tMax.z) { t = tMax.y; b.y += st.y; tMax.y += tD.y; }
+    else { t = tMax.z; b.z += st.z; tMax.z += tD.z; }
+    if (!pvIn(b)) break;
+  }
+  return t;
+}
+void main() {
+  // The speckle: GRAIN_TINTS by a hash of the screen cell, as the faces pick theirs.
+  ivec2 c = ivec2(floor(gl_FragCoord.xy / pvCell));
+  uint n = uint(c.x) * 1619u + uint(c.y) * 31337u + uint(pvMat) * 6971u;
+  n = (n << 13u) ^ n;
+  n = (n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu;
+  int g = int(float(n) / 2147483647.0 * 5.999);
+  const float tints[6] = float[6](${GRAIN_TINTS.map(glf).join(', ')});
+  float a = 1.0;
+  if (pvOpaque == 0) {
+    vec4 v = pvProjInv * vec4(vNdc, 1.0, 1.0);
+    vec3 d = normalize(mat3(pvCamWorld) * (v.xyz / v.w));
+    a = 1.0 - pow(pvT, pvDepth(d));
+  }
+  gl_FragColor = vec4(clamp(pvBase * tints[g], 0.0, 1.0), a);
+  #include <colorspace_fragment>
+}`,
+});
+const pvScene = new THREE.Scene();
+const pvQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), pvMaterial);
+pvQuad.frustumCulled = false;
+pvScene.add(pvQuad);
+const pvCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const powderView = { mat: -1, t: -1, base: -1, on: false, held: false, stale: false };
+// The powder the eye is in, or -1: a ground cell of it, or one the player has
+// pushed aside and is sitting in.
+function cameraPowderMat() {
+  const c = camera.position, i = colI(c.x), j = colJ(c.z), l = Math.floor(c.y / BLOCK);
+  if (i < 0 || j < 0 || i >= GEN_N || j >= GEN_N) return -1;
+  let m = voxelAt(i, j, l);
+  powderView.held = false;
+  if (m === AIR && sinkHeldCell(i, j, l)) { m = playerHeldMat(fricKey(i, j, l)); powderView.held = m !== AIR; }
+  return m !== AIR && m >= 0 && MAT_STATS[m]?.powder ? m : -1;
+}
+// Whether the see-through atlas has the eye's own cell as m yet: a powder just
+// made see-through is only in it once its chunks are meshed again.
+function clearTileHas(i, j, l, m) {
+  const t = clearTiles[chunkOf(i, j)], ll = l - (t ? t.lo : 0);
+  return !!t && ll >= 0 && ll < t.n && t.ids[ll * 256 + (j % CHUNK) * 16 + (i % CHUNK)] === m;
+}
+function playerHeldMat(key) {
+  const st = sinkers.get(playerBody);
+  if (st) for (const M of st.media.values()) if (!M.body) { const r = M.rec.get(key); if (r) return r.m; }
+  return AIR;
+}
+// Before a frame is drawn: is the eye in powder, and with what. True when the
+// picture changes from the last call (so a paused frame knows to draw again).
+function powderViewUpdate() {
+  const m = cameraPowderMat();
+  const was = powderView.on, wasM = powderView.mat, wasT = powderView.t, wasStale = powderView.stale;
+  powderView.on = m >= 0;
+  powderView.mat = m;
+  if (m < 0) return was;
+  const T = 1 - TERRAIN_ALPHA[m], b = TERRAIN_BASE[m];
+  powderView.t = T;
+  pvU.pvMat.value = m;
+  pvU.pvT.value = T;
+  // Until the atlas has it the look-through has nothing to march, so the eye
+  // keeps the opaque view a frame or two rather than flashing clear.
+  const c = camera.position;
+  powderView.stale = T > 0 && !powderView.held && !clearTileHas(colI(c.x), colJ(c.z), Math.floor(c.y / BLOCK), m);
+  pvU.pvOpaque.value = T > 0 && !powderView.stale ? 0 : 1;
+  const colorKey = b.x * 7 + b.y * 13 + b.z * 29;
+  const colorChanged = colorKey !== powderView.base;
+  powderView.base = colorKey;
+  pvU.pvBase.value.copy(b);
+  pvU.pvCell.value = Math.max(2, renderer.domElement.height / PV_CELLS);
+  if (T > 0) {
+    // The player's room in this powder, as bits in a box about him.
+    pvHeldBits.fill(0);
+    const p = playerBody.position;
+    const oi = colI(p.x) - (PV_BOX[0] >> 1), oj = colJ(p.z) - (PV_BOX[1] >> 1), ol = Math.floor((p.y - centerOffset()) / BLOCK) - 2;
+    pvU.pvHeldO.value.set(oi, ol, oj);
+    const st = sinkers.get(playerBody);
+    if (st) for (const M of st.media.values()) {
+      if (M.body) continue;
+      for (const r of M.rec.values()) {
+        if (r.m !== m) continue;
+        const x = r.i - oi, z = r.j - oj, y = r.l - ol;
+        if (x < 0 || z < 0 || y < 0 || x >= PV_BOX[0] || z >= PV_BOX[1] || y >= PV_BOX[2]) continue;
+        const n = (y * PV_BOX[1] + z) * PV_BOX[0] + x;
+        pvHeldBits[n >> 5] |= 1 << (n & 31);
+      }
+    }
+  }
+  return !was || wasM !== m || wasT !== powderView.t || wasStale !== powderView.stale || colorChanged;
+}
+// The world, then (in powder) the view from inside it on top.
+function renderView() {
+  renderer.render(scene, camera);
+  if (!powderView.on) return;
+  pvU.pvCam.value.setFromMatrixPosition(camera.matrixWorld);
+  pvU.pvProjInv.value.copy(camera.projectionMatrixInverse);
+  pvU.pvCamWorld.value.copy(camera.matrixWorld);
+  const ac = renderer.autoClear;
+  renderer.autoClear = false;
+  renderer.render(pvScene, pvCamera);
+  renderer.autoClear = ac;
 }
 
 // ---------------------------------------------------------------------------
@@ -16294,10 +16533,12 @@ function tick() {
     flushDirtyChunks();
     updateLOD();
     debrisBatchSync();   // a load from the menu drops and remakes pieces
+    // A transparency or colour edit in the panel while the eye is in that powder.
+    if (powderViewUpdate()) menuRedraw = true;
     if (!menuRedraw && !renderer.shadowMap.needsUpdate) return;
     menuRedraw = false;
     sky.position.copy(camera.position);
-    renderer.render(scene, camera);
+    renderView();
     return;
   }
   pausedFrameAt = 0;
@@ -16313,7 +16554,8 @@ function tick() {
     // Nobody is driving the character — park it so it does not creep away.
     playerBody.velocity.x = 0;
     playerBody.velocity.z = 0;
-    sinkDriveX = sinkDriveZ = 0;
+    sinkDriveX = sinkDriveY = sinkDriveZ = 0;
+    swimming = false;
   } else {
     updatePlayer(dt);
   }
@@ -16451,7 +16693,8 @@ function tick() {
   debrisBatchSync();     // last, so nothing after it can change a piece it copied
   if (shadowCastersChanged()) renderer.shadowMap.needsUpdate = true;
   menuRedraw = false;
-  renderer.render(scene, camera);
+  powderViewUpdate();
+  renderView();
 }
 
 // ---------------------------------------------------------------------------
@@ -17419,6 +17662,7 @@ function applyWorldCore(s) {
   {
     const st = sinkers.get(playerBody);
     if (st) { st.owed.length = 0; sinkForget(playerBody, st); }
+    sinkDriveY = 0; swimming = false; playerPowderVol = 0;   // no stroke carries into the loaded world
   }
   // An older save has no weight: the default.
   SINK_TUNE.playerWeight = Number.isFinite(ps.weight) && ps.weight >= 0.001 ? ps.weight : PLAYER_WEIGHT_DEF;
@@ -17748,6 +17992,9 @@ window.hermes = {
     grounded: groundNy > GROUND_DOT,
     pos: playerBody.position.toArray(),
     vel: playerBody.velocity.toArray(),
+    swimming,
+    swimDepth: playerSwimDepth(),
+    powderView: { on: powderView.on, mat: powderView.mat, opaque: pvU.pvOpaque.value === 1 },
   }),
 };
 

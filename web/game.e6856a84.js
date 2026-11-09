@@ -980,7 +980,7 @@ world.solver.solve = frictionSolve;
 // to rest high, where a heavy one rests deep. Only powder gives way like that:
 // a block is pressed into ground that can flow round it, and cohesive ground
 // (dirt, clay, stone) holds whatever lies on it, however heavy — its contact
-// is cannon's, untouched, as is a block's on powder of its own weight. No physical number
+// is cannon's, untouched. No physical number
 // is made up here: the lift is the displaced cells' MAT_STATS weight, the
 // hold-back their friction; every other number the code works with is in SINK_TUNE, which the
 // Sink panel edits live, so none is out of reach.
@@ -1080,7 +1080,7 @@ function sinkBlocksPowder(i, j, l) {
 const PLAYER_WEIGHT_DEF = 0.015, PLAYER_WEIGHT_KG = 6 / PLAYER_WEIGHT_DEF;
 const SINK_TUNE_DEFS = [
   { key: 'playerWeight', group: 'Player', name: 'Player weight', def: PLAYER_WEIGHT_DEF, min: 0.001,
-    help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 2.2, Fine Dirt 2): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper; of a powder\'s own weight he stands on it as ground. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
+    help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 2.2, Fine Dirt 2): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper; of a powder\'s own weight he goes in and holds where he stops, under its surface. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
   { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 1000, min: 0,
     help: 'How much the friction of the powder slows a sinker, on the part of it that is in the powder: held back by this x the divider x friction x the weight it displaces there, per m/s, so the hold grows as it goes in. 0: nothing slows sinking but the momentum the grains take (always there) and the piece\'s own damping.' },
   { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1, min: 1, max: 1000,
@@ -1142,8 +1142,9 @@ const sinkMedium = (m) => !!MAT_STATS[m]?.powder;
 // the lightest, or heavier than the heaviest. A lighter piece goes into heavier
 // powder by the same rules a heavier one does, and is lifted back out by the
 // same displaced weight: weight only decides where it comes to rest. Of equal
-// weight it is neither, and the powder holds it as ground does.
-const sinkGives = (h, w) => w < h.minW || w > h.maxW;
+// weight it goes in the same way and the lift balances it exactly once it is
+// under: it holds wherever its momentum dies, never floats up or sinks on.
+const sinkGives = (h, w) => w <= h.minW || w >= h.maxW;
 
 // What can sink: a piece, or the player.
 const sinkBody = (b) => !!b.debrisMesh || b === playerBody;
@@ -1156,9 +1157,10 @@ function sinkTouch(S, O) {
   M.touchAt = world.stepnumber;
 }
 // The contact between piece S (its point rS, n pointing from S into O when sg
-// is 1) and O lets go if O's block where S's block is is powder and S's block
-// there is not of its weight (heavier sinks in; lighter goes in too, and the
-// lift turns it back up to its own depth; equal weight holds): read at S's own point, not at O's face, because a sunk piece is
+// is 1) and O lets go if O's block where S's block is is powder, whatever S's
+// block there weighs (heavier sinks in; lighter goes in too, and the lift
+// turns it back up to its own depth; equal weight goes in and the lift
+// balances it once it is under): read at S's own point, not at O's face, because a sunk piece is
 // deep inside the old box of ground it is going through and that box's face
 // says nothing about the cells round it. Pushing up into O never sinks S into
 // it. A cell of ground that reads as air there gives way only if a sinker has
@@ -1216,7 +1218,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     // against the powder there as going down.
     if (O.voxelGround && sg * n.y >= -SINK_TUNE.upCut && sinkers.get(S)?.disp > 0) {
       const w = sinkGroundAround(S, rS, n, sg);
-      if (w < 0 || (w > 0 && (ws === w || sinkPlayerWall(S, ws, w, sg * n.x, sg * n.y, sg * n.z)))) return false;
+      if (w < 0 || (w > 0 && sinkPlayerWall(S, ws, w, sg * n.x, sg * n.y, sg * n.z))) return false;
       sinkTouch(S, O);
       return true;
     }
@@ -1248,7 +1250,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
-  if (fl ? !(wo === 0 || fl.W < SINK_TUNE.floatScale * wo * fl.count) : ws === wo || sinkPlayerWall(S, ws, wo, _sinkN.x, _sinkN.y, _sinkN.z)) return false;
+  if (fl ? !(wo === 0 || fl.W < SINK_TUNE.floatScale * wo * fl.count) : sinkPlayerWall(S, ws, wo, _sinkN.x, _sinkN.y, _sinkN.z)) return false;
   sinkTouch(S, O);
   return true;
 }
@@ -1491,9 +1493,8 @@ function sinkToWorld(M, F, g, out) {
   out.vadd(b.position, out);
   return out;
 }
-// Every overlap of a hull cell with a powder cell of medium M of another
-// weight, lighter or heavier (a cell of anything else, or of powder of the
-// cell's own weight, is not displaced, it holds), written to the
+// Every overlap of a hull cell with a powder cell of medium M of any weight
+// (a cell of anything else is not displaced, it holds), written to the
 // scratch list (stride SINK_L): hull cell, the cell's slot in the scan's
 // region, the cell, its material, the overlap (a fraction of a block),
 // whether the cell is only a record, and the overlap box's centre in the world.
@@ -1536,7 +1537,7 @@ function sinkScan(S, hull, M, F) {
   _sinkI0 = i0; _sinkJ0 = j0; _sinkL0 = l0; _sinkDI = di; _sinkDJ = dj; _sinkSz = size;
   const ground = !F, rec = M.rec;
   for (let c = 0; c < nc; c++) {
-    const gx = G[c * 3], gy = G[c * 3 + 1], gz = G[c * 3 + 2], dens = cells[c * 4 + 3];
+    const gx = G[c * 3], gy = G[c * 3 + 1], gz = G[c * 3 + 2];
     const fi = Math.floor(gx), fj = Math.floor(gz), fl = Math.floor(gy);
     for (let a = 0; a < 2; a++) {
       const ni = fi + a, ox = 1 - Math.abs(gx - ni);
@@ -1559,10 +1560,9 @@ function sinkScan(S, hull, M, F) {
           }
           if (m === -1) continue;
           const isRec = m <= -3, mm = isRec ? -3 - m : m;
-          // dens is float32: a powder of a block's own weight can read as a
-          // hair lighter than it, never heavier, so heavier is tested at float32.
-          const wm = sinkWeight(mm);
-          if (!sinkMedium(mm) || !(wm < dens || Math.fround(wm) > dens)) continue;
+          // Powder of the block's own weight too: it is displaced, and lifts
+          // the block by exactly its weight once it is under.
+          if (!sinkMedium(mm)) continue;
           const w = ox * oy * oz;
           const k = _sinkLen++ * SINK_L;
           L[k] = c; L[k + 1] = r; L[k + 2] = ni; L[k + 3] = nj; L[k + 4] = nl; L[k + 5] = mm; L[k + 6] = w; L[k + 7] = isRec ? 1 : 0;

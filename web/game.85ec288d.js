@@ -6829,7 +6829,8 @@ function updateCamera(dt) {
 // whole screen: its colour, speckled as its faces are. An opaque one is all
 // there is to see. A see-through one is the look-through every see-through
 // block gives (terrain clear draw: a look L blocks deep lets through the
-// transparency to the L-th power), the look starting at the camera: per pixel,
+// transparency to the L-th power; from inside, eased: see PV_LOOK and PV_MAX_A),
+// the look starting at the camera: per pixel,
 // the distance from the eye along that pixel's ray until it leaves the powder,
 // marched through the same see-through atlas the terrain's own draw reads. A
 // cell the player has pushed aside and is sitting in is still that powder
@@ -6840,6 +6841,14 @@ function updateCamera(dt) {
 const PV_BOX = [7, 7, 12];                           // cells x, z, levels of the player's room box
 const PV_WORDS = Math.ceil(PV_BOX[0] * PV_BOX[1] * PV_BOX[2] / 32);
 const PV_CELLS = 24;                                 // speckle cells up the screen
+// How strong the look-through is from inside. A block face lets through its
+// transparency per block, but from inside, every look runs through metres of
+// the powder, and at per-block strength anything past a metre is gone (sand at
+// 50: 2% of a target 1.1 m off still shows). So from inside, the transparency
+// is what a metre of the powder lets through (PV_LOOK blocks), and the powder
+// never covers more than PV_MAX_A of the view: the world always shows through.
+const PV_LOOK = 1 / BLOCK;                           // blocks per transparency step (1 m)
+const PV_MAX_A = 0.6;                                // the most of the view the powder takes
 const pvHeldBits = new Int32Array(PV_WORDS);
 const pvU = {
   clearAtlas: clearAtlasU, clearIdx: clearIdxU,
@@ -6904,7 +6913,7 @@ void main() {
   if (pvOpaque == 0) {
     vec4 v = pvProjInv * vec4(vNdc, 1.0, 1.0);
     vec3 d = normalize(mat3(pvCamWorld) * (v.xyz / v.w));
-    a = 1.0 - pow(pvT, pvDepth(d));
+    a = ${glf(PV_MAX_A)} * (1.0 - pow(pvT, pvDepth(d) / ${glf(PV_LOOK)}));
   }
   gl_FragColor = vec4(clamp(pvBase * tints[g], 0.0, 1.0), a);
   #include <colorspace_fragment>

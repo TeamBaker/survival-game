@@ -1238,7 +1238,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
   // on rock reads as the rock under it and holds him above the floor.
   let mo = contactMatOf(O, _sinkP, S === playerBody ? _sinkZ : _sinkN);
   let wo;
-  const soft = (m) => m === AIR || m === WATER || !MAT_STATS[m];
+  const soft = (m) => m === AIR || !MAT_STATS[m];
   if (O.voxelGround && soft(mo)) {
     const d = SINK_TUNE.probe * BLOCK;
     const x = S.position.x + rS.x + _sinkN.x * d, y = S.position.y + rS.y + _sinkN.y * d, z = S.position.z + rS.z + _sinkN.z * d;
@@ -1276,7 +1276,7 @@ function sinkGroundAround(S, rS, n, sg) {
     const i = colI(x + ex), j = colJ(z + ez), l = lvlOfY(y + ey);
     if (sinkHeldCell(i, j, l)) continue;
     const v = voxelAt(i, j, l);
-    if (v === AIR || v === WATER || !MAT_STATS[v]) continue;
+    if (v === AIR || !MAT_STATS[v]) continue;
     if (!sinkMedium(v)) return -1;
     w = Math.max(w, sinkWeight(v));
   }
@@ -1332,7 +1332,7 @@ function sinkPlayerFloorDepth(c) {
   if (!O.voxelGround || -sg * c.ni.y < GROUND_DOT) return Infinity;
   const x = playerBody.position.x + r.x, y = playerBody.position.y + r.y, z = playerBody.position.z + r.z;
   const i = colI(x), j = colJ(z), l = lvlOfY(y);
-  const solid = (v) => v !== AIR && v !== WATER && !!MAT_STATS[v] && !sinkMedium(v);
+  const solid = (v) => v !== AIR && !!MAT_STATS[v] && !sinkMedium(v);
   if (!solid(voxelAt(i, j, l))) return Infinity;
   let t = l;
   while (t < l + 4 && solid(voxelAt(i, j, t + 1))) t++;
@@ -1359,7 +1359,7 @@ function sinkGroundGives(S, st, hull) {
   let gives = (i1 - i0 + 1) * (j1 - j0 + 1) * (l1 - l0 + 1) <= SINK_TUNE.skipCells;
   for (let l = l0; l <= l1 && gives; l++) for (let j = j0; j <= j1 && gives; j++) for (let i = i0; i <= i1; i++) {
     const v = voxelAt(i, j, l);
-    if (v !== AIR && v !== WATER && !(sinkMedium(v) && sinkGives(hull, sinkWeight(v)))) { gives = false; break; }
+    if (v !== AIR && !(sinkMedium(v) && sinkGives(hull, sinkWeight(v)))) { gives = false; break; }
   }
   return (st.boxGives = gives);
 }
@@ -1561,7 +1561,7 @@ function sinkScan(S, hull, M, F) {
           if (m === -2) {
             // The store or the lattice as it is; else a record (stored as
             // -3 - m, so it is told apart); else nothing (-1).
-            if (ground) { const v = voxelAt(ni, nj, nl); m = v !== AIR && v !== WATER && MAT_STATS[v] ? v : -1; }
+            if (ground) { const v = voxelAt(ni, nj, nl); m = v !== AIR && MAT_STATS[v] ? v : -1; }
             else { const v = F.cells.get(fricKey(ni, nj, nl)); m = v === undefined ? -1 : v; }
             if (m < 0 && rec.size) { const e = rec.get(fricKey(ni, nj, nl)); if (e) m = -3 - e.m; }
             mats[r] = m;
@@ -2739,16 +2739,14 @@ let clearCount = 0;
 // A powder has no compression or pull (it never holds a load as a solid: the
 // stress solver passes it by), only its place angle — the slope its heaps stand
 // at — and friction. A solid has no angle.
-// Water is the one entry with no row — it is a block in the store but it is not
-// a thing you can carry, and nothing in the sim reads it as a material yet. Its
-// numbers are WATER_STATS, below: the panel and Copy Stats show them, and its
-// transparency is drawn.
+// Water is a powder row like Sand (v299): the sea is blocks of it, and it
+// sinks, floats, pours and draws by its own numbers like any other.
 // The owner's table (v297), as given.
 const MAT_STATS = [
   { name: 'Sand',          weight: 12.8,  friction: 5.8, angle: 45, powder: true  },                 // SAND
   { name: 'Dirt',          weight: 9.7,   friction: 5,   angle: 50, powder: true  },                 // DIRT
   { name: 'Stone',         weight: 20,    friction: 6.5, strength: 600000, pull: 30000,  powder: false },  // STONE
-  null,                                                                                         // WATER
+  { name: 'Water',         weight: 8,     friction: 0,   angle: 0,  transparency: 75, powder: true  },  // WATER
   { name: 'Fine Dirt',     weight: 9.7,   friction: 5,   angle: 45, powder: true  },                 // FINE_DIRT
   { name: 'Wood',          weight: 4.5,   friction: 3.3, strength: 170000, pull: 450000, powder: false },  // WOOD
   { name: 'Compact Dirt',  weight: 13,    friction: 5,   strength: 6000,   pull: 300,    powder: false },  // COMPACT_DIRT
@@ -2762,7 +2760,6 @@ const MAT_STATS = [
   null,                                                                                         // (retired: Wet Sand)
   null,                                                                                         // (retired: Hard Sand)
 ];
-const WATER_STATS = { name: 'Water', weight: 8, friction: 0, angle: 0, powder: true, transparency: 75 };
 // The order the owner's table lists them in: the Materials panel's.
 const MAT_ORDER = [DIRT, FINE_DIRT, COMPACT_DIRT, STONE, STONE_DUST, CLAY, COMPACT_CLAY, SAND, SANDSTONE, WATER, WOOD];
 // What the stress solver's beams take for a powder's stiffness, which has no
@@ -2773,7 +2770,6 @@ for (const st of MAT_STATS) if (st && !st.powder && !(st.pull > 0)) st.pull = st
 // The table as shipped: what the Materials panel calls each built-in setting's
 // default, and what its Defaults button puts back. An edit lasts the session.
 const MAT_STATS_DEF = MAT_STATS.map((st) => st && { ...st });
-const WATER_STATS_DEF = { ...WATER_STATS };
 // AIR's row; the created materials' are added by matTablesGrow.
 MAT_STATS.push(null);
 // A built-in powder's own place angle (v297: Dirt and Clay 50, the rest 45 —
@@ -2837,12 +2833,13 @@ function pickMaterial(h, slope, x, z) {
 // to get harder the deeper it goes, so the lower half of the soil under any
 // column is the packed or waterlogged version of whatever caps it. Indexed by
 // material id; WATER's entry is never read (a flooded column's bed is sand).
+// v299: sand's lower band is Sandstone (the owner's), where it was Dirt.
 // v297: the same bands as before with each old material put through
 // MAT_REMAP_V297, so a generated world is the same ids it always was (Brittle
 // Stone's are Sandstone's now, Hard Dirt's Compact Dirt's, Hard Clay's Compact
 // Clay's).
 const DEEP_MAT = [
-  DIRT,           // SAND — packed under the beach
+  SANDSTONE,      // SAND — packed under the beach (v299; Dirt before)
   COMPACT_DIRT,   // DIRT
   ROCK,           // ROCK
   WATER,          // WATER
@@ -2859,6 +2856,13 @@ const DEEP_MAT = [
   ROCK,           // (retired)
   ROCK,           // (retired)
 ];
+// The bands the world in play was generated with, as the stress solver's
+// settled ground works them out again under a dug column (stressGenWeight): a
+// world from before v299 (a save without genDeep) has Dirt under its sand.
+const GEN_DEEP_VER = 299;
+const DEEP_MAT_V298 = DEEP_MAT.slice();
+DEEP_MAT_V298[SAND] = DIRT;
+let genDeep = DEEP_MAT;
 
 {
   const rnd = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
@@ -3340,9 +3344,9 @@ function setVoxel(i, j, lvl, m) {
   stressCols.add(k);
   stressGroundCols.add(k);
   stressWeightCols.add(k);
-  // Ground coming or going (water moving about does not count): the ground of
-  // this chunk is no longer as it settled, and is solved for real from here on.
-  if ((was !== AIR && was !== WATER) || (m !== AIR && m !== WATER)) {
+  // Ground coming or going: the ground of this chunk is no longer as it
+  // settled, and is solved for real from here on.
+  if (was !== AIR || m !== AIR) {
     const c = chunkOf(i, j);
     if (lvl < stressChunkLow[c]) stressChunkLow[c] = lvl;
     stressChunkEdit[c] = ++stressEditSeq;
@@ -7297,12 +7301,12 @@ const dirtyChunks = new Set();
 // breaks off the world as one piece. It stops being terrain at that moment: the
 // blocks are cut out of the store and the piece carries on as a loose rigid body
 // that falls under the same gravity as everything else, hits the ground, tumbles
-// and rolls to a stop wherever the physics puts it. Water neither falls nor holds
-// anything up. What settles keeps its body and stays in the physics world, so it
+// and rolls to a stop wherever the physics puts it. Water is a powder (v299)
+// and holds up as sand does. What settles keeps its body and stays in the physics world, so it
 // is solid to stand on and shoves awake again when something runs into it — but
 // it is never written back into the voxel grid, so the shovel treats it as a
 // piece rather than as terrain.
-const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER; };
+const gravSolid = (i, j, lvl) => voxelAt(i, j, lvl) !== AIR;
 const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 
 // ----- loose chunks -----
@@ -9265,7 +9269,7 @@ function impactSide(body, px, py, pz, h, sign) {
     const d = depth * BLOCK * sign;
     const i = colI(px + h.nx * d), j = colJ(pz + h.nz * d), lvl = lvlOfY(py + h.ny * d);
     const m = voxelAt(i, j, lvl);
-    if (m === AIR || m === WATER || lvl <= VOX_FLOOR) continue;
+    if (m === AIR || lvl <= VOX_FLOOR) continue;
     return { cell: { i, j, lvl }, dir: { x: h.nx * sign, y: h.ny * sign, z: h.nz * sign }, px, py, pz, cost: impactCost(m) };
   }
   return null;
@@ -9334,7 +9338,7 @@ function craterGround(s, E, vn) {
     if (nTaken && !(impactTaken[t - 1] || impactTaken[t + 1] || impactTaken[t - IMPACT_SIDE] || impactTaken[t + IMPACT_SIDE]
                  || impactTaken[t - IMPACT_SIDE * IMPACT_SIDE] || impactTaken[t + IMPACT_SIDE * IMPACT_SIDE])) continue;
     const m = voxelAt(i, j, lvl);
-    if (m === AIR || m === WATER) continue;
+    if (m === AIR) continue;
     const cost = impactCost(m);
     if (cost > E) continue;
     // A solid block is costed as itself but leaves as what it breaks to, read
@@ -9379,7 +9383,7 @@ function craterGround(s, E, vn) {
       continue;
     }
     const m = voxelAt(c.i, c.j, c.lvl);
-    if (m === AIR || m === WATER) continue;
+    if (m === AIR) continue;
     // Thrown out of the crater, up and away from the middle, in the chunk
     // processImpacts' breakBatch puts it in; whatever the hole then brings
     // down after it is left to fall as it would. Counted a block at a time,
@@ -9402,7 +9406,7 @@ function digImpactPending() {
     for (let q = 0; q < n; q++) {
       const c = impactPending[q];
       const m = voxelAt(c.i, c.j, c.lvl);
-      if (m === AIR || m === WATER) continue;
+      if (m === AIR) continue;
       // What poured in since it was chosen leaves as itself; rubble as what it was crushed to.
       const mat = MAT_STATS[m]?.powder ? m : c.mat;
       editBlock(c.i, c.j, c.lvl, AIR);
@@ -11260,7 +11264,7 @@ function hammerTargetLive() {
     return mesh.parent === debris && !!lat && idx >= 0 && idx < lat.length && lat[idx] === blk;
   }
   const m = voxelAt(hammer.hit.i, hammer.hit.j, hammer.hit.lvl);
-  return m !== AIR && m !== WATER;
+  return m !== AIR;
 }
 // A lone cube struck: crushed to its powder where it lies, or, one that has
 // none, knocked along the blow.
@@ -11347,7 +11351,7 @@ function breakDebrisBlocks(mesh, idxs) {
 function breakBlock(i, j, lvl, gravity = true, eject = null) {
   if (!inVoxelRange(i, j, lvl)) return false;
   const m = voxelAt(i, j, lvl);
-  if (m === AIR || m === WATER) return false;
+  if (m === AIR) return false;
   const dropMat = resolveBreakMat(m);
   const crack = stressCrackAt(i, j, lvl);   // read while the cell still holds it
 
@@ -11646,7 +11650,7 @@ function hammerAim() {
   const dHit = debrisAim(ox, oy, oz);
   if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
     const m = voxelAt(ddaHit.i, ddaHit.j, ddaHit.lvl);
-    if (m !== AIR && m !== WATER) {
+    if (m !== AIR) {
       hammer.hit = setCell(hammerHitCell, ddaHit.i, ddaHit.j, ddaHit.lvl);
       return;
     }
@@ -11935,10 +11939,8 @@ function matAngleSet(m, angle) {
 function customMatsStore() {
   try { localStorage.setItem(CUSTOM_MATS_KEY, JSON.stringify(customMatDefs())); } catch (e) {}
 }
-// Water's transparency (v297, the owner's 75): the one number of WATER_STATS
-// the game draws. Put in before the created materials, as theirs are.
-matClearSet(WATER, WATER_STATS.transparency);
-// A built-in row given a transparency of its own (a pasted Copy stats table).
+// A built-in row's transparency (Water's 75, or a pasted Copy stats table's).
+// Put in before the created materials, as theirs are.
 for (let m = 0; m < N_MATS; m++) if (MAT_STATS[m]?.transparency > 0) matClearSet(m, MAT_STATS[m].transparency);
 try {
   const saved = JSON.parse(localStorage.getItem(CUSTOM_MATS_KEY) || '[]');
@@ -12065,18 +12067,16 @@ const MAT_FIELDS = [
     help: 'How much you see through it: 0 opaque, 100 unseen.' },
 ];
 // The settings row m has: a powder's angle, a solid's (or a created powder's)
-// compression and pull, and for Water only its transparency — the one number of
-// WATER_STATS anything uses yet.
+// compression and pull.
 function matFieldsOf(m) {
-  if (m === WATER) return MAT_FIELDS.filter((d) => d.key === 'transparency');
   const st = MAT_STATS[m];
   if (!st) return [];
   return MAT_FIELDS.filter((d) => d.key === 'strength' || d.key === 'pull' ? st[d.key] != null
                                 : d.key === 'angle' ? st.powder : true);
 }
-const matStatsOf = (m) => (m === WATER ? WATER_STATS : MAT_STATS[m]);
+const matStatsOf = (m) => MAT_STATS[m];
 // What it is as shipped, or undefined for a created material (no table of its own).
-const matDefOf = (m, key) => (m === WATER ? WATER_STATS_DEF : MAT_STATS_DEF[m])?.[key] ?? (m < N_MATS && key === 'transparency' ? 0 : undefined);
+const matDefOf = (m, key) => MAT_STATS_DEF[m]?.[key] ?? (m < N_MATS && key === 'transparency' ? 0 : undefined);
 const matValOf = (m, key) => matStatsOf(m)[key] ?? (key === 'transparency' ? 0 : undefined);
 // One setting into the material and everything that reads it.
 function matStatSet(m, key, v) {
@@ -12098,12 +12098,6 @@ function matStatSet(m, key, v) {
 // The read-out a row shows closed: every number, plain.
 function matSummary(i) {
   const st = MAT_STATS[i];
-  if (i === WATER) {
-    const W = WATER_STATS;
-    return `Weight: ${W.weight} &middot; Friction: ${W.friction} &middot; Compression: - &middot; Pull: -`
-      + ` &middot; Powder: ${W.powder ? 'Yes' : 'No'} &middot; Place angle: ${W.angle}`
-      + ` &middot; Transparency: ${W.transparency} &middot; not carryable`;
-  }
   if (!st) return 'no stats &mdash; not carryable';
   const tr = st.transparency ?? 0;
   return `Weight: ${st.weight} &middot; Friction: ${st.friction}`
@@ -12128,7 +12122,7 @@ function buildMatList() {
     // wants, so the swatch matches what the cubes actually render as.
     const hex = '#' + TERRAIN_MATS[i].color.getHexString();
     const st = MAT_STATS[i];
-    const name = st ? escapeHtml(st.name) : i === WATER ? WATER_STATS.name : titleCase(MAT_NAMES[i]);
+    const name = st ? escapeHtml(st.name) : titleCase(MAT_NAMES[i]);
     const fields = matFieldsOf(i), open = i === matOpen;
     const edit = !fields.length ? '' : `<div class="mat-edit" data-mat="${i}"${open ? '' : ' hidden'}>`
       + fields.map((d) => {
@@ -12138,8 +12132,7 @@ function buildMatList() {
           + `<input class="mat-str" data-key="${d.key}" type="text" inputmode="decimal" autocomplete="off" value="${matValOf(i, d.key)}">`
           + `<div><b>${d.name}</b><span>${d.help} ${def != null ? `Default ${def}; ` : ''}${range}.</span></div></div>`;
       }).join('')
-      + (i === WATER ? '<div class="mat-note">Its weight, friction and place angle are not used yet: water is a still block for now.</div>' : '')
-      + `<div class="mat-note">Powder: ${(st || WATER_STATS).powder ? 'Yes' : 'No'} &mdash; fixed, it decides which settings it has.</div>`
+      + `<div class="mat-note">Powder: ${st.powder ? 'Yes' : 'No'} &mdash; fixed, it decides which settings it has.</div>`
       + (i < N_MATS ? `<button class="mat-btn mat-reset" data-mat="${i}">Defaults</button>` : '')
       + '</div>';
     return `<div class="mat-item">`
@@ -12256,11 +12249,9 @@ function matStatsSource() {
     return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${col(st.weight, 7)}`
          + `friction: ${col(st.friction, 5)}${tail}${clear}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
-  const W = WATER_STATS;
-  const water = `const WATER_STATS = { name: '${W.name}', weight: ${W.weight}, friction: ${W.friction}, angle: ${W.angle}, powder: ${W.powder}, transparency: ${W.transparency} };`;
   // The created materials after it, as their own list: id, colour and stats.
   const made = customMatDefs().map((d) => '  ' + JSON.stringify(d).replace(/"(\w+)":/g, '$1: ').replace(/,(?=\w+: )/g, ', ') + ',');
-  return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n' + water + '\n'
+  return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n'
     + (made.length ? '// Created in game\nconst CUSTOM_MATS = [\n' + made.join('\n') + '\n];\n' : '');
 }
 // iOS only lets a page write the clipboard inside the tap itself, so this is a
@@ -13003,7 +12994,6 @@ function creativeAim() {
 function buildPlacerMatGrid() {
   placerMatGrid.textContent = '';
   for (let m = 0; m < MAT_STATS.length; m++) {
-    if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;
     const btn = document.createElement('button');
@@ -13442,7 +13432,7 @@ function volumeRemove() {
         for (let j = Math.max(0, box.j1); j <= Math.min(GEN_N - 1, box.j2); j++) {
           for (let i = Math.max(0, box.i1); i <= Math.min(GEN_N - 1, box.i2); i++) {
             const m = voxelAt(i, j, lvl);
-            if (m !== AIR && m !== WATER) editBlock(i, j, lvl, AIR);
+            if (m !== AIR) editBlock(i, j, lvl, AIR);
           }
         }
       }
@@ -13558,8 +13548,8 @@ function updatePlacer() {
 // axis-aligned Euler-Bernoulli beam with axial (EA/L), torsional and two-plane
 // bending (EI/L^3) stiffness.
 //
-// Ground hangs when it is not standing on bedrock: a block with a gap (air or
-// water) anywhere under it in its own column — an overhang, the ceiling of a
+// Ground hangs when it is not standing on bedrock: a block with a gap (air)
+// anywhere under it in its own column — an overhang, the ceiling of a
 // tunnel or a cave, the face of a cliff someone has dug under. Its weight has to
 // go sideways to reach anything, so it bends and pulls, and it is laid out and
 // solved and broken exactly as a built block is. Ground that stands on an
@@ -13570,7 +13560,7 @@ function updatePlacer() {
 // is not a node. Generated ground is nearly all of that kind (a heightmap, solid
 // from bedrock up); a write is what opens a gap under something, so the columns
 // written to (stressCols) are looked at, plus the few generated columns with
-// a block over a gap from the start (the surface swap leaves some over water).
+// a block over a gap from the start.
 //
 // Ground standing on bedrock still has stress, though, and the frame's answer
 // for it needs no solve: a run of solid standing on bedrock carries everything
@@ -14704,7 +14694,7 @@ let stressDrain = false;
 const stHeldPieces = new Map();   // mesh -> its red blocks still to go
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
 
-const solidMat = (m) => m !== AIR && m !== WATER && !!MAT_STATS[m];
+const solidMat = (m) => m !== AIR && !!MAT_STATS[m];
 // Fallen-piece node keys: far above any gravCell, one band per piece.
 const stPieceKey = (mesh, gi, gj, lvl) => (mesh.id + 1) * 1e11 + ((lvl + 2048) * 4096 + (gj + 2048)) * 4096 + (gi + 2048);
 
@@ -15092,8 +15082,8 @@ function stressHangScan() {
   return total;
 }
 
-// The columns ground can hang in: every one written to, and the generated ones
-// the surface swap left with a block sitting on water. Every written column's
+// The columns ground can hang in: every one written to, and any generated one
+// with a block over air. Every written column's
 // ground is looked at for breaking again too.
 function stressSeedCols() {
   stressCols.clear();
@@ -15126,13 +15116,14 @@ stressSeedCols();
 // out again from its bed, as the fill pass laid it — rock, then the deep and the
 // surface soil — with its top block as the surface swap left it.
 function stressGenWeight(k, l) {
-  if (l < VOX_FLOOR || l > bedLvl[k]) return 0;
+  if (l < VOX_FLOOR || l > topLvl[k]) return 0;
   let m;
   if (!colDug[k]) m = voxMat[voxOff[k] + l - VOX_FLOOR];
   else if (l === topLvl[k]) m = topMat[k];
+  else if (l > bedLvl[k]) m = WATER;   // the sea the fill pass laid over the bed
   else {
     const bed = bedLvl[k], soilLo = Math.max(VOX_FLOOR, bed - SOIL_DEPTH), soilMid = Math.max(soilLo, bed - (SOIL_DEPTH >> 1));
-    m = l >= soilMid ? bedMat[k] : l >= soilLo ? DEEP_MAT[bedMat[k]] : ROCK;
+    m = l >= soilMid ? bedMat[k] : l >= soilLo ? genDeep[bedMat[k]] : ROCK;
   }
   return solidMat(m) ? MAT_STATS[m].weight : 0;
 }
@@ -15144,7 +15135,8 @@ function stressGenWeight(k, l) {
 // never generated ground at all.
 function stressSettledN(i, j, lo) {
   if (sandboxMode) return 0;
-  const k = j * GEN_N + i, bed = bedLvl[k];
+  // Up to the generated top, sea included: water weighs on the bed as sand does.
+  const k = j * GEN_N + i, bed = topLvl[k];
   if (bed === NO_COLUMN || voxOff[k] < 0 || lo < VOX_FLOOR || lo + 1 > bed) return 0;
   if (colDug[k]) {
     const placed = placedByChunk[chunkOf(i, j)];
@@ -16457,7 +16449,6 @@ const matBar = document.getElementById('mat-bar');
 function buildMatBar() {
   matBar.textContent = '';
   for (let m = 0; m < MAT_STATS.length; m++) {
-    if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;
     const sq = document.createElement('div');
@@ -17160,6 +17151,8 @@ function collectWorldMeta() {
     // The material table its ids are (v297's): a save without it is from
     // before, and its retired ids are mapped on load (remapOldSaveMats).
     matTable: MAT_TABLE_VER,
+    // The soil bands its world was generated with (genDeep).
+    genDeep: GEN_DEEP_VER,
     timestamp: Date.now(),
     playerState,
     cameraState,
@@ -17864,6 +17857,7 @@ function applyWorldCore(s) {
   const vs = s.voxelStore;
   const laid = vs.laid || null;
   customMatsAdopt(s.customMats);
+  genDeep = s.genDeep >= GEN_DEEP_VER ? DEEP_MAT : DEEP_MAT_V298;
   topLvl.set(vs.topLvl);
   bedLvl.set(vs.bedLvl);
   bedMat.set(vs.bedMat);
@@ -18203,7 +18197,7 @@ window.hermes = {
   // world *is* but not what is drawn: the meshes and the collider are baked.
   SAND, DIRT, ROCK, WATER, AIR, SEA_LVL, VOX_FLOOR, SOIL_DEPTH, voxCount,
   STONE, FINE_DIRT, WOOD, COMPACT_DIRT, STONE_DUST, SANDSTONE,
-  CLAY, COMPACT_CLAY, MAT_NAMES, MAT_STATS, WATER_STATS, MAT_ORDER, MAT_REMAP_V297,
+  CLAY, COMPACT_CLAY, MAT_NAMES, MAT_STATS, MAT_ORDER, MAT_REMAP_V297,
   voxelAt, voxelAtWorld, voxelColumn, setVoxel, solidTopAt,
   colI, colJ, colX, colZ, lvlOfY,
   // The island is bare by design — these are how you put something on it from

@@ -1259,6 +1259,18 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
       wo = sinkWeight(mo);
     }
   } else {
+    // Solid read at a point that is in powder all the same: a piece resting
+    // on the ground sits a hair into it, so a powder cell landing beside it
+    // touches its bottom edge, and the probe there steps into the block under
+    // the powder (a hair above it is the powder). Pressing down, a corner
+    // within a probe of the floor reads the floor, though the corner is in
+    // the powder. Held, either shoved the piece flush with the powder block.
+    if (O.voxelGround && mo >= 0 && !sinkMedium(mo)) {
+      const px = S.position.x + rS.x, py = S.position.y + rS.y, pz = S.position.z + rS.z, d = 0.25 * BLOCK;
+      let m = voxelAtWorld(px + _sinkN.x * d, py + _sinkN.y * d + SINK_TUNE.edgeProbe * BLOCK, pz + _sinkN.z * d);
+      if (!sinkMedium(m) && _sinkN.y < -SINK_TUNE.upCut) m = voxelAtWorld(px, py, pz);
+      if (sinkMedium(m)) mo = m;
+    }
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
@@ -1281,7 +1293,13 @@ function sinkGroundAround(S, rS, n, sg) {
     if (sinkHeldCell(i, j, l)) continue;
     const v = voxelAt(i, j, l);
     if (v === AIR || !MAT_STATS[v]) continue;
-    if (!sinkMedium(v)) return -1;
+    if (!sinkMedium(v)) {
+      // The top of a block with powder (or a moved-out cell) over it, a hair
+      // under the point: the bottom edge of a piece resting on it, not a wall.
+      const lu = lvlOfY(y + e);
+      if (ey < 0 && lu !== l && (sinkMedium(voxelAt(i, j, lu)) || sinkHeldCell(i, j, lu))) continue;
+      return -1;
+    }
     w = Math.max(w, sinkWeight(v));
   }
   return w;

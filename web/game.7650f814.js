@@ -2789,6 +2789,8 @@ const reposeLim = new Uint16Array(MAT_ID_LIMIT * REPOSE_REACH_MAX).fill(1);
 // Angle 0 spreads flat like water: level ground to the end of the look is no
 // reason to stop there (powderFar).
 const reposeFlat = new Uint8Array(MAT_ID_LIMIT);
+// tan of the place angle itself, for a grain on a piece's face at a tilt (v310).
+const reposeTan = new Float64Array(MAT_ID_LIMIT).fill(1);
 let powderFarNone = 0, powderFarNoneI = 0, powderFarNoneJ = 0, powderFarNoneL = 0;   // the last far look that found nothing, while it holds
 // The furthest any material looks: a grain leaving a column can unsettle ones
 // that far off, not just its neighbours (powderDirtySides).
@@ -2800,6 +2802,7 @@ function matReposeSet(m, angle) {
   const R = angle >= 90 ? 0 : angle === 45 ? 1 : t >= 1 ? Math.min(8, Math.ceil(8 / t)) : REPOSE_REACH_MAX;
   reposeReach[m] = R;
   reposeFlat[m] = t <= 0 ? 1 : 0;
+  reposeTan[m] = angle >= 90 ? Infinity : t;
   for (let k = 1; k <= REPOSE_REACH_MAX; k++) {
     // A drop of one is level ground (a grain beside a grain), never a slope.
     reposeLim[m * REPOSE_REACH_MAX + k - 1] = Math.max(1, Math.min(65535, Math.ceil(k * t - 1e-9)));
@@ -9931,24 +9934,28 @@ function powderClear(x, y, z, self, moved = 0) {
 }
 // How far along the way down from (x, y0, z) to (x, y1, z), 0 to 1, a grain
 // first comes to overlap a block of the piece — in the piece's own frame, where
-// its blocks are cubes — or Infinity if it never does.
+// its blocks are cubes — or Infinity if it never does. The face it comes to is
+// left in powderSweepAx: the piece's axis, 1 + 0..2, signed by the way the face
+// looks; 0 if it was overlapping from the start.
 const _sweepA = new THREE.Vector3(), _sweepD = new THREE.Vector3();
+let powderSweepAx = 0;
 function powderSweep(mesh, x, y0, z, y1) {
   mesh.updateWorldMatrix(true, false);
   const A = mesh.worldToLocal(_sweepA.set(x, y0, z)), D = mesh.worldToLocal(_sweepD.set(x, y1, z)).sub(A);
   let best = Infinity;
+  powderSweepAx = 0;
   blocks: for (const b of mesh.userData.blocks) {
-    let t0 = 0, t1 = 1;
+    let t0 = 0, t1 = 1, ax = 0;
     for (let k = 0; k < 3; k++) {
       const o = b.pos.getComponent(k) - A.getComponent(k), d = D.getComponent(k);
       if (Math.abs(d) < 1e-9) { if (Math.abs(o) >= POWDER_GAP) continue blocks; continue; }
       let ta = (o - POWDER_GAP) / d, tb = (o + POWDER_GAP) / d;
       if (ta > tb) { const s = ta; ta = tb; tb = s; }
-      if (ta > t0) t0 = ta;
+      if (ta > t0) { t0 = ta; ax = -(k + 1) * Math.sign(d); }
       if (tb < t1) t1 = tb;
       if (t0 >= t1) continue blocks;
     }
-    if (t0 < best) best = t0;
+    if (t0 < best) { best = t0; powderSweepAx = ax; }
   }
   return best;
 }
@@ -10101,6 +10108,7 @@ let powderStamp = 0;
 const powderSpot = new THREE.Vector3();
 
 const powderPassedTurned = [];   // turned pieces a grain falls past this frame (v308)
+const _faceN = new THREE.Vector3(), _faceQ = new THREE.Quaternion();
 function catchPowder(dt) {
   let filed = false;   // the cells are filed on first need, and again after anything that may move or make pieces
   const reach = 2 * BLOCK;   // a grain's cube can touch a block of a turned piece from this far off across
@@ -10183,7 +10191,7 @@ function catchPowder(dt) {
     if (!inside && !p.thru && (restedChunks.length || fallingChunks.length)) {
       if (!filed) { powderCatchFile(reach); filed = true; }
       const near = powderCatchCells.get(debrisCellKey(Math.floor(px / CATCH_CELL), Math.floor(pz / CATCH_CELL)));
-      let mesh = null, t = Infinity, sideOff = null;
+      let mesh = null, t = Infinity, faceY = 0, faceAx = 0;
       powderPassedTurned.length = 0;
       for (;;) {
         mesh = null; t = Infinity;
@@ -10193,18 +10201,39 @@ function catchPowder(dt) {
           if (yEnd > c.maxY + reach || y0 < c.minY - reach || px < c.minX - reach || px > c.maxX + reach
               || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
           const tm = powderSweep(m, px, y0, pz, yEnd);
-          if (tm < t) { t = tm; mesh = m; }
+          if (tm < t) { t = tm; mesh = m; faceAx = powderSweepAx; }
         }
         if (!mesh || pieceSquare(mesh.quaternion)) break;
-        // A turned piece holds no powder: off its side to fall on from there. No
-        // clear column in reach, and it goes on down past that piece only, this
-        // frame: the next piece under it on the way still catches it, and the
-        // turned one is asked again next frame (it may have come square by then).
-        sideOff = powderOffPiece(px, y0 + (yEnd - y0) * t, pz, p, stamp);
-        if (sideOff) break;
+        // A piece off the world grid is just faces in the world (v310): the grain
+        // touches the face it came down onto, there. Inside the piece already (it
+        // moved into the grain), the face over it, as the waits below do; none,
+        // and it goes on down past that piece only, this frame.
+        faceY = y0 + (yEnd - y0) * t;
+        if (!faceAx) {
+          const top = y0 + 2 * BLOCK, tu = powderSweep(mesh, px, top, pz, y0);
+          if (tu > 0 && tu < 1 && powderSweepAx) { faceY = top - 2 * BLOCK * tu; faceAx = powderSweepAx; }
+        }
+        if (faceAx) break;
         powderPassedTurned.push(mesh);
       }
-      if (sideOff) { powderMove(p, sideOff.x, sideOff.y, sideOff.z); p.v = 0; continue; }
+      if (mesh && faceAx && !pieceSquare(mesh.quaternion)) {
+        // The face's world tilt against the material's place angle: within it the
+        // grain rests where it touched, held there for as long as the face stays
+        // so (it is asked again every frame); steeper, it slides on down the face
+        // by what is left of its fall this frame, at its pace, and falls on from
+        // wherever that leaves it.
+        const k = Math.abs(faceAx) - 1, n = _faceN.set(0, 0, 0).setComponent(k, Math.sign(faceAx))
+          .applyQuaternion(mesh.getWorldQuaternion(_faceQ));
+        const ny = n.y, rest = ny > 1e-6 && Math.sqrt(Math.max(0, 1 - ny * ny)) <= reposeTan[p.mat] * ny + 1e-6;
+        const r = Math.max(0, faceY - yEnd);
+        if (!rest && r > 0) {
+          const sx = px + r * ny * n.x + 1e-4 * n.x, sy = faceY + r * (ny * ny - 1) + 1e-4 * n.y, sz = pz + r * ny * n.z + 1e-4 * n.z;
+          if (!powderClear(sx, sy, sz, p, stamp)) { powderMove(p, sx, sy, sz); continue; }
+        }
+        powderMove(p, px, faceY, pz);
+        p.v = 0;
+        continue;
+      }
       if (mesh) {
         p.pos.y = y0 + (yEnd - y0) * t;   // where it touches
         // The spot is the piece's cell the grain is in, so a grain put on a cell

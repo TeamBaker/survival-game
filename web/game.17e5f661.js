@@ -1075,9 +1075,10 @@ function sinkBlocksPowder(i, j, l) {
 // and is pushed back up, and a rock sinks at about 1.36 m/s.
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
-// The player's default weight, per block of its hull in MAT_STATS units: what
-// the body's 6 kg comes to over the capsule's blocks (a piece's 5 kg per weight).
-const PLAYER_WEIGHT_DEF = 0.015, PLAYER_WEIGHT_KG = 6 / PLAYER_WEIGHT_DEF;
+// The player's default weight, per block of its hull in MAT_STATS units. The
+// body's mass is 400 kg per unit of weight (0.015 = the old 6 kg), capped at
+// FALL_MASS_CAP: the default 5 is heavier than sand and puts him at the 40 kg cap.
+const PLAYER_WEIGHT_DEF = 5, PLAYER_WEIGHT_KG = 400;
 const SINK_TUNE_DEFS = [
   { key: 'playerWeight', group: 'Player', name: 'Player weight', def: PLAYER_WEIGHT_DEF, min: 0.001,
     help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 2.2, Fine Dirt 2): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper; of a powder\'s own weight he goes in and holds where he stops, under its surface. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
@@ -6381,7 +6382,8 @@ const playerBody = new CANNON.Body({
   // Heavier than the crates on purpose. The controller sets velocity directly so
   // mass never affects how the character itself moves — it only decides how much
   // authority the body has in contact impulses, i.e. whether walking into a crate
-  // shoves it or stalls against it.
+  // shoves it or stalls against it. Set from the Player weight once the sink
+  // panel is built (applyPlayerWeight), so a new game starts at the default.
   mass: 6,
   material: physPlayer,
   fixedRotation: true,
@@ -6408,9 +6410,10 @@ function setPlayerShape(crouch) {
   playerBody.updateMassProperties();   // honours fixedRotation, leaves the mass as it is
 }
 setPlayerShape(false);
-// Sink panel's Player weight to the body's mass. At the default that is the
-// 6 kg above; heavier, capped where the heaviest piece is, so the solver sees
-// nothing it does not already handle. The sinking reads the weight itself.
+// Sink panel's Player weight to the body's mass: 400 kg per unit (0.015 is the
+// old 6 kg), capped where the heaviest piece is, so the solver sees nothing it
+// does not already handle; the default 5 sits at that cap. The sinking reads
+// the weight itself.
 function applyPlayerWeight() {
   const m = Math.min(PLAYER_WEIGHT_KG * SINK_TUNE.playerWeight, FALL_MASS_CAP);
   if (playerBody.mass === m) return;
@@ -12179,6 +12182,7 @@ function buildSinkList() {
   }
 }
 buildSinkList();
+applyPlayerWeight();   // the body is made at 6 kg, before the cap is defined
 for (const id of ['sink-copy', 'sink-reset']) {
   const b = document.getElementById(id);
   b.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });

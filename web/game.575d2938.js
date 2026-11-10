@@ -9701,17 +9701,33 @@ const powderDown = new CANNON.Vec3(0, -1, 0), powderQ = new CANNON.Quaternion();
 const powderLocalDown = new CANNON.Vec3();
 const powderProbe = new THREE.Vector3();
 
-// Powder is only ever seen square to the world. A piece holds it for as long as
-// the piece itself is unturned, a settled piece's few degrees of residual tilt
-// included (POWDER_TURN: 1 - cos^2 of the half angle, so about 3.6 degrees); once
-// turned past that, every powder block it has leaves as a loose grain, and a
-// grain coming down on a turned piece slides off it rather than being laid in.
-// The one exception is powder placed by hand on a piece lying at a tilt: the
-// piece keeps that pose in userData.powderHold and holds the powder until it
-// turns away from the pose or a solid block is taken out of it.
+// Powder is world-frame only: it never cares how a piece is turned, only whether
+// the piece's lattice lies on the world grid. A piece holds powder while its
+// cells line up with the world's — unturned, or turned onto any of its other
+// faces (the 24 square poses), a settled piece's few degrees of residual tilt
+// included (POWDER_TURN: 1 - cos^2 of the half angle off the nearest square
+// pose, so about 3.6 degrees). Then the piece's lattice axes are the world's,
+// and stacking, rolling and shedding down its axis nearest world down are by
+// world gravity. Off the world grid it holds none: every powder block it has
+// leaves as a loose grain, and a grain coming down on it slides off it rather
+// than being laid in (v309).
 const POWDER_TURN = 1e-3;
-const pieceSquare = (q) => q.x * q.x + q.y * q.y + q.z * q.z < POWDER_TURN;
+const POWDER_SQUARE_Q = (() => {
+  const out = [], m = new THREE.Matrix4();
+  for (const [a, b, c] of [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]])
+    for (let sg = 0; sg < 8; sg++) {
+      const r = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+      r[0][a] = sg & 1 ? -1 : 1; r[1][b] = sg & 2 ? -1 : 1; r[2][c] = sg & 4 ? -1 : 1;
+      const det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1]) - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+                + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+      if (det < 0) continue;
+      m.set(r[0][0], r[0][1], r[0][2], 0, r[1][0], r[1][1], r[1][2], 0, r[2][0], r[2][1], r[2][2], 0, 0, 0, 0, 1);
+      out.push(new THREE.Quaternion().setFromRotationMatrix(m));
+    }
+  return out;
+})();
 const pieceInPose = (q, r) => { const d = q.x * r.x + q.y * r.y + q.z * r.z + q.w * r.w; return 1 - d * d < POWDER_TURN; };
+const pieceSquare = (q) => POWDER_SQUARE_Q.some((r) => pieceInPose(q, r));
 function shedPowder() {
   // Awake pieces only: a sleeping one lies as it did when last looked at, and
   // anything that changes its lattice wakes it (rebuildDebrisBody).
@@ -10895,24 +10911,22 @@ function placeOnDebris(mesh, local, m, rebuild = true, placed = false) {
 // a grain barred from this piece and it would fall through to the ground.
 // Either way it leaves as a grain from nowhere, free to land back on this
 // piece further down.
+const _layQ = new THREE.Quaternion(), _layDn = new THREE.Vector3();
 function layOnDebris(mesh, local, m, rebuild = true) {
   if (MAT_STATS[m]?.powder) {
+    // A piece off the world grid gives it no cell: it falls as a grain from
+    // where it was aimed, as beside the piece, and goes by world gravity (v309).
     if (!pieceSquare(mesh.quaternion)) {
-      // A piece lying at a tilt keeps it where it was aimed; one still moving does not.
-      const f = reposeFlat[m] ? null : chunkOfMesh(mesh);
-      if (!f || !(restedChunks.includes(f) || f.body.sleepState === 2 || f.body.type === CANNON.Body.STATIC)) {
-        mesh.localToWorld(powderGrain(0, 0, 0, m, null).pos.copy(local));
-        return;
-      }
-      mesh.userData.powderHold ??= mesh.quaternion.clone();
-      f.shedKey = -1;
-      placeOnDebris(mesh, local, m, rebuild, true);
+      mesh.localToWorld(powderGrain(0, 0, 0, m, null).pos.copy(local));
       return;
     }
-    // Straight on a solid block of the piece it stays where it was aimed, as on
+    // Straight on a solid block of the piece — the cell under it in the world,
+    // the piece's axis that is world down — it stays where it was aimed, as on
     // solid ground; on the piece's powder it rolls, so a pile keeps its angle.
+    mesh.getWorldQuaternion(_layQ).invert();
+    const dn = _layDn.set(0, -1, 0).applyQuaternion(_layQ).round().multiplyScalar(BLOCK).add(local);
     const solidUnder = !reposeFlat[m] && mesh.userData.blocks.some((b) => !MAT_STATS[b.mat]?.powder
-      && Math.abs(b.pos.x - local.x) < 0.1 && Math.abs(b.pos.y - (local.y - BLOCK)) < 0.1 && Math.abs(b.pos.z - local.z) < 0.1);
+      && Math.abs(b.pos.x - dn.x) < 0.1 && Math.abs(b.pos.y - dn.y) < 0.1 && Math.abs(b.pos.z - dn.z) < 0.1);
     const off = solidUnder ? null : debrisRoll(mesh, local, m);
     if (off !== null) {
       const g = powderGrain(0, 0, 0, m, null);
@@ -17910,13 +17924,8 @@ function restoreSavedPiece(pc) {
   f.body.velocity.set(...pc.vel);
   f.body.angularVelocity.set(...pc.angVel);
   f.body.updateAABB();
-  if (pc.hold) {
-    const mesh = f.mesh;
-    mesh.userData.powderHold = new THREE.Quaternion(...pc.hold);
-    for (const b of mesh.userData.blocks) if (MAT_STATS[b.mat]?.powder) mesh.userData.grains[b.mat].setMatrixAt(b.k, grainMatrix(mesh, b.pos, debrisM4));
-    for (const L of Object.values(mesh.userData.grains || {})) L.instanceMatrix.needsUpdate = true;
-    debrisFaceMask(mesh);
-  }
+  // A save's powderHold (powder glued into a tilted piece's lattice, before
+  // v309) is not taken up: the piece sheds that powder by world gravity.
   return f;
 }
 // The falling pieces, then the rested ones — under the menu RESTORE_BATCH at a

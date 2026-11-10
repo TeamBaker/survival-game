@@ -2770,6 +2770,10 @@ const MAT_ORDER = [DIRT, FINE_DIRT, COMPACT_DIRT, STONE, STONE_DUST, CLAY, COMPA
 // is as soft as it always was.
 const POWDER_STIFF = 50;
 for (const st of MAT_STATS) if (st && !st.powder && !(st.pull > 0)) st.pull = st.strength;
+// The table as shipped: what the Materials panel calls each built-in setting's
+// default, and what its Defaults button puts back. An edit lasts the session.
+const MAT_STATS_DEF = MAT_STATS.map((st) => st && { ...st });
+const WATER_STATS_DEF = { ...WATER_STATS };
 // AIR's row; the created materials' are added by matTablesGrow.
 MAT_STATS.push(null);
 // A built-in powder's own place angle (v297: Dirt and Clay 50, the rest 45 —
@@ -11934,6 +11938,8 @@ function customMatsStore() {
 // Water's transparency (v297, the owner's 75): the one number of WATER_STATS
 // the game draws. Put in before the created materials, as theirs are.
 matClearSet(WATER, WATER_STATS.transparency);
+// A built-in row given a transparency of its own (a pasted Copy stats table).
+for (let m = 0; m < N_MATS; m++) if (MAT_STATS[m]?.transparency > 0) matClearSet(m, MAT_STATS[m].transparency);
 try {
   const saved = JSON.parse(localStorage.getItem(CUSTOM_MATS_KEY) || '[]');
   if (Array.isArray(saved)) for (const d of saved) { const def = customMatDef(d); if (def) customMatInstall(def); }
@@ -12012,85 +12018,179 @@ function frictionWake() {
   }
 }
 
+// A weight edit has to reach the pieces already made of it: a piece's mass,
+// centre of mass and inertia were worked out from its blocks' weights when it
+// was built, and its sink hull keeps their total. Each piece holding m gets
+// them again (a lone block gliding into place keeps its own until it lands),
+// every sinker looks at the powder round it again under the new weights, the
+// sleepers are woken, and the stress solve is done again — its loads are the
+// weights.
+function matWeightSet(m) {
+  for (const f of [...fallingChunks, ...restedChunks]) {
+    const mesh = f.mesh, body = f.body, lat = mesh?.userData.blocks;
+    if (!lat?.some((b) => b.mat === m)) continue;
+    delete mesh.userData.sinkHull;
+    if (!body || body.type !== CANNON.Body.DYNAMIC) continue;
+    body.mass = debrisMass(lat);
+    debrisWeighCentre(mesh, body);
+    body.updateMassProperties();
+    body.updateAABB();
+    body.wakeUp();
+  }
+  for (const st of sinkers.values()) st.scanQ = null;
+  frictionWake();
+  // The settled ground's weights, generated over each column, are of the old
+  // numbers wherever m is in it.
+  stSettledW.clear();
+  stressInvalidate();
+  stressRev++;
+}
+
+// Every setting a material has, as the panel edits it: what it is called, why
+// it matters, and the range it takes. Powder or solid is not among them — it
+// decides which of these a row has at all (a powder has a place angle, a solid
+// compression and pull), so it stays what the material was made as.
+const MAT_FIELDS = [
+  { key: 'weight', name: 'Weight', min: 0, above: true,
+    help: 'How much a block drags on you: a piece\'s mass, the load the stress solver puts on it, and whether it sinks into a powder (heavier) or floats on it (lighter).' },
+  { key: 'friction', name: 'Friction', min: 0,
+    help: 'How hard it grips what rests on it and what it rests on; as a powder, how hard it holds back what sinks through it.' },
+  { key: 'strength', name: 'Compression', min: 0, above: true,
+    help: 'What it takes to crush it; also how stiff its stress beams are, so how a load spreads through it.' },
+  { key: 'pull', name: 'Pull', min: 0, above: true,
+    help: 'What it takes to pull it apart.' },
+  { key: 'angle', name: 'Place angle', min: 0, max: 90,
+    help: 'The slope its heaps stand at, in degrees: 0 spreads flat, 90 stands as a wall.' },
+  { key: 'transparency', name: 'Transparency', min: 0, max: 100,
+    help: 'How much you see through it: 0 opaque, 100 unseen.' },
+];
+// The settings row m has: a powder's angle, a solid's (or a created powder's)
+// compression and pull, and for Water only its transparency — the one number of
+// WATER_STATS anything uses yet.
+function matFieldsOf(m) {
+  if (m === WATER) return MAT_FIELDS.filter((d) => d.key === 'transparency');
+  const st = MAT_STATS[m];
+  if (!st) return [];
+  return MAT_FIELDS.filter((d) => d.key === 'strength' || d.key === 'pull' ? st[d.key] != null
+                                : d.key === 'angle' ? st.powder : true);
+}
+const matStatsOf = (m) => (m === WATER ? WATER_STATS : MAT_STATS[m]);
+// What it is as shipped, or undefined for a created material (no table of its own).
+const matDefOf = (m, key) => (m === WATER ? WATER_STATS_DEF : MAT_STATS_DEF[m])?.[key] ?? (m < N_MATS && key === 'transparency' ? 0 : undefined);
+const matValOf = (m, key) => matStatsOf(m)[key] ?? (key === 'transparency' ? 0 : undefined);
+// One setting into the material and everything that reads it.
+function matStatSet(m, key, v) {
+  const st = matStatsOf(m);
+  st[key] = v;
+  if (key === 'transparency') matClearSet(m, v);
+  else if (key === 'angle') matAngleSet(m, v);
+  else if (key === 'friction') frictionWake();
+  else if (key === 'weight') matWeightSet(m);
+  else {
+    stressInvalidate();
+    // Compression is also the beams' stiffness, so how the load spreads: solved
+    // again. Pull only says where the answers in hand break.
+    if (key === 'strength') stressRev++;
+  }
+  if (isCustomMat(m)) customMatsStore();
+}
+
+// The read-out a row shows closed: every number, plain.
+function matSummary(i) {
+  const st = MAT_STATS[i];
+  if (i === WATER) {
+    const W = WATER_STATS;
+    return `Weight: ${W.weight} &middot; Friction: ${W.friction} &middot; Compression: - &middot; Pull: -`
+      + ` &middot; Powder: ${W.powder ? 'Yes' : 'No'} &middot; Place angle: ${W.angle}`
+      + ` &middot; Transparency: ${W.transparency} &middot; not carryable`;
+  }
+  if (!st) return 'no stats &mdash; not carryable';
+  const tr = st.transparency ?? 0;
+  return `Weight: ${st.weight} &middot; Friction: ${st.friction}`
+    + ` &middot; Compression: ${st.strength != null ? st.strength : '-'}`
+    + ` &middot; Pull: ${st.pull != null ? st.pull : '-'}`
+    + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}`
+    + (st.powder ? ` &middot; Place angle: ${st.angle}` : '')
+    // A built-in row says it only once it is see-through; a created one always.
+    + (isCustomMat(i) || tr > 0 ? ` &middot; Transparency: ${tr}` : '');
+}
+// The one row open for editing, if any: opening another closes it, so the list
+// stays a page of read-outs with at most one set of fields in it.
+let matOpen = -1;
+
 function buildMatList() {
   // The built-in ones in the owner's table's order (retired ids have no row),
   // then the created ones.
   const ids = [...MAT_ORDER, ...customMatIds()];
+  if (!ids.includes(matOpen)) matOpen = -1;
   matListEl.innerHTML = ids.map((i) => {
     // getHexString() converts the linear-space colour back to the sRGB the browser
     // wants, so the swatch matches what the cubes actually render as.
     const hex = '#' + TERRAIN_MATS[i].color.getHexString();
     const st = MAT_STATS[i];
     const name = st ? escapeHtml(st.name) : i === WATER ? WATER_STATS.name : titleCase(MAT_NAMES[i]);
-    const strField = (key) => `<input class="mat-str" data-mat="${i}" data-key="${key}" type="text" inputmode="decimal" autocomplete="off" value="${st[key]}">`;
-    // Full width now, so the stats spell themselves out on one line. A built-in
-    // powder has no compression or pull (a dash, as in the owner's table); a
-    // created one keeps the fields it was made with.
-    const stats = st
-      ? `<span>Weight: ${st.weight} &middot; Friction: ${strField('friction')}`
-        + ` &middot; Compression: ${st.strength != null ? strField('strength') : '-'}`
-        + ` &middot; Pull: ${st.pull != null ? strField('pull') : '-'}`
-        + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}`
-        // A built-in powder's angle is the table's, and is not to be changed.
-        + (st.powder ? ' &middot; Place angle: ' + (isCustomMat(i)
-          ? `<input class="mat-str mat-par" data-mat="${i}" data-key="angle" type="text" inputmode="decimal" autocomplete="off" value="${st.angle}">`
-          : st.angle) : '')
-        + (isCustomMat(i)
-          ? ` &middot; Transparency: <input class="mat-str mat-par" data-mat="${i}" data-key="transparency" type="text" inputmode="decimal" autocomplete="off" value="${st.transparency}">`
-          : '')
-        + '</span>'
-      // Water: its numbers, read only — not carryable, and only the
-      // transparency is used yet.
-      : i === WATER
-        ? `<span>Weight: ${WATER_STATS.weight} &middot; Friction: ${WATER_STATS.friction} &middot; Compression: - &middot; Pull: -`
-          + ` &middot; Powder: ${WATER_STATS.powder ? 'Yes' : 'No'} &middot; Place angle: ${WATER_STATS.angle}`
-          + ` &middot; Transparency: ${WATER_STATS.transparency} &middot; not carryable</span>`
-        : '<span>no stats &mdash; not carryable</span>';
-    return '<div class="mat-row">'
+    const fields = matFieldsOf(i), open = i === matOpen;
+    const edit = !fields.length ? '' : `<div class="mat-edit" data-mat="${i}"${open ? '' : ' hidden'}>`
+      + fields.map((d) => {
+        const def = matDefOf(i, d.key);
+        const range = d.max != null ? `${d.min} to ${d.max}` : d.above ? `above ${d.min}` : `${d.min} or more`;
+        return '<div class="sink-row">'
+          + `<input class="mat-str" data-key="${d.key}" type="text" inputmode="decimal" autocomplete="off" value="${matValOf(i, d.key)}">`
+          + `<div><b>${d.name}</b><span>${d.help} ${def != null ? `Default ${def}; ` : ''}${range}.</span></div></div>`;
+      }).join('')
+      + (i === WATER ? '<div class="mat-note">Its weight, friction and place angle are not used yet: water is a still block for now.</div>' : '')
+      + `<div class="mat-note">Powder: ${(st || WATER_STATS).powder ? 'Yes' : 'No'} &mdash; fixed, it decides which settings it has.</div>`
+      + (i < N_MATS ? `<button class="mat-btn mat-reset" data-mat="${i}">Defaults</button>` : '')
+      + '</div>';
+    return `<div class="mat-item">`
+         + '<div class="mat-row">'
          + `<div class="mat-sw" style="background:${hex}"></div>`
-         + `<div class="mat-txt"><b>${name}</b>${stats}</div>`
+         + `<div class="mat-txt"><b>${name}</b><span class="mat-sum">${matSummary(i)}</span></div>`
+         + (fields.length ? `<button class="mat-btn mat-open${open ? ' on' : ''}" data-mat="${i}">${open ? 'Done' : 'Edit'}</button>` : '')
          + (isCustomMat(i) ? `<button class="mat-del" data-mat="${i}">Delete</button>` : '')
-         + '</div>';
+         + '</div>' + edit + '</div>';
   }).join('');
 
-  // Friction, strength (compression) and pull are edited in place: a number above
-  // zero (friction may be 0) goes straight into MAT_STATS and the stress overlay
-  // re-solves with it; anything else is left marked until the field is left, when
-  // it snaps back to the value in force.
-  for (const el of matListEl.querySelectorAll('.mat-str:not(.mat-par)')) {
-    const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
-    el.addEventListener('input', () => {
-      const v = parseFloat(el.value.replace(',', '.'));
-      const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && (v > 0 || key === 'friction');
-      el.classList.toggle('bad', !ok);
-      if (!ok || v === st[key]) return;
-      st[key] = v;
-      if (isCustomMat(m)) customMatsStore();
-      if (key !== 'friction') stressInvalidate();
-      else frictionWake();
-    });
-    el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+  // Each field goes into the material as it is typed, once it is a number in
+  // its range (out of range it is marked and left out); the field shows what is
+  // in force once it is left. One off its default is marked, as on the Sink panel.
+  for (const box of matListEl.querySelectorAll('.mat-edit')) {
+    const m = +box.dataset.mat, sum = box.parentNode.querySelector('.mat-sum');
+    for (const el of box.querySelectorAll('input')) {
+      const key = el.dataset.key, d = MAT_FIELDS.find((x) => x.key === key);
+      const mark = () => { const def = matDefOf(m, key); el.classList.toggle('moved', def != null && matValOf(m, key) !== def); };
+      mark();
+      el.addEventListener('input', () => {
+        const v = parseFloat(el.value.replace(',', '.'));
+        const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v)
+                && (d.above ? v > d.min : v >= d.min) && !(d.max != null && v > d.max);
+        el.classList.toggle('bad', !ok);
+        if (!ok || v === matValOf(m, key)) return;
+        matStatSet(m, key, v);
+        mark();
+        sum.innerHTML = matSummary(m);
+      });
+      el.addEventListener('change', () => { el.value = String(matValOf(m, key)); el.classList.remove('bad'); });
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+    }
   }
-  // A created material's place angle and transparency, the same way: a number
-  // goes in at once, brought into range (0 to 90, 0 to 100) — marked if it had to
-  // be — and the field shows what is in force once it is left.
-  for (const el of matListEl.querySelectorAll('.mat-par')) {
-    const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
-    const fit = key === 'angle' ? matAngleOf : matClearOf;
-    el.addEventListener('input', () => {
-      const raw = parseFloat(el.value.replace(',', '.'));
-      const num = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(raw);
-      const v = num ? fit(raw) : NaN;
-      el.classList.toggle('bad', !num || v !== raw);
-      if (!num || v === st[key]) return;
-      st[key] = v;
-      if (key === 'angle') matAngleSet(m, v);
-      else matClearSet(m, v);
-      customMatsStore();
+  for (const el of matListEl.querySelectorAll('.mat-open')) {
+    bindTap(el, () => {
+      const m = +el.dataset.mat;
+      if (matListEl.contains(document.activeElement)) document.activeElement.blur();
+      matOpen = matOpen === m ? -1 : m;
+      buildMatList();
     });
-    el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+  }
+  for (const el of matListEl.querySelectorAll('.mat-reset')) {
+    bindTap(el, () => {
+      const m = +el.dataset.mat;
+      for (const d of matFieldsOf(m)) {
+        const def = matDefOf(m, d.key);
+        if (def != null && matValOf(m, d.key) !== def) matStatSet(m, d.key, def);
+      }
+      buildMatList();
+    });
   }
   for (const el of matListEl.querySelectorAll('.mat-del')) {
     bindTap(el, () => { matNewMsg.textContent = customMatDelete(+el.dataset.mat) || 'Deleted'; });
@@ -12100,7 +12200,8 @@ const escapeHtml = (t) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 buildMatList();
 
 // The New material form. Strength and pull are the same numbers as the rows'
-// fields, and so is friction; weight is fixed once made, as it is for the others.
+// fields, and so is friction; every one of them can be changed later from the
+// row's Edit, as a built-in one's can.
 const matNewEl = document.getElementById('mat-new');
 matNewEl.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
 matNewEl.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
@@ -12140,15 +12241,20 @@ mnPowder.addEventListener('change', () => { document.getElementById('mn-angle-ro
 
 // The whole table, laid out as the MAT_STATS source is, so it pastes straight back.
 function matStatsSource() {
+  // A number and its comma, padded to its column — or, an edited one too long
+  // for it, with one space after.
+  const col = (v, n) => { const t = v + ','; return t.length < n ? t.padEnd(n) : t + ' '; };
   const rows = MAT_STATS.slice(0, N_MATS).map((st, i) => {
     const tag = '  // ' + (MAT_NAMES[i] ? MAT_NAMES[i].toUpperCase().replace(/ /g, '_') : `(retired: ${MAT_RETIRED[i] || i})`);
     if (!st) return '  null,'.padEnd(80) + tag;
     // A powder row has its angle where a solid has its strength and pull.
     const tail = st.powder && st.strength == null
-      ? `angle: ${(st.angle + ',').padEnd(4)}`
-      : `strength: ${(st.strength + ',').padEnd(9)}pull: ${(st.pull + ',').padEnd(8)}`;
-    return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
-         + `friction: ${(st.friction + ',').padEnd(5)}${tail}powder: ${String(st.powder).padEnd(6)}},` + tag;
+      ? `angle: ${col(st.angle, 4)}`
+      : `strength: ${col(st.strength, 9)}pull: ${col(st.pull, 8)}`;
+    // A transparency only once there is one, so the shipped table copies as it is.
+    const clear = st.transparency > 0 ? `transparency: ${st.transparency}, ` : '';
+    return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${col(st.weight, 7)}`
+         + `friction: ${col(st.friction, 5)}${tail}${clear}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
   const W = WATER_STATS;
   const water = `const WATER_STATS = { name: '${W.name}', weight: ${W.weight}, friction: ${W.friction}, angle: ${W.angle}, powder: ${W.powder}, transparency: ${W.transparency} };`;

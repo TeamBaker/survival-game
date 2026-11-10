@@ -66,6 +66,10 @@ Status: IN PROGRESS (#1-#10 done). After each change, bump window.GAME_VERSION (
 51. [x] DONE (v182) — per-frame keep flags cleared via tracked list; player 3x3 square requested on chunk change; queue compacted in place; shared colliderFarFrom unload test. Walked across chunk border, no fall-through. LOW.
 52. [x] DONE (v183) — module-level scratch Vec3s + reused opts/callback; 12 crouch cycles clean. LOW.
 
+## Placed powder decisions (2026-11-09, v290)
+- Settled pieces count as unturned: a piece with only a small leftover tilt (under about 3.6 degrees) keeps its powder, and powder placed on a settled slab stays where it was placed.
+- Placed powder stays where it was aimed on solid ground, slopes included, and on a piece lying at a tilt. It is not new physics, the grain just skips the roll. It still falls normally if the ground under it is dug out, the piece turns away, or a solid block is cut from the piece. Powder placed on other powder still rolls, so hand-built piles keep their angle, and angle-0 materials still run.
+
 ## Bugs found (fix before/during optimization work)
 - [ ] Firefox (possibly others): distant terrain draws black + far water shows sky reflection — terrainCols GPU texture goes stale; per-chunk copyTextureToTexture in rebuildChunk suspected. Pre-existing, seen headless; check in real browsers.
 - [x] World load crash (const SEED) — fixed in v135 save work.

@@ -10664,6 +10664,7 @@ const _debrisRollDown = new THREE.Vector3();
 const _debrisRollSide = new THREE.Vector3();
 const _debrisRollAt = new THREE.Vector3();
 const _debrisRollUnder = new THREE.Vector3();
+const _debrisRollW = new THREE.Vector3();
 function debrisRoll(mesh, local, m) {
   const lat = mesh.userData.blocks;
   mesh.getWorldQuaternion(_debrisRollQ).invert();
@@ -10680,10 +10681,46 @@ function debrisRoll(mesh, local, m) {
   };
   if (!filled(_debrisRollUnder.copy(local).add(d))) return false;
   const s0 = (Math.random() * 4) | 0;
-  // A piece is too small a lattice to read a slope off further out than its
-  // edge, so any place angle short of 90 keeps the one-step test; at 90 a grain
-  // stays where it lands, as on the ground.
+  // At 90 a grain stays where it lands, as on the ground.
   if (!reposeReach[m]) return null;
+  // Any other angle but 45 asks powderRoll's own question in the piece's
+  // lattice: out along each side, cell by cell while the way is free of the
+  // piece and the ground, how far it falls away there against reposeLim, the
+  // soonest fall winning. A grain only moves the first cell that way, so Dirt
+  // piles steeper and Water spreads level and runs off the edge, as on the
+  // ground.
+  if (!reposeStd[m]) {
+    const free = (v) => !filled(v) && (mesh.localToWorld(_debrisRollW.copy(v)), voxelAtWorld(_debrisRollW.x, _debrisRollW.y, _debrisRollW.z) === AIR);
+    const R = reposeReach[m], L0 = m * REPOSE_REACH_MAX, L1 = reposeLim[L0];
+    let best = -1, bestK = R + 1;
+    for (let s = 0; s < 4; s++) {
+      const [u, v] = POWDER_SIDES[(s0 + s) & 3];
+      _debrisRollSide.set(0, 0, 0).setComponent((axis + 1) % 3, u * BLOCK).setComponent((axis + 2) % 3, v * BLOCK);
+      const at = _debrisRollAt.copy(local);
+      let dPrev = 0;
+      for (let k = 1; k < bestK; k++) {
+        at.add(_debrisRollSide);
+        if (!free(at)) break;
+        const L = reposeLim[L0 + k - 1], cap = Math.max(L, dPrev + L1 + 1);
+        const under = _debrisRollUnder.copy(at);
+        let dn = 0;
+        while (dn < cap && free(under.add(d))) dn++;
+        // A fall off the side further out than the first cell is not the slope.
+        if (k > 1 && dn - dPrev > L1) break;
+        if (dn >= L) { best = (s0 + s) & 3; bestK = k; break; }
+        dPrev = dn;
+      }
+    }
+    if (best < 0) return null;
+    const [u, v] = POWDER_SIDES[best];
+    _debrisRollSide.set(0, 0, 0).setComponent((axis + 1) % 3, u * BLOCK).setComponent((axis + 2) % 3, v * BLOCK);
+    const at = mesh.localToWorld(_debrisRollAt.copy(local).add(_debrisRollSide));
+    // The caller's check for another piece under it: a cell with this piece
+    // under it (a step along level) is not one, so it asks of the cell itself.
+    if (filled(_debrisRollUnder.copy(local).add(_debrisRollSide).add(d))) _debrisRollUnder.copy(at);
+    else mesh.localToWorld(_debrisRollUnder);
+    return at;
+  }
   for (let s = 0; s < 4; s++) {
     const [u, v] = POWDER_SIDES[(s0 + s) & 3];
     // The two lattice axes across down, in turn, either way along each.

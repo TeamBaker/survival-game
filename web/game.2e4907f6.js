@@ -1084,7 +1084,7 @@ const SINK_TUNE_DEFS = [
     help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 2.2, Fine Dirt 2): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper; of a powder\'s own weight he goes in and holds where he stops, under its surface. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
   { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 1000, min: 0,
     help: 'How much the friction of the powder slows a sinker, on the part of it that is in the powder: held back by this x the divider x friction x the weight it displaces there, per m/s, so the hold grows as it goes in. 0: nothing slows sinking but the momentum the grains take (always there) and the piece\'s own damping.' },
-  { key: 'gripScale', group: 'Speed', name: 'Grip multiplier', def: 0.05, min: 0,
+  { key: 'gripScale', group: 'Speed', name: 'Grip multiplier', def: 0.03, min: 0,
     help: 'Multiplies the friction of every block contact: pieces and debris on the ground and on each other grip with the two blocks\' frictions multiplied together, times this. 2: twice as grippy everywhere, 0.5: half, 0: ice. 1: as without it. The player\'s own feet are not changed. Kept in saves.' },
   { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1, min: 1, max: 1000,
     help: 'Divides the steady speed of everything sinking or rising through powder (2: half as fast) by holding it back this many times harder: it multiplies the friction hold-back (and the grains\' momentum take by its square), so it also stops a falling piece sooner and damps a bob more (a dropped floater pushed back up from past its depth stops short of it instead). 1: as without it. Where a piece rests is not changed.' },
@@ -8977,11 +8977,18 @@ function shedTerrainPowder(dt) {
   }
 }
 
+// Cannon's own sleep for a piece body follows the Rest ticks knob: it needs
+// that many frames' worth of sim time of quiet (frames are capped at the
+// substep budget, so a slow frame does not count for more than it simulates).
+const pieceSleepTime = () => SINK_TUNE.restTicks * Math.min(physFrameAvg, physStep * physMaxSubsteps());
+
 // Called once a frame after the step: retire whatever has stopped moving, and
 // drop whatever has fallen out of the world altogether.
 function updateFallingChunks() {
+  const sleepT = pieceSleepTime();
   for (let n = fallingChunks.length - 1; n >= 0; n--) {
     const f = fallingChunks[n];
+    f.body.sleepTimeLimit = sleepT;
     if (f.body.position.y < FALL_KILL_Y) {
       fallingChunks.splice(n, 1);
       dropChunk(f);
@@ -8991,7 +8998,7 @@ function updateFallingChunks() {
     const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
               && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
     f.still = slow ? f.still + 1 : 0;
-    if (f.still >= SINK_TUNE.restTicks || f.body.sleepState === CANNON.Body.SLEEPING) {
+    if (f.still >= SINK_TUNE.restTicks) {   // a body cannon put to sleep has no speed, so it counts up here too
       restFallingChunk(n);
       if (f.mesh.userData.blocks.length <= 2 && !mergeLoneBlock(f)) loneBackoff(f);
     }
@@ -9000,7 +9007,8 @@ function updateFallingChunks() {
   mergeLoneRetry();
   // A settled piece cannon keeps awake — jittering against the terrain or a
   // neighbour, never quiet for the full sleepTimeLimit — is put to sleep by
-  // hand once it has gone FALL_FREEZE_TICKS without getting anywhere. Slowness
+  // hand once it has gone FALL_FREEZE_TICKS (never fewer than the Rest ticks
+  // knob) without getting anywhere. Slowness
   // alone is not enough (a slow slide is still a slide), so the test is how far
   // it has moved and turned over the window. It sleeps like any other body: a
   // contact, a dig in its chunk or a tool on it wakes it.
@@ -9008,6 +9016,7 @@ function updateFallingChunks() {
   const rested = awakeChunks(true);
   for (let n = rested.length - 1; n >= 0; n--) {
     const f = rested[n], b = f.body;
+    b.sleepTimeLimit = sleepT;
     if (b.position.y < FALL_KILL_Y) { restedChunks.splice(restedChunks.indexOf(f), 1); dropChunk(f); continue; }
     if (b.sleepState === CANNON.Body.SLEEPING) { f.calm = 0; continue; }
     if (b.velocity.lengthSquared() >= FALL_REST_V * FALL_REST_V
@@ -9020,7 +9029,7 @@ function updateFallingChunks() {
       f.calm = 1;
       continue;
     }
-    if (++f.calm < FALL_FREEZE_TICKS) continue;
+    if (++f.calm < Math.max(FALL_FREEZE_TICKS, SINK_TUNE.restTicks)) continue;
     f.calm = 0;
     const p = b.position, a = f.calmPos, q = b.quaternion, aq = f.calmQuat;
     const dx = p.x - a.x, dy = p.y - a.y, dz = p.z - a.z;

@@ -10084,6 +10084,7 @@ const powderOrder = [];
 let powderStamp = 0;
 const powderSpot = new THREE.Vector3();
 
+const powderPassedTurned = [];   // turned pieces a grain falls past this frame (v308)
 function catchPowder(dt) {
   let filed = false;   // the cells are filed on first need, and again after anything that may move or make pieces
   const reach = 2 * BLOCK;   // a grain's cube can touch a block of a turned piece from this far off across
@@ -10166,23 +10167,28 @@ function catchPowder(dt) {
     if (!inside && !p.thru && (restedChunks.length || fallingChunks.length)) {
       if (!filed) { powderCatchFile(reach); filed = true; }
       const near = powderCatchCells.get(debrisCellKey(Math.floor(px / CATCH_CELL), Math.floor(pz / CATCH_CELL)));
-      let mesh = null, t = Infinity;
-      if (near) for (let e = 0; e < near.length; e += 2) {
-        const m = near[e], c = near[e + 1];
-        if (m === p.from) continue;
-        if (yEnd > c.maxY + reach || y0 < c.minY - reach || px < c.minX - reach || px > c.maxX + reach
-            || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
-        const tm = powderSweep(m, px, y0, pz, yEnd);
-        if (tm < t) { t = tm; mesh = m; }
-      }
-      if (mesh && !pieceSquare(mesh.quaternion)) {
+      let mesh = null, t = Infinity, sideOff = null;
+      powderPassedTurned.length = 0;
+      for (;;) {
+        mesh = null; t = Infinity;
+        if (near) for (let e = 0; e < near.length; e += 2) {
+          const m = near[e], c = near[e + 1];
+          if (m === p.from || powderPassedTurned.includes(m)) continue;
+          if (yEnd > c.maxY + reach || y0 < c.minY - reach || px < c.minX - reach || px > c.maxX + reach
+              || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
+          const tm = powderSweep(m, px, y0, pz, yEnd);
+          if (tm < t) { t = tm; mesh = m; }
+        }
+        if (!mesh || pieceSquare(mesh.quaternion)) break;
         // A turned piece holds no powder: off its side to fall on from there. No
-        // clear column in reach, and it goes on down past the pieces to the ground.
-        const off = powderOffPiece(px, y0 + (yEnd - y0) * t, pz, p, stamp);
-        if (off) { powderMove(p, off.x, off.y, off.z); p.v = 0; continue; }
-        p.thru = true;
-        mesh = null;
+        // clear column in reach, and it goes on down past that piece only, this
+        // frame: the next piece under it on the way still catches it, and the
+        // turned one is asked again next frame (it may have come square by then).
+        sideOff = powderOffPiece(px, y0 + (yEnd - y0) * t, pz, p, stamp);
+        if (sideOff) break;
+        powderPassedTurned.push(mesh);
       }
+      if (sideOff) { powderMove(p, sideOff.x, sideOff.y, sideOff.z); p.v = 0; continue; }
       if (mesh) {
         p.pos.y = y0 + (yEnd - y0) * t;   // where it touches
         // The spot is the piece's cell the grain is in, so a grain put on a cell

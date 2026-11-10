@@ -1621,8 +1621,82 @@ function sinkScan(S, hull, M, F) {
 // does — carrying a fall in past its balance depth and coming back, a heavy
 // one going in further than a light one at the same speed, a spin dying out
 // in the grains — is that momentum answering those forces.
+// Powder beside a piece, not under or in it: water poured round a piece at
+// the bottom of a dry pit touches its sides and no cell of it overlaps the
+// hull, so no contact with it is ever made and none of the above would see
+// it. The piece is pressed instead: each of its cells below the level of the
+// powder at its sides (the highest face-adjacent powder cell's top) counts as
+// that powder displaced, so it floats or stays by the same weight rule. Only
+// while none of the hull is in the medium: from the first overlap the lift
+// is the displaced cells' as above. Not the player (his rules are depth's).
+const SINK_PRESS_MIN = 0.1, SINK_PRESS_EVERY = 10, SINK_GROUND_BODY = { voxelGround: true };
+const _sinkPT = { top: -Infinity, m: -1 }, _sinkNoRec = { rec: new Map() };
+function sinkGridCells(S, hull) {
+  const cells = hull.cells, q = S.quaternion, x = S.position, nc = hull.count;
+  if (_sinkGC.length < nc * 3) _sinkGC = new Float64Array(nc * 6);
+  for (let c = 0; c < nc; c++) {
+    q.vmult(_sinkV.set(cells[c * 4], cells[c * 4 + 1], cells[c * 4 + 2]), _sinkV);
+    _sinkV.vadd(x, _sinkV);
+    const g = sinkToGrid(null, null, _sinkV, _sinkG);
+    _sinkGC[c * 3] = g.x; _sinkGC[c * 3 + 1] = g.y; _sinkGC[c * 3 + 2] = g.z;
+  }
+}
+function sinkPressTop(G, nc) {
+  let top = -Infinity, m = -1;
+  for (let c = 0; c < nc; c++) {
+    const gy = G[c * 3 + 1], fi = Math.round(G[c * 3]), fj = Math.round(G[c * 3 + 2]), fl = Math.floor(gy);
+    for (let l = fl; l <= fl + 1; l++) {
+      if (l + 0.5 <= top || l + 0.5 < gy - 0.5 + SINK_PRESS_MIN) continue;
+      for (let d = 0; d < 4; d++) {
+        const v = voxelAt(fi + (d === 0 ? 1 : d === 1 ? -1 : 0), fj + (d === 2 ? 1 : d === 3 ? -1 : 0), l);
+        if (v === AIR || !MAT_STATS[v] || !sinkMedium(v)) continue;
+        top = l + 0.5; m = v;
+        break;
+      }
+    }
+  }
+  _sinkPT.top = top; _sinkPT.m = m;
+  return m >= 0;
+}
+// The pressed weight (G already in ground grid coordinates); with push, the
+// lift goes on the body at each pressed cell's submerged middle.
+function sinkPressLift(S, hull, K, push) {
+  if (!sinkPressTop(_sinkGC, hull.count)) return 0;
+  const top = _sinkPT.top, wm = sinkWeight(_sinkPT.m), G = _sinkGC, g = world.gravity;
+  let disp = 0;
+  for (let c = 0; c < hull.count; c++) {
+    const lo = G[c * 3 + 1] - 0.5, f = Math.min(1, top - lo);
+    if (!(f > 0)) continue;
+    disp += f * wm;
+    if (!push) continue;
+    _sinkC.x = G[c * 3]; _sinkC.y = lo + f * 0.5; _sinkC.z = G[c * 3 + 2];
+    const p = sinkToWorld(null, null, _sinkC, _sinkP), kg = f * wm * K * SINK_TUNE.floatScale;
+    sinkPush(S, null, false, p, -g.x * kg, -g.y * kg, -g.z * kg);
+  }
+  return disp;
+}
+// Every few steps: a piece not in the ground's powder but pressed by it is
+// made a sinker of it, and woken if asleep and the press would lift it.
+function sinkPressScan() {
+  for (const S of world.bodies) {
+    if (!S.debrisMesh || S.type !== CANNON.Body.DYNAMIC) continue;
+    const st = sinkers.get(S), M = st?.media.get(SINK_GROUND), asleep = S.sleepState === CANNON.Body.SLEEPING;
+    if (M && (!asleep || M.rec.size)) continue;
+    const hull = sinkHull(S.debrisMesh, S);
+    if (!(hull.W > 0)) continue;
+    sinkGridCells(S, hull);
+    if (!sinkPressTop(_sinkGC, hull.count)) continue;
+    sinkScan(S, hull, M || _sinkNoRec, null);
+    if (_sinkLen) continue;
+    const disp = sinkPressLift(S, hull, 0, false);
+    if (!(disp > 0)) continue;
+    if (!M) sinkTouch(S, SINK_GROUND_BODY);
+    if (asleep && disp * SINK_TUNE.floatScale > hull.W * (1 + SINK_TUNE.sleepImb)) S.wakeUp();
+  }
+}
 function sinkForces(h) {
   sinkBusyN = 0;
+  if (world.stepnumber % SINK_PRESS_EVERY === 0) sinkPressScan();
   if (!sinkers.size) return;
   const step = world.stepnumber, gx = world.gravity.x, gy = world.gravity.y, gz = world.gravity.z;
   for (const [S, st] of sinkers) {
@@ -1631,7 +1705,7 @@ function sinkForces(h) {
     const hull = sinkHull(S.debrisMesh, S);
     if (!(hull.W > 0)) continue;
     const K = S.mass / hull.W;
-    let disp = 0, vol = 0;
+    let disp = 0, vol = 0, press = 0;
     if (S === playerBody) { playerPowderVol = 0; playerPowderAt = step; }
     for (const [key, M] of st.media) {
       const O = M.body;
@@ -1641,6 +1715,8 @@ function sinkForces(h) {
       sinkScan(S, hull, M, F);
       const L = _sinkList, acc = _sinkAcc, nIn = _sinkLen;
       if (nIn) M.overAt = step;
+      const pr = !O && !nIn && !M.rec.size && S !== playerBody ? sinkPressLift(S, hull, K, true) : 0;
+      press += pr;
       const Od = O && O.type === CANNON.Body.DYNAMIC;
       // Lift first, so the hold-back is solved against the motion the step is
       // heading for with it in.
@@ -1661,7 +1737,7 @@ function sinkForces(h) {
       // (sinkFillBehind), and stays the piece's until it does.
       for (const [rk, r] of M.rec) if (r.at !== step) sinkLeave(M, rk, r);
       if (O && nIn && O.sleepState === CANNON.Body.SLEEPING && S.velocity.lengthSquared() > SINK_TUNE.wakeSpeed ** 2) O.wakeUp();
-      if (!nIn && !M.rec.size && step - M.touchAt > SINK_TUNE.forgetSteps) sinkDropMedium(st, key, M);
+      if (!nIn && !M.rec.size && !pr && step - M.touchAt > SINK_TUNE.forgetSteps) sinkDropMedium(st, key, M);
     }
     st.disp = disp; st.vol = vol;
     // Off balance and held by nothing rigid: still sinking or rising, however
@@ -1669,7 +1745,7 @@ function sinkForces(h) {
     // against the lift as felt (floatScale), while being in the powder at all
     // is the raw overlap, so a piece lifted by nothing still counts as on its
     // way down. With weightSpeed 0 the weight moves it nowhere, so it is not.
-    st.busy = Math.abs(hull.W - disp * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp > 0
+    st.busy = Math.abs(hull.W - (disp + press) * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp + press > 0
       && SINK_TUNE.weightSpeed > 0;
     if (st.busy) { sinkBusyN++; if (S.sleepState !== CANNON.Body.AWAKE) S.wakeUp(); }
     if (!st.media.size && !st.owed.length) sinkers.delete(S);

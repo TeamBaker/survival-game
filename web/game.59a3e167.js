@@ -1184,6 +1184,13 @@ function sinkPlayerWall(S, ws, wo, nx, ny, nz) {
   if (sinkDriveX * nx + sinkDriveZ * nz <= 0) return false;
   return !(sinkers.get(S)?.vol >= playerSinkHull().count * 0.5);
 }
+// A floater rises on into powder heavier than it (lighter powder over it is
+// a lid). The player also into powder of his own weight: that gives round
+// him as it does under him (sinkGives), so he swims up through it as through
+// any other, where held as a lid it threw every stroke up back down.
+const sinkFloatsInto = (S, fl, w) => S === playerBody
+  ? fl.W <= SINK_TUNE.floatScale * w * fl.count
+  : fl.W < SINK_TUNE.floatScale * w * fl.count;
 function sinkPresses(S, rS, O, rO, n, sg, depth) {
   if (!O.voxelGround && !O.debrisMesh) return false;
   if (S.type !== CANNON.Body.DYNAMIC) return false;
@@ -1202,7 +1209,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
   if (fl) {
     if (O.voxelGround) {
       const w = sinkGroundAround(S, rS, n, sg);
-      if (w < 0 || (w > 0 && !(fl.W < SINK_TUNE.floatScale * w * fl.count))) return false;
+      if (w < 0 || (w > 0 && !sinkFloatsInto(S, fl, w))) return false;
       sinkTouch(S, O);
       return true;
     }
@@ -1250,7 +1257,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
-  if (fl ? !(wo === 0 || fl.W < SINK_TUNE.floatScale * wo * fl.count) : sinkPlayerWall(S, ws, wo, _sinkN.x, _sinkN.y, _sinkN.z)) return false;
+  if (fl ? !(wo === 0 || sinkFloatsInto(S, fl, wo)) : sinkPlayerWall(S, ws, wo, _sinkN.x, _sinkN.y, _sinkN.z)) return false;
   sinkTouch(S, O);
   return true;
 }

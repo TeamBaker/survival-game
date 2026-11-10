@@ -888,7 +888,7 @@ function debrisFricCells(lat, rev) {
     if (mb < 0) made = makeFriction.call(this, c, out);
     else {
       const cm = this.currentContactMaterial, f0 = cm.friction;
-      cm.friction = mu = matFriction(ma) * matFriction(mb);
+      cm.friction = mu = matFriction(ma) * matFriction(mb) * SINK_TUNE.gripScale;
       made = makeFriction.call(this, c, out);
       cm.friction = f0;
     }
@@ -1084,6 +1084,8 @@ const SINK_TUNE_DEFS = [
     help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 2.2, Fine Dirt 2): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper; of a powder\'s own weight he goes in and holds where he stops, under its surface. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
   { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 1000, min: 0,
     help: 'How much the friction of the powder slows a sinker, on the part of it that is in the powder: held back by this x the divider x friction x the weight it displaces there, per m/s, so the hold grows as it goes in. 0: nothing slows sinking but the momentum the grains take (always there) and the piece\'s own damping.' },
+  { key: 'gripScale', group: 'Speed', name: 'Grip multiplier', def: 1, min: 0,
+    help: 'Multiplies the friction of every block contact: pieces and debris on the ground and on each other grip with the two blocks\' frictions multiplied together, times this. 2: twice as grippy everywhere, 0.5: half, 0: ice. 1: as without it. The player\'s own feet are not changed. Kept in saves.' },
   { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1, min: 1, max: 1000,
     help: 'Divides the steady speed of everything sinking or rising through powder (2: half as fast) by holding it back this many times harder: it multiplies the friction hold-back (and the grains\' momentum take by its square), so it also stops a falling piece sooner and damps a bob more (a dropped floater pushed back up from past its depth stops short of it instead). 1: as without it. Where a piece rests is not changed.' },
   { key: 'weightSpeed', group: 'Speed', name: 'Weight speed importance', def: 1, min: 0,
@@ -3451,8 +3453,9 @@ const TERRAIN_MATS = [
   // The earth family. Wet ones are a touch smoother — damp ground catches a
   // little more light than dust does.
   mat(0x9b7a52, 0.99, 0.00, { envMapIntensity: 0.30 }),   // FINE_DIRT
-  // Wood (v297, in Mud's old slot): a warm mid brown, redder than any earth.
-  mat(0x8a5a32, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WOOD
+  // Wood (v297, in Mud's old slot; v302 four fifths of the way to Sawdust's tan,
+  // a faint brown left under it so a block is not a grain's colour).
+  mat(0xcfb57c, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WOOD
   mat(0x7a5c38, 0.96, 0.00, { envMapIntensity: 0.34 }),   // COMPACT_DIRT
   // Sawdust (v301, in Fine Mud's slot): a pale wheat tan, lighter than sand.
   mat(0xe0cc8e, 0.98, 0.00, { envMapIntensity: 0.40 }),   // SAWDUST
@@ -17174,6 +17177,7 @@ function collectWorldMeta() {
     // The soil bands its world was generated with (genDeep).
     genDeep: GEN_DEEP_VER,
     timestamp: Date.now(),
+    gripScale: SINK_TUNE.gripScale,
     playerState,
     cameraState,
     toolsState,
@@ -17906,6 +17910,8 @@ function applyWorldCore(s) {
   }
   // An older save has no weight: the default.
   SINK_TUNE.playerWeight = Number.isFinite(ps.weight) && ps.weight >= 0.001 ? ps.weight : PLAYER_WEIGHT_DEF;
+  // An older save has no grip multiplier: the default.
+  SINK_TUNE.gripScale = Number.isFinite(s.gripScale) && s.gripScale >= 0 ? s.gripScale : 1;
   applyPlayerWeight();
   buildSinkList();
   playerBody.position.set(...ps.pos);

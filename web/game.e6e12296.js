@@ -2643,6 +2643,8 @@ const STONE = ROCK;
 const FINE_DIRT = 4, WOOD = 5, COMPACT_DIRT = 6;
 const STONE_DUST = 8, SANDSTONE = 10;
 const CLAY = 11, COMPACT_CLAY = 13;
+// Sawdust (v301) took Fine Mud's retired id, the way Wood took Mud's.
+const SAWDUST = 7;
 const N_MATS = 16;
 // Old id -> id, for a save from before v297 (one without matTable): Mud, Fine
 // Mud -> Compact Dirt (packed earth); Stone Mud, Wet Sand, Hard Sand ->
@@ -2741,7 +2743,8 @@ let clearCount = 0;
 // at — and friction. A solid has no angle.
 // Water is a powder row like Sand (v299): the sea is blocks of it, and it
 // sinks, floats, pours and draws by its own numbers like any other.
-// The owner's table (v297), as given.
+// The owner's table (v297), as given; Sawdust joined it at v301, in Fine Mud's
+// retired slot.
 const MAT_STATS = [
   { name: 'Sand',          weight: 12.8,  friction: 5.8, angle: 45, powder: true  },                 // SAND
   { name: 'Dirt',          weight: 9.7,   friction: 5,   angle: 50, powder: true  },                 // DIRT
@@ -2750,7 +2753,7 @@ const MAT_STATS = [
   { name: 'Fine Dirt',     weight: 9.7,   friction: 5,   angle: 45, powder: true  },                 // FINE_DIRT
   { name: 'Wood',          weight: 4.5,   friction: 3.3, strength: 170000, pull: 450000, powder: false },  // WOOD
   { name: 'Compact Dirt',  weight: 13,    friction: 5,   strength: 6000,   pull: 300,    powder: false },  // COMPACT_DIRT
-  null,                                                                                         // (retired: Fine Mud)
+  { name: 'Sawdust',       weight: 1.5,   friction: 3.3, angle: 45, powder: true  },                 // SAWDUST (v301)
   { name: 'Stone Dust',    weight: 12.8,  friction: 6.5, angle: 45, powder: true  },                 // STONE_DUST
   null,                                                                                         // (retired: Stone Mud)
   { name: 'Sandstone',     weight: 18.6,  friction: 5,   strength: 400000, pull: 17000,  powder: false },  // SANDSTONE
@@ -2761,7 +2764,7 @@ const MAT_STATS = [
   null,                                                                                         // (retired: Hard Sand)
 ];
 // The order the owner's table lists them in: the Materials panel's.
-const MAT_ORDER = [DIRT, FINE_DIRT, COMPACT_DIRT, STONE, STONE_DUST, CLAY, COMPACT_CLAY, SAND, SANDSTONE, WATER, WOOD];
+const MAT_ORDER = [DIRT, FINE_DIRT, COMPACT_DIRT, STONE, STONE_DUST, CLAY, COMPACT_CLAY, SAND, SANDSTONE, WATER, WOOD, SAWDUST];
 // What the stress solver's beams take for a powder's stiffness, which has no
 // strength of its own now: what Sand's was before v297, so a beam into powder
 // is as soft as it always was.
@@ -2846,7 +2849,7 @@ const DEEP_MAT = [
   DIRT,           // FINE_DIRT
   WOOD,           // WOOD (never generated)
   SANDSTONE,      // COMPACT_DIRT
-  COMPACT_DIRT,   // (retired)
+  SAWDUST,        // SAWDUST (v301; never generated)
   SANDSTONE,      // STONE_DUST
   ROCK,           // (retired)
   ROCK,           // SANDSTONE
@@ -3451,7 +3454,8 @@ const TERRAIN_MATS = [
   // Wood (v297, in Mud's old slot): a warm mid brown, redder than any earth.
   mat(0x8a5a32, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WOOD
   mat(0x7a5c38, 0.96, 0.00, { envMapIntensity: 0.34 }),   // COMPACT_DIRT
-  mat(0x5c4a32, 0.86, 0.00, { envMapIntensity: 0.44 }),   // (retired: FINE_MUD)
+  // Sawdust (v301, in Fine Mud's slot): a pale wheat tan, lighter than sand.
+  mat(0xe0cc8e, 0.98, 0.00, { envMapIntensity: 0.40 }),   // SAWDUST
   // The stone family, all of it a shade of the same grey as ROCK.
   mat(0xa0a8b0, 0.98, 0.00, { envMapIntensity: 0.40 }),   // STONE_DUST
   mat(0x6a7078, 0.85, 0.02, { envMapIntensity: 0.50 }),   // (retired: STONE_MUD)
@@ -7086,13 +7090,13 @@ const SHOVEL_CAP   = 64;       // blocks your hands hold
 // A retired id (v297) has no name: no material of it is left anywhere.
 const MAT_NAMES = [
   'sand', 'dirt', 'stone', 'water',
-  'fine dirt', 'wood', 'compact dirt', undefined,
+  'fine dirt', 'wood', 'compact dirt', 'sawdust',
   'stone dust', undefined, 'sandstone',
   'clay', undefined, 'compact clay',
   undefined, undefined,
 ];
 // Their old names, for the Copy Stats tag of a retired row.
-const MAT_RETIRED = { 7: 'fine mud', 9: 'stone mud', 12: 'clay mud', 14: 'wet sand', 15: 'hard sand' };
+const MAT_RETIRED = { 9: 'stone mud', 12: 'clay mud', 14: 'wet sand', 15: 'hard sand' };
 
 const shovel = {
   on: false,
@@ -12408,18 +12412,21 @@ const CHART_COLS = [
 // cells (Hard dirt is Compact dirt, Hard clay Compact clay); Sandstone takes
 // Hard sand's (it breaks to Sand), Wood has none yet. A cell that named a
 // material the table dropped (the muds, Wet sand, Hard sand, Brittle stone) is
-// empty: that change has nothing to become.
+// empty: that change has nothing to become. v301: the owner's new Break column
+// (Dirt no longer breaks; Compact dirt, Compact clay, Sandstone and Wood split
+// half and half), and a Sawdust row.
 const MAT_CHART = [
-  { mat: 'Dirt',          dry: '',              water: '',           rain: '',           break: '50% Fine dirt, 50% Dirt',  compress: '' },
+  { mat: 'Dirt',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
   { mat: 'Fine dirt',     dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Compact dirt',  dry: '',              water: '',           rain: '',           break: 'Dirt',                     compress: '' },
+  { mat: 'Compact dirt',  dry: '',              water: '',           rain: '',           break: '50% Dirt, 50% Fine dirt',  compress: '' },
   { mat: 'Stone',         dry: '',              water: '',           rain: '',           break: '50% Stone, 50% Stone dust',compress: '' },
   { mat: 'Stone dust',    dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
   { mat: 'Clay',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Compact clay',  dry: '',              water: '',           rain: '',           break: 'Clay',                     compress: '' },
+  { mat: 'Compact clay',  dry: '',              water: '',           rain: '',           break: '50% Compact clay, 50% Clay', compress: '' },
   { mat: 'Sand',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Sandstone',     dry: '',              water: '',           rain: '',           break: 'Sand',                     compress: '' },
-  { mat: 'Wood',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Sandstone',     dry: '',              water: '',           rain: '',           break: '50% Sandstone, 50% Sand', compress: '' },
+  { mat: 'Wood',          dry: '',              water: '',           rain: '',           break: '50% Wood, 50% Sawdust',    compress: '' },
+  { mat: 'Sawdust',       dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
 ];
 
 // A created material has no row of its own in MAT_CHART, so it shows with every

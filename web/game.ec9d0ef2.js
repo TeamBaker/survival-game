@@ -1077,14 +1077,14 @@ function sinkBlocksPowder(i, j, l) {
 // in stops working, and the panel will not go under it.
 // The player's default weight, per block of its hull in MAT_STATS units. The
 // body's mass is 400 kg per unit of weight (0.015 = the old 6 kg), capped at
-// FALL_MASS_CAP: the default 5 is heavier than sand and puts him at the 40 kg cap.
-const PLAYER_WEIGHT_DEF = 5, PLAYER_WEIGHT_KG = 400;
+// FALL_MASS_CAP: the default 3 (1200 kg) is heavier than sand and puts him at the 40 kg cap.
+const PLAYER_WEIGHT_DEF = 3, PLAYER_WEIGHT_KG = 400;
 const SINK_TUNE_DEFS = [
   { key: 'playerWeight', group: 'Player', name: 'Player weight', def: PLAYER_WEIGHT_DEF, min: 0.001,
     help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 2.2, Fine Dirt 2): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper; of a powder\'s own weight he goes in and holds where he stops, under its surface. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
   { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 1000, min: 0,
     help: 'How much the friction of the powder slows a sinker, on the part of it that is in the powder: held back by this x the divider x friction x the weight it displaces there, per m/s, so the hold grows as it goes in. 0: nothing slows sinking but the momentum the grains take (always there) and the piece\'s own damping.' },
-  { key: 'gripScale', group: 'Speed', name: 'Grip multiplier', def: 1, min: 0,
+  { key: 'gripScale', group: 'Speed', name: 'Grip multiplier', def: 0.05, min: 0,
     help: 'Multiplies the friction of every block contact: pieces and debris on the ground and on each other grip with the two blocks\' frictions multiplied together, times this. 2: twice as grippy everywhere, 0.5: half, 0: ice. 1: as without it. The player\'s own feet are not changed. Kept in saves.' },
   { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1, min: 1, max: 1000,
     help: 'Divides the steady speed of everything sinking or rising through powder (2: half as fast) by holding it back this many times harder: it multiplies the friction hold-back (and the grains\' momentum take by its square), so it also stops a falling piece sooner and damps a bob more (a dropped floater pushed back up from past its depth stops short of it instead). 1: as without it. Where a piece rests is not changed.' },
@@ -1094,6 +1094,8 @@ const SINK_TUNE_DEFS = [
     help: 'Push-back from the weight of the powder a piece has displaced, times this. Rests where this x displaced weight == its weight: higher floats higher. 0: nothing floats, every piece that goes in sinks to the solid under the powder.' },
   { key: 'sleepImb', group: 'Settling', name: 'Sleep balance', def: 0.002, min: 0.0001,
     help: 'Fraction of its weight a sinker may be off balance and still sleep. Smaller: rests nearer the exact depth, takes longer.' },
+  { key: 'restTicks', group: 'Settling', name: 'Rest ticks', def: 90, min: 1, int: true,
+    help: 'How many frames a fallen piece must stay under the rest speed before its body rests. Bigger: pieces stay awake longer before they rest.' },
   { key: 'rigidSteps', group: 'Settling', name: 'Held memory (steps)', def: 1, min: 1, int: true,
     help: 'Steps after its last solid contact a sinker still counts as held up (and may sleep off balance).' },
   { key: 'forgetSteps', group: 'Settling', name: 'Forget medium (steps)', def: 2, min: 1, int: true,
@@ -6470,7 +6472,7 @@ function setPlayerShape(crouch) {
 setPlayerShape(false);
 // Sink panel's Player weight to the body's mass: 400 kg per unit (0.015 is the
 // old 6 kg), capped where the heaviest piece is, so the solver sees nothing it
-// does not already handle; the default 5 sits at that cap. The sinking reads
+// does not already handle; the default 3 (1200 kg) sits at that cap. The sinking reads
 // the weight itself.
 function applyPlayerWeight() {
   const m = Math.min(PLAYER_WEIGHT_KG * SINK_TUNE.playerWeight, FALL_MASS_CAP);
@@ -7446,7 +7448,7 @@ function pieceGyro(h) {
   }
 }
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
-const FALL_REST_TICKS = 30;   // frames of that before its body is retired
+// (for SINK_TUNE.restTicks frames, the panel's Rest ticks, before its body is retired)
 const FALL_FREEZE_TICKS = 120; // frames a settled piece cannon will not put to sleep may fidget before it is put to sleep by hand
 const FALL_FREEZE_D  = 0.02;  // m it may have wandered over those frames and still count as fidgeting, not sliding
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
@@ -8989,7 +8991,7 @@ function updateFallingChunks() {
     const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
               && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
     f.still = slow ? f.still + 1 : 0;
-    if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) {
+    if (f.still >= SINK_TUNE.restTicks || f.body.sleepState === CANNON.Body.SLEEPING) {
       restFallingChunk(n);
       if (f.mesh.userData.blocks.length <= 2 && !mergeLoneBlock(f)) loneBackoff(f);
     }
@@ -17911,7 +17913,7 @@ function applyWorldCore(s) {
   // An older save has no weight: the default.
   SINK_TUNE.playerWeight = Number.isFinite(ps.weight) && ps.weight >= 0.001 ? ps.weight : PLAYER_WEIGHT_DEF;
   // An older save has no grip multiplier: the default.
-  SINK_TUNE.gripScale = Number.isFinite(s.gripScale) && s.gripScale >= 0 ? s.gripScale : 1;
+  SINK_TUNE.gripScale = Number.isFinite(s.gripScale) && s.gripScale >= 0 ? s.gripScale : SINK_TUNE_DEFS.find((d) => d.key === 'gripScale').def;
   applyPlayerWeight();
   buildSinkList();
   playerBody.position.set(...ps.pos);

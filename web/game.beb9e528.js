@@ -7931,8 +7931,9 @@ const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air
 // lands or leaves the field, and come out again for the next one.
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
-  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null, thru: false };
-  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1; g.thru = false;
+  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null, thru: false,
+    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0 };
+  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1; g.thru = false; g.lk = null; g.lg = null;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
   return g;
@@ -7940,6 +7941,7 @@ function powderGrain(x, y, z, mat, from) {
 function powderGrainFree(g) {
   g.from = null;   // a mesh held here would outlive its piece
   g.dn = null;
+  g.lk = null; g.lg = null; g.ls = 0;   // a grain stacked on this record must not take its next life for it
   g.far = null;
   powderGrainPool.push(g);
 }
@@ -9938,12 +9940,12 @@ function powderClear(x, y, z, self, moved = 0) {
 // left in powderSweepAx: the piece's axis, 1 + 0..2, signed by the way the face
 // looks; 0 if it was overlapping from the start.
 const _sweepA = new THREE.Vector3(), _sweepD = new THREE.Vector3();
-let powderSweepAx = 0;
+let powderSweepAx = 0, powderSweepB = null;
 function powderSweep(mesh, x, y0, z, y1) {
   mesh.updateWorldMatrix(true, false);
   const A = mesh.worldToLocal(_sweepA.set(x, y0, z)), D = mesh.worldToLocal(_sweepD.set(x, y1, z)).sub(A);
   let best = Infinity;
-  powderSweepAx = 0;
+  powderSweepAx = 0; powderSweepB = null;
   blocks: for (const b of mesh.userData.blocks) {
     let t0 = 0, t1 = 1, ax = 0;
     for (let k = 0; k < 3; k++) {
@@ -9955,7 +9957,7 @@ function powderSweep(mesh, x, y0, z, y1) {
       if (tb < t1) t1 = tb;
       if (t0 >= t1) continue blocks;
     }
-    if (t0 < best) { best = t0; powderSweepAx = ax; }
+    if (t0 < best) { best = t0; powderSweepAx = ax; powderSweepB = b; }
   }
   return best;
 }
@@ -10109,6 +10111,79 @@ const powderSpot = new THREE.Vector3();
 
 const powderPassedTurned = [];   // turned pieces a grain falls past this frame (v308)
 const _faceN = new THREE.Vector3(), _faceQ = new THREE.Quaternion();
+// Whether a grain of `mat` rests on a face looking along unit world `n` (v310):
+// its tilt from level within the material's place angle.
+const faceRests = (n, mat) => n.y > 1e-6 && Math.sqrt(Math.max(0, 1 - n.y * n.y)) <= reposeTan[mat] * n.y + 1e-6;
+const _faceAt = (mesh, k, sgn) => _faceN.set(0, 0, 0).setComponent(k, sgn).applyQuaternion(mesh.getWorldQuaternion(_faceQ));
+
+// ----- a grain resting on a piece rides it (v311) -----
+// A grain at rest on a piece off the world grid is kept as a spot in the
+// piece's own frame, so it goes where the piece goes and turns as it turns,
+// instead of being left at a point in the world the piece moves out from
+// under. It is held on the face it came to rest on (lk, the block lb, its face
+// lx), and let go — to be a falling grain from where it is on the piece — once
+// that face no longer holds it: the block is gone or built over, the face has
+// tilted past the material's place angle, the piece comes square (its own
+// lattice takes powder then) or leaves the world, or its spot is taken. A
+// grain at rest on such a grain (lg) rides the same piece for as long as the
+// one under it does. Spots are kept with the piece's recentring shift added,
+// so digging or building on the piece does not move them.
+// Off, and a resting grain is held at its point in the world as v310 had it.
+const POWDER_RIDES = true;
+let powderLockSeq = 0;
+const _lockAt = new THREE.Vector3(), _lockB = new THREE.Vector3();
+function powderLockKeep(g, mesh) {
+  mesh.updateWorldMatrix(true, false);
+  mesh.worldToLocal(g.lp.copy(g.pos));
+  const S = mesh.userData.powderShift;
+  if (S) g.lp.add(S);
+  g.lk = mesh; g.ls = ++powderLockSeq;
+}
+function powderLock(g, mesh, b, ax) {
+  powderLockKeep(g, mesh);
+  const S = mesh.userData.powderShift;
+  g.lb.copy(b.pos); if (S) g.lb.add(S);
+  g.lx = ax; g.lg = null;
+}
+function powderLockOn(g, under) {
+  powderLockKeep(g, under.lk);
+  g.lg = under; g.lgs = under.ls;
+}
+// Where the piece has carried a locked grain to, in the world: into _lockAt.
+function powderLockSpot(g) {
+  const mesh = g.lk, S = mesh.userData.powderShift;
+  _lockAt.copy(g.lp); if (S) _lockAt.sub(S);
+  mesh.updateWorldMatrix(true, false);
+  return mesh.localToWorld(_lockAt);
+}
+// Whether the piece still holds a locked grain.
+function powderLockHolds(g) {
+  const mesh = g.lk;
+  if (mesh.parent !== debris || !mesh.userData.blocks?.length || pieceSquare(mesh.quaternion)) return false;
+  if (g.lg) return g.lg.lk === mesh && g.lg.ls === g.lgs;
+  const S = mesh.userData.powderShift, cells = powderLockCells(mesh), o = mesh.userData.blocks[0].pos;
+  const at = _lockB.copy(g.lb); if (S) at.sub(S);
+  at.sub(o).divideScalar(BLOCK).round();
+  if (!cells.has(powderLockKey(at))) return false;
+  const k = Math.abs(g.lx) - 1, sgn = Math.sign(g.lx);
+  at.setComponent(k, at.getComponent(k) + sgn);
+  if (cells.has(powderLockKey(at))) return false;
+  return faceRests(_faceAt(mesh, k, sgn), g.mat);
+}
+// A piece's blocks as whole steps from its first block, filed once per frame
+// and again after any edit to a piece (stressRev), so each locked grain asks a
+// set rather than walking a lattice that may be thousands long.
+const powderLockKey = (v) => (v.x + 1024) * 4194304 + (v.y + 1024) * 2048 + (v.z + 1024);
+const _lockC = new THREE.Vector3();
+function powderLockCells(mesh) {
+  const ud = mesh.userData;
+  if (ud.lockCellsAt === powderStamp && ud.lockCellsRev === stressRev) return ud.lockCells;
+  const S = ud.lockCells ||= new Set(), lat = ud.blocks, o = lat[0].pos;
+  S.clear();
+  for (const b of lat) S.add(powderLockKey(_lockC.copy(b.pos).sub(o).divideScalar(BLOCK).round()));
+  ud.lockCellsAt = powderStamp; ud.lockCellsRev = stressRev;
+  return S;
+}
 function catchPowder(dt) {
   let filed = false;   // the cells are filed on first need, and again after anything that may move or make pieces
   const reach = 2 * BLOCK;   // a grain's cube can touch a block of a turned piece from this far off across
@@ -10139,6 +10214,19 @@ function catchPowder(dt) {
     if (p.dn) p.d = p.dn.d;   // the grain under it went first and holds the stack's depth by now
     if (p.d > p.push) p.push = p.d;
     p.v = Math.min(Math.max(p.v + POWDER_G * dt, powderPushV(p.push)), POWDER_VMAX);
+    // Locked to a piece: carried to its spot there, and that is all, while the
+    // piece holds it and nothing else is in the spot. Let go, it is a grain on
+    // the piece where the piece took it (if that is free), falling or sliding
+    // from there by the rules below.
+    if (p.lk) {
+      const holds = powderLockHolds(p), at = powderLockSpot(p);
+      const inField = at.x >= POWDER_EDGE_LO && at.x <= POWDER_EDGE_HI && at.z >= POWDER_EDGE_LO && at.z <= POWDER_EDGE_HI;
+      const clear = inField ? powderClear(at.x, at.y, at.z, p, stamp) : 2;
+      if (!clear) powderMove(p, at.x, at.y, at.z);
+      if (holds && !clear) { p.v = 0; continue; }
+      p.lk = null; p.lg = null;
+      p.v = 0;
+    }
     // Past the edge of the field (put there last frame, or made there): back to
     // the edge column. It is a grain there like any other this frame — inside
     // the ground there it comes up out of it, onto a grain it goes on top.
@@ -10170,7 +10258,8 @@ function catchPowder(dt) {
       p.v = 0;
       continue;
     }
-    if (powderUnderTop > y) { y = powderUnderTop; p.v = powderUnderG.v; }
+    const onG = powderUnderTop > y ? powderUnderG : null;
+    if (onG) { y = powderUnderTop; p.v = onG.v; }
     // The ground on the way: the first solid cell in its column its underside
     // comes to, all of them in turn, so it cannot pass through a thin one.
     // Already inside one (thrown into the ground) it comes up to the first free
@@ -10191,7 +10280,7 @@ function catchPowder(dt) {
     if (!inside && !p.thru && (restedChunks.length || fallingChunks.length)) {
       if (!filed) { powderCatchFile(reach); filed = true; }
       const near = powderCatchCells.get(debrisCellKey(Math.floor(px / CATCH_CELL), Math.floor(pz / CATCH_CELL)));
-      let mesh = null, t = Infinity, faceY = 0, faceAx = 0;
+      let mesh = null, t = Infinity, faceY = 0, faceAx = 0, faceB = null;
       powderPassedTurned.length = 0;
       for (;;) {
         mesh = null; t = Infinity;
@@ -10201,7 +10290,7 @@ function catchPowder(dt) {
           if (yEnd > c.maxY + reach || y0 < c.minY - reach || px < c.minX - reach || px > c.maxX + reach
               || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
           const tm = powderSweep(m, px, y0, pz, yEnd);
-          if (tm < t) { t = tm; mesh = m; faceAx = powderSweepAx; }
+          if (tm < t) { t = tm; mesh = m; faceAx = powderSweepAx; faceB = powderSweepB; }
         }
         if (!mesh || pieceSquare(mesh.quaternion)) break;
         // A piece off the world grid is just faces in the world (v310): the grain
@@ -10211,7 +10300,7 @@ function catchPowder(dt) {
         faceY = y0 + (yEnd - y0) * t;
         if (!faceAx) {
           const top = y0 + 2 * BLOCK, tu = powderSweep(mesh, px, top, pz, y0);
-          if (tu > 0 && tu < 1 && powderSweepAx) { faceY = top - 2 * BLOCK * tu; faceAx = powderSweepAx; }
+          if (tu > 0 && tu < 1 && powderSweepAx) { faceY = top - 2 * BLOCK * tu; faceAx = powderSweepAx; faceB = powderSweepB; }
         }
         if (faceAx) break;
         powderPassedTurned.push(mesh);
@@ -10222,9 +10311,8 @@ function catchPowder(dt) {
         // so (it is asked again every frame); steeper, it slides on down the face
         // by what is left of its fall this frame, at its pace, and falls on from
         // wherever that leaves it.
-        const k = Math.abs(faceAx) - 1, n = _faceN.set(0, 0, 0).setComponent(k, Math.sign(faceAx))
-          .applyQuaternion(mesh.getWorldQuaternion(_faceQ));
-        const ny = n.y, rest = ny > 1e-6 && Math.sqrt(Math.max(0, 1 - ny * ny)) <= reposeTan[p.mat] * ny + 1e-6;
+        const k = Math.abs(faceAx) - 1, n = _faceAt(mesh, k, Math.sign(faceAx));
+        const ny = n.y, rest = faceRests(n, p.mat);
         const r = Math.max(0, faceY - yEnd);
         if (!rest && r > 0) {
           const sx = px + r * ny * n.x + 1e-4 * n.x, sy = faceY + r * (ny * ny - 1) + 1e-4 * n.y, sz = pz + r * ny * n.z + 1e-4 * n.z;
@@ -10232,6 +10320,9 @@ function catchPowder(dt) {
         }
         powderMove(p, px, faceY, pz);
         p.v = 0;
+        // At rest there, it is the piece's to carry from now on (v311). A steep
+        // face's grain with its way down blocked only waits, as before.
+        if (rest && POWDER_RIDES && faceB) powderLock(p, mesh, faceB, faceAx);
         continue;
       }
       if (mesh) {
@@ -10294,6 +10385,8 @@ function catchPowder(dt) {
     }
     if (land === -Infinity) {
       p.pos.y = y;
+      // Come to rest on a grain the piece is carrying: carried too.
+      if (onG && onG.lk && y === onG.pos.y + BLOCK) { powderLockOn(p, onG); p.v = 0; }
       if (p.pos.y < FALL_KILL_Y) { leave(n); powderGrainFree(p); }
       continue;
     }
@@ -10392,6 +10485,9 @@ function recentreDebris(mesh, body) {
     tw += w;
   }
   if (tw > 0) c.multiplyScalar(1 / tw);
+  // Every block's own-frame spot moves by c: a grain locked to the piece keeps
+  // its spot in the frame as it was, and takes the running total off (v311).
+  (mesh.userData.powderShift ||= new THREE.Vector3()).add(c);
   stressRev++;   // the stress overlay's cubes sit at these positions
   stressLatEdit(mesh);
   const m4 = new THREE.Matrix4();

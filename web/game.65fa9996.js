@@ -13661,12 +13661,13 @@ function builtCutCells(i, j, l, ii, jj, ll) {
   if (a === b || !(MAT_STATS[a]?.powder || MAT_STATS[b]?.powder)) return false;
   return builtCut(a, isPlacedCell(i, j, l), b, isPlacedCell(ii, jj, ll));
 }
-// What the player has just built, as flat i, j, lvl: a non-powder block set
-// straight on powder of another material is not built into the ground but
-// stands on it as a piece of its own, free to sink in (sinkYield). Blocks of
-// the same build joined to it come with it, as one piece — a wall built on a
-// beach is one wall on the sand — and nothing else does, however it touches.
-// Whatever is left that touches such powder anywhere else has lost that join
+// What the player has just built, as flat i, j, lvl, taken as units: blocks of
+// the same build joined to each other (builtCut joins excepted) go together.
+// A unit that touches any structural block outside itself, face to face, is
+// built into the world and stays — a block on stone that also meets dirt is
+// on the stone. A unit that touches only powder, or nothing, stands as a piece
+// of its own, free to sink in (sinkYield) — sand on a sand pile too. Whatever
+// stays that touches powder of another material has lost that join
 // (builtCut), and comes down if nothing else holds it.
 function settleBuilt(cells) {
   const mine = new Map();
@@ -13675,25 +13676,37 @@ function settleBuilt(cells) {
     if (gravSolid(i, j, l)) mine.set(gravCell(i, j, l), q);
   }
   if (!mine.size) return;
-  const onPowder = (i, j, l) => {
-    const m = voxelAt(i, j, l), u = voxelAt(i, j, l - 1);
-    return !MAT_STATS[m]?.powder && u !== m && !!MAT_STATS[u]?.powder && !mine.has(gravCell(i, j, l - 1));
-  };
-  const taken = new Set();
+  // Every unit is judged on the world as built, before any of them leaves.
+  const seen = new Set(), leaving = [];
   for (const [k0, q0] of mine) {
-    if (taken.has(k0) || !onPowder(cells[q0], cells[q0 + 1], cells[q0 + 2])) continue;
+    if (seen.has(k0)) continue;
     const unit = new Map(), stack = [q0];
-    taken.add(k0);
+    seen.add(k0);
     while (stack.length) {
       const q = stack.pop(), i = cells[q], j = cells[q + 1], l = cells[q + 2], m = voxelAt(i, j, l);
       unit.set(gravCell(i, j, l), { i, j, lvl: l, m, color: terrainBlockColor(i, j, l, m), placed: 1 });
       for (const [di, dj, dl] of GRAV_DIRS) {
         const k = gravCell(i + di, j + dj, l + dl), nq = mine.get(k);
-        if (nq === undefined || taken.has(k) || builtCutCells(i, j, l, i + di, j + dj, l + dl)) continue;
-        taken.add(k);
+        if (nq === undefined || seen.has(k) || builtCutCells(i, j, l, i + di, j + dj, l + dl)) continue;
+        seen.add(k);
         stack.push(nq);
       }
     }
+    let held = false;
+    for (const b of unit.values()) {
+      for (const [di, dj, dl] of GRAV_DIRS) {
+        const ni = b.i + di, nj = b.j + dj, nl = b.lvl + dl;
+        if (ni < 0 || nj < 0 || ni >= GEN_N || nj >= GEN_N) continue;   // off the field is air
+        if (unit.has(gravCell(ni, nj, nl)) || !gravSolid(ni, nj, nl)) continue;
+        if (!MAT_STATS[voxelAt(ni, nj, nl)]?.powder) { held = true; break; }
+      }
+      if (held) break;
+    }
+    if (!held) leaving.push(unit);
+  }
+  const taken = new Set();
+  for (const unit of leaving) {
+    for (const k of unit.keys()) taken.add(k);
     // Set down where it was built, not thrown: adriftFrame's nudge of spin is
     // for ground that breaks away.
     for (const b of unit.values()) unmarkPlaced(b.i, b.j, b.lvl);

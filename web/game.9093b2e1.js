@@ -2629,13 +2629,33 @@ function fieldAt(i, j) {
 // The four the island was first built out of keep their ids, so nothing that
 // already reads a voxel has to change; the variants added after them extend the
 // list rather than reorder it. Each is a real material with weight, friction and
-// strength (MAT_STATS below) — the same rock in three states of decay, the same
-// earth wet, fine or packed hard.
+// strength (MAT_STATS below).
+//
+// The owner's v297 table is eleven materials. A material it kept keeps its id
+// (Rock is now called Stone, Hard Dirt Compact Dirt, Hard Clay Compact Clay);
+// Sandstone took Brittle Stone's id and Wood took Mud's. The ids of the rest
+// (Fine Mud, Stone Mud, Clay Mud, Wet Sand, Hard Sand) are retired: no row, never
+// generated, and a save from before v297 has its blocks of those (and of Mud)
+// turned into the nearest material left (MAT_REMAP_V297). N_MATS stays 16 so
+// AIR, the created materials' ids and every save keep the values they had.
 const SAND = 0, DIRT = 1, ROCK = 2, WATER = 3;
-const FINE_DIRT = 4, MUD = 5, HARD_DIRT = 6, FINE_MUD = 7;
-const STONE_DUST = 8, STONE_MUD = 9, BRITTLE_STONE = 10;
-const CLAY = 11, CLAY_MUD = 12, HARD_CLAY = 13;
+const STONE = ROCK;
+const FINE_DIRT = 4, WOOD = 5, COMPACT_DIRT = 6;
+const STONE_DUST = 8, SANDSTONE = 10;
+const CLAY = 11, COMPACT_CLAY = 13;
 const N_MATS = 16;
+// Old id -> id, for a save from before v297 (one without matTable): Mud, Fine
+// Mud -> Compact Dirt (packed earth); Stone Mud, Wet Sand, Hard Sand ->
+// Sandstone (the one solid left of the stone and sand families besides Stone);
+// Clay Mud -> Compact Clay. Brittle Stone is already Sandstone's id.
+const MAT_TABLE_VER = 297;
+const MAT_REMAP_V297 = new Uint8Array(256).map((_, i) => i);
+MAT_REMAP_V297[5] = COMPACT_DIRT;    // MUD
+MAT_REMAP_V297[7] = COMPACT_DIRT;    // FINE_MUD
+MAT_REMAP_V297[9] = SANDSTONE;       // STONE_MUD
+MAT_REMAP_V297[12] = COMPACT_CLAY;   // CLAY_MUD
+MAT_REMAP_V297[14] = SANDSTONE;      // WET_SAND
+MAT_REMAP_V297[15] = SANDSTONE;      // HARD_SAND
 // Not a terrain material: the value the voxel store below uses for a block that
 // is not there. It sorts after the built-in ones.
 const AIR = N_MATS;
@@ -2685,7 +2705,7 @@ function matReposeSet(m, angle) {
     reposeLim[m * REPOSE_REACH_MAX + k - 1] = Math.max(1, Math.min(65535, Math.ceil(k * t - 1e-9)));
   }
   reposeReachAll = 1;
-  for (let id = CUSTOM_MAT0; id < MAT_ID_LIMIT; id++) if (reposeReach[id] > reposeReachAll) reposeReachAll = reposeReach[id];
+  for (let id = 0; id < MAT_ID_LIMIT; id++) if (reposeReach[id] > reposeReachAll) reposeReachAll = reposeReach[id];
 }
 // Transparency: matClear marks the ids drawn see-through (any transparency
 // above 0). A see-through block's own faces go in its chunk's see-through draw,
@@ -2716,29 +2736,45 @@ let clearCount = 0;
 // by the same factor (x100), so the beams' stiffness relative to each other,
 // and with it how a load spreads through a structure, is what it was; only
 // the margin before crushing grew.
-// Water is the one entry with none — it is a block in the store but it is not a
-// thing you can carry.
+// A powder has no compression or pull (it never holds a load as a solid: the
+// stress solver passes it by), only its place angle — the slope its heaps stand
+// at — and friction. A solid has no angle.
+// Water is the one entry with no row — it is a block in the store but it is not
+// a thing you can carry, and nothing in the sim reads it as a material yet. Its
+// numbers are WATER_STATS, below: the panel and Copy Stats show them, and its
+// transparency is drawn.
+// The owner's table (v297), as given.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 2.2,   friction: 1, strength: 50,      pull: 0.5,  powder: true  },  // SAND
-  { name: 'Dirt',          weight: 2,     friction: 1, strength: 100000,  pull: 50,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 6,     friction: 1, strength: 1500000, pull: 5000, powder: false },  // ROCK
-  null,                                                                           // WATER
-  { name: 'Fine Dirt',     weight: 2,     friction: 1, strength: 50,      pull: 0.5,  powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 4,     friction: 1, strength: 100000,  pull: 70,   powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 2,     friction: 1, strength: 100000,  pull: 100,  powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 4,     friction: 1, strength: 7000,    pull: 70,   powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 5,     friction: 1, strength: 100,     pull: 1,    powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 6,     friction: 1, strength: 100000,  pull: 150,  powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 5,     friction: 1, strength: 500000,  pull: 2500, powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 2.4,   friction: 1, strength: 120,     pull: 1.2,  powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 4.4,   friction: 1, strength: 100000,  pull: 100,  powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 2.4,   friction: 1, strength: 200000,  pull: 1000, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 4.2,   friction: 1, strength: 100000,  pull: 0.8,  powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 2.2,   friction: 1, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
+  { name: 'Sand',          weight: 12.8,  friction: 5.8, angle: 45, powder: true  },                 // SAND
+  { name: 'Dirt',          weight: 9.7,   friction: 5,   angle: 50, powder: true  },                 // DIRT
+  { name: 'Stone',         weight: 20,    friction: 6.5, strength: 600000, pull: 30000,  powder: false },  // STONE
+  null,                                                                                         // WATER
+  { name: 'Fine Dirt',     weight: 9.7,   friction: 5,   angle: 45, powder: true  },                 // FINE_DIRT
+  { name: 'Wood',          weight: 4.5,   friction: 3.3, strength: 170000, pull: 450000, powder: false },  // WOOD
+  { name: 'Compact Dirt',  weight: 13,    friction: 5,   strength: 6000,   pull: 300,    powder: false },  // COMPACT_DIRT
+  null,                                                                                         // (retired: Fine Mud)
+  { name: 'Stone Dust',    weight: 12.8,  friction: 6.5, angle: 45, powder: true  },                 // STONE_DUST
+  null,                                                                                         // (retired: Stone Mud)
+  { name: 'Sandstone',     weight: 18.6,  friction: 5,   strength: 400000, pull: 17000,  powder: false },  // SANDSTONE
+  { name: 'Clay',          weight: 12.8,  friction: 5,   angle: 50, powder: true  },                 // CLAY
+  null,                                                                                         // (retired: Clay Mud)
+  { name: 'Compact Clay',  weight: 13.6,  friction: 5,   strength: 81000,  pull: 1500,   powder: false },  // COMPACT_CLAY
+  null,                                                                                         // (retired: Wet Sand)
+  null,                                                                                         // (retired: Hard Sand)
 ];
-for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
+const WATER_STATS = { name: 'Water', weight: 8, friction: 0, angle: 0, powder: true, transparency: 75 };
+// The order the owner's table lists them in: the Materials panel's.
+const MAT_ORDER = [DIRT, FINE_DIRT, COMPACT_DIRT, STONE, STONE_DUST, CLAY, COMPACT_CLAY, SAND, SANDSTONE, WATER, WOOD];
+// What the stress solver's beams take for a powder's stiffness, which has no
+// strength of its own now: what Sand's was before v297, so a beam into powder
+// is as soft as it always was.
+const POWDER_STIFF = 50;
+for (const st of MAT_STATS) if (st && !st.powder && !(st.pull > 0)) st.pull = st.strength;
 // AIR's row; the created materials' are added by matTablesGrow.
 MAT_STATS.push(null);
+// A built-in powder's own place angle (v297: Dirt and Clay 50, the rest 45 —
+// 45 goes down sand's own test, as it always did).
+for (let m = 0; m < N_MATS; m++) if (MAT_STATS[m]?.powder) matReposeSet(m, MAT_STATS[m].angle);
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -2782,7 +2818,7 @@ function pickMaterial(h, slope, x, z) {
   // Anything you could not stand on. Most of it is sound rock; the rest is the
   // crumbling face of it, which is softer to dig and lighter to carry.
   if (slope > 1.05 + n * 0.30) {
-    return v > 0.45 ? BRITTLE_STONE : (v < -0.55 ? STONE_DUST : ROCK);
+    return v > 0.45 ? SANDSTONE : (v < -0.55 ? STONE_DUST : ROCK);
   }
   if (h < 1.2 + n * 0.5) return SAND;              // the beach, up to knee height
   // Just above the tide line the ground never dries out, so the damp variants
@@ -2797,21 +2833,27 @@ function pickMaterial(h, slope, x, z) {
 // to get harder the deeper it goes, so the lower half of the soil under any
 // column is the packed or waterlogged version of whatever caps it. Indexed by
 // material id; WATER's entry is never read (a flooded column's bed is sand).
+// v297: the same bands as before with each old material put through
+// MAT_REMAP_V297, so a generated world is the same ids it always was (Brittle
+// Stone's are Sandstone's now, Hard Dirt's Compact Dirt's, Hard Clay's Compact
+// Clay's).
 const DEEP_MAT = [
-  DIRT,           // SAND — wet sand under the beach
-  HARD_DIRT,      // DIRT
+  DIRT,           // SAND — packed under the beach
+  COMPACT_DIRT,   // DIRT
   ROCK,           // ROCK
   WATER,          // WATER
   DIRT,           // FINE_DIRT
-  FINE_MUD,       // MUD
-  BRITTLE_STONE,  // HARD_DIRT
-  HARD_DIRT,      // FINE_MUD
-  BRITTLE_STONE,  // STONE_DUST
-  ROCK,           // STONE_MUD
-  ROCK,           // BRITTLE_STONE
-  HARD_CLAY,      // CLAY
-  HARD_CLAY,      // CLAY_MUD
-  BRITTLE_STONE,  // HARD_CLAY
+  WOOD,           // WOOD (never generated)
+  SANDSTONE,      // COMPACT_DIRT
+  COMPACT_DIRT,   // (retired)
+  SANDSTONE,      // STONE_DUST
+  ROCK,           // (retired)
+  ROCK,           // SANDSTONE
+  COMPACT_CLAY,   // CLAY
+  COMPACT_CLAY,   // (retired)
+  SANDSTONE,      // COMPACT_CLAY
+  ROCK,           // (retired)
+  ROCK,           // (retired)
 ];
 
 {
@@ -3398,20 +3440,21 @@ const TERRAIN_MATS = [
   // The earth family. Wet ones are a touch smoother — damp ground catches a
   // little more light than dust does.
   mat(0x9b7a52, 0.99, 0.00, { envMapIntensity: 0.30 }),   // FINE_DIRT
-  mat(0x6b5a3e, 0.88, 0.00, { envMapIntensity: 0.42 }),   // MUD
-  mat(0x7a5c38, 0.96, 0.00, { envMapIntensity: 0.34 }),   // HARD_DIRT
-  mat(0x5c4a32, 0.86, 0.00, { envMapIntensity: 0.44 }),   // FINE_MUD
+  // Wood (v297, in Mud's old slot): a warm mid brown, redder than any earth.
+  mat(0x8a5a32, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WOOD
+  mat(0x7a5c38, 0.96, 0.00, { envMapIntensity: 0.34 }),   // COMPACT_DIRT
+  mat(0x5c4a32, 0.86, 0.00, { envMapIntensity: 0.44 }),   // (retired: FINE_MUD)
   // The stone family, all of it a shade of the same grey as ROCK.
   mat(0xa0a8b0, 0.98, 0.00, { envMapIntensity: 0.40 }),   // STONE_DUST
-  mat(0x6a7078, 0.85, 0.02, { envMapIntensity: 0.50 }),   // STONE_MUD
-  mat(0x909898, 0.94, 0.01, { envMapIntensity: 0.50 }),   // BRITTLE_STONE
+  mat(0x6a7078, 0.85, 0.02, { envMapIntensity: 0.50 }),   // (retired: STONE_MUD)
+  // Sandstone (v297, in Brittle Stone's slot): a sandy tan, darker than sand.
+  mat(0xc0a274, 0.94, 0.01, { envMapIntensity: 0.45 }),   // SANDSTONE
   // The clay family — tan, and the least rough of the dry materials.
   mat(0xa88060, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
-  mat(0x947858, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
-  mat(0xba8a64, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
-  // The sand family, either side of SAND: damp is darker, packed is warmer.
-  mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
-  mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
+  mat(0x947858, 0.86, 0.00, { envMapIntensity: 0.44 }),   // (retired: CLAY_MUD)
+  mat(0xba8a64, 0.90, 0.00, { envMapIntensity: 0.40 }),   // COMPACT_CLAY
+  mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // (retired: WET_SAND)
+  mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // (retired: HARD_SAND)
 ];
 // AIR's slot (never drawn); a created material's is added by matTablesGrow and
 // recoloured by customMatInstall — every table below is indexed by the same ids.
@@ -7032,13 +7075,16 @@ function renderView() {
 // ---------------------------------------------------------------------------
 const SHOVEL_REACH = 6.0;      // metres of reach from the eye
 const SHOVEL_CAP   = 64;       // blocks your hands hold
+// A retired id (v297) has no name: no material of it is left anywhere.
 const MAT_NAMES = [
-  'sand', 'dirt', 'rock', 'water',
-  'fine dirt', 'mud', 'hard dirt', 'fine mud',
-  'stone dust', 'stone mud', 'brittle stone',
-  'clay', 'clay mud', 'hard clay',
-  'wet sand', 'hard sand',
+  'sand', 'dirt', 'stone', 'water',
+  'fine dirt', 'wood', 'compact dirt', undefined,
+  'stone dust', undefined, 'sandstone',
+  'clay', undefined, 'compact clay',
+  undefined, undefined,
 ];
+// Their old names, for the Copy Stats tag of a retired row.
+const MAT_RETIRED = { 7: 'fine mud', 9: 'stone mud', 12: 'clay mud', 14: 'wet sand', 15: 'hard sand' };
 
 const shovel = {
   on: false,
@@ -9608,7 +9654,10 @@ function shedPowder() {
 }
 
 // Where the loose grains end up: the ground if there is ground under them, the
-// rubble if there is rubble, and nowhere at all if they have left the field.
+// rubble if there is rubble. None leaves the field sideways (v297): the field's
+// edge is a wall to a grain — one that would be past it (slid, rolled or shed
+// off a piece out there, or loaded so) is put back in the edge column, at the
+// height it is at, and falls on from there like any other (POWDER_EDGE_LO/HI).
 //
 // Each piece's blocks are put into the world with a box round them; a grain
 // outside a piece's box (grown by a block) cannot be within a block of any of
@@ -9880,13 +9929,16 @@ function powderAbove(x, y, z, self, stamp) {
 // piece on the way across. With nowhere to go it goes on top, as onto a slower
 // one. A grain at the pace of the one under it is riding it, and stays.
 const POWDER_SLIDE_V = 6, POWDER_SLIDE_DV = 2;
+// The field's edge columns' centres: a grain's x and z are held between them.
+const POWDER_EDGE_LO = -GEN_R + HALF_BLOCK, POWDER_EDGE_HI = GEN_R - HALF_BLOCK;
 const POWDER_SLIDE = [];
 for (let a = -2; a <= 2; a++) for (let b = -2; b <= 2; b++) if (a || b) POWDER_SLIDE.push([a, b, a * a + b * b]);
 POWDER_SLIDE.sort((u, w) => u[2] - w[2]);
 function powderSlide(p, x, y, z, pieces) {
   const i = colI(x), j = colJ(z), l0 = Math.floor((y - HALF_BLOCK) / BLOCK + 0.01), l1 = Math.floor((y + HALF_BLOCK) / BLOCK - 0.01);
   const ground = (ci, cj) => { for (let l = l0; l <= l1; l++) if (voxelAt(ci, cj, l) !== AIR) return true; return false; };
-  const blocked = (ci, cj) => ground(ci, cj) || (pieces && powderInPiece(colX(ci), y, colZ(cj)));
+  // Past the field's edge is a wall, as the ground is.
+  const blocked = (ci, cj) => ci < 0 || cj < 0 || ci >= GEN_N || cj >= GEN_N || ground(ci, cj) || (pieces && powderInPiece(colX(ci), y, colZ(cj)));
   // Equally near spots are tried from a random one on, so the stream spreads evenly.
   for (let g0 = 0; g0 < POWDER_SLIDE.length; ) {
     let g1 = g0;
@@ -9942,6 +9994,13 @@ function catchPowder(dt) {
     if (p.dn) p.d = p.dn.d;   // the grain under it went first and holds the stack's depth by now
     if (p.d > p.push) p.push = p.d;
     p.v = Math.min(Math.max(p.v + POWDER_G * dt, powderPushV(p.push)), POWDER_VMAX);
+    // Past the edge of the field (put there last frame, or made there): back to
+    // the edge column. It is a grain there like any other this frame — inside
+    // the ground there it comes up out of it, onto a grain it goes on top.
+    if (p.pos.x < POWDER_EDGE_LO || p.pos.x > POWDER_EDGE_HI || p.pos.z < POWDER_EDGE_LO || p.pos.z > POWDER_EDGE_HI) {
+      powderMove(p, Math.min(Math.max(p.pos.x, POWDER_EDGE_LO), POWDER_EDGE_HI), p.pos.y,
+                 Math.min(Math.max(p.pos.z, POWDER_EDGE_LO), POWDER_EDGE_HI));
+    }
     const px = p.pos.x, pz = p.pos.z, y0 = p.pos.y;
     let y = y0 - p.v * dt;
     // A grain under it that has moved: it comes down onto that and on at its
@@ -11109,7 +11168,7 @@ function editBlock(i, j, lvl, m) {
 // falls as whatever it already was.
 const matIndexByName = (name) => {
   const n = name.trim().toLowerCase();
-  return MAT_NAMES.indexOf(n === 'stone' ? 'rock' : n);
+  return n ? MAT_NAMES.indexOf(n) : -1;
 };
 
 function resolveBreakMat(m) {
@@ -11872,6 +11931,9 @@ function matAngleSet(m, angle) {
 function customMatsStore() {
   try { localStorage.setItem(CUSTOM_MATS_KEY, JSON.stringify(customMatDefs())); } catch (e) {}
 }
+// Water's transparency (v297, the owner's 75): the one number of WATER_STATS
+// the game draws. Put in before the created materials, as theirs are.
+matClearSet(WATER, WATER_STATS.transparency);
 try {
   const saved = JSON.parse(localStorage.getItem(CUSTOM_MATS_KEY) || '[]');
   if (Array.isArray(saved)) for (const d of saved) { const def = customMatDef(d); if (def) customMatInstall(def); }
@@ -11951,33 +12013,39 @@ function frictionWake() {
 }
 
 function buildMatList() {
-  const ids = [];
-  for (let i = 0; i < N_MATS; i++) ids.push(i);
-  ids.push(...customMatIds());
+  // The built-in ones in the owner's table's order (retired ids have no row),
+  // then the created ones.
+  const ids = [...MAT_ORDER, ...customMatIds()];
   matListEl.innerHTML = ids.map((i) => {
     // getHexString() converts the linear-space colour back to the sRGB the browser
     // wants, so the swatch matches what the cubes actually render as.
     const hex = '#' + TERRAIN_MATS[i].color.getHexString();
     const st = MAT_STATS[i];
-    const name = st ? escapeHtml(st.name) : titleCase(MAT_NAMES[i]);
-    // Full width now, so the stats spell themselves out on one line.
+    const name = st ? escapeHtml(st.name) : i === WATER ? WATER_STATS.name : titleCase(MAT_NAMES[i]);
+    const strField = (key) => `<input class="mat-str" data-mat="${i}" data-key="${key}" type="text" inputmode="decimal" autocomplete="off" value="${st[key]}">`;
+    // Full width now, so the stats spell themselves out on one line. A built-in
+    // powder has no compression or pull (a dash, as in the owner's table); a
+    // created one keeps the fields it was made with.
     const stats = st
-      ? `<span>Weight: ${st.weight} &middot; Friction: `
-        + `<input class="mat-str" data-mat="${i}" data-key="friction" type="text" inputmode="decimal" autocomplete="off" value="${st.friction}">`
-        + ` &middot; Compression: `
-        + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
-        + ` &middot; Pull: `
-        + `<input class="mat-str" data-mat="${i}" data-key="pull" type="text" inputmode="decimal" autocomplete="off" value="${st.pull}">`
+      ? `<span>Weight: ${st.weight} &middot; Friction: ${strField('friction')}`
+        + ` &middot; Compression: ${st.strength != null ? strField('strength') : '-'}`
+        + ` &middot; Pull: ${st.pull != null ? strField('pull') : '-'}`
         + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}`
-        // A built-in powder holds sand's 45 degrees, and is not to be changed.
+        // A built-in powder's angle is the table's, and is not to be changed.
         + (st.powder ? ' &middot; Place angle: ' + (isCustomMat(i)
           ? `<input class="mat-str mat-par" data-mat="${i}" data-key="angle" type="text" inputmode="decimal" autocomplete="off" value="${st.angle}">`
-          : MAT_ANGLE_STD) : '')
+          : st.angle) : '')
         + (isCustomMat(i)
           ? ` &middot; Transparency: <input class="mat-str mat-par" data-mat="${i}" data-key="transparency" type="text" inputmode="decimal" autocomplete="off" value="${st.transparency}">`
           : '')
         + '</span>'
-      : '<span>no stats &mdash; not carryable</span>';
+      // Water: its numbers, read only — not carryable, and only the
+      // transparency is used yet.
+      : i === WATER
+        ? `<span>Weight: ${WATER_STATS.weight} &middot; Friction: ${WATER_STATS.friction} &middot; Compression: - &middot; Pull: -`
+          + ` &middot; Powder: ${WATER_STATS.powder ? 'Yes' : 'No'} &middot; Place angle: ${WATER_STATS.angle}`
+          + ` &middot; Transparency: ${WATER_STATS.transparency} &middot; not carryable</span>`
+        : '<span>no stats &mdash; not carryable</span>';
     return '<div class="mat-row">'
          + `<div class="mat-sw" style="background:${hex}"></div>`
          + `<div class="mat-txt"><b>${name}</b>${stats}</div>`
@@ -12073,15 +12141,20 @@ mnPowder.addEventListener('change', () => { document.getElementById('mn-angle-ro
 // The whole table, laid out as the MAT_STATS source is, so it pastes straight back.
 function matStatsSource() {
   const rows = MAT_STATS.slice(0, N_MATS).map((st, i) => {
-    const tag = '  // ' + MAT_NAMES[i].toUpperCase().replace(/ /g, '_');
+    const tag = '  // ' + (MAT_NAMES[i] ? MAT_NAMES[i].toUpperCase().replace(/ /g, '_') : `(retired: ${MAT_RETIRED[i] || i})`);
     if (!st) return '  null,'.padEnd(80) + tag;
+    // A powder row has its angle where a solid has its strength and pull.
+    const tail = st.powder && st.strength == null
+      ? `angle: ${(st.angle + ',').padEnd(4)}`
+      : `strength: ${(st.strength + ',').padEnd(9)}pull: ${(st.pull + ',').padEnd(8)}`;
     return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
-         + `friction: ${(st.friction + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(9)}`
-         + `pull: ${(st.pull + ',').padEnd(6)}powder: ${String(st.powder).padEnd(6)}},` + tag;
+         + `friction: ${(st.friction + ',').padEnd(5)}${tail}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
+  const W = WATER_STATS;
+  const water = `const WATER_STATS = { name: '${W.name}', weight: ${W.weight}, friction: ${W.friction}, angle: ${W.angle}, powder: ${W.powder}, transparency: ${W.transparency} };`;
   // The created materials after it, as their own list: id, colour and stats.
   const made = customMatDefs().map((d) => '  ' + JSON.stringify(d).replace(/"(\w+)":/g, '$1: ').replace(/,(?=\w+: )/g, ', ') + ',');
-  return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n'
+  return 'const MAT_STATS = [\n' + rows.join('\n') + '\n];\n' + water + '\n'
     + (made.length ? '// Created in game\nconst CUSTOM_MATS = [\n' + made.join('\n') + '\n];\n' : '');
 }
 // iOS only lets a page write the clipboard inside the tap itself, so this is a
@@ -12234,22 +12307,22 @@ const CHART_COLS = [
   { key: 'break',    label: 'Break', sub: 'If empty block breaks' },
   { key: 'compress', label: 'Compress' },
 ];
+// v297: one row per material of the owner's table. Renamed rows kept their
+// cells (Hard dirt is Compact dirt, Hard clay Compact clay); Sandstone takes
+// Hard sand's (it breaks to Sand), Wood has none yet. A cell that named a
+// material the table dropped (the muds, Wet sand, Hard sand, Brittle stone) is
+// empty: that change has nothing to become.
 const MAT_CHART = [
-  { mat: 'Dirt',          dry: '',              water: 'Mud',        rain: 'Mud',        break: '50% Fine dirt, 50% Dirt',  compress: '' },
-  { mat: 'Mud',           dry: 'Dirt',          water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Fine dirt',     dry: '',              water: 'Fine mud',   rain: 'Fine mud',   break: '',                         compress: '' },
-  { mat: 'Hard dirt',     dry: '',              water: 'Fine mud',   rain: '',           break: 'Dirt',                     compress: '' },
-  { mat: 'Fine mud',      dry: 'Hard dirt',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Dirt',          dry: '',              water: '',           rain: '',           break: '50% Fine dirt, 50% Dirt',  compress: '' },
+  { mat: 'Fine dirt',     dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Compact dirt',  dry: '',              water: '',           rain: '',           break: 'Dirt',                     compress: '' },
   { mat: 'Stone',         dry: '',              water: '',           rain: '',           break: '50% Stone, 50% Stone dust',compress: '' },
-  { mat: 'Stone dust',    dry: '',              water: 'Stone mud',  rain: 'Stone mud',  break: '',                         compress: '' },
-  { mat: 'Stone mud',     dry: 'Brittle stone', water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Brittle stone', dry: '',              water: '',           rain: '',           break: 'Stone dust',               compress: '' },
-  { mat: 'Clay',          dry: '',              water: 'Clay mud',   rain: 'Clay mud',   break: '',                         compress: '' },
-  { mat: 'Clay mud',      dry: 'Hard clay',     water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Hard clay',     dry: '',              water: '',           rain: '',           break: 'Clay',                     compress: '' },
-  { mat: 'Sand',          dry: '',              water: 'Wet sand',   rain: 'Wet sand',   break: '',                         compress: '' },
-  { mat: 'Wet sand',      dry: 'Hard sand',     water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Hard sand',     dry: '',              water: 'Wet sand',   rain: '',           break: 'Sand',                     compress: '' },
+  { mat: 'Stone dust',    dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Clay',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Compact clay',  dry: '',              water: '',           rain: '',           break: 'Clay',                     compress: '' },
+  { mat: 'Sand',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Sandstone',     dry: '',              water: '',           rain: '',           break: 'Sand',                     compress: '' },
+  { mat: 'Wood',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
 ];
 
 // A created material has no row of its own in MAT_CHART, so it shows with every
@@ -14819,8 +14892,11 @@ function stressMix(h, v) {
   return h ^ (h >>> 15);
 }
 
+// A beam end's stiffness: the material's strength, or for a powder with none of
+// its own (the built-in ones since v297) what sand's was.
+const matStiff = (m) => { const st = MAT_STATS[m]; return st ? (st.strength ?? (st.powder ? POWDER_STIFF : 0)) : 0; };
 function stressAddEdge(a, b, ax, ma, mb) {
-  const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2;
+  const EA = (matStiff(ma) + matStiff(mb)) / 2;
   stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA; stEG[stNE] = -1; stEN0[stNE] = 0;
   stNE++;
 }
@@ -16127,6 +16203,8 @@ const STRESS_PENDING = 0.35;
 function stressOver(n) {
   const st = MAT_STATS[stCur.mat[n]];
   if (!st) return 0;
+  // A powder without strengths (v297's built-in ones) is never over them.
+  if (st.powder && !(st.strength > 0)) return 0;
   return Math.max(stCur.push[n] / st.strength, stCur.pull[n] / st.pull);
 }
 // A node's place on the ramp, -1 while it is not solved yet.
@@ -16973,6 +17051,9 @@ function collectWorldMeta() {
 
   return {
     version: SAVE_VERSION,
+    // The material table its ids are (v297's): a save without it is from
+    // before, and its retired ids are mapped on load (remapOldSaveMats).
+    matTable: MAT_TABLE_VER,
     timestamp: Date.now(),
     playerState,
     cameraState,
@@ -17599,6 +17680,7 @@ async function applyWorldState(s) {
     console.warn('Save version mismatch or invalid save');
     return false;
   }
+  if (!(s.matTable >= MAT_TABLE_VER)) remapOldSaveMats(s);
   const split = underMenu();
   let changed;
   storeHold = split;
@@ -17615,6 +17697,24 @@ async function applyWorldState(s) {
   await applyWorldRebuild(split, changed);
   await restoreSavedPieces(s.debrisState, split);
   return true;
+}
+// A save from before the v297 table: every material id it holds — the store,
+// the column records, the pieces, the grains in the air, the hands and the
+// placer — through MAT_REMAP_V297, before anything reads them. Ids it keeps
+// (and AIR, and the created materials') map to themselves.
+function remapOldSaveMats(s) {
+  const R = MAT_REMAP_V297;
+  const all = (a) => { if (a) for (let n = 0; n < a.length; n++) a[n] = R[a[n]]; };
+  const vs = s.voxelStore;
+  if (vs) { all(vs.laid?.mat); all(vs.voxMat); all(vs.bedMat); all(vs.topMat); }
+  const ds = s.debrisState;
+  if (ds) {
+    for (const f of [...(ds.fallingChunks || []), ...(ds.restedChunks || [])]) for (const b of f.blocks || []) b.mat = R[b.mat];
+    for (const g of ds.powderFalling || []) g.mat = R[g.mat];
+  }
+  const ts = s.toolsState;
+  if (ts?.shovel?.held) all(ts.shovel.held);
+  if (ts?.placer && Number.isInteger(ts.placer.mat)) ts.placer.mat = R[ts.placer.mat];
 }
 // The chunks a load changes: those with a column their mesh (or collider) reads
 // — their own and MESH_MARGIN round them, as far as any job looks — that is not
@@ -17996,8 +18096,8 @@ window.hermes = {
   // AIR are the material values. Editing through setVoxel changes what the
   // world *is* but not what is drawn: the meshes and the collider are baked.
   SAND, DIRT, ROCK, WATER, AIR, SEA_LVL, VOX_FLOOR, SOIL_DEPTH, voxCount,
-  FINE_DIRT, MUD, HARD_DIRT, FINE_MUD, STONE_DUST, STONE_MUD, BRITTLE_STONE,
-  CLAY, CLAY_MUD, HARD_CLAY, MAT_NAMES, MAT_STATS,
+  STONE, FINE_DIRT, WOOD, COMPACT_DIRT, STONE_DUST, SANDSTONE,
+  CLAY, COMPACT_CLAY, MAT_NAMES, MAT_STATS, WATER_STATS, MAT_ORDER, MAT_REMAP_V297,
   voxelAt, voxelAtWorld, voxelColumn, setVoxel, solidTopAt,
   colI, colJ, colX, colZ, lvlOfY,
   // The island is bare by design — these are how you put something on it from

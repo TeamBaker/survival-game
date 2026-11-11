@@ -7932,7 +7932,7 @@ const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
   const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null, thru: false,
-    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0 };
+    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0, lq: -1, lr: -1 };
   g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1; g.thru = false; g.lk = null; g.lg = null;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
@@ -10138,6 +10138,7 @@ function powderLockKeep(g, mesh) {
   const S = mesh.userData.powderShift;
   if (S) g.lp.add(S);
   g.lk = mesh; g.ls = ++powderLockSeq;
+  g.lq = -1;   // freshly at rest: its first look round is owed now, whatever else is quiet
 }
 function powderLock(g, mesh, b, ax) {
   powderLockKeep(g, mesh);
@@ -10184,6 +10185,117 @@ function powderLockCells(mesh) {
   ud.lockCellsAt = powderStamp; ud.lockCellsRev = stressRev;
   return S;
 }
+
+// ----- powder on a piece is still powder (v312) -----
+// A grain riding a piece is carried, but it is a grain too: each frame it asks
+// the question a grain on the ground asks when it lands (powderRoll) — is there
+// a side to roll off to — and rolls there if so, to fall on from that spot as
+// any grain does and come to rest (and ride) wherever it lands. A pile poured
+// on a piece so spreads to the material's angle and spills off the edges, and
+// a grain the one under it rolled out from under (its lg let go) falls in turn.
+// The question goes by world gravity, as the rest does since v309: the four
+// sides are world-level steps of a block from where the grain is, a cell
+// "free" if no grain, ground or piece is in a grain's cube there. Off, and a
+// riding grain stays put until the face lets it go, as v311 had it.
+const POWDER_FLOWS = true;
+// Which way first, when several are open: a hash rather than Math.random, so a
+// pile on a piece does not shift the draw every ground grain after it makes.
+const powderRideSide = (p) => Math.imul(p.ls ^ (powderStamp * 40503), 0x9E3779B1) >>> 30;
+// Asked again only when something could have changed the answer: the piece
+// moved, any grain moved, landed, rolled or let go last frame (powderRideStir),
+// or a piece was edited (stressRev). A still pile on a still piece costs one
+// compare per grain. Every POWDER_RIDE_RECHECK frames each asks anyway, for
+// what none of those see (the ground dug beside a piece).
+let powderRideStir = 0, powderRideStirNext = false;
+const POWDER_RIDE_RECHECK = 30;
+function powderRideDue(p, stamp) {
+  const ud = p.lk.userData;
+  if (ud.ridePoseAt !== stamp) {
+    const e = p.lk.matrixWorld.elements, q = ud.ridePose ||= new Float64Array(16);
+    let moved = false;
+    for (let k = 0; k < 16; k++) if (Math.abs(e[k] - q[k]) > 1e-5) { moved = true; q[k] = e[k]; }
+    ud.ridePoseAt = stamp; ud.rideMoved = moved;
+  }
+  if (!ud.rideMoved && p.lq === powderRideStir && p.lr === stressRev && (p.ls + stamp) % POWDER_RIDE_RECHECK) return false;
+  p.lq = powderRideStir; p.lr = stressRev;
+  return true;
+}
+// Whether a grain's cube at world x, y, z overlaps a block of `mesh`: the
+// powderSweep test, asked of the piece's filed steps (powderLockCells) — at
+// most the 8 cells round the point — instead of every block.
+const _rideL = new THREE.Vector3();
+const POWDER_GAP_B = POWDER_GAP / BLOCK;
+function powderRideInOwn(mesh, x, y, z) {
+  const cells = powderLockCells(mesh), o = mesh.userData.blocks[0].pos;
+  const c = mesh.worldToLocal(_rideL.set(x, y, z)).sub(o).divideScalar(BLOCK);
+  const fx = Math.floor(c.x), fy = Math.floor(c.y), fz = Math.floor(c.z);
+  for (let a = fx; a <= fx + 1; a++) {
+    if (Math.abs(c.x - a) >= POWDER_GAP_B) continue;
+    for (let b = fy; b <= fy + 1; b++) {
+      if (Math.abs(c.y - b) >= POWDER_GAP_B) continue;
+      for (let d = fz; d <= fz + 1; d++) {
+        if (Math.abs(c.z - d) >= POWDER_GAP_B) continue;
+        if (cells.has(powderLockKey(_rideL.set(a, b, d)))) return true;
+      }
+    }
+  }
+  return false;
+}
+// Free for a riding grain to roll into: in the field, no grain, ground or piece
+// there. Asked a hair higher than the spot, so a cell that only touches what is
+// under it (a grain's own resting place, one over) counts as free, as a cell
+// over the ground does.
+const POWDER_RIDE_LIFT = 1e-3 * BLOCK;
+function powderRideFree(x, y, z, p) {
+  if (x < POWDER_EDGE_LO || x > POWDER_EDGE_HI || z < POWDER_EDGE_LO || z > POWDER_EDGE_HI) return false;
+  y += POWDER_RIDE_LIFT;
+  if (powderClear(x, y, z, p)) return false;
+  const own = p.lk;
+  if (powderRideInOwn(own, x, y, z)) return false;
+  const near = powderCatchCells.get(debrisCellKey(Math.floor(x / CATCH_CELL), Math.floor(z / CATCH_CELL)));
+  if (near) for (let e = 0; e < near.length; e += 2) {
+    const m = near[e], c = near[e + 1], r = 2 * BLOCK;
+    if (m === own || y > c.maxY + r || y < c.minY - r || x < c.minX - r || x > c.maxX + r || z < c.minZ - r || z > c.maxZ + r) continue;
+    if (powderSweep(m, x, y, z, y) === 0) return false;
+  }
+  return true;
+}
+// powderRoll's question for a riding grain p, cell for cell, with the free
+// cells above standing in for the ground's air: the world spot to roll to,
+// into _rideTo, or null to stay. Angle 0 stops at its reach (no far look on a
+// piece: question.md).
+const _rideTo = new THREE.Vector3();
+function powderRideRoll(p) {
+  const m = p.mat, R = reposeReach[m];
+  if (!R) return null;
+  const x = p.pos.x, y = p.pos.y, z = p.pos.z, s0 = powderRideSide(p);
+  if (reposeStd[m]) {
+    for (let s = 0; s < 4; s++) {
+      const [u, v] = POWDER_SIDES[(s0 + s) & 3], sx = x + u * BLOCK, sz = z + v * BLOCK;
+      if (powderRideFree(sx, y, sz, p) && powderRideFree(sx, y - BLOCK, sz, p)) return _rideTo.set(sx, y, sz);
+    }
+    return null;
+  }
+  const L0 = m * REPOSE_REACH_MAX, L1 = reposeLim[L0];
+  let best = -1, bestK = R + 1;
+  for (let s = 0; s < 4; s++) {
+    const [u, v] = POWDER_SIDES[(s0 + s) & 3];
+    let dPrev = 0;
+    for (let k = 1; k < bestK; k++) {
+      const sx = x + u * k * BLOCK, sz = z + v * k * BLOCK;
+      if (!powderRideFree(sx, y, sz, p)) break;
+      const L = reposeLim[L0 + k - 1], cap = Math.max(L, dPrev + L1 + 1);
+      let d = 0;
+      while (d < cap && powderRideFree(sx, y - (d + 1) * BLOCK, sz, p)) d++;
+      if (k > 1 && d - dPrev > L1) break;
+      if (d >= L) { best = (s0 + s) & 3; bestK = k; break; }
+      dPrev = d;
+    }
+  }
+  if (best < 0) return null;
+  const [u, v] = POWDER_SIDES[best];
+  return _rideTo.set(x + u * BLOCK, y, z + v * BLOCK);
+}
 function catchPowder(dt) {
   let filed = false;   // the cells are filed on first need, and again after anything that may move or make pieces
   const reach = 2 * BLOCK;   // a grain's cube can touch a block of a turned piece from this far off across
@@ -10195,8 +10307,9 @@ function catchPowder(dt) {
   for (let n = 0; n < len; n++) ord.push(n);
   ord.sort((x, y) => a[x].pos.y - a[y].pos.y || y - x);
   const stamp = ++powderStamp;
+  if (powderRideStirNext) { powderRideStir++; powderRideStirNext = false; }
   let gone = 0;
-  const leave = (n) => { powderIdxDel(a[n]); a[n] = null; gone++; };
+  const leave = (n) => { powderIdxDel(a[n]); a[n] = null; gone++; powderRideStirNext = true; };
   // How deep the stack each grain is in, from where they all are before any
   // moves: highest first, a grain's depth from it up (d) is one more than that
   // of the grain sitting square on it, and the grain under it is noted (dn).
@@ -10223,10 +10336,24 @@ function catchPowder(dt) {
       const inField = at.x >= POWDER_EDGE_LO && at.x <= POWDER_EDGE_HI && at.z >= POWDER_EDGE_LO && at.z <= POWDER_EDGE_HI;
       const clear = inField ? powderClear(at.x, at.y, at.z, p, stamp) : 2;
       if (!clear) powderMove(p, at.x, at.y, at.z);
-      if (holds && !clear) { p.v = 0; continue; }
+      if (holds && !clear) {
+        p.v = 0;
+        // Held, it still rolls where a grain would (v312): off the side, it is
+        // let go there and falls on from it below, like a grain let go.
+        if (!POWDER_FLOWS || !powderRideDue(p, stamp)) continue;
+        if (!filed && (restedChunks.length || fallingChunks.length)) { powderCatchFile(reach); filed = true; }
+        const to = powderRideRoll(p);
+        if (!to) continue;
+        powderMove(p, to.x, to.y, to.z);
+      }
       p.lk = null; p.lg = null;
       p.v = 0;
     }
+    // A grain that moved since last frame (or is new, or was just let go — its
+    // lp is not its world point then) may have changed what a riding grain
+    // rests on; one parked still, waiting on a steep face, has not. lp is free
+    // to keep last frame's point while a grain is not locked.
+    if (!p.lp.equals(p.pos)) { powderRideStirNext = true; p.lp.copy(p.pos); }
     // Past the edge of the field (put there last frame, or made there): back to
     // the edge column. It is a grain there like any other this frame — inside
     // the ground there it comes up out of it, onto a grain it goes on top.

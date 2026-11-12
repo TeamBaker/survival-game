@@ -7932,7 +7932,7 @@ const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
   const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null, thru: false,
-    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0, lq: -1, lr: -1 };
+    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0, lq: -1, lr: -1, lw: false };
   g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1; g.thru = false; g.lk = null; g.lg = null;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
@@ -10233,7 +10233,7 @@ function powderPushBack(mesh, p, stamp) {
   }
   for (let b = 0; b < 6; b++) { const m = (lo + hi) / 2; if (powderInOwnLocal(mesh, _pushC.lerpVectors(A, B, m))) hi = m; else lo = m; }
   const at = mesh.localToWorld(_pushC.lerpVectors(A, B, lo));
-  if (powderInGround(at.x, at.y, at.z)) return false;
+  if (powderInGround(at.x, at.y, at.z) || powderInPiece(at.x, at.y, at.z)) return false;   // nor into another piece (v314)
   powderMove(p, at.x, at.y, at.z);
   return true;
 }
@@ -10265,11 +10265,11 @@ function powderDepen(mesh, p) {
     }
   }
   const rx = Math.round(u.x), ry = Math.round(u.y), rz = Math.round(u.z);
-  let best = Infinity, bx = 0, by = 0, bz = 0;
+  let best = Infinity, bestE = 2, bx = 0, by = 0, bz = 0;
   for (let a = rx - 1; a <= rx + 1; a++) for (let b = ry - 1; b <= ry + 1; b++) for (let c = rz - 1; c <= rz + 1; c++) {
     if (cells.has(powderLockKey(_depK.set(a, b, c)))) continue;
     const d = (a - u.x) ** 2 + (b - u.y) ** 2 + (c - u.z) ** 2;
-    if (d >= best) continue;
+    if (bestE === 0 && d >= best) continue;
     let side = true;
     for (let e = 0; e < _depIn.length && side; e += 3) {
       const sx = _depIn[e], sy = _depIn[e + 1], sz = _depIn[e + 2];
@@ -10278,7 +10278,15 @@ function powderDepen(mesh, p) {
     if (!side) continue;
     const w = mesh.localToWorld(_depW.set(a, b, c).multiplyScalar(BLOCK).add(o));
     if (powderInGround(w.x, w.y, w.z)) continue;
-    best = d; bx = a; by = b; bz = c;
+    // Nor into another piece lying against this one (v314): put out of each in
+    // turn, a grain wedged between two went back and forth every frame.
+    if (powderInPiece(w.x, w.y, w.z)) continue;
+    // A cell no grain is in before one that is: put in with another, a grain
+    // was put up on top of that one's whole stack, and from there rolled back
+    // down to here. A full box has only cells with grains in.
+    const e = powderGrainAt(w.x, w.y, w.z, p) ? 1 : 0;
+    if (e > bestE || (e === bestE && d >= best)) continue;
+    best = d; bestE = e; bx = a; by = b; bz = c;
   }
   if (best === Infinity) return false;
   const w = mesh.localToWorld(_depW.set(bx, by, bz).multiplyScalar(BLOCK).add(o));
@@ -10295,7 +10303,7 @@ function powderSolidCells(mesh) {
   ud.solidCellsAt = powderStamp; ud.solidCellsRev = stressRev;
   return S;
 }
-const powderOrder = [];
+const powderOrder = [], powderOrderLoose = [];
 let powderStamp = 0;
 const powderSpot = new THREE.Vector3();
 
@@ -10374,6 +10382,117 @@ function powderLockCells(mesh) {
   for (const b of lat) S.add(powderLockKey(_lockC.copy(b.pos).sub(o).divideScalar(BLOCK).round()));
   ud.lockCellsAt = powderStamp; ud.lockCellsRev = stressRev;
   return S;
+}
+
+// ----- a riding grain sits in the world's cells (v314) -----
+// Turned to the world since v309, a riding grain is placed by the world too:
+// of the world cells its carried spot (powderLockSpot) overlaps — at most
+// eight, those within a block of it on every axis — it sits in the nearest
+// that is free: in the field, no grain moved there this frame, no ground, the
+// cell's middle not inside a block of its own piece or of any other. So a grain
+// on a piece sits in the same cells a grain on the ground does, and steps from
+// one to the next as the piece carries its spot across, never more than its
+// own cube away from the spot. A grain stacked on a riding grain (lg) sits in
+// the cell straight over that one, by world gravity. The spot itself (lp) is
+// never moved, so the grain is back in the same cell whenever the piece is back
+// in the same pose. With no free cell it is let go, as with its spot taken.
+// While the piece is moving, a grain keeps the cell it is in for as long as
+// that cell is still free and its carried cube still overlaps it, so a piece
+// rocking or settling by less than a block does not flip grains to and fro
+// between two cells; once the piece is still, each grain goes to its nearest
+// (lw: the cell it is in was picked so).
+const _cellCand = [], _cellFrom = new THREE.Vector3();
+for (let n = 0; n < 8; n++) _cellCand.push([0, 0, 0, 0]);
+const _cellW = new THREE.Vector3();
+// Whether the middle of the world cell at x, y, z is inside a block of `mesh`.
+function powderCentreIn(mesh, x, y, z) {
+  const lat = mesh.userData.blocks;
+  if (mesh.parent !== debris || !lat?.length) return false;
+  mesh.updateWorldMatrix(true, false);
+  const c = mesh.worldToLocal(_cellW.set(x, y, z)).sub(lat[0].pos).divideScalar(BLOCK).round();
+  return powderLockCells(mesh).has(powderLockKey(c));
+}
+// The same, for `own` and every other piece filed near (powderCatchFile).
+function powderCentreInAny(x, y, z, own) {
+  if (powderCentreIn(own, x, y, z)) return true;
+  const near = powderCatchCells.get(debrisCellKey(Math.floor(x / CATCH_CELL), Math.floor(z / CATCH_CELL)));
+  if (near) for (let e = 0; e < near.length; e += 2) {
+    const m = near[e], c = near[e + 1];
+    if (m === own || y > c.maxY + BLOCK || y < c.minY - BLOCK || x < c.minX - BLOCK || x > c.maxX + BLOCK || z < c.minZ - BLOCK || z > c.maxZ + BLOCK) continue;
+    if (powderCentreIn(m, x, y, z)) return true;
+  }
+  return false;
+}
+// Whether the way from `from` (world) to the middle of the cell at x, y, z
+// stays out of the blocks of `mesh`: a grain is never put in a cell on the far
+// side of a wall from its spot — a tilted box's wall can lie between the spot
+// and a cell less than a block from it on every world axis.
+const _segL = new THREE.Vector3(), _segA = new THREE.Vector3(), _segK = new THREE.Vector3();
+function powderSegClear(mesh, from, x, y, z) {
+  const lat = mesh.userData.blocks;
+  if (mesh.parent !== debris || !lat?.length) return true;
+  mesh.updateWorldMatrix(true, false);
+  const cells = powderLockCells(mesh), o = lat[0].pos;
+  const a = mesh.worldToLocal(_segA.copy(from)).sub(o).divideScalar(BLOCK);
+  const b = mesh.worldToLocal(_segL.set(x, y, z)).sub(o).divideScalar(BLOCK);
+  const n = Math.max(1, Math.ceil(a.distanceTo(b) * 4));
+  for (let k = 1; k <= n; k++) {
+    if (cells.has(powderLockKey(_segK.lerpVectors(a, b, k / n).round()))) return false;
+  }
+  return true;
+}
+function powderCellFree(x, y, z, p, stamp, from) {
+  if (x < POWDER_EDGE_LO || x > POWDER_EDGE_HI || z < POWDER_EDGE_LO || z > POWDER_EDGE_HI) return false;
+  if (powderClear(x, y, z, p, stamp)) return false;
+  if (powderCentreInAny(x, y, z, p.lk)) return false;
+  return !from || powderSegClear(p.lk, from, x, y, z);
+}
+// The cell a locked grain p sits in this frame, into _lockAt, or null if none
+// is free. The pieces must be filed.
+function powderLockCell(p, stamp, keep) {
+  p.lw = true;
+  if (p.lg) {
+    const q = p.lg.pos;   // lower, so placed already this frame
+    return powderCellFree(q.x, q.y + BLOCK, q.z, p, stamp, q) ? _lockAt.set(q.x, q.y + BLOCK, q.z) : null;
+  }
+  const A = _cellFrom.copy(powderLockSpot(p));
+  if (keep) {
+    p.lw = false;
+    const g = p.pos;
+    if (Math.abs(g.x - A.x) < BLOCK && Math.abs(g.y - A.y) < BLOCK && Math.abs(g.z - A.z) < BLOCK
+        && powderCellFree(g.x, g.y, g.z, p, stamp, A)) return g;
+  }
+  const u = (A.x + GEN_R) / BLOCK - 0.5, v = A.y / BLOCK - 0.5, w = (A.z + GEN_R) / BLOCK - 0.5;
+  const i = Math.floor(u), l = Math.floor(v), k = Math.floor(w);
+  let n = 0;
+  for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) for (let c = 0; c < 2; c++) {
+    const e = _cellCand[n++];
+    e[0] = i + a; e[1] = l + b; e[2] = k + c;
+    e[3] = (u - i - a) * (u - i - a) + (v - l - b) * (v - l - b) + (w - k - c) * (w - k - c);
+  }
+  _cellCand.sort((x, y) => x[3] - y[3]);   // stable: equally near ones in a fixed order
+  // A cell no grain is in at all first: one another grain still sits in, not
+  // yet asked this frame, taken from it, two grains that both had it nearest
+  // took it from each other in turn every frame. Only with none such, as before.
+  for (let pass = 0; pass < 2; pass++) for (const e of _cellCand) {
+    const x = colX(e[0]), y = (e[1] + 0.5) * BLOCK, z = colZ(e[2]);
+    if (!pass && powderGrainAt(x, y, z, p)) continue;
+    if (powderCellFree(x, y, z, p, stamp, A)) return _lockAt.set(x, y, z);
+  }
+  // All taken: where the nearest is held by grains the same piece carries, it
+  // goes on top of them, as a grain coming down on a pile does, and rides
+  // stacked on the top one.
+  for (const e of _cellCand) {
+    const x = colX(e[0]), z = colZ(e[2]);
+    let y = (e[1] + 0.5) * BLOCK, g = powderGrainAt(x, y, z, p, 0, stamp), top = null;
+    while (g && g.lk === p.lk && Math.abs(g.pos.x - x) < 1e-9 && Math.abs(g.pos.z - z) < 1e-9) { top = g; y = g.pos.y + BLOCK; g = powderGrainAt(x, y, z, p, 0, stamp); }
+    if (!top) continue;
+    for (let q = top; q; q = q.lg) if (q === p) return null;   // never onto a stack standing on itself
+    if (!powderCellFree(x, y, z, p, stamp, top.pos)) return null;
+    p.lg = top; p.lgs = top.ls;
+    return _lockAt.set(x, y, z);
+  }
+  return null;
 }
 
 // ----- powder on a piece is still powder (v312) -----
@@ -10516,6 +10635,19 @@ function catchPowder(dt) {
     else p.d = 1;
     p.t = -stamp;
   }
+  // Grains a piece is carrying go before the rest (v314), lowest first still,
+  // so each is in its cell for the frame before any loose grain asks what is
+  // where: a loose grain going by keeps out of a carried one's cell instead of
+  // taking it first and shoving it out to a neighbour for a frame.
+  let carried = 0;
+  if (restedChunks.length || fallingChunks.length) for (let o = 0; o < len; o++) if (a[ord[o]].lk) carried++;
+  if (carried && carried < len) {
+    const tmp = powderOrderLoose;
+    tmp.length = 0;
+    let w = 0;
+    for (let o = 0; o < len; o++) { const n = ord[o]; if (a[n].lk) ord[w++] = n; else tmp.push(n); }
+    for (const n of tmp) ord[w++] = n;
+  }
   grains: for (let o = 0; o < len; o++) {
     const n = ord[o], p = a[n];
     p.t = stamp;
@@ -10527,16 +10659,35 @@ function catchPowder(dt) {
     // the piece where the piece took it (if that is free), falling or sliding
     // from there by the rules below.
     if (p.lk) {
-      const holds = powderLockHolds(p), at = powderLockSpot(p);
-      const inField = at.x >= POWDER_EDGE_LO && at.x <= POWDER_EDGE_HI && at.z >= POWDER_EDGE_LO && at.z <= POWDER_EDGE_HI;
-      const clear = inField ? powderClear(at.x, at.y, at.z, p, stamp) : 2;
-      if (!clear) powderMove(p, at.x, at.y, at.z);
-      if (holds && !clear) {
+      const holds = powderLockHolds(p), due = holds && powderRideDue(p, stamp);
+      // In the world cell it sits in (v314): kept while nothing that could
+      // change which cell that is has changed — the piece has not moved, no
+      // grain moved, no piece was edited — and the cell is still free, the one
+      // under it still under it; asked again otherwise.
+      let at = null;
+      const q = p.lg?.pos;
+      if (!due && holds && p.lw && !powderClear(p.pos.x, p.pos.y, p.pos.z, p, stamp)
+          && (!q || (q.x === p.pos.x && q.z === p.pos.z && q.y + BLOCK === p.pos.y))) at = p.pos;
+      else {
+        if (!filed && (restedChunks.length || fallingChunks.length)) { powderCatchFile(reach); filed = true; }
+        at = powderLockCell(p, stamp, holds && p.lk.userData.rideMoved);
+        // No world cell free for it (a full box turned off the grid has fewer
+        // cells inside it than grains): it is at the spot the piece carries it
+        // to, as v311 had every riding grain — never left where it sat last
+        // frame, which a turning wall may have passed — held there while the
+        // piece holds it, and asks for a cell again each frame.
+        if (!at) {
+          p.lw = false;
+          const A = powderLockSpot(p);
+          if (A.x >= POWDER_EDGE_LO && A.x <= POWDER_EDGE_HI && A.z >= POWDER_EDGE_LO && A.z <= POWDER_EDGE_HI && !powderInGround(A.x, A.y, A.z)) at = A;
+        }
+        if (at && !at.equals(p.pos)) { powderMove(p, at.x, at.y, at.z); powderRideStirNext = true; }
+      }
+      if (holds && at) {
         p.v = 0;
         // Held, it still rolls where a grain would (v312): off the side, it is
         // let go there and falls on from it below, like a grain let go.
-        if (!POWDER_FLOWS || !powderRideDue(p, stamp)) continue;
-        if (!filed && (restedChunks.length || fallingChunks.length)) { powderCatchFile(reach); filed = true; }
+        if (!POWDER_FLOWS || !due) continue;
         const to = powderRideRoll(p);
         if (!to) continue;
         powderMove(p, to.x, to.y, to.z);
@@ -10567,7 +10718,10 @@ function catchPowder(dt) {
     // own, either of them fast: off the side. Two grains of a stack go at the
     // same pace (the same push), so a stack holds together. From there it is a
     // grain falling like any other.
-    if (powderUnderTop > y && Math.max(powderUnderG.v, p.v) >= POWDER_SLIDE_V && Math.abs(powderUnderG.v - p.v) >= POWDER_SLIDE_DV) {
+    // A grain a piece is carrying is not going anywhere of its own (v314): one
+    // coming down onto it stops on it, as on the ground, rather than sliding
+    // off to the next carried grain and back every frame.
+    if (powderUnderTop > y && !powderUnderG.lk && Math.max(powderUnderG.v, p.v) >= POWDER_SLIDE_V && Math.abs(powderUnderG.v - p.v) >= POWDER_SLIDE_DV) {
       const pieces = restedChunks.length > 0 || fallingChunks.length > 0;
       if (pieces && !filed) { powderCatchFile(reach); filed = true; }
       const vq = powderUnderG.v;
@@ -10672,7 +10826,13 @@ function catchPowder(dt) {
         p.v = 0;
         // At rest there, it is the piece's to carry from now on (v311). A steep
         // face's grain with its way down blocked only waits, as before.
-        if (rest && POWDER_RIDES && faceB) powderLock(p, mesh, faceB, faceAx);
+        if (rest && POWDER_RIDES && faceB) {
+          powderLock(p, mesh, faceB, faceAx);
+          // Into the world cell it sits in from the first frame (v314); with
+          // none free it waits where it touched, as an unheld grain.
+          const at = powderLockCell(p, stamp);
+          if (at) powderMove(p, at.x, at.y, at.z); else p.lk = null;
+        }
         continue;
       }
       if (mesh) {
@@ -10739,7 +10899,12 @@ function catchPowder(dt) {
     if (land === -Infinity) {
       p.pos.y = y;
       // Come to rest on a grain the piece is carrying: carried too.
-      if (onG && onG.lk && y === onG.pos.y + BLOCK) { powderLockOn(p, onG); p.v = 0; }
+      if (onG && onG.lk && y === onG.pos.y + BLOCK) {
+        powderLockOn(p, onG); p.v = 0;
+        if (!filed) { powderCatchFile(reach); filed = true; }
+        const at = powderLockCell(p, stamp);   // the cell over the one it is on (v314)
+        if (at) powderMove(p, at.x, at.y, at.z); else { p.lk = null; p.lg = null; }
+      }
       if (p.pos.y < FALL_KILL_Y) { leave(n); powderGrainFree(p); }
       continue;
     }

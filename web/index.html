@@ -6,7 +6,7 @@
 // Build version — bump after every change. The server sends index.html with
 // Cache-Control: no-cache + ETag, so the browser revalidates on every load and
 // any edit to this file (this bump included) is picked up on the next visit.
-window.GAME_VERSION = 295;
+window.GAME_VERSION = 314;
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -531,6 +531,14 @@ window.GAME_VERSION = 295;
     touch-action: manipulation;
   }
   .mat-del { flex: 0 0 auto; margin-left: auto; color: #f0b0a6; border-color: rgba(224, 106, 90, 0.5); }
+  /* A row is its read-out; Edit opens its settings under it, one row at a time. */
+  .mat-open { flex: 0 0 auto; margin-left: auto; }
+  .mat-open.on { color: #0b1622; background: rgba(150, 205, 255, 0.9); }
+  .mat-open + .mat-del { margin-left: 0; }
+  .mat-edit { margin: -4px 0 16px 42px; padding: 10px 0 2px 12px; border-left: 2px solid rgba(150, 195, 245, 0.25); }
+  .mat-edit .mat-str.moved { border-color: #e0c25a; }
+  .mat-note { margin: 0 0 10px; color: #62819f; font-size: 11px; }
+  .mat-reset { margin-bottom: 8px; }
   #mn-msg { min-height: 1.4em; margin-top: 6px; color: #9ecbff; font-size: 11px; }
   #mat-foot { margin-top: 14px; color: #62819f; font-size: 11px; }
   #mat-foot b { color: #9ecbff; }
@@ -560,6 +568,11 @@ window.GAME_VERSION = 295;
 
   @media (max-width: 620px) {
     #materials-ui { font-size: 12px; }
+    .mat-edit { margin-left: 0; }
+    /* Closed rows a little tighter, so the whole list is one phone screen. */
+    .mat-row { margin-bottom: 6px; }
+    .mat-txt span { line-height: 1.3; }
+    .mat-open { padding: 0 12px; }
     #btn-materials { top: calc(152px + env(safe-area-inset-top)); font-size: 10px; padding: 7px 12px; }
   }
 
@@ -1542,7 +1555,7 @@ window.GAME_VERSION = 295;
 <button id="btn-volume" class="ui-el">Volume &mdash; Off</button>
 <button id="btn-matbar" class="ui-el">MAT</button>
 <div id="placer-ui">
-  <div id="placer-mat-name">Rock</div>
+  <div id="placer-mat-name">Stone</div>
   <div id="placer-row">
     <button class="sv-btn" id="placer-del"><span class="glyph">&#10005;</span>DELETE</button>
     <button class="sv-btn" id="placer-do"><span class="glyph">&#9635;</span>PLACE</button>
@@ -1583,7 +1596,7 @@ window.GAME_VERSION = 295;
     <button id="mn-add" class="mat-btn">Create</button>
     <div id="mn-msg"></div>
   </div>
-  <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>wt / fric / str</div>
+  <div id="mat-foot"><span class="key"><b>5</b> toggle &mdash; </span>Edit opens a material's settings; they apply at once, and a built-in one's last until a reload (Copy stats keeps them)</div>
 </div>
 
 <!-- Rows are generated from SINK_TUNE_DEFS, so the panel and the code read one table. -->
@@ -1796,7 +1809,7 @@ window.__libsReady = (function () {
      server caches it for a year (immutable) only while the name matches the
      content. After editing it, rename it and update this tag:
        h=$(sha256sum game.*.js | cut -c1-8); mv game.*.js game.$h.js -->
-<script type="module" src="game.59a3e167.js"></script>
+<script type="module" src="game.cc7338a6.js"></script>
 
 <script>
 // Surface module-load failures (bad network / blocked CDN) instead of a black screen.

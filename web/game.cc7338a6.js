@@ -888,7 +888,7 @@ function debrisFricCells(lat, rev) {
     if (mb < 0) made = makeFriction.call(this, c, out);
     else {
       const cm = this.currentContactMaterial, f0 = cm.friction;
-      cm.friction = mu = matFriction(ma) * matFriction(mb);
+      cm.friction = mu = matFriction(ma) * matFriction(mb) * SINK_TUNE.gripScale;
       made = makeFriction.call(this, c, out);
       cm.friction = f0;
     }
@@ -1075,14 +1075,17 @@ function sinkBlocksPowder(i, j, l) {
 // and is pushed back up, and a rock sinks at about 1.36 m/s.
 // The rest are thresholds; each has a floor (min) below which the code it is
 // in stops working, and the panel will not go under it.
-// The player's default weight, per block of its hull in MAT_STATS units: what
-// the body's 6 kg comes to over the capsule's blocks (a piece's 5 kg per weight).
-const PLAYER_WEIGHT_DEF = 0.015, PLAYER_WEIGHT_KG = 6 / PLAYER_WEIGHT_DEF;
+// The player's default weight, per block of its hull in MAT_STATS units. The
+// body's mass is 400 kg per unit of weight (0.015 = the old 6 kg), capped at
+// FALL_MASS_CAP: the default 3 (1200 kg) is heavier than sand and puts him at the 40 kg cap.
+const PLAYER_WEIGHT_DEF = 3, PLAYER_WEIGHT_KG = 400;
 const SINK_TUNE_DEFS = [
   { key: 'playerWeight', group: 'Player', name: 'Player weight', def: PLAYER_WEIGHT_DEF, min: 0.001,
     help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 2.2, Fine Dirt 2): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper; of a powder\'s own weight he goes in and holds where he stops, under its surface. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
   { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 1000, min: 0,
     help: 'How much the friction of the powder slows a sinker, on the part of it that is in the powder: held back by this x the divider x friction x the weight it displaces there, per m/s, so the hold grows as it goes in. 0: nothing slows sinking but the momentum the grains take (always there) and the piece\'s own damping.' },
+  { key: 'gripScale', group: 'Speed', name: 'Grip multiplier', def: 0.03, min: 0,
+    help: 'Multiplies the friction of every block contact: pieces and debris on the ground and on each other grip with the two blocks\' frictions multiplied together, times this. 2: twice as grippy everywhere, 0.5: half, 0: ice. 1: as without it. The player\'s own feet are not changed. Kept in saves.' },
   { key: 'speedDiv', group: 'Speed', name: 'Overall speed divider', def: 1, min: 1, max: 1000,
     help: 'Divides the steady speed of everything sinking or rising through powder (2: half as fast) by holding it back this many times harder: it multiplies the friction hold-back (and the grains\' momentum take by its square), so it also stops a falling piece sooner and damps a bob more (a dropped floater pushed back up from past its depth stops short of it instead). 1: as without it. Where a piece rests is not changed.' },
   { key: 'weightSpeed', group: 'Speed', name: 'Weight speed importance', def: 1, min: 0,
@@ -1091,6 +1094,8 @@ const SINK_TUNE_DEFS = [
     help: 'Push-back from the weight of the powder a piece has displaced, times this. Rests where this x displaced weight == its weight: higher floats higher. 0: nothing floats, every piece that goes in sinks to the solid under the powder.' },
   { key: 'sleepImb', group: 'Settling', name: 'Sleep balance', def: 0.002, min: 0.0001,
     help: 'Fraction of its weight a sinker may be off balance and still sleep. Smaller: rests nearer the exact depth, takes longer.' },
+  { key: 'restTicks', group: 'Settling', name: 'Rest ticks', def: 90, min: 1, int: true,
+    help: 'How many frames a fallen piece must stay under the rest speed before its body rests. Bigger: pieces stay awake longer before they rest.' },
   { key: 'rigidSteps', group: 'Settling', name: 'Held memory (steps)', def: 1, min: 1, int: true,
     help: 'Steps after its last solid contact a sinker still counts as held up (and may sleep off balance).' },
   { key: 'forgetSteps', group: 'Settling', name: 'Forget medium (steps)', def: 2, min: 1, int: true,
@@ -1237,7 +1242,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
   // on rock reads as the rock under it and holds him above the floor.
   let mo = contactMatOf(O, _sinkP, S === playerBody ? _sinkZ : _sinkN);
   let wo;
-  const soft = (m) => m === AIR || m === WATER || !MAT_STATS[m];
+  const soft = (m) => m === AIR || !MAT_STATS[m];
   if (O.voxelGround && soft(mo)) {
     const d = SINK_TUNE.probe * BLOCK;
     const x = S.position.x + rS.x + _sinkN.x * d, y = S.position.y + rS.y + _sinkN.y * d, z = S.position.z + rS.z + _sinkN.z * d;
@@ -1254,6 +1259,18 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
       wo = sinkWeight(mo);
     }
   } else {
+    // Solid read at a point that is in powder all the same: a piece resting
+    // on the ground sits a hair into it, so a powder cell landing beside it
+    // touches its bottom edge, and the probe there steps into the block under
+    // the powder (a hair above it is the powder). Pressing down, a corner
+    // within a probe of the floor reads the floor, though the corner is in
+    // the powder. Held, either shoved the piece flush with the powder block.
+    if (O.voxelGround && mo >= 0 && !sinkMedium(mo)) {
+      const px = S.position.x + rS.x, py = S.position.y + rS.y, pz = S.position.z + rS.z, d = 0.25 * BLOCK;
+      let m = voxelAtWorld(px + _sinkN.x * d, py + _sinkN.y * d + SINK_TUNE.edgeProbe * BLOCK, pz + _sinkN.z * d);
+      if (!sinkMedium(m) && _sinkN.y < -SINK_TUNE.upCut) m = voxelAtWorld(px, py, pz);
+      if (sinkMedium(m)) mo = m;
+    }
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
@@ -1275,8 +1292,14 @@ function sinkGroundAround(S, rS, n, sg) {
     const i = colI(x + ex), j = colJ(z + ez), l = lvlOfY(y + ey);
     if (sinkHeldCell(i, j, l)) continue;
     const v = voxelAt(i, j, l);
-    if (v === AIR || v === WATER || !MAT_STATS[v]) continue;
-    if (!sinkMedium(v)) return -1;
+    if (v === AIR || !MAT_STATS[v]) continue;
+    if (!sinkMedium(v)) {
+      // The top of a block with powder (or a moved-out cell) over it, a hair
+      // under the point: the bottom edge of a piece resting on it, not a wall.
+      const lu = lvlOfY(y + e);
+      if (ey < 0 && lu !== l && (sinkMedium(voxelAt(i, j, lu)) || sinkHeldCell(i, j, lu))) continue;
+      return -1;
+    }
     w = Math.max(w, sinkWeight(v));
   }
   return w;
@@ -1331,7 +1354,7 @@ function sinkPlayerFloorDepth(c) {
   if (!O.voxelGround || -sg * c.ni.y < GROUND_DOT) return Infinity;
   const x = playerBody.position.x + r.x, y = playerBody.position.y + r.y, z = playerBody.position.z + r.z;
   const i = colI(x), j = colJ(z), l = lvlOfY(y);
-  const solid = (v) => v !== AIR && v !== WATER && !!MAT_STATS[v] && !sinkMedium(v);
+  const solid = (v) => v !== AIR && !!MAT_STATS[v] && !sinkMedium(v);
   if (!solid(voxelAt(i, j, l))) return Infinity;
   let t = l;
   while (t < l + 4 && solid(voxelAt(i, j, t + 1))) t++;
@@ -1358,7 +1381,7 @@ function sinkGroundGives(S, st, hull) {
   let gives = (i1 - i0 + 1) * (j1 - j0 + 1) * (l1 - l0 + 1) <= SINK_TUNE.skipCells;
   for (let l = l0; l <= l1 && gives; l++) for (let j = j0; j <= j1 && gives; j++) for (let i = i0; i <= i1; i++) {
     const v = voxelAt(i, j, l);
-    if (v !== AIR && v !== WATER && !(sinkMedium(v) && sinkGives(hull, sinkWeight(v)))) { gives = false; break; }
+    if (v !== AIR && !(sinkMedium(v) && sinkGives(hull, sinkWeight(v)))) { gives = false; break; }
   }
   return (st.boxGives = gives);
 }
@@ -1560,7 +1583,7 @@ function sinkScan(S, hull, M, F) {
           if (m === -2) {
             // The store or the lattice as it is; else a record (stored as
             // -3 - m, so it is told apart); else nothing (-1).
-            if (ground) { const v = voxelAt(ni, nj, nl); m = v !== AIR && v !== WATER && MAT_STATS[v] ? v : -1; }
+            if (ground) { const v = voxelAt(ni, nj, nl); m = v !== AIR && MAT_STATS[v] ? v : -1; }
             else { const v = F.cells.get(fricKey(ni, nj, nl)); m = v === undefined ? -1 : v; }
             if (m < 0 && rec.size) { const e = rec.get(fricKey(ni, nj, nl)); if (e) m = -3 - e.m; }
             mats[r] = m;
@@ -1598,8 +1621,82 @@ function sinkScan(S, hull, M, F) {
 // does — carrying a fall in past its balance depth and coming back, a heavy
 // one going in further than a light one at the same speed, a spin dying out
 // in the grains — is that momentum answering those forces.
+// Powder beside a piece, not under or in it: water poured round a piece at
+// the bottom of a dry pit touches its sides and no cell of it overlaps the
+// hull, so no contact with it is ever made and none of the above would see
+// it. The piece is pressed instead: each of its cells below the level of the
+// powder at its sides (the highest face-adjacent powder cell's top) counts as
+// that powder displaced, so it floats or stays by the same weight rule. Only
+// while none of the hull is in the medium: from the first overlap the lift
+// is the displaced cells' as above. Not the player (his rules are depth's).
+const SINK_PRESS_MIN = 0.1, SINK_PRESS_EVERY = 10, SINK_GROUND_BODY = { voxelGround: true };
+const _sinkPT = { top: -Infinity, m: -1 }, _sinkNoRec = { rec: new Map() };
+function sinkGridCells(S, hull) {
+  const cells = hull.cells, q = S.quaternion, x = S.position, nc = hull.count;
+  if (_sinkGC.length < nc * 3) _sinkGC = new Float64Array(nc * 6);
+  for (let c = 0; c < nc; c++) {
+    q.vmult(_sinkV.set(cells[c * 4], cells[c * 4 + 1], cells[c * 4 + 2]), _sinkV);
+    _sinkV.vadd(x, _sinkV);
+    const g = sinkToGrid(null, null, _sinkV, _sinkG);
+    _sinkGC[c * 3] = g.x; _sinkGC[c * 3 + 1] = g.y; _sinkGC[c * 3 + 2] = g.z;
+  }
+}
+function sinkPressTop(G, nc) {
+  let top = -Infinity, m = -1;
+  for (let c = 0; c < nc; c++) {
+    const gy = G[c * 3 + 1], fi = Math.round(G[c * 3]), fj = Math.round(G[c * 3 + 2]), fl = Math.floor(gy);
+    for (let l = fl; l <= fl + 1; l++) {
+      if (l + 0.5 <= top || l + 0.5 < gy - 0.5 + SINK_PRESS_MIN) continue;
+      for (let d = 0; d < 4; d++) {
+        const v = voxelAt(fi + (d === 0 ? 1 : d === 1 ? -1 : 0), fj + (d === 2 ? 1 : d === 3 ? -1 : 0), l);
+        if (v === AIR || !MAT_STATS[v] || !sinkMedium(v)) continue;
+        top = l + 0.5; m = v;
+        break;
+      }
+    }
+  }
+  _sinkPT.top = top; _sinkPT.m = m;
+  return m >= 0;
+}
+// The pressed weight (G already in ground grid coordinates); with push, the
+// lift goes on the body at each pressed cell's submerged middle.
+function sinkPressLift(S, hull, K, push) {
+  if (!sinkPressTop(_sinkGC, hull.count)) return 0;
+  const top = _sinkPT.top, wm = sinkWeight(_sinkPT.m), G = _sinkGC, g = world.gravity;
+  let disp = 0;
+  for (let c = 0; c < hull.count; c++) {
+    const lo = G[c * 3 + 1] - 0.5, f = Math.min(1, top - lo);
+    if (!(f > 0)) continue;
+    disp += f * wm;
+    if (!push) continue;
+    _sinkC.x = G[c * 3]; _sinkC.y = lo + f * 0.5; _sinkC.z = G[c * 3 + 2];
+    const p = sinkToWorld(null, null, _sinkC, _sinkP), kg = f * wm * K * SINK_TUNE.floatScale;
+    sinkPush(S, null, false, p, -g.x * kg, -g.y * kg, -g.z * kg);
+  }
+  return disp;
+}
+// Every few steps: a piece not in the ground's powder but pressed by it is
+// made a sinker of it, and woken if asleep and the press would lift it.
+function sinkPressScan() {
+  for (const S of world.bodies) {
+    if (!S.debrisMesh || S.type !== CANNON.Body.DYNAMIC) continue;
+    const st = sinkers.get(S), M = st?.media.get(SINK_GROUND), asleep = S.sleepState === CANNON.Body.SLEEPING;
+    if (M && (!asleep || M.rec.size)) continue;
+    const hull = sinkHull(S.debrisMesh, S);
+    if (!(hull.W > 0)) continue;
+    sinkGridCells(S, hull);
+    if (!sinkPressTop(_sinkGC, hull.count)) continue;
+    sinkScan(S, hull, M || _sinkNoRec, null);
+    if (_sinkLen) continue;
+    const disp = sinkPressLift(S, hull, 0, false);
+    if (!(disp > 0)) continue;
+    if (!M) sinkTouch(S, SINK_GROUND_BODY);
+    if (asleep && disp * SINK_TUNE.floatScale > hull.W * (1 + SINK_TUNE.sleepImb)) S.wakeUp();
+  }
+}
 function sinkForces(h) {
   sinkBusyN = 0;
+  if (world.stepnumber % SINK_PRESS_EVERY === 0) sinkPressScan();
   if (!sinkers.size) return;
   const step = world.stepnumber, gx = world.gravity.x, gy = world.gravity.y, gz = world.gravity.z;
   for (const [S, st] of sinkers) {
@@ -1608,7 +1705,7 @@ function sinkForces(h) {
     const hull = sinkHull(S.debrisMesh, S);
     if (!(hull.W > 0)) continue;
     const K = S.mass / hull.W;
-    let disp = 0, vol = 0;
+    let disp = 0, vol = 0, press = 0;
     if (S === playerBody) { playerPowderVol = 0; playerPowderAt = step; }
     for (const [key, M] of st.media) {
       const O = M.body;
@@ -1618,6 +1715,8 @@ function sinkForces(h) {
       sinkScan(S, hull, M, F);
       const L = _sinkList, acc = _sinkAcc, nIn = _sinkLen;
       if (nIn) M.overAt = step;
+      const pr = !O && !nIn && !M.rec.size && S !== playerBody ? sinkPressLift(S, hull, K, true) : 0;
+      press += pr;
       const Od = O && O.type === CANNON.Body.DYNAMIC;
       // Lift first, so the hold-back is solved against the motion the step is
       // heading for with it in.
@@ -1638,7 +1737,7 @@ function sinkForces(h) {
       // (sinkFillBehind), and stays the piece's until it does.
       for (const [rk, r] of M.rec) if (r.at !== step) sinkLeave(M, rk, r);
       if (O && nIn && O.sleepState === CANNON.Body.SLEEPING && S.velocity.lengthSquared() > SINK_TUNE.wakeSpeed ** 2) O.wakeUp();
-      if (!nIn && !M.rec.size && step - M.touchAt > SINK_TUNE.forgetSteps) sinkDropMedium(st, key, M);
+      if (!nIn && !M.rec.size && !pr && step - M.touchAt > SINK_TUNE.forgetSteps) sinkDropMedium(st, key, M);
     }
     st.disp = disp; st.vol = vol;
     // Off balance and held by nothing rigid: still sinking or rising, however
@@ -1646,7 +1745,7 @@ function sinkForces(h) {
     // against the lift as felt (floatScale), while being in the powder at all
     // is the raw overlap, so a piece lifted by nothing still counts as on its
     // way down. With weightSpeed 0 the weight moves it nowhere, so it is not.
-    st.busy = Math.abs(hull.W - disp * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp > 0
+    st.busy = Math.abs(hull.W - (disp + press) * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp + press > 0
       && SINK_TUNE.weightSpeed > 0;
     if (st.busy) { sinkBusyN++; if (S.sleepState !== CANNON.Body.AWAKE) S.wakeUp(); }
     if (!st.media.size && !st.owed.length) sinkers.delete(S);
@@ -2628,13 +2727,35 @@ function fieldAt(i, j) {
 // The four the island was first built out of keep their ids, so nothing that
 // already reads a voxel has to change; the variants added after them extend the
 // list rather than reorder it. Each is a real material with weight, friction and
-// strength (MAT_STATS below) — the same rock in three states of decay, the same
-// earth wet, fine or packed hard.
+// strength (MAT_STATS below).
+//
+// The owner's v297 table is eleven materials. A material it kept keeps its id
+// (Rock is now called Stone, Hard Dirt Compact Dirt, Hard Clay Compact Clay);
+// Sandstone took Brittle Stone's id and Wood took Mud's. The ids of the rest
+// (Fine Mud, Stone Mud, Clay Mud, Wet Sand, Hard Sand) are retired: no row, never
+// generated, and a save from before v297 has its blocks of those (and of Mud)
+// turned into the nearest material left (MAT_REMAP_V297). N_MATS stays 16 so
+// AIR, the created materials' ids and every save keep the values they had.
 const SAND = 0, DIRT = 1, ROCK = 2, WATER = 3;
-const FINE_DIRT = 4, MUD = 5, HARD_DIRT = 6, FINE_MUD = 7;
-const STONE_DUST = 8, STONE_MUD = 9, BRITTLE_STONE = 10;
-const CLAY = 11, CLAY_MUD = 12, HARD_CLAY = 13;
+const STONE = ROCK;
+const FINE_DIRT = 4, WOOD = 5, COMPACT_DIRT = 6;
+const STONE_DUST = 8, SANDSTONE = 10;
+const CLAY = 11, COMPACT_CLAY = 13;
+// Sawdust (v301) took Fine Mud's retired id, the way Wood took Mud's.
+const SAWDUST = 7;
 const N_MATS = 16;
+// Old id -> id, for a save from before v297 (one without matTable): Mud, Fine
+// Mud -> Compact Dirt (packed earth); Stone Mud, Wet Sand, Hard Sand ->
+// Sandstone (the one solid left of the stone and sand families besides Stone);
+// Clay Mud -> Compact Clay. Brittle Stone is already Sandstone's id.
+const MAT_TABLE_VER = 297;
+const MAT_REMAP_V297 = new Uint8Array(256).map((_, i) => i);
+MAT_REMAP_V297[5] = COMPACT_DIRT;    // MUD
+MAT_REMAP_V297[7] = COMPACT_DIRT;    // FINE_MUD
+MAT_REMAP_V297[9] = SANDSTONE;       // STONE_MUD
+MAT_REMAP_V297[12] = COMPACT_CLAY;   // CLAY_MUD
+MAT_REMAP_V297[14] = SANDSTONE;      // WET_SAND
+MAT_REMAP_V297[15] = SANDSTONE;      // HARD_SAND
 // Not a terrain material: the value the voxel store below uses for a block that
 // is not there. It sorts after the built-in ones.
 const AIR = N_MATS;
@@ -2668,6 +2789,8 @@ const reposeLim = new Uint16Array(MAT_ID_LIMIT * REPOSE_REACH_MAX).fill(1);
 // Angle 0 spreads flat like water: level ground to the end of the look is no
 // reason to stop there (powderFar).
 const reposeFlat = new Uint8Array(MAT_ID_LIMIT);
+// tan of the place angle itself, for a grain on a piece's face at a tilt (v310).
+const reposeTan = new Float64Array(MAT_ID_LIMIT).fill(1);
 let powderFarNone = 0, powderFarNoneI = 0, powderFarNoneJ = 0, powderFarNoneL = 0;   // the last far look that found nothing, while it holds
 // The furthest any material looks: a grain leaving a column can unsettle ones
 // that far off, not just its neighbours (powderDirtySides).
@@ -2679,12 +2802,13 @@ function matReposeSet(m, angle) {
   const R = angle >= 90 ? 0 : angle === 45 ? 1 : t >= 1 ? Math.min(8, Math.ceil(8 / t)) : REPOSE_REACH_MAX;
   reposeReach[m] = R;
   reposeFlat[m] = t <= 0 ? 1 : 0;
+  reposeTan[m] = angle >= 90 ? Infinity : t;
   for (let k = 1; k <= REPOSE_REACH_MAX; k++) {
     // A drop of one is level ground (a grain beside a grain), never a slope.
     reposeLim[m * REPOSE_REACH_MAX + k - 1] = Math.max(1, Math.min(65535, Math.ceil(k * t - 1e-9)));
   }
   reposeReachAll = 1;
-  for (let id = CUSTOM_MAT0; id < MAT_ID_LIMIT; id++) if (reposeReach[id] > reposeReachAll) reposeReachAll = reposeReach[id];
+  for (let id = 0; id < MAT_ID_LIMIT; id++) if (reposeReach[id] > reposeReachAll) reposeReachAll = reposeReach[id];
 }
 // Transparency: matClear marks the ids drawn see-through (any transparency
 // above 0). A see-through block's own faces go in its chunk's see-through draw,
@@ -2715,29 +2839,46 @@ let clearCount = 0;
 // by the same factor (x100), so the beams' stiffness relative to each other,
 // and with it how a load spreads through a structure, is what it was; only
 // the margin before crushing grew.
-// Water is the one entry with none — it is a block in the store but it is not a
-// thing you can carry.
+// A powder has no compression or pull (it never holds a load as a solid: the
+// stress solver passes it by), only its place angle — the slope its heaps stand
+// at — and friction. A solid has no angle.
+// Water is a powder row like Sand (v299): the sea is blocks of it, and it
+// sinks, floats, pours and draws by its own numbers like any other.
+// The owner's table (v297), as given; Sawdust joined it at v301, in Fine Mud's
+// retired slot.
 const MAT_STATS = [
-  { name: 'Sand',          weight: 2.2,   friction: 1, strength: 50,      pull: 0.5,  powder: true  },  // SAND
-  { name: 'Dirt',          weight: 2,     friction: 1, strength: 100000,  pull: 50,   powder: false },  // DIRT
-  { name: 'Rock',          weight: 6,     friction: 1, strength: 1500000, pull: 5000, powder: false },  // ROCK
-  null,                                                                           // WATER
-  { name: 'Fine Dirt',     weight: 2,     friction: 1, strength: 50,      pull: 0.5,  powder: true  },  // FINE_DIRT
-  { name: 'Mud',           weight: 4,     friction: 1, strength: 100000,  pull: 70,   powder: false },  // MUD
-  { name: 'Hard Dirt',     weight: 2,     friction: 1, strength: 100000,  pull: 100,  powder: false },  // HARD_DIRT
-  { name: 'Fine Mud',      weight: 4,     friction: 1, strength: 7000,    pull: 70,   powder: false },  // FINE_MUD
-  { name: 'Stone Dust',    weight: 5,     friction: 1, strength: 100,     pull: 1,    powder: true  },  // STONE_DUST
-  { name: 'Stone Mud',     weight: 6,     friction: 1, strength: 100000,  pull: 150,  powder: false },  // STONE_MUD
-  { name: 'Brittle Stone', weight: 5,     friction: 1, strength: 500000,  pull: 2500, powder: false },  // BRITTLE_STONE
-  { name: 'Clay',          weight: 2.4,   friction: 1, strength: 120,     pull: 1.2,  powder: true  },  // CLAY
-  { name: 'Clay Mud',      weight: 4.4,   friction: 1, strength: 100000,  pull: 100,  powder: false },  // CLAY_MUD
-  { name: 'Hard Clay',     weight: 2.4,   friction: 1, strength: 200000,  pull: 1000, powder: false },  // HARD_CLAY
-  { name: 'Wet Sand',      weight: 4.2,   friction: 1, strength: 100000,  pull: 0.8,  powder: false },  // WET_SAND
-  { name: 'Hard Sand',     weight: 2.2,   friction: 1, strength: 100000,  pull: 500,  powder: false },  // HARD_SAND
+  { name: 'Sand',          weight: 12.8,  friction: 5.8, angle: 45, powder: true  },                 // SAND
+  { name: 'Dirt',          weight: 9.7,   friction: 5,   angle: 50, powder: true  },                 // DIRT
+  { name: 'Stone',         weight: 20,    friction: 6.5, strength: 600000, pull: 30000,  powder: false },  // STONE
+  { name: 'Water',         weight: 8,     friction: 0,   angle: 0,  transparency: 75, powder: true  },  // WATER
+  { name: 'Fine Dirt',     weight: 9.7,   friction: 5,   angle: 45, powder: true  },                 // FINE_DIRT
+  { name: 'Wood',          weight: 4.5,   friction: 3.3, strength: 170000, pull: 450000, powder: false },  // WOOD
+  { name: 'Compact Dirt',  weight: 13,    friction: 5,   strength: 6000,   pull: 300,    powder: false },  // COMPACT_DIRT
+  { name: 'Sawdust',       weight: 1.5,   friction: 3.3, angle: 45, powder: true  },                 // SAWDUST (v301)
+  { name: 'Stone Dust',    weight: 12.8,  friction: 6.5, angle: 45, powder: true  },                 // STONE_DUST
+  null,                                                                                         // (retired: Stone Mud)
+  { name: 'Sandstone',     weight: 18.6,  friction: 5,   strength: 400000, pull: 17000,  powder: false },  // SANDSTONE
+  { name: 'Clay',          weight: 12.8,  friction: 5,   angle: 50, powder: true  },                 // CLAY
+  null,                                                                                         // (retired: Clay Mud)
+  { name: 'Compact Clay',  weight: 13.6,  friction: 5,   strength: 81000,  pull: 1500,   powder: false },  // COMPACT_CLAY
+  null,                                                                                         // (retired: Wet Sand)
+  null,                                                                                         // (retired: Hard Sand)
 ];
-for (const st of MAT_STATS) if (st && !(st.pull > 0)) st.pull = st.strength;
+// The order the owner's table lists them in: the Materials panel's.
+const MAT_ORDER = [DIRT, FINE_DIRT, COMPACT_DIRT, STONE, STONE_DUST, CLAY, COMPACT_CLAY, SAND, SANDSTONE, WATER, WOOD, SAWDUST];
+// What the stress solver's beams take for a powder's stiffness, which has no
+// strength of its own now: what Sand's was before v297, so a beam into powder
+// is as soft as it always was.
+const POWDER_STIFF = 50;
+for (const st of MAT_STATS) if (st && !st.powder && !(st.pull > 0)) st.pull = st.strength;
+// The table as shipped: what the Materials panel calls each built-in setting's
+// default, and what its Defaults button puts back. An edit lasts the session.
+const MAT_STATS_DEF = MAT_STATS.map((st) => st && { ...st });
 // AIR's row; the created materials' are added by matTablesGrow.
 MAT_STATS.push(null);
+// A built-in powder's own place angle (v297: Dirt and Clay 50, the rest 45 —
+// 45 goes down sand's own test, as it always did).
+for (let m = 0; m < N_MATS; m++) if (MAT_STATS[m]?.powder) matReposeSet(m, MAT_STATS[m].angle);
 // The block level whose top is sea level, and the level every flooded column is
 // filled up to. Level k spans y from k*BLOCK to (k+1)*BLOCK, so this is the last
 // one wholly under SEA_Y.
@@ -2781,7 +2922,7 @@ function pickMaterial(h, slope, x, z) {
   // Anything you could not stand on. Most of it is sound rock; the rest is the
   // crumbling face of it, which is softer to dig and lighter to carry.
   if (slope > 1.05 + n * 0.30) {
-    return v > 0.45 ? BRITTLE_STONE : (v < -0.55 ? STONE_DUST : ROCK);
+    return v > 0.45 ? SANDSTONE : (v < -0.55 ? STONE_DUST : ROCK);
   }
   if (h < 1.2 + n * 0.5) return SAND;              // the beach, up to knee height
   // Just above the tide line the ground never dries out, so the damp variants
@@ -2796,22 +2937,36 @@ function pickMaterial(h, slope, x, z) {
 // to get harder the deeper it goes, so the lower half of the soil under any
 // column is the packed or waterlogged version of whatever caps it. Indexed by
 // material id; WATER's entry is never read (a flooded column's bed is sand).
+// v299: sand's lower band is Sandstone (the owner's), where it was Dirt.
+// v297: the same bands as before with each old material put through
+// MAT_REMAP_V297, so a generated world is the same ids it always was (Brittle
+// Stone's are Sandstone's now, Hard Dirt's Compact Dirt's, Hard Clay's Compact
+// Clay's).
 const DEEP_MAT = [
-  DIRT,           // SAND — wet sand under the beach
-  HARD_DIRT,      // DIRT
+  SANDSTONE,      // SAND — packed under the beach (v299; Dirt before)
+  COMPACT_DIRT,   // DIRT
   ROCK,           // ROCK
   WATER,          // WATER
   DIRT,           // FINE_DIRT
-  FINE_MUD,       // MUD
-  BRITTLE_STONE,  // HARD_DIRT
-  HARD_DIRT,      // FINE_MUD
-  BRITTLE_STONE,  // STONE_DUST
-  ROCK,           // STONE_MUD
-  ROCK,           // BRITTLE_STONE
-  HARD_CLAY,      // CLAY
-  HARD_CLAY,      // CLAY_MUD
-  BRITTLE_STONE,  // HARD_CLAY
+  WOOD,           // WOOD (never generated)
+  SANDSTONE,      // COMPACT_DIRT
+  SAWDUST,        // SAWDUST (v301; never generated)
+  SANDSTONE,      // STONE_DUST
+  ROCK,           // (retired)
+  ROCK,           // SANDSTONE
+  COMPACT_CLAY,   // CLAY
+  COMPACT_CLAY,   // (retired)
+  SANDSTONE,      // COMPACT_CLAY
+  ROCK,           // (retired)
+  ROCK,           // (retired)
 ];
+// The bands the world in play was generated with, as the stress solver's
+// settled ground works them out again under a dug column (stressGenWeight): a
+// world from before v299 (a save without genDeep) has Dirt under its sand.
+const GEN_DEEP_VER = 299;
+const DEEP_MAT_V298 = DEEP_MAT.slice();
+DEEP_MAT_V298[SAND] = DIRT;
+let genDeep = DEEP_MAT;
 
 {
   const rnd = mulberry32((SEED ^ 0x9e3779b9) >>> 0);
@@ -3293,9 +3448,9 @@ function setVoxel(i, j, lvl, m) {
   stressCols.add(k);
   stressGroundCols.add(k);
   stressWeightCols.add(k);
-  // Ground coming or going (water moving about does not count): the ground of
-  // this chunk is no longer as it settled, and is solved for real from here on.
-  if ((was !== AIR && was !== WATER) || (m !== AIR && m !== WATER)) {
+  // Ground coming or going: the ground of this chunk is no longer as it
+  // settled, and is solved for real from here on.
+  if (was !== AIR || m !== AIR) {
     const c = chunkOf(i, j);
     if (lvl < stressChunkLow[c]) stressChunkLow[c] = lvl;
     stressChunkEdit[c] = ++stressEditSeq;
@@ -3397,20 +3552,23 @@ const TERRAIN_MATS = [
   // The earth family. Wet ones are a touch smoother — damp ground catches a
   // little more light than dust does.
   mat(0x9b7a52, 0.99, 0.00, { envMapIntensity: 0.30 }),   // FINE_DIRT
-  mat(0x6b5a3e, 0.88, 0.00, { envMapIntensity: 0.42 }),   // MUD
-  mat(0x7a5c38, 0.96, 0.00, { envMapIntensity: 0.34 }),   // HARD_DIRT
-  mat(0x5c4a32, 0.86, 0.00, { envMapIntensity: 0.44 }),   // FINE_MUD
+  // Wood (v297, in Mud's old slot; v302 four fifths of the way to Sawdust's tan,
+  // a faint brown left under it so a block is not a grain's colour).
+  mat(0xcfb57c, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WOOD
+  mat(0x7a5c38, 0.96, 0.00, { envMapIntensity: 0.34 }),   // COMPACT_DIRT
+  // Sawdust (v301, in Fine Mud's slot): a pale wheat tan, lighter than sand.
+  mat(0xe0cc8e, 0.98, 0.00, { envMapIntensity: 0.40 }),   // SAWDUST
   // The stone family, all of it a shade of the same grey as ROCK.
   mat(0xa0a8b0, 0.98, 0.00, { envMapIntensity: 0.40 }),   // STONE_DUST
-  mat(0x6a7078, 0.85, 0.02, { envMapIntensity: 0.50 }),   // STONE_MUD
-  mat(0x909898, 0.94, 0.01, { envMapIntensity: 0.50 }),   // BRITTLE_STONE
+  mat(0x6a7078, 0.85, 0.02, { envMapIntensity: 0.50 }),   // (retired: STONE_MUD)
+  // Sandstone (v297, in Brittle Stone's slot): a sandy tan, darker than sand.
+  mat(0xc0a274, 0.94, 0.01, { envMapIntensity: 0.45 }),   // SANDSTONE
   // The clay family — tan, and the least rough of the dry materials.
   mat(0xa88060, 0.92, 0.00, { envMapIntensity: 0.42 }),   // CLAY
-  mat(0x947858, 0.86, 0.00, { envMapIntensity: 0.44 }),   // CLAY_MUD
-  mat(0xba8a64, 0.90, 0.00, { envMapIntensity: 0.40 }),   // HARD_CLAY
-  // The sand family, either side of SAND: damp is darker, packed is warmer.
-  mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // WET_SAND
-  mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // HARD_SAND
+  mat(0x947858, 0.86, 0.00, { envMapIntensity: 0.44 }),   // (retired: CLAY_MUD)
+  mat(0xba8a64, 0.90, 0.00, { envMapIntensity: 0.40 }),   // COMPACT_CLAY
+  mat(0xb8a880, 0.90, 0.00, { envMapIntensity: 0.38 }),   // (retired: WET_SAND)
+  mat(0xcab888, 0.95, 0.00, { envMapIntensity: 0.42 }),   // (retired: HARD_SAND)
 ];
 // AIR's slot (never drawn); a created material's is added by matTablesGrow and
 // recoloured by customMatInstall — every table below is indexed by the same ids.
@@ -6381,7 +6539,8 @@ const playerBody = new CANNON.Body({
   // Heavier than the crates on purpose. The controller sets velocity directly so
   // mass never affects how the character itself moves — it only decides how much
   // authority the body has in contact impulses, i.e. whether walking into a crate
-  // shoves it or stalls against it.
+  // shoves it or stalls against it. Set from the Player weight once the sink
+  // panel is built (applyPlayerWeight), so a new game starts at the default.
   mass: 6,
   material: physPlayer,
   fixedRotation: true,
@@ -6408,9 +6567,10 @@ function setPlayerShape(crouch) {
   playerBody.updateMassProperties();   // honours fixedRotation, leaves the mass as it is
 }
 setPlayerShape(false);
-// Sink panel's Player weight to the body's mass. At the default that is the
-// 6 kg above; heavier, capped where the heaviest piece is, so the solver sees
-// nothing it does not already handle. The sinking reads the weight itself.
+// Sink panel's Player weight to the body's mass: 400 kg per unit (0.015 is the
+// old 6 kg), capped where the heaviest piece is, so the solver sees nothing it
+// does not already handle; the default 3 (1200 kg) sits at that cap. The sinking reads
+// the weight itself.
 function applyPlayerWeight() {
   const m = Math.min(PLAYER_WEIGHT_KG * SINK_TUNE.playerWeight, FALL_MASS_CAP);
   if (playerBody.mass === m) return;
@@ -7029,13 +7189,16 @@ function renderView() {
 // ---------------------------------------------------------------------------
 const SHOVEL_REACH = 6.0;      // metres of reach from the eye
 const SHOVEL_CAP   = 64;       // blocks your hands hold
+// A retired id (v297) has no name: no material of it is left anywhere.
 const MAT_NAMES = [
-  'sand', 'dirt', 'rock', 'water',
-  'fine dirt', 'mud', 'hard dirt', 'fine mud',
-  'stone dust', 'stone mud', 'brittle stone',
-  'clay', 'clay mud', 'hard clay',
-  'wet sand', 'hard sand',
+  'sand', 'dirt', 'stone', 'water',
+  'fine dirt', 'wood', 'compact dirt', 'sawdust',
+  'stone dust', undefined, 'sandstone',
+  'clay', undefined, 'compact clay',
+  undefined, undefined,
 ];
+// Their old names, for the Copy Stats tag of a retired row.
+const MAT_RETIRED = { 9: 'stone mud', 12: 'clay mud', 14: 'wet sand', 15: 'hard sand' };
 
 const shovel = {
   on: false,
@@ -7244,12 +7407,12 @@ const dirtyChunks = new Set();
 // breaks off the world as one piece. It stops being terrain at that moment: the
 // blocks are cut out of the store and the piece carries on as a loose rigid body
 // that falls under the same gravity as everything else, hits the ground, tumbles
-// and rolls to a stop wherever the physics puts it. Water neither falls nor holds
-// anything up. What settles keeps its body and stays in the physics world, so it
+// and rolls to a stop wherever the physics puts it. Water is a powder (v299)
+// and holds up as sand does. What settles keeps its body and stays in the physics world, so it
 // is solid to stand on and shoves awake again when something runs into it — but
 // it is never written back into the voxel grid, so the shovel treats it as a
 // piece rather than as terrain.
-const gravSolid = (i, j, lvl) => { const m = voxelAt(i, j, lvl); return m !== AIR && m !== WATER; };
+const gravSolid = (i, j, lvl) => voxelAt(i, j, lvl) !== AIR;
 const gravKey = (i, j, lvl) => i + ',' + j + ',' + lvl;
 
 // ----- loose chunks -----
@@ -7382,7 +7545,7 @@ function pieceGyro(h) {
   }
 }
 const FALL_REST_V    = 0.35;  // m/s, and rad/s, a piece has to stay under to be settling
-const FALL_REST_TICKS = 30;   // frames of that before its body is retired
+// (for SINK_TUNE.restTicks frames, the panel's Rest ticks, before its body is retired)
 const FALL_FREEZE_TICKS = 120; // frames a settled piece cannon will not put to sleep may fidget before it is put to sleep by hand
 const FALL_FREEZE_D  = 0.02;  // m it may have wandered over those frames and still count as fidgeting, not sliding
 const FALL_KILL_Y    = (VOX_FLOOR - 40) * BLOCK;  // out from under the field: stop paying for it
@@ -7651,8 +7814,8 @@ function removeGrain(mesh, e) {
 // +-w in z, +-wd in y. Two scratches, because shedPowder keeps its lookup alive
 // across cuts that each recompute the face mask.
 const debrisCellXYZ = { a: new Int32Array(192) };
-const debrisCellsMain = { cell: new Int32Array(64), grid: new Int32Array(512), w: 0, wd: 0 };
-const debrisCellsShed = { cell: new Int32Array(64), grid: new Int32Array(512), w: 0, wd: 0 };
+const debrisCellsMain = { cell: new Int32Array(64), grid: new Int32Array(512), w: 0, wd: 0, vol: 0 };
+const debrisCellsShed = { cell: new Int32Array(64), grid: new Int32Array(512), w: 0, wd: 0, vol: 0 };
 function debrisCells(lat, S) {
   const n = lat.length, a0 = lat[0].pos;
   if (debrisCellXYZ.a.length < n * 3) debrisCellXYZ.a = new Int32Array(n * 3);
@@ -7676,7 +7839,7 @@ function debrisCells(lat, S) {
     cell[k] = c;
     grid[c] = k + 1;
   }
-  S.w = w; S.wd = wd;
+  S.w = w; S.wd = wd; S.vol = vol;
   return S;
 }
 
@@ -7768,8 +7931,9 @@ const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air
 // lands or leaves the field, and come out again for the next one.
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
-  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null, thru: false };
-  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1; g.thru = false;
+  const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null, thru: false,
+    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0, lq: -1, lr: -1, lw: false };
+  g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1; g.thru = false; g.lk = null; g.lg = null;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
   return g;
@@ -7777,6 +7941,7 @@ function powderGrain(x, y, z, mat, from) {
 function powderGrainFree(g) {
   g.from = null;   // a mesh held here would outlive its piece
   g.dn = null;
+  g.lk = null; g.lg = null; g.ls = 0;   // a grain stacked on this record must not take its next life for it
   g.far = null;
   powderGrainPool.push(g);
 }
@@ -8911,11 +9076,18 @@ function shedTerrainPowder(dt) {
   }
 }
 
+// Cannon's own sleep for a piece body follows the Rest ticks knob: it needs
+// that many frames' worth of sim time of quiet (frames are capped at the
+// substep budget, so a slow frame does not count for more than it simulates).
+const pieceSleepTime = () => SINK_TUNE.restTicks * Math.min(physFrameAvg, physStep * physMaxSubsteps());
+
 // Called once a frame after the step: retire whatever has stopped moving, and
 // drop whatever has fallen out of the world altogether.
 function updateFallingChunks() {
+  const sleepT = pieceSleepTime();
   for (let n = fallingChunks.length - 1; n >= 0; n--) {
     const f = fallingChunks[n];
+    f.body.sleepTimeLimit = sleepT;
     if (f.body.position.y < FALL_KILL_Y) {
       fallingChunks.splice(n, 1);
       dropChunk(f);
@@ -8925,7 +9097,7 @@ function updateFallingChunks() {
     const slow = v.lengthSquared() < FALL_REST_V * FALL_REST_V
               && w.lengthSquared() < FALL_REST_V * FALL_REST_V;
     f.still = slow ? f.still + 1 : 0;
-    if (f.still >= FALL_REST_TICKS || f.body.sleepState === CANNON.Body.SLEEPING) {
+    if (f.still >= SINK_TUNE.restTicks) {   // a body cannon put to sleep has no speed, so it counts up here too
       restFallingChunk(n);
       if (f.mesh.userData.blocks.length <= 2 && !mergeLoneBlock(f)) loneBackoff(f);
     }
@@ -8934,7 +9106,8 @@ function updateFallingChunks() {
   mergeLoneRetry();
   // A settled piece cannon keeps awake — jittering against the terrain or a
   // neighbour, never quiet for the full sleepTimeLimit — is put to sleep by
-  // hand once it has gone FALL_FREEZE_TICKS without getting anywhere. Slowness
+  // hand once it has gone FALL_FREEZE_TICKS (never fewer than the Rest ticks
+  // knob) without getting anywhere. Slowness
   // alone is not enough (a slow slide is still a slide), so the test is how far
   // it has moved and turned over the window. It sleeps like any other body: a
   // contact, a dig in its chunk or a tool on it wakes it.
@@ -8942,6 +9115,7 @@ function updateFallingChunks() {
   const rested = awakeChunks(true);
   for (let n = rested.length - 1; n >= 0; n--) {
     const f = rested[n], b = f.body;
+    b.sleepTimeLimit = sleepT;
     if (b.position.y < FALL_KILL_Y) { restedChunks.splice(restedChunks.indexOf(f), 1); dropChunk(f); continue; }
     if (b.sleepState === CANNON.Body.SLEEPING) { f.calm = 0; continue; }
     if (b.velocity.lengthSquared() >= FALL_REST_V * FALL_REST_V
@@ -8954,7 +9128,7 @@ function updateFallingChunks() {
       f.calm = 1;
       continue;
     }
-    if (++f.calm < FALL_FREEZE_TICKS) continue;
+    if (++f.calm < Math.max(FALL_FREEZE_TICKS, SINK_TUNE.restTicks)) continue;
     f.calm = 0;
     const p = b.position, a = f.calmPos, q = b.quaternion, aq = f.calmQuat;
     const dx = p.x - a.x, dy = p.y - a.y, dz = p.z - a.z;
@@ -9212,7 +9386,7 @@ function impactSide(body, px, py, pz, h, sign) {
     const d = depth * BLOCK * sign;
     const i = colI(px + h.nx * d), j = colJ(pz + h.nz * d), lvl = lvlOfY(py + h.ny * d);
     const m = voxelAt(i, j, lvl);
-    if (m === AIR || m === WATER || lvl <= VOX_FLOOR) continue;
+    if (m === AIR || lvl <= VOX_FLOOR) continue;
     return { cell: { i, j, lvl }, dir: { x: h.nx * sign, y: h.ny * sign, z: h.nz * sign }, px, py, pz, cost: impactCost(m) };
   }
   return null;
@@ -9281,7 +9455,7 @@ function craterGround(s, E, vn) {
     if (nTaken && !(impactTaken[t - 1] || impactTaken[t + 1] || impactTaken[t - IMPACT_SIDE] || impactTaken[t + IMPACT_SIDE]
                  || impactTaken[t - IMPACT_SIDE * IMPACT_SIDE] || impactTaken[t + IMPACT_SIDE * IMPACT_SIDE])) continue;
     const m = voxelAt(i, j, lvl);
-    if (m === AIR || m === WATER) continue;
+    if (m === AIR) continue;
     const cost = impactCost(m);
     if (cost > E) continue;
     // A solid block is costed as itself but leaves as what it breaks to, read
@@ -9326,7 +9500,7 @@ function craterGround(s, E, vn) {
       continue;
     }
     const m = voxelAt(c.i, c.j, c.lvl);
-    if (m === AIR || m === WATER) continue;
+    if (m === AIR) continue;
     // Thrown out of the crater, up and away from the middle, in the chunk
     // processImpacts' breakBatch puts it in; whatever the hole then brings
     // down after it is left to fall as it would. Counted a block at a time,
@@ -9349,7 +9523,7 @@ function digImpactPending() {
     for (let q = 0; q < n; q++) {
       const c = impactPending[q];
       const m = voxelAt(c.i, c.j, c.lvl);
-      if (m === AIR || m === WATER) continue;
+      if (m === AIR) continue;
       // What poured in since it was chosen leaves as itself; rubble as what it was crushed to.
       const mat = MAT_STATS[m]?.powder ? m : c.mat;
       editBlock(c.i, c.j, c.lvl, AIR);
@@ -9532,17 +9706,48 @@ const powderDown = new CANNON.Vec3(0, -1, 0), powderQ = new CANNON.Quaternion();
 const powderLocalDown = new CANNON.Vec3();
 const powderProbe = new THREE.Vector3();
 
-// Powder is only ever seen square to the world. A piece holds it for as long as
-// the piece itself is unturned, a settled piece's few degrees of residual tilt
-// included (POWDER_TURN: 1 - cos^2 of the half angle, so about 3.6 degrees); once
-// turned past that, every powder block it has leaves as a loose grain, and a
-// grain coming down on a turned piece slides off it rather than being laid in.
-// The one exception is powder placed by hand on a piece lying at a tilt: the
-// piece keeps that pose in userData.powderHold and holds the powder until it
-// turns away from the pose or a solid block is taken out of it.
+// Powder is world-frame only: it never cares how a piece is turned, only whether
+// the piece's lattice lies on the world grid. A piece holds powder while its
+// cells line up with the world's — unturned, or turned onto any of its other
+// faces (the 24 square poses), a settled piece's few degrees of residual tilt
+// included (POWDER_TURN: 1 - cos^2 of the half angle off the nearest square
+// pose, so about 3.6 degrees). Then the piece's lattice axes are the world's,
+// and stacking, rolling and shedding down its axis nearest world down are by
+// world gravity. Off the world grid it holds none: every powder block it has
+// leaves as a loose grain, and a grain coming down on it slides off it rather
+// than being laid in (v309).
 const POWDER_TURN = 1e-3;
-const pieceSquare = (q) => q.x * q.x + q.y * q.y + q.z * q.z < POWDER_TURN;
+const POWDER_SQUARE_Q = (() => {
+  const out = [], m = new THREE.Matrix4();
+  for (const [a, b, c] of [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]])
+    for (let sg = 0; sg < 8; sg++) {
+      const r = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+      r[0][a] = sg & 1 ? -1 : 1; r[1][b] = sg & 2 ? -1 : 1; r[2][c] = sg & 4 ? -1 : 1;
+      const det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1]) - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+                + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+      if (det < 0) continue;
+      m.set(r[0][0], r[0][1], r[0][2], 0, r[1][0], r[1][1], r[1][2], 0, r[2][0], r[2][1], r[2][2], 0, 0, 0, 0, 1);
+      out.push(new THREE.Quaternion().setFromRotationMatrix(m));
+    }
+  return out;
+})();
 const pieceInPose = (q, r) => { const d = q.x * r.x + q.y * r.y + q.z * r.z + q.w * r.w; return 1 - d * d < POWDER_TURN; };
+const pieceSquare = (q) => POWDER_SQUARE_Q.some((r) => pieceInPose(q, r));
+// Whether the piece has a block anywhere further along `step` (one lattice step
+// down) from grid cell c, inside the debrisCells box (w a row, wd a level).
+function debrisBelow(S, c, step) {
+  const { grid, w, wd, vol } = S;
+  // Padded a cell all round, so the walk stops at the padding: past it, off a
+  // row or a level, are no blocks of the piece.
+  const x = c % w, z = ((c - x) / w) % (wd / w), y = (c - x - z * w) / wd;
+  const sx = step === 1 ? 1 : step === -1 ? -1 : 0, sz = step === w ? 1 : step === -w ? -1 : 0, sy = step === wd ? 1 : step === -wd ? -1 : 0;
+  const nz = wd / w, ny = vol / wd;
+  for (let cx = x + 2 * sx, cz = z + 2 * sz, cy = y + 2 * sy, cc = c + 2 * step;
+       cx >= 0 && cx < w && cz >= 0 && cz < nz && cy >= 0 && cy < ny; cx += sx, cz += sz, cy += sy, cc += step) {
+    if (grid[cc]) return true;
+  }
+  return false;
+}
 function shedPowder() {
   // Awake pieces only: a sleeping one lies as it did when last looked at, and
   // anything that changes its lattice wakes it (rebuildDebrisBody).
@@ -9588,7 +9793,10 @@ function shedPowder() {
         if (!turned && powderGrainAt(at.x, at.y, at.z, null)) { f.shedKey = -1; continue; }
         // Off a turned piece it is not barred from the piece: one with solid under
         // it is caught and sent off the side (powderOffPiece), not dropped through.
-        powderGrain(at.x, at.y, at.z, b.mat, turned ? null : mesh);
+        // Barred from this piece only if it is leaving it: with a block of the
+        // piece further down its column it is falling inside the piece (a box,
+        // a cup, an arch) and lands on that, not through it to whatever is under.
+        powderGrain(at.x, at.y, at.z, b.mat, turned || debrisBelow(debrisCellsShed, cell[q], step) ? null : mesh);
         grid[cell[q]] = 0;
         cutDebrisLat(mesh, q);   // the same gap-close a dig does
         cut = true;
@@ -9605,7 +9813,10 @@ function shedPowder() {
 }
 
 // Where the loose grains end up: the ground if there is ground under them, the
-// rubble if there is rubble, and nowhere at all if they have left the field.
+// rubble if there is rubble. None leaves the field sideways (v297): the field's
+// edge is a wall to a grain — one that would be past it (slid, rolled or shed
+// off a piece out there, or loaded so) is put back in the edge column, at the
+// height it is at, and falls on from there like any other (POWDER_EDGE_LO/HI).
 //
 // Each piece's blocks are put into the world with a box round them; a grain
 // outside a piece's box (grown by a block) cannot be within a block of any of
@@ -9735,32 +9946,50 @@ function powderGrainAt(x, y, z, self, stamp = 0, moved = 0) {
 // column is.
 function powderClear(x, y, z, self, moved = 0) {
   if (powderGrainAt(x, y, z, self, 0, moved)) return 1;
+  return powderInGround(x, y, z) ? 2 : 0;
+}
+// Whether a grain at x, y, z would overlap a block of any piece, for catchPowder
+// (which files the pieces once a frame, on first need: powderCatchFile).
+let powderPieceFiledAt = -1;
+function powderPieceAt(x, y, z) {
+  if (!restedChunks.length && !fallingChunks.length) return false;
+  if (powderPieceFiledAt !== powderStamp) { powderCatchFile(2 * BLOCK); powderPieceFiledAt = powderStamp; }
+  return powderInPiece(x, y, z);
+}
+// Whether a grain at x, y, z would overlap the ground in its column. Asked on
+// its own where a grain is put up on others: powderClear answers "a grain is in
+// the way" first, and so never says whether the ground is there too.
+function powderInGround(x, y, z) {
   const i = colI(x), j = colJ(z);
   for (let l = Math.floor((y - HALF_BLOCK) / BLOCK + 0.01), l1 = Math.floor((y + HALF_BLOCK) / BLOCK - 0.01); l <= l1; l++) {
-    if (voxelAt(i, j, l) !== AIR) return 2;
+    if (voxelAt(i, j, l) !== AIR) return true;
   }
-  return 0;
+  return false;
 }
 // How far along the way down from (x, y0, z) to (x, y1, z), 0 to 1, a grain
 // first comes to overlap a block of the piece — in the piece's own frame, where
-// its blocks are cubes — or Infinity if it never does.
+// its blocks are cubes — or Infinity if it never does. The face it comes to is
+// left in powderSweepAx: the piece's axis, 1 + 0..2, signed by the way the face
+// looks; 0 if it was overlapping from the start.
 const _sweepA = new THREE.Vector3(), _sweepD = new THREE.Vector3();
+let powderSweepAx = 0, powderSweepB = null;
 function powderSweep(mesh, x, y0, z, y1) {
   mesh.updateWorldMatrix(true, false);
   const A = mesh.worldToLocal(_sweepA.set(x, y0, z)), D = mesh.worldToLocal(_sweepD.set(x, y1, z)).sub(A);
   let best = Infinity;
+  powderSweepAx = 0; powderSweepB = null;
   blocks: for (const b of mesh.userData.blocks) {
-    let t0 = 0, t1 = 1;
+    let t0 = 0, t1 = 1, ax = 0;
     for (let k = 0; k < 3; k++) {
       const o = b.pos.getComponent(k) - A.getComponent(k), d = D.getComponent(k);
       if (Math.abs(d) < 1e-9) { if (Math.abs(o) >= POWDER_GAP) continue blocks; continue; }
       let ta = (o - POWDER_GAP) / d, tb = (o + POWDER_GAP) / d;
       if (ta > tb) { const s = ta; ta = tb; tb = s; }
-      if (ta > t0) t0 = ta;
+      if (ta > t0) { t0 = ta; ax = -(k + 1) * Math.sign(d); }
       if (tb < t1) t1 = tb;
       if (t0 >= t1) continue blocks;
     }
-    if (t0 < best) best = t0;
+    if (t0 < best) { best = t0; powderSweepAx = ax; powderSweepB = b; }
   }
   return best;
 }
@@ -9877,13 +10106,16 @@ function powderAbove(x, y, z, self, stamp) {
 // piece on the way across. With nowhere to go it goes on top, as onto a slower
 // one. A grain at the pace of the one under it is riding it, and stays.
 const POWDER_SLIDE_V = 6, POWDER_SLIDE_DV = 2;
+// The field's edge columns' centres: a grain's x and z are held between them.
+const POWDER_EDGE_LO = -GEN_R + HALF_BLOCK, POWDER_EDGE_HI = GEN_R - HALF_BLOCK;
 const POWDER_SLIDE = [];
 for (let a = -2; a <= 2; a++) for (let b = -2; b <= 2; b++) if (a || b) POWDER_SLIDE.push([a, b, a * a + b * b]);
 POWDER_SLIDE.sort((u, w) => u[2] - w[2]);
 function powderSlide(p, x, y, z, pieces) {
   const i = colI(x), j = colJ(z), l0 = Math.floor((y - HALF_BLOCK) / BLOCK + 0.01), l1 = Math.floor((y + HALF_BLOCK) / BLOCK - 0.01);
   const ground = (ci, cj) => { for (let l = l0; l <= l1; l++) if (voxelAt(ci, cj, l) !== AIR) return true; return false; };
-  const blocked = (ci, cj) => ground(ci, cj) || (pieces && powderInPiece(colX(ci), y, colZ(cj)));
+  // Past the field's edge is a wall, as the ground is.
+  const blocked = (ci, cj) => ci < 0 || cj < 0 || ci >= GEN_N || cj >= GEN_N || ground(ci, cj) || (pieces && powderInPiece(colX(ci), y, colZ(cj)));
   // Equally near spots are tried from a random one on, so the stream spreads evenly.
   for (let g0 = 0; g0 < POWDER_SLIDE.length; ) {
     let g1 = g0;
@@ -9905,10 +10137,479 @@ function powderSlide(p, x, y, z, pieces) {
   }
   return false;
 }
-const powderOrder = [];
+// The nearest air to cell (i, j, l) a grain inside the ground there can get
+// to through powder alone, by steps across faces, up first among equals — the
+// way the grain would be pushed out of a pile it was buried in — or null if
+// none within POWDER_OUT_R. Only a grain that has somehow come to be inside the
+// ground under something solid asks, so it costs nothing in the run of things.
+// Solid cells are never gone through: what they close in, a grain stays in.
+const POWDER_OUT_R = 6, POWDER_OUT_W = 2 * POWDER_OUT_R + 1;
+const POWDER_OUT_STEPS = [[0, 0, 1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, -1]];   // [di, dj, dl]
+const powderOutSeen = new Uint32Array(POWDER_OUT_W ** 3), powderOutQ = new Int32Array(POWDER_OUT_W ** 3);
+let powderOutStamp = 0;
+function powderOut(i, j, l) {
+  if (powderOutStamp >= 0xfffffff0) { powderOutSeen.fill(0); powderOutStamp = 0; }
+  const W = POWDER_OUT_W, R = POWDER_OUT_R, st = ++powderOutStamp, seen = powderOutSeen, q = powderOutQ;
+  const o = (R * W + R) * W + R;   // ((dl * W) + dj) * W + di, each offset by R
+  seen[o] = st; q[0] = o;
+  for (let head = 0, tail = 1; head < tail; ) {
+    const at = q[head++], ai = at % W, aj = ((at - ai) / W) % W, al = (at - ai - aj * W) / (W * W);
+    for (const [di, dj, dl] of POWDER_OUT_STEPS) {
+      const wi = ai + di, wj = aj + dj, wl = al + dl;
+      if (wi < 0 || wj < 0 || wl < 0 || wi >= W || wj >= W || wl >= W) continue;
+      const k = (wl * W + wj) * W + wi;
+      if (seen[k] === st) continue;
+      seen[k] = st;
+      const ci = i + wi - R, cj = j + wj - R, cl = l + wl - R;
+      if (!canBuildAt(ci, cj, cl)) continue;   // past the field's edge or under its floor is a wall
+      const m = voxelAt(ci, cj, cl);
+      if (m === AIR) return powderSpot.set(colX(ci), (cl + 0.5) * BLOCK, colZ(cj));
+      if (MAT_STATS[m]?.powder) q[tail++] = k;
+    }
+  }
+  return null;
+}
+// How far, 0 to 1, a grain can go along the straight way from (x0, y0, z0) to
+// (x1, y1, z1) before it would overlap the ground, a falling grain moved this
+// frame or a block of any piece (the pieces filed by powderCatchFile). Looked at
+// every quarter block, then the step it is stopped in narrowed down, so no
+// block can be stepped over.
+function powderSlideFree(x0, y0, z0, x1, y1, z1, p, stamp) {
+  const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+  const n = Math.max(1, Math.ceil(Math.sqrt(dx * dx + dy * dy + dz * dz) / (0.25 * BLOCK)));
+  const free = (f) => !powderClear(x0 + dx * f, y0 + dy * f, z0 + dz * f, p, stamp) && !powderInPiece(x0 + dx * f, y0 + dy * f, z0 + dz * f);
+  let lo = 0;
+  for (let k = 1; k <= n; k++) {
+    const f = k / n;
+    if (free(f)) { lo = f; continue; }
+    let hi = f;
+    for (let b = 0; b < 6; b++) { const m = (lo + hi) / 2; if (free(m)) lo = m; else hi = m; }
+    return lo;
+  }
+  return 1;
+}
+// Each piece's pose as catchPowder last left it (its matrixWorld, then the
+// position, quaternion and lattice edit count it was taken at, and the run of
+// frames it belongs to), for powderPushBack: the piece's move since then is
+// what pushed into a grain. Kept only while there are grains about — a field
+// of rubble with nothing falling pays nothing — and a frame with none starts
+// a new run (powderPoseRun), so a pose from before it is never taken for last
+// frame's: the grain goes out by powderDepen then.
+let powderPoseRun = 0;
+function powderPrevPoses() {
+  if (!powderFalling.length) { powderPoseRun++; return; }
+  const run = powderPoseRun;
+  for (const list of [restedChunks, fallingChunks]) for (const f of list) {
+    const m = f.mesh, ud = m.userData, ps = m.position, q = m.quaternion, L = ud.stressLat | 0;
+    let a = ud.powderPrev;
+    if (a && a[24] === run && a[16] === ps.x && a[17] === ps.y && a[18] === ps.z && a[19] === q.x && a[20] === q.y && a[21] === q.z && a[22] === q.w && a[23] === L) continue;
+    m.updateWorldMatrix(true, false);
+    if (!a) a = ud.powderPrev = new Float64Array(25);
+    a.set(m.matrixWorld.elements);
+    a[16] = ps.x; a[17] = ps.y; a[18] = ps.z; a[19] = q.x; a[20] = q.y; a[21] = q.z; a[22] = q.w; a[23] = L; a[24] = run;
+  }
+}
+// A grain a piece has moved into: put back where, along the piece's own move
+// since last frame, it would first have touched it — in the piece's frame the
+// grain went from where it was then to where it is now; the last of that way
+// still clear of the piece's blocks is where the piece's face has shoved it
+// to. False if that cannot be told (no pose kept, the lattice edited since,
+// the grain inside it then too) or the spot is in the ground: the caller's
+// older answer stands.
+const _pushM = new THREE.Matrix4(), _pushA = new THREE.Vector3(), _pushB = new THREE.Vector3(), _pushC = new THREE.Vector3();
+function powderPushBack(mesh, p, stamp) {
+  const a = mesh.userData.powderPrev;
+  if (!a || a[24] !== powderPoseRun || a[23] !== (mesh.userData.stressLat | 0) || !mesh.userData.blocks.length) return false;
+  mesh.updateWorldMatrix(true, false);
+  _pushM.fromArray(a).invert();
+  const A = _pushA.copy(p.pos).applyMatrix4(_pushM), B = mesh.worldToLocal(_pushB.copy(p.pos));
+  if (powderInOwnLocal(mesh, A)) return false;
+  const d = A.distanceTo(B), n = Math.max(1, Math.ceil(d / (0.25 * BLOCK)));
+  let lo = 0, hi = 1;
+  for (let k = 1; k <= n; k++) {
+    if (!powderInOwnLocal(mesh, _pushC.lerpVectors(A, B, k / n))) { lo = k / n; continue; }
+    hi = k / n;
+    break;
+  }
+  for (let b = 0; b < 6; b++) { const m = (lo + hi) / 2; if (powderInOwnLocal(mesh, _pushC.lerpVectors(A, B, m))) hi = m; else lo = m; }
+  const at = mesh.localToWorld(_pushC.lerpVectors(A, B, lo));
+  if (powderInGround(at.x, at.y, at.z) || powderInPiece(at.x, at.y, at.z)) return false;   // nor into another piece (v314)
+  powderMove(p, at.x, at.y, at.z);
+  return true;
+}
+// A grain overlapping blocks of `mesh`, put in the nearest empty cell of the
+// piece's own lattice round it (the 27 about its own) that lies on the grain's
+// side of every solid block it is in — never past a block's middle to its far
+// side, which for a lid or a wall is the outside — and not in the ground. A
+// cell's centre overlaps no block, so this clears a grain caught in a corner
+// (in a lid and a wall at once) as well as one in a single face, which no
+// push along one axis can. Its own lattice's powder is no place to go. False
+// if there is none: it is left where it is.
+const _depU = new THREE.Vector3(), _depW = new THREE.Vector3(), _depK = new THREE.Vector3();
+const _depIn = [];
+function powderDepen(mesh, p) {
+  const lat = mesh.userData.blocks;
+  if (!lat.length) return false;
+  mesh.updateWorldMatrix(true, false);
+  const cells = powderLockCells(mesh), solid = powderSolidCells(mesh), o = lat[0].pos, G = POWDER_GAP_B;
+  const u = mesh.worldToLocal(_depU.copy(p.pos)).sub(o).divideScalar(BLOCK);
+  // The solid blocks it is in.
+  _depIn.length = 0;
+  for (let a = Math.floor(u.x); a <= Math.floor(u.x) + 1; a++) {
+    if (Math.abs(u.x - a) >= G) continue;
+    for (let b = Math.floor(u.y); b <= Math.floor(u.y) + 1; b++) {
+      if (Math.abs(u.y - b) >= G) continue;
+      for (let c = Math.floor(u.z); c <= Math.floor(u.z) + 1; c++) {
+        if (Math.abs(u.z - c) < G && solid.has(powderLockKey(_depK.set(a, b, c)))) _depIn.push(a, b, c);
+      }
+    }
+  }
+  const rx = Math.round(u.x), ry = Math.round(u.y), rz = Math.round(u.z);
+  let best = Infinity, bestE = 2, bx = 0, by = 0, bz = 0;
+  for (let a = rx - 1; a <= rx + 1; a++) for (let b = ry - 1; b <= ry + 1; b++) for (let c = rz - 1; c <= rz + 1; c++) {
+    if (cells.has(powderLockKey(_depK.set(a, b, c)))) continue;
+    const d = (a - u.x) ** 2 + (b - u.y) ** 2 + (c - u.z) ** 2;
+    if (bestE === 0 && d >= best) continue;
+    let side = true;
+    for (let e = 0; e < _depIn.length && side; e += 3) {
+      const sx = _depIn[e], sy = _depIn[e + 1], sz = _depIn[e + 2];
+      if ((a - sx) * (u.x - sx) + (b - sy) * (u.y - sy) + (c - sz) * (u.z - sz) <= 0) side = false;
+    }
+    if (!side) continue;
+    const w = mesh.localToWorld(_depW.set(a, b, c).multiplyScalar(BLOCK).add(o));
+    if (powderInGround(w.x, w.y, w.z)) continue;
+    // Nor into another piece lying against this one (v314): put out of each in
+    // turn, a grain wedged between two went back and forth every frame.
+    if (powderInPiece(w.x, w.y, w.z)) continue;
+    // A cell no grain is in before one that is: put in with another, a grain
+    // was put up on top of that one's whole stack, and from there rolled back
+    // down to here. A full box has only cells with grains in.
+    const e = powderGrainAt(w.x, w.y, w.z, p) ? 1 : 0;
+    if (e > bestE || (e === bestE && d >= best)) continue;
+    best = d; bestE = e; bx = a; by = b; bz = c;
+  }
+  if (best === Infinity) return false;
+  const w = mesh.localToWorld(_depW.set(bx, by, bz).multiplyScalar(BLOCK).add(o));
+  powderMove(p, w.x, w.y, w.z);
+  return true;
+}
+// The piece's solid (not powder) blocks, as powderLockCells keys, kept with it.
+function powderSolidCells(mesh) {
+  const ud = mesh.userData;
+  if (ud.solidCellsAt === powderStamp && ud.solidCellsRev === stressRev) return ud.solidCells;
+  const S = ud.solidCells ||= new Set(), lat = ud.blocks, o = lat[0].pos;
+  S.clear();
+  for (const b of lat) if (!MAT_STATS[b.mat]?.powder) S.add(powderLockKey(_lockC.copy(b.pos).sub(o).divideScalar(BLOCK).round()));
+  ud.solidCellsAt = powderStamp; ud.solidCellsRev = stressRev;
+  return S;
+}
+const powderOrder = [], powderOrderLoose = [];
 let powderStamp = 0;
 const powderSpot = new THREE.Vector3();
 
+const powderPassedTurned = [];   // turned pieces a grain falls past this frame (v308)
+const _faceN = new THREE.Vector3(), _faceQ = new THREE.Quaternion();
+// Whether a grain of `mat` rests on a face looking along unit world `n` (v310):
+// its tilt from level within the material's place angle.
+const faceRests = (n, mat) => n.y > 1e-6 && Math.sqrt(Math.max(0, 1 - n.y * n.y)) <= reposeTan[mat] * n.y + 1e-6;
+const _faceAt = (mesh, k, sgn) => _faceN.set(0, 0, 0).setComponent(k, sgn).applyQuaternion(mesh.getWorldQuaternion(_faceQ));
+
+// ----- a grain resting on a piece rides it (v311) -----
+// A grain at rest on a piece off the world grid is kept as a spot in the
+// piece's own frame, so it goes where the piece goes and turns as it turns,
+// instead of being left at a point in the world the piece moves out from
+// under. It is held on the face it came to rest on (lk, the block lb, its face
+// lx), and let go — to be a falling grain from where it is on the piece — once
+// that face no longer holds it: the block is gone or built over, the face has
+// tilted past the material's place angle, the piece comes square (its own
+// lattice takes powder then) or leaves the world, or its spot is taken. A
+// grain at rest on such a grain (lg) rides the same piece for as long as the
+// one under it does. Spots are kept with the piece's recentring shift added,
+// so digging or building on the piece does not move them.
+// Off, and a resting grain is held at its point in the world as v310 had it.
+const POWDER_RIDES = true;
+let powderLockSeq = 0;
+const _lockAt = new THREE.Vector3(), _lockB = new THREE.Vector3();
+function powderLockKeep(g, mesh) {
+  mesh.updateWorldMatrix(true, false);
+  mesh.worldToLocal(g.lp.copy(g.pos));
+  const S = mesh.userData.powderShift;
+  if (S) g.lp.add(S);
+  g.lk = mesh; g.ls = ++powderLockSeq;
+  g.lq = -1;   // freshly at rest: its first look round is owed now, whatever else is quiet
+}
+function powderLock(g, mesh, b, ax) {
+  powderLockKeep(g, mesh);
+  const S = mesh.userData.powderShift;
+  g.lb.copy(b.pos); if (S) g.lb.add(S);
+  g.lx = ax; g.lg = null;
+}
+function powderLockOn(g, under) {
+  powderLockKeep(g, under.lk);
+  g.lg = under; g.lgs = under.ls;
+}
+// Where the piece has carried a locked grain to, in the world: into _lockAt.
+function powderLockSpot(g) {
+  const mesh = g.lk, S = mesh.userData.powderShift;
+  _lockAt.copy(g.lp); if (S) _lockAt.sub(S);
+  mesh.updateWorldMatrix(true, false);
+  return mesh.localToWorld(_lockAt);
+}
+// Whether the piece still holds a locked grain.
+function powderLockHolds(g) {
+  const mesh = g.lk;
+  if (mesh.parent !== debris || !mesh.userData.blocks?.length || pieceSquare(mesh.quaternion)) return false;
+  if (g.lg) return g.lg.lk === mesh && g.lg.ls === g.lgs;
+  const S = mesh.userData.powderShift, cells = powderLockCells(mesh), o = mesh.userData.blocks[0].pos;
+  const at = _lockB.copy(g.lb); if (S) at.sub(S);
+  at.sub(o).divideScalar(BLOCK).round();
+  if (!cells.has(powderLockKey(at))) return false;
+  const k = Math.abs(g.lx) - 1, sgn = Math.sign(g.lx);
+  at.setComponent(k, at.getComponent(k) + sgn);
+  if (cells.has(powderLockKey(at))) return false;
+  return faceRests(_faceAt(mesh, k, sgn), g.mat);
+}
+// A piece's blocks as whole steps from its first block, filed once per frame
+// and again after any edit to a piece (stressRev), so each locked grain asks a
+// set rather than walking a lattice that may be thousands long.
+const powderLockKey = (v) => (v.x + 1024) * 4194304 + (v.y + 1024) * 2048 + (v.z + 1024);
+const _lockC = new THREE.Vector3();
+function powderLockCells(mesh) {
+  const ud = mesh.userData;
+  if (ud.lockCellsAt === powderStamp && ud.lockCellsRev === stressRev) return ud.lockCells;
+  const S = ud.lockCells ||= new Set(), lat = ud.blocks, o = lat[0].pos;
+  S.clear();
+  for (const b of lat) S.add(powderLockKey(_lockC.copy(b.pos).sub(o).divideScalar(BLOCK).round()));
+  ud.lockCellsAt = powderStamp; ud.lockCellsRev = stressRev;
+  return S;
+}
+
+// ----- a riding grain sits in the world's cells (v314) -----
+// Turned to the world since v309, a riding grain is placed by the world too:
+// of the world cells its carried spot (powderLockSpot) overlaps — at most
+// eight, those within a block of it on every axis — it sits in the nearest
+// that is free: in the field, no grain moved there this frame, no ground, the
+// cell's middle not inside a block of its own piece or of any other. So a grain
+// on a piece sits in the same cells a grain on the ground does, and steps from
+// one to the next as the piece carries its spot across, never more than its
+// own cube away from the spot. A grain stacked on a riding grain (lg) sits in
+// the cell straight over that one, by world gravity. The spot itself (lp) is
+// never moved, so the grain is back in the same cell whenever the piece is back
+// in the same pose. With no free cell it is let go, as with its spot taken.
+// While the piece is moving, a grain keeps the cell it is in for as long as
+// that cell is still free and its carried cube still overlaps it, so a piece
+// rocking or settling by less than a block does not flip grains to and fro
+// between two cells; once the piece is still, each grain goes to its nearest
+// (lw: the cell it is in was picked so).
+const _cellCand = [], _cellFrom = new THREE.Vector3();
+for (let n = 0; n < 8; n++) _cellCand.push([0, 0, 0, 0]);
+const _cellW = new THREE.Vector3();
+// Whether the middle of the world cell at x, y, z is inside a block of `mesh`.
+function powderCentreIn(mesh, x, y, z) {
+  const lat = mesh.userData.blocks;
+  if (mesh.parent !== debris || !lat?.length) return false;
+  mesh.updateWorldMatrix(true, false);
+  const c = mesh.worldToLocal(_cellW.set(x, y, z)).sub(lat[0].pos).divideScalar(BLOCK).round();
+  return powderLockCells(mesh).has(powderLockKey(c));
+}
+// The same, for `own` and every other piece filed near (powderCatchFile).
+function powderCentreInAny(x, y, z, own) {
+  if (powderCentreIn(own, x, y, z)) return true;
+  const near = powderCatchCells.get(debrisCellKey(Math.floor(x / CATCH_CELL), Math.floor(z / CATCH_CELL)));
+  if (near) for (let e = 0; e < near.length; e += 2) {
+    const m = near[e], c = near[e + 1];
+    if (m === own || y > c.maxY + BLOCK || y < c.minY - BLOCK || x < c.minX - BLOCK || x > c.maxX + BLOCK || z < c.minZ - BLOCK || z > c.maxZ + BLOCK) continue;
+    if (powderCentreIn(m, x, y, z)) return true;
+  }
+  return false;
+}
+// Whether the way from `from` (world) to the middle of the cell at x, y, z
+// stays out of the blocks of `mesh`: a grain is never put in a cell on the far
+// side of a wall from its spot — a tilted box's wall can lie between the spot
+// and a cell less than a block from it on every world axis.
+const _segL = new THREE.Vector3(), _segA = new THREE.Vector3(), _segK = new THREE.Vector3();
+function powderSegClear(mesh, from, x, y, z) {
+  const lat = mesh.userData.blocks;
+  if (mesh.parent !== debris || !lat?.length) return true;
+  mesh.updateWorldMatrix(true, false);
+  const cells = powderLockCells(mesh), o = lat[0].pos;
+  const a = mesh.worldToLocal(_segA.copy(from)).sub(o).divideScalar(BLOCK);
+  const b = mesh.worldToLocal(_segL.set(x, y, z)).sub(o).divideScalar(BLOCK);
+  const n = Math.max(1, Math.ceil(a.distanceTo(b) * 4));
+  for (let k = 1; k <= n; k++) {
+    if (cells.has(powderLockKey(_segK.lerpVectors(a, b, k / n).round()))) return false;
+  }
+  return true;
+}
+function powderCellFree(x, y, z, p, stamp, from) {
+  if (x < POWDER_EDGE_LO || x > POWDER_EDGE_HI || z < POWDER_EDGE_LO || z > POWDER_EDGE_HI) return false;
+  if (powderClear(x, y, z, p, stamp)) return false;
+  if (powderCentreInAny(x, y, z, p.lk)) return false;
+  return !from || powderSegClear(p.lk, from, x, y, z);
+}
+// The cell a locked grain p sits in this frame, into _lockAt, or null if none
+// is free. The pieces must be filed.
+function powderLockCell(p, stamp, keep) {
+  p.lw = true;
+  if (p.lg) {
+    const q = p.lg.pos;   // lower, so placed already this frame
+    return powderCellFree(q.x, q.y + BLOCK, q.z, p, stamp, q) ? _lockAt.set(q.x, q.y + BLOCK, q.z) : null;
+  }
+  const A = _cellFrom.copy(powderLockSpot(p));
+  if (keep) {
+    p.lw = false;
+    const g = p.pos;
+    if (Math.abs(g.x - A.x) < BLOCK && Math.abs(g.y - A.y) < BLOCK && Math.abs(g.z - A.z) < BLOCK
+        && powderCellFree(g.x, g.y, g.z, p, stamp, A)) return g;
+  }
+  const u = (A.x + GEN_R) / BLOCK - 0.5, v = A.y / BLOCK - 0.5, w = (A.z + GEN_R) / BLOCK - 0.5;
+  const i = Math.floor(u), l = Math.floor(v), k = Math.floor(w);
+  let n = 0;
+  for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) for (let c = 0; c < 2; c++) {
+    const e = _cellCand[n++];
+    e[0] = i + a; e[1] = l + b; e[2] = k + c;
+    e[3] = (u - i - a) * (u - i - a) + (v - l - b) * (v - l - b) + (w - k - c) * (w - k - c);
+  }
+  _cellCand.sort((x, y) => x[3] - y[3]);   // stable: equally near ones in a fixed order
+  // A cell no grain is in at all first: one another grain still sits in, not
+  // yet asked this frame, taken from it, two grains that both had it nearest
+  // took it from each other in turn every frame. Only with none such, as before.
+  for (let pass = 0; pass < 2; pass++) for (const e of _cellCand) {
+    const x = colX(e[0]), y = (e[1] + 0.5) * BLOCK, z = colZ(e[2]);
+    if (!pass && powderGrainAt(x, y, z, p)) continue;
+    if (powderCellFree(x, y, z, p, stamp, A)) return _lockAt.set(x, y, z);
+  }
+  // All taken: where the nearest is held by grains the same piece carries, it
+  // goes on top of them, as a grain coming down on a pile does, and rides
+  // stacked on the top one.
+  for (const e of _cellCand) {
+    const x = colX(e[0]), z = colZ(e[2]);
+    let y = (e[1] + 0.5) * BLOCK, g = powderGrainAt(x, y, z, p, 0, stamp), top = null;
+    while (g && g.lk === p.lk && Math.abs(g.pos.x - x) < 1e-9 && Math.abs(g.pos.z - z) < 1e-9) { top = g; y = g.pos.y + BLOCK; g = powderGrainAt(x, y, z, p, 0, stamp); }
+    if (!top) continue;
+    for (let q = top; q; q = q.lg) if (q === p) return null;   // never onto a stack standing on itself
+    if (!powderCellFree(x, y, z, p, stamp, top.pos)) return null;
+    p.lg = top; p.lgs = top.ls;
+    return _lockAt.set(x, y, z);
+  }
+  return null;
+}
+
+// ----- powder on a piece is still powder (v312) -----
+// A grain riding a piece is carried, but it is a grain too: each frame it asks
+// the question a grain on the ground asks when it lands (powderRoll) — is there
+// a side to roll off to — and rolls there if so, to fall on from that spot as
+// any grain does and come to rest (and ride) wherever it lands. A pile poured
+// on a piece so spreads to the material's angle and spills off the edges, and
+// a grain the one under it rolled out from under (its lg let go) falls in turn.
+// The question goes by world gravity, as the rest does since v309: the four
+// sides are world-level steps of a block from where the grain is, a cell
+// "free" if no grain, ground or piece is in a grain's cube there. Off, and a
+// riding grain stays put until the face lets it go, as v311 had it.
+const POWDER_FLOWS = true;
+// Which way first, when several are open: a hash rather than Math.random, so a
+// pile on a piece does not shift the draw every ground grain after it makes.
+const powderRideSide = (p) => Math.imul(p.ls ^ (powderStamp * 40503), 0x9E3779B1) >>> 30;
+// Asked again only when something could have changed the answer: the piece
+// moved, any grain moved, landed, rolled or let go last frame (powderRideStir),
+// or a piece was edited (stressRev). A still pile on a still piece costs one
+// compare per grain. Every POWDER_RIDE_RECHECK frames each asks anyway, for
+// what none of those see (the ground dug beside a piece).
+let powderRideStir = 0, powderRideStirNext = false;
+const POWDER_RIDE_RECHECK = 30;
+function powderRideDue(p, stamp) {
+  const ud = p.lk.userData;
+  if (ud.ridePoseAt !== stamp) {
+    const e = p.lk.matrixWorld.elements, q = ud.ridePose ||= new Float64Array(16);
+    let moved = false;
+    for (let k = 0; k < 16; k++) if (Math.abs(e[k] - q[k]) > 1e-5) { moved = true; q[k] = e[k]; }
+    ud.ridePoseAt = stamp; ud.rideMoved = moved;
+  }
+  if (!ud.rideMoved && p.lq === powderRideStir && p.lr === stressRev && (p.ls + stamp) % POWDER_RIDE_RECHECK) return false;
+  p.lq = powderRideStir; p.lr = stressRev;
+  return true;
+}
+// Whether a grain's cube at world x, y, z overlaps a block of `mesh`: the
+// powderSweep test, asked of the piece's filed steps (powderLockCells) — at
+// most the 8 cells round the point — instead of every block.
+const _rideL = new THREE.Vector3(), _rideC = new THREE.Vector3();
+const POWDER_GAP_B = POWDER_GAP / BLOCK;
+function powderRideInOwn(mesh, x, y, z) {
+  return powderInOwnLocal(mesh, mesh.worldToLocal(_rideW.set(x, y, z)));
+}
+// The same for a point already in the piece's own frame.
+const _rideW = new THREE.Vector3();
+function powderInOwnLocal(mesh, v) {
+  const cells = powderLockCells(mesh), o = mesh.userData.blocks[0].pos;
+  const c = _rideC.copy(v).sub(o).divideScalar(BLOCK);
+  const fx = Math.floor(c.x), fy = Math.floor(c.y), fz = Math.floor(c.z);
+  for (let a = fx; a <= fx + 1; a++) {
+    if (Math.abs(c.x - a) >= POWDER_GAP_B) continue;
+    for (let b = fy; b <= fy + 1; b++) {
+      if (Math.abs(c.y - b) >= POWDER_GAP_B) continue;
+      for (let d = fz; d <= fz + 1; d++) {
+        if (Math.abs(c.z - d) >= POWDER_GAP_B) continue;
+        if (cells.has(powderLockKey(_rideL.set(a, b, d)))) return true;
+      }
+    }
+  }
+  return false;
+}
+// Free for a riding grain to roll into: in the field, no grain, ground or piece
+// there. Asked a hair higher than the spot, so a cell that only touches what is
+// under it (a grain's own resting place, one over) counts as free, as a cell
+// over the ground does.
+const POWDER_RIDE_LIFT = 1e-3 * BLOCK;
+function powderRideFree(x, y, z, p) {
+  if (x < POWDER_EDGE_LO || x > POWDER_EDGE_HI || z < POWDER_EDGE_LO || z > POWDER_EDGE_HI) return false;
+  y += POWDER_RIDE_LIFT;
+  if (powderClear(x, y, z, p)) return false;
+  const own = p.lk;
+  if (powderRideInOwn(own, x, y, z)) return false;
+  const near = powderCatchCells.get(debrisCellKey(Math.floor(x / CATCH_CELL), Math.floor(z / CATCH_CELL)));
+  if (near) for (let e = 0; e < near.length; e += 2) {
+    const m = near[e], c = near[e + 1], r = 2 * BLOCK;
+    if (m === own || y > c.maxY + r || y < c.minY - r || x < c.minX - r || x > c.maxX + r || z < c.minZ - r || z > c.maxZ + r) continue;
+    if (powderSweep(m, x, y, z, y) === 0) return false;
+  }
+  return true;
+}
+// powderRoll's question for a riding grain p, cell for cell, with the free
+// cells above standing in for the ground's air: the world spot to roll to,
+// into _rideTo, or null to stay. Angle 0 stops at its reach (no far look on a
+// piece: question.md).
+const _rideTo = new THREE.Vector3();
+function powderRideRoll(p) {
+  const m = p.mat, R = reposeReach[m];
+  if (!R) return null;
+  const x = p.pos.x, y = p.pos.y, z = p.pos.z, s0 = powderRideSide(p);
+  if (reposeStd[m]) {
+    for (let s = 0; s < 4; s++) {
+      const [u, v] = POWDER_SIDES[(s0 + s) & 3], sx = x + u * BLOCK, sz = z + v * BLOCK;
+      if (powderRideFree(sx, y, sz, p) && powderRideFree(sx, y - BLOCK, sz, p)) return _rideTo.set(sx, y, sz);
+    }
+    return null;
+  }
+  const L0 = m * REPOSE_REACH_MAX, L1 = reposeLim[L0];
+  let best = -1, bestK = R + 1;
+  for (let s = 0; s < 4; s++) {
+    const [u, v] = POWDER_SIDES[(s0 + s) & 3];
+    let dPrev = 0;
+    for (let k = 1; k < bestK; k++) {
+      const sx = x + u * k * BLOCK, sz = z + v * k * BLOCK;
+      if (!powderRideFree(sx, y, sz, p)) break;
+      const L = reposeLim[L0 + k - 1], cap = Math.max(L, dPrev + L1 + 1);
+      let d = 0;
+      while (d < cap && powderRideFree(sx, y - (d + 1) * BLOCK, sz, p)) d++;
+      if (k > 1 && d - dPrev > L1) break;
+      if (d >= L) { best = (s0 + s) & 3; bestK = k; break; }
+      dPrev = d;
+    }
+  }
+  if (best < 0) return null;
+  const [u, v] = POWDER_SIDES[best];
+  return _rideTo.set(x + u * BLOCK, y, z + v * BLOCK);
+}
 function catchPowder(dt) {
   let filed = false;   // the cells are filed on first need, and again after anything that may move or make pieces
   const reach = 2 * BLOCK;   // a grain's cube can touch a block of a turned piece from this far off across
@@ -9920,8 +10621,9 @@ function catchPowder(dt) {
   for (let n = 0; n < len; n++) ord.push(n);
   ord.sort((x, y) => a[x].pos.y - a[y].pos.y || y - x);
   const stamp = ++powderStamp;
+  if (powderRideStirNext) { powderRideStir++; powderRideStirNext = false; }
   let gone = 0;
-  const leave = (n) => { powderIdxDel(a[n]); a[n] = null; gone++; };
+  const leave = (n) => { powderIdxDel(a[n]); a[n] = null; gone++; powderRideStirNext = true; };
   // How deep the stack each grain is in, from where they all are before any
   // moves: highest first, a grain's depth from it up (d) is one more than that
   // of the grain sitting square on it, and the grain under it is noted (dn).
@@ -9933,12 +10635,78 @@ function catchPowder(dt) {
     else p.d = 1;
     p.t = -stamp;
   }
+  // Grains a piece is carrying go before the rest (v314), lowest first still,
+  // so each is in its cell for the frame before any loose grain asks what is
+  // where: a loose grain going by keeps out of a carried one's cell instead of
+  // taking it first and shoving it out to a neighbour for a frame.
+  let carried = 0;
+  if (restedChunks.length || fallingChunks.length) for (let o = 0; o < len; o++) if (a[ord[o]].lk) carried++;
+  if (carried && carried < len) {
+    const tmp = powderOrderLoose;
+    tmp.length = 0;
+    let w = 0;
+    for (let o = 0; o < len; o++) { const n = ord[o]; if (a[n].lk) ord[w++] = n; else tmp.push(n); }
+    for (const n of tmp) ord[w++] = n;
+  }
   grains: for (let o = 0; o < len; o++) {
     const n = ord[o], p = a[n];
     p.t = stamp;
     if (p.dn) p.d = p.dn.d;   // the grain under it went first and holds the stack's depth by now
     if (p.d > p.push) p.push = p.d;
     p.v = Math.min(Math.max(p.v + POWDER_G * dt, powderPushV(p.push)), POWDER_VMAX);
+    // Locked to a piece: carried to its spot there, and that is all, while the
+    // piece holds it and nothing else is in the spot. Let go, it is a grain on
+    // the piece where the piece took it (if that is free), falling or sliding
+    // from there by the rules below.
+    if (p.lk) {
+      const holds = powderLockHolds(p), due = holds && powderRideDue(p, stamp);
+      // In the world cell it sits in (v314): kept while nothing that could
+      // change which cell that is has changed — the piece has not moved, no
+      // grain moved, no piece was edited — and the cell is still free, the one
+      // under it still under it; asked again otherwise.
+      let at = null;
+      const q = p.lg?.pos;
+      if (!due && holds && p.lw && !powderClear(p.pos.x, p.pos.y, p.pos.z, p, stamp)
+          && (!q || (q.x === p.pos.x && q.z === p.pos.z && q.y + BLOCK === p.pos.y))) at = p.pos;
+      else {
+        if (!filed && (restedChunks.length || fallingChunks.length)) { powderCatchFile(reach); filed = true; }
+        at = powderLockCell(p, stamp, holds && p.lk.userData.rideMoved);
+        // No world cell free for it (a full box turned off the grid has fewer
+        // cells inside it than grains): it is at the spot the piece carries it
+        // to, as v311 had every riding grain — never left where it sat last
+        // frame, which a turning wall may have passed — held there while the
+        // piece holds it, and asks for a cell again each frame.
+        if (!at) {
+          p.lw = false;
+          const A = powderLockSpot(p);
+          if (A.x >= POWDER_EDGE_LO && A.x <= POWDER_EDGE_HI && A.z >= POWDER_EDGE_LO && A.z <= POWDER_EDGE_HI && !powderInGround(A.x, A.y, A.z)) at = A;
+        }
+        if (at && !at.equals(p.pos)) { powderMove(p, at.x, at.y, at.z); powderRideStirNext = true; }
+      }
+      if (holds && at) {
+        p.v = 0;
+        // Held, it still rolls where a grain would (v312): off the side, it is
+        // let go there and falls on from it below, like a grain let go.
+        if (!POWDER_FLOWS || !due) continue;
+        const to = powderRideRoll(p);
+        if (!to) continue;
+        powderMove(p, to.x, to.y, to.z);
+      }
+      p.lk = null; p.lg = null;
+      p.v = 0;
+    }
+    // A grain that moved since last frame (or is new, or was just let go — its
+    // lp is not its world point then) may have changed what a riding grain
+    // rests on; one parked still, waiting on a steep face, has not. lp is free
+    // to keep last frame's point while a grain is not locked.
+    if (!p.lp.equals(p.pos)) { powderRideStirNext = true; p.lp.copy(p.pos); }
+    // Past the edge of the field (put there last frame, or made there): back to
+    // the edge column. It is a grain there like any other this frame — inside
+    // the ground there it comes up out of it, onto a grain it goes on top.
+    if (p.pos.x < POWDER_EDGE_LO || p.pos.x > POWDER_EDGE_HI || p.pos.z < POWDER_EDGE_LO || p.pos.z > POWDER_EDGE_HI) {
+      powderMove(p, Math.min(Math.max(p.pos.x, POWDER_EDGE_LO), POWDER_EDGE_HI), p.pos.y,
+                 Math.min(Math.max(p.pos.z, POWDER_EDGE_LO), POWDER_EDGE_HI));
+    }
     const px = p.pos.x, pz = p.pos.z, y0 = p.pos.y;
     let y = y0 - p.v * dt;
     // A grain under it that has moved: it comes down onto that and on at its
@@ -9950,20 +10718,28 @@ function catchPowder(dt) {
     // own, either of them fast: off the side. Two grains of a stack go at the
     // same pace (the same push), so a stack holds together. From there it is a
     // grain falling like any other.
-    if (powderUnderTop > y && Math.max(powderUnderG.v, p.v) >= POWDER_SLIDE_V && Math.abs(powderUnderG.v - p.v) >= POWDER_SLIDE_DV) {
+    // A grain a piece is carrying is not going anywhere of its own (v314): one
+    // coming down onto it stops on it, as on the ground, rather than sliding
+    // off to the next carried grain and back every frame.
+    if (powderUnderTop > y && !powderUnderG.lk && Math.max(powderUnderG.v, p.v) >= POWDER_SLIDE_V && Math.abs(powderUnderG.v - p.v) >= POWDER_SLIDE_DV) {
       const pieces = restedChunks.length > 0 || fallingChunks.length > 0;
       if (pieces && !filed) { powderCatchFile(reach); filed = true; }
       const vq = powderUnderG.v;
       if (powderSlide(p, px, y0, pz, pieces)) { p.v = Math.max(p.v, vq); continue; }
       powderGrainAt(px, y0, pz, p, stamp);   // the looking round lost which one is under it
     }
-    if (powderUnderTop > y0) {
+    // Inside a piece as well (pressed into a tilted box's lid with a grain under
+    // it), the piece comes first: it is put out of the piece below, and only
+    // then is there a question of which grain is on which.
+    if (powderUnderTop > y0 && !powderPieceAt(px, y0, pz)) {
       const top = powderAbove(px, powderUnderTop, pz, p, stamp);
-      if (powderClear(px, top, pz, p) !== 2) powderMove(p, px, top, pz);
+      // Nor into a piece over it (a tilted box's lid): the same.
+      if (!powderInGround(px, top, pz) && !powderPieceAt(px, top, pz)) powderMove(p, px, top, pz);
       p.v = 0;
       continue;
     }
-    if (powderUnderTop > y) { y = powderUnderTop; p.v = powderUnderG.v; }
+    const onG = powderUnderTop > y ? powderUnderG : null;
+    if (onG) { y = powderUnderTop; p.v = onG.v; }
     // The ground on the way: the first solid cell in its column its underside
     // comes to, all of them in turn, so it cannot pass through a thin one.
     // Already inside one (thrown into the ground) it comes up to the first free
@@ -9984,22 +10760,80 @@ function catchPowder(dt) {
     if (!inside && !p.thru && (restedChunks.length || fallingChunks.length)) {
       if (!filed) { powderCatchFile(reach); filed = true; }
       const near = powderCatchCells.get(debrisCellKey(Math.floor(px / CATCH_CELL), Math.floor(pz / CATCH_CELL)));
-      let mesh = null, t = Infinity;
-      if (near) for (let e = 0; e < near.length; e += 2) {
-        const m = near[e], c = near[e + 1];
-        if (m === p.from) continue;
-        if (yEnd > c.maxY + reach || y0 < c.minY - reach || px < c.minX - reach || px > c.maxX + reach
-            || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
-        const tm = powderSweep(m, px, y0, pz, yEnd);
-        if (tm < t) { t = tm; mesh = m; }
+      let mesh = null, t = Infinity, faceY = 0, faceAx = 0, faceB = null;
+      powderPassedTurned.length = 0;
+      for (;;) {
+        mesh = null; t = Infinity;
+        if (near) for (let e = 0; e < near.length; e += 2) {
+          const m = near[e], c = near[e + 1];
+          if (m === p.from || powderPassedTurned.includes(m)) continue;
+          if (yEnd > c.maxY + reach || y0 < c.minY - reach || px < c.minX - reach || px > c.maxX + reach
+              || pz < c.minZ - reach || pz > c.maxZ + reach) continue;
+          const tm = powderSweep(m, px, y0, pz, yEnd);
+          if (tm < t) { t = tm; mesh = m; faceAx = powderSweepAx; faceB = powderSweepB; }
+        }
+        // Inside a block of the piece from the start: the piece moved into it
+        // since last frame. It is pushed back out the way the piece came at it,
+        // so a wall turning or sliding through a grain shoves it along in front,
+        // on the side it was on — never on out through the far side of the wall.
+        // Failing that (no pose kept, or it was in the block then too), out by
+        // the shortest way it may go (powderDepen), which for a block that has
+        // only just come into it is back the way it came. Never lifted to the
+        // face over it or let fall on through: the face over a grain in a lid
+        // is the lid's outside.
+        // With no way out at all it waits where it is this frame, inside.
+        if (mesh && t === 0 && !faceAx) {
+          if (!powderPushBack(mesh, p, stamp)) powderDepen(mesh, p);
+          p.v = 0;
+          continue grains;
+        }
+        if (!mesh || pieceSquare(mesh.quaternion)) break;
+        // A piece off the world grid is just faces in the world (v310): the grain
+        // touches the face it came down onto, there. Inside the piece already (it
+        // moved into the grain), the face over it, as the waits below do; none,
+        // and it goes on down past that piece only, this frame.
+        faceY = y0 + (yEnd - y0) * t;
+        if (!faceAx) {
+          const top = y0 + 2 * BLOCK, tu = powderSweep(mesh, px, top, pz, y0);
+          if (tu > 0 && tu < 1 && powderSweepAx) { faceY = top - 2 * BLOCK * tu; faceAx = powderSweepAx; faceB = powderSweepB; }
+        }
+        if (faceAx) break;
+        powderPassedTurned.push(mesh);
       }
-      if (mesh && !pieceSquare(mesh.quaternion)) {
-        // A turned piece holds no powder: off its side to fall on from there. No
-        // clear column in reach, and it goes on down past the pieces to the ground.
-        const off = powderOffPiece(px, y0 + (yEnd - y0) * t, pz, p, stamp);
-        if (off) { powderMove(p, off.x, off.y, off.z); p.v = 0; continue; }
-        p.thru = true;
-        mesh = null;
+      if (mesh && faceAx && !pieceSquare(mesh.quaternion)) {
+        // The face's world tilt against the material's place angle: within it the
+        // grain rests where it touched, held there for as long as the face stays
+        // so (it is asked again every frame); steeper, it slides on down the face
+        // by what is left of its fall this frame, at its pace, and falls on from
+        // wherever that leaves it.
+        const k = Math.abs(faceAx) - 1, n = _faceAt(mesh, k, Math.sign(faceAx));
+        const ny = n.y, rest = faceRests(n, p.mat);
+        const r = Math.max(0, faceY - yEnd);
+        if (!rest && r > 0) {
+          const sx = px + r * ny * n.x + 1e-4 * n.x, sy = faceY + r * (ny * ny - 1) + 1e-4 * n.y, sz = pz + r * ny * n.z + 1e-4 * n.z;
+          // Down the face only as far as nothing stands in the way: a fast grain
+          // slides blocks a frame, and a jump straight to the end would go
+          // through a wall at the bottom of the face (a tilted box's side) to
+          // the far side of it. Short of the first thing in the way it stops,
+          // against it, as it would at the foot of any slope.
+          const f = powderSlideFree(px, faceY + 1e-4 * n.y, pz, sx, sy, sz, p, stamp);
+          if (f > 0) { powderMove(p, px + (sx - px) * f, faceY + 1e-4 * n.y + (sy - faceY - 1e-4 * n.y) * f, pz + (sz - pz) * f); if (f === 1) continue; }
+          else powderMove(p, px, faceY, pz);
+          p.v = 0;
+          continue;
+        }
+        powderMove(p, px, faceY, pz);
+        p.v = 0;
+        // At rest there, it is the piece's to carry from now on (v311). A steep
+        // face's grain with its way down blocked only waits, as before.
+        if (rest && POWDER_RIDES && faceB) {
+          powderLock(p, mesh, faceB, faceAx);
+          // Into the world cell it sits in from the first frame (v314); with
+          // none free it waits where it touched, as an unheld grain.
+          const at = powderLockCell(p, stamp);
+          if (at) powderMove(p, at.x, at.y, at.z); else p.lk = null;
+        }
+        continue;
       }
       if (mesh) {
         p.pos.y = y0 + (yEnd - y0) * t;   // where it touches
@@ -10048,7 +10882,10 @@ function catchPowder(dt) {
             else {
               // Where it touched, then; if the piece has since moved into it, it goes up out of it.
               const top = p.pos.y + 2 * BLOCK, tu = powderSweep(mesh, px, top, pz, p.pos.y);
-              if (tu > 0 && tu < 1) p.pos.y = powderAbove(px, top - 2 * BLOCK * tu, pz, p, stamp);
+              if (tu > 0 && tu < 1) {
+                const up = powderAbove(px, top - 2 * BLOCK * tu, pz, p, stamp);
+                if (!powderInGround(px, up, pz) && !powderPieceAt(px, up, pz)) p.pos.y = up;   // not into the ground or a piece over it
+              }
             }
             p.v = 0;
             continue;
@@ -10061,11 +10898,32 @@ function catchPowder(dt) {
     }
     if (land === -Infinity) {
       p.pos.y = y;
+      // Come to rest on a grain the piece is carrying: carried too.
+      if (onG && onG.lk && y === onG.pos.y + BLOCK) {
+        powderLockOn(p, onG); p.v = 0;
+        if (!filed) { powderCatchFile(reach); filed = true; }
+        const at = powderLockCell(p, stamp);   // the cell over the one it is on (v314)
+        if (at) powderMove(p, at.x, at.y, at.z); else { p.lk = null; p.lg = null; }
+      }
       if (p.pos.y < FALL_KILL_Y) { leave(n); powderGrainFree(p); }
       continue;
     }
     let lvl = land;
-    while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) lvl++;   // the first free cell over what it hit
+    // The first free cell over what it hit. Up through powder only, which it
+    // pushes aside as a grain pushed into a pile comes out on top: never up
+    // through anything solid — a lid, a roof, a ledge — to the air on its far
+    // side, which would carry it out of wherever it was. Stopped by one, it
+    // comes out into the nearest air it can reach through the powder round it.
+    while (inVoxelRange(i, j, lvl) && voxelAt(i, j, lvl) !== AIR) {
+      if (!MAT_STATS[voxelAt(i, j, lvl)]?.powder) { lvl = -Infinity; break; }
+      lvl++;
+    }
+    if (lvl === -Infinity) {
+      const out = powderOut(i, j, land);
+      if (out) powderMove(p, out.x, out.y, out.z);
+      p.v = 0;   // with none, it waits in place: there is no free cell for it on this side of the solid
+      continue;
+    }
     // Landing on an edge it rolls off and falls on down the lower column,
     // where it may roll again — every roll is a level lower, so it stops. A
     // falling grain already moved there and it waits on top for a frame (one
@@ -10086,7 +10944,13 @@ function catchPowder(dt) {
       // over that cell (a face that is shedding): then it holds the spot too.
       if (!powderGrainAt(rx, ry, rz, p, 0, stamp)
           && !(inVoxelRange(ri, rj, lvl + 1) && voxelAt(ri, rj, lvl + 1) !== AIR && powderGrainAt(rx, ry, rz, p))) powderMove(p, rx, ry, rz);
-      else p.pos.y = powderAbove(px, ry, pz, p, stamp);
+      else {
+        // Up onto the grains in its own column, but never into the ground over
+        // them: a grain set inside a lid would come up out of the far side of
+        // it next frame. It waits where it was instead.
+        const top = powderAbove(px, ry, pz, p, stamp);
+        if (!powderInGround(px, top, pz) && !powderPieceAt(px, top, pz)) p.pos.y = top;
+      }
       p.v = 0;
       continue;
     }
@@ -10114,6 +10978,7 @@ function catchPowder(dt) {
     if (filed && (chunkSeq !== powderCatchSig || restedChunks.length !== powderCatchRested
                   || fallingChunks.length !== powderCatchFalling)) filed = false;
   }
+  powderPrevPoses();
   // Close up what went; anything spawned meanwhile is past len and stays.
   if (gone) {
     let w = 0;
@@ -10159,6 +11024,9 @@ function recentreDebris(mesh, body) {
     tw += w;
   }
   if (tw > 0) c.multiplyScalar(1 / tw);
+  // Every block's own-frame spot moves by c: a grain locked to the piece keeps
+  // its spot in the frame as it was, and takes the running total off (v311).
+  (mesh.userData.powderShift ||= new THREE.Vector3()).add(c);
   stressRev++;   // the stress overlay's cubes sit at these positions
   stressLatEdit(mesh);
   const m4 = new THREE.Matrix4();
@@ -10576,6 +11444,7 @@ const _debrisRollDown = new THREE.Vector3();
 const _debrisRollSide = new THREE.Vector3();
 const _debrisRollAt = new THREE.Vector3();
 const _debrisRollUnder = new THREE.Vector3();
+const _debrisRollW = new THREE.Vector3();
 function debrisRoll(mesh, local, m) {
   const lat = mesh.userData.blocks;
   mesh.getWorldQuaternion(_debrisRollQ).invert();
@@ -10592,10 +11461,46 @@ function debrisRoll(mesh, local, m) {
   };
   if (!filled(_debrisRollUnder.copy(local).add(d))) return false;
   const s0 = (Math.random() * 4) | 0;
-  // A piece is too small a lattice to read a slope off further out than its
-  // edge, so any place angle short of 90 keeps the one-step test; at 90 a grain
-  // stays where it lands, as on the ground.
+  // At 90 a grain stays where it lands, as on the ground.
   if (!reposeReach[m]) return null;
+  // Any other angle but 45 asks powderRoll's own question in the piece's
+  // lattice: out along each side, cell by cell while the way is free of the
+  // piece and the ground, how far it falls away there against reposeLim, the
+  // soonest fall winning. A grain only moves the first cell that way, so Dirt
+  // piles steeper and Water spreads level and runs off the edge, as on the
+  // ground.
+  if (!reposeStd[m]) {
+    const free = (v) => !filled(v) && (mesh.localToWorld(_debrisRollW.copy(v)), voxelAtWorld(_debrisRollW.x, _debrisRollW.y, _debrisRollW.z) === AIR);
+    const R = reposeReach[m], L0 = m * REPOSE_REACH_MAX, L1 = reposeLim[L0];
+    let best = -1, bestK = R + 1;
+    for (let s = 0; s < 4; s++) {
+      const [u, v] = POWDER_SIDES[(s0 + s) & 3];
+      _debrisRollSide.set(0, 0, 0).setComponent((axis + 1) % 3, u * BLOCK).setComponent((axis + 2) % 3, v * BLOCK);
+      const at = _debrisRollAt.copy(local);
+      let dPrev = 0;
+      for (let k = 1; k < bestK; k++) {
+        at.add(_debrisRollSide);
+        if (!free(at)) break;
+        const L = reposeLim[L0 + k - 1], cap = Math.max(L, dPrev + L1 + 1);
+        const under = _debrisRollUnder.copy(at);
+        let dn = 0;
+        while (dn < cap && free(under.add(d))) dn++;
+        // A fall off the side further out than the first cell is not the slope.
+        if (k > 1 && dn - dPrev > L1) break;
+        if (dn >= L) { best = (s0 + s) & 3; bestK = k; break; }
+        dPrev = dn;
+      }
+    }
+    if (best < 0) return null;
+    const [u, v] = POWDER_SIDES[best];
+    _debrisRollSide.set(0, 0, 0).setComponent((axis + 1) % 3, u * BLOCK).setComponent((axis + 2) % 3, v * BLOCK);
+    const at = mesh.localToWorld(_debrisRollAt.copy(local).add(_debrisRollSide));
+    // The caller's check for another piece under it: a cell with this piece
+    // under it (a step along level) is not one, so it asks of the cell itself.
+    if (filled(_debrisRollUnder.copy(local).add(_debrisRollSide).add(d))) _debrisRollUnder.copy(at);
+    else mesh.localToWorld(_debrisRollUnder);
+    return at;
+  }
   for (let s = 0; s < 4; s++) {
     const [u, v] = POWDER_SIDES[(s0 + s) & 3];
     // The two lattice axes across down, in turn, either way along each.
@@ -10670,24 +11575,22 @@ function placeOnDebris(mesh, local, m, rebuild = true, placed = false) {
 // a grain barred from this piece and it would fall through to the ground.
 // Either way it leaves as a grain from nowhere, free to land back on this
 // piece further down.
+const _layQ = new THREE.Quaternion(), _layDn = new THREE.Vector3();
 function layOnDebris(mesh, local, m, rebuild = true) {
   if (MAT_STATS[m]?.powder) {
+    // A piece off the world grid gives it no cell: it falls as a grain from
+    // where it was aimed, as beside the piece, and goes by world gravity (v309).
     if (!pieceSquare(mesh.quaternion)) {
-      // A piece lying at a tilt keeps it where it was aimed; one still moving does not.
-      const f = reposeFlat[m] ? null : chunkOfMesh(mesh);
-      if (!f || !(restedChunks.includes(f) || f.body.sleepState === 2 || f.body.type === CANNON.Body.STATIC)) {
-        mesh.localToWorld(powderGrain(0, 0, 0, m, null).pos.copy(local));
-        return;
-      }
-      mesh.userData.powderHold ??= mesh.quaternion.clone();
-      f.shedKey = -1;
-      placeOnDebris(mesh, local, m, rebuild, true);
+      mesh.localToWorld(powderGrain(0, 0, 0, m, null).pos.copy(local));
       return;
     }
-    // Straight on a solid block of the piece it stays where it was aimed, as on
+    // Straight on a solid block of the piece — the cell under it in the world,
+    // the piece's axis that is world down — it stays where it was aimed, as on
     // solid ground; on the piece's powder it rolls, so a pile keeps its angle.
+    mesh.getWorldQuaternion(_layQ).invert();
+    const dn = _layDn.set(0, -1, 0).applyQuaternion(_layQ).round().multiplyScalar(BLOCK).add(local);
     const solidUnder = !reposeFlat[m] && mesh.userData.blocks.some((b) => !MAT_STATS[b.mat]?.powder
-      && Math.abs(b.pos.x - local.x) < 0.1 && Math.abs(b.pos.y - (local.y - BLOCK)) < 0.1 && Math.abs(b.pos.z - local.z) < 0.1);
+      && Math.abs(b.pos.x - dn.x) < 0.1 && Math.abs(b.pos.y - dn.y) < 0.1 && Math.abs(b.pos.z - dn.z) < 0.1);
     const off = solidUnder ? null : debrisRoll(mesh, local, m);
     if (off !== null) {
       const g = powderGrain(0, 0, 0, m, null);
@@ -11106,7 +12009,7 @@ function editBlock(i, j, lvl, m) {
 // falls as whatever it already was.
 const matIndexByName = (name) => {
   const n = name.trim().toLowerCase();
-  return MAT_NAMES.indexOf(n === 'stone' ? 'rock' : n);
+  return n ? MAT_NAMES.indexOf(n) : -1;
 };
 
 function resolveBreakMat(m) {
@@ -11194,7 +12097,7 @@ function hammerTargetLive() {
     return mesh.parent === debris && !!lat && idx >= 0 && idx < lat.length && lat[idx] === blk;
   }
   const m = voxelAt(hammer.hit.i, hammer.hit.j, hammer.hit.lvl);
-  return m !== AIR && m !== WATER;
+  return m !== AIR;
 }
 // A lone cube struck: crushed to its powder where it lies, or, one that has
 // none, knocked along the blow.
@@ -11281,7 +12184,7 @@ function breakDebrisBlocks(mesh, idxs) {
 function breakBlock(i, j, lvl, gravity = true, eject = null) {
   if (!inVoxelRange(i, j, lvl)) return false;
   const m = voxelAt(i, j, lvl);
-  if (m === AIR || m === WATER) return false;
+  if (m === AIR) return false;
   const dropMat = resolveBreakMat(m);
   const crack = stressCrackAt(i, j, lvl);   // read while the cell still holds it
 
@@ -11580,7 +12483,7 @@ function hammerAim() {
   const dHit = debrisAim(ox, oy, oz);
   if (voxelRay(ox, oy, oz, aimDir.x, aimDir.y, aimDir.z, dHit ? dHit.distance : SHOVEL_REACH)) {
     const m = voxelAt(ddaHit.i, ddaHit.j, ddaHit.lvl);
-    if (m !== AIR && m !== WATER) {
+    if (m !== AIR) {
       hammer.hit = setCell(hammerHitCell, ddaHit.i, ddaHit.j, ddaHit.lvl);
       return;
     }
@@ -11869,6 +12772,9 @@ function matAngleSet(m, angle) {
 function customMatsStore() {
   try { localStorage.setItem(CUSTOM_MATS_KEY, JSON.stringify(customMatDefs())); } catch (e) {}
 }
+// A built-in row's transparency (Water's 75, or a pasted Copy stats table's).
+// Put in before the created materials, as theirs are.
+for (let m = 0; m < N_MATS; m++) if (MAT_STATS[m]?.transparency > 0) matClearSet(m, MAT_STATS[m].transparency);
 try {
   const saved = JSON.parse(localStorage.getItem(CUSTOM_MATS_KEY) || '[]');
   if (Array.isArray(saved)) for (const d of saved) { const def = customMatDef(d); if (def) customMatInstall(def); }
@@ -11947,79 +12853,170 @@ function frictionWake() {
   }
 }
 
+// A weight edit has to reach the pieces already made of it: a piece's mass,
+// centre of mass and inertia were worked out from its blocks' weights when it
+// was built, and its sink hull keeps their total. Each piece holding m gets
+// them again (a lone block gliding into place keeps its own until it lands),
+// every sinker looks at the powder round it again under the new weights, the
+// sleepers are woken, and the stress solve is done again — its loads are the
+// weights.
+function matWeightSet(m) {
+  for (const f of [...fallingChunks, ...restedChunks]) {
+    const mesh = f.mesh, body = f.body, lat = mesh?.userData.blocks;
+    if (!lat?.some((b) => b.mat === m)) continue;
+    delete mesh.userData.sinkHull;
+    if (!body || body.type !== CANNON.Body.DYNAMIC) continue;
+    body.mass = debrisMass(lat);
+    debrisWeighCentre(mesh, body);
+    body.updateMassProperties();
+    body.updateAABB();
+    body.wakeUp();
+  }
+  for (const st of sinkers.values()) st.scanQ = null;
+  frictionWake();
+  // The settled ground's weights, generated over each column, are of the old
+  // numbers wherever m is in it.
+  stSettledW.clear();
+  stressInvalidate();
+  stressRev++;
+}
+
+// Every setting a material has, as the panel edits it: what it is called, why
+// it matters, and the range it takes. Powder or solid is not among them — it
+// decides which of these a row has at all (a powder has a place angle, a solid
+// compression and pull), so it stays what the material was made as.
+const MAT_FIELDS = [
+  { key: 'weight', name: 'Weight', min: 0, above: true,
+    help: 'How much a block drags on you: a piece\'s mass, the load the stress solver puts on it, and whether it sinks into a powder (heavier) or floats on it (lighter).' },
+  { key: 'friction', name: 'Friction', min: 0,
+    help: 'How hard it grips what rests on it and what it rests on; as a powder, how hard it holds back what sinks through it.' },
+  { key: 'strength', name: 'Compression', min: 0, above: true,
+    help: 'What it takes to crush it; also how stiff its stress beams are, so how a load spreads through it.' },
+  { key: 'pull', name: 'Pull', min: 0, above: true,
+    help: 'What it takes to pull it apart.' },
+  { key: 'angle', name: 'Place angle', min: 0, max: 90,
+    help: 'The slope its heaps stand at, in degrees: 0 spreads flat, 90 stands as a wall.' },
+  { key: 'transparency', name: 'Transparency', min: 0, max: 100,
+    help: 'How much you see through it: 0 opaque, 100 unseen.' },
+];
+// The settings row m has: a powder's angle, a solid's (or a created powder's)
+// compression and pull.
+function matFieldsOf(m) {
+  const st = MAT_STATS[m];
+  if (!st) return [];
+  return MAT_FIELDS.filter((d) => d.key === 'strength' || d.key === 'pull' ? st[d.key] != null
+                                : d.key === 'angle' ? st.powder : true);
+}
+const matStatsOf = (m) => MAT_STATS[m];
+// What it is as shipped, or undefined for a created material (no table of its own).
+const matDefOf = (m, key) => MAT_STATS_DEF[m]?.[key] ?? (m < N_MATS && key === 'transparency' ? 0 : undefined);
+const matValOf = (m, key) => matStatsOf(m)[key] ?? (key === 'transparency' ? 0 : undefined);
+// One setting into the material and everything that reads it.
+function matStatSet(m, key, v) {
+  const st = matStatsOf(m);
+  st[key] = v;
+  if (key === 'transparency') matClearSet(m, v);
+  else if (key === 'angle') matAngleSet(m, v);
+  else if (key === 'friction') frictionWake();
+  else if (key === 'weight') matWeightSet(m);
+  else {
+    stressInvalidate();
+    // Compression is also the beams' stiffness, so how the load spreads: solved
+    // again. Pull only says where the answers in hand break.
+    if (key === 'strength') stressRev++;
+  }
+  if (isCustomMat(m)) customMatsStore();
+}
+
+// The read-out a row shows closed: every number, plain.
+function matSummary(i) {
+  const st = MAT_STATS[i];
+  if (!st) return 'no stats &mdash; not carryable';
+  const tr = st.transparency ?? 0;
+  return `Weight: ${st.weight} &middot; Friction: ${st.friction}`
+    + ` &middot; Compression: ${st.strength != null ? st.strength : '-'}`
+    + ` &middot; Pull: ${st.pull != null ? st.pull : '-'}`
+    + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}`
+    + (st.powder ? ` &middot; Place angle: ${st.angle}` : '')
+    // A built-in row says it only once it is see-through; a created one always.
+    + (isCustomMat(i) || tr > 0 ? ` &middot; Transparency: ${tr}` : '');
+}
+// The one row open for editing, if any: opening another closes it, so the list
+// stays a page of read-outs with at most one set of fields in it.
+let matOpen = -1;
+
 function buildMatList() {
-  const ids = [];
-  for (let i = 0; i < N_MATS; i++) ids.push(i);
-  ids.push(...customMatIds());
+  // The built-in ones in the owner's table's order (retired ids have no row),
+  // then the created ones.
+  const ids = [...MAT_ORDER, ...customMatIds()];
+  if (!ids.includes(matOpen)) matOpen = -1;
   matListEl.innerHTML = ids.map((i) => {
     // getHexString() converts the linear-space colour back to the sRGB the browser
     // wants, so the swatch matches what the cubes actually render as.
     const hex = '#' + TERRAIN_MATS[i].color.getHexString();
     const st = MAT_STATS[i];
     const name = st ? escapeHtml(st.name) : titleCase(MAT_NAMES[i]);
-    // Full width now, so the stats spell themselves out on one line.
-    const stats = st
-      ? `<span>Weight: ${st.weight} &middot; Friction: `
-        + `<input class="mat-str" data-mat="${i}" data-key="friction" type="text" inputmode="decimal" autocomplete="off" value="${st.friction}">`
-        + ` &middot; Compression: `
-        + `<input class="mat-str" data-mat="${i}" data-key="strength" type="text" inputmode="decimal" autocomplete="off" value="${st.strength}">`
-        + ` &middot; Pull: `
-        + `<input class="mat-str" data-mat="${i}" data-key="pull" type="text" inputmode="decimal" autocomplete="off" value="${st.pull}">`
-        + ` &middot; Powder: ${st.powder ? 'Yes' : 'No'}`
-        // A built-in powder holds sand's 45 degrees, and is not to be changed.
-        + (st.powder ? ' &middot; Place angle: ' + (isCustomMat(i)
-          ? `<input class="mat-str mat-par" data-mat="${i}" data-key="angle" type="text" inputmode="decimal" autocomplete="off" value="${st.angle}">`
-          : MAT_ANGLE_STD) : '')
-        + (isCustomMat(i)
-          ? ` &middot; Transparency: <input class="mat-str mat-par" data-mat="${i}" data-key="transparency" type="text" inputmode="decimal" autocomplete="off" value="${st.transparency}">`
-          : '')
-        + '</span>'
-      : '<span>no stats &mdash; not carryable</span>';
-    return '<div class="mat-row">'
+    const fields = matFieldsOf(i), open = i === matOpen;
+    const edit = !fields.length ? '' : `<div class="mat-edit" data-mat="${i}"${open ? '' : ' hidden'}>`
+      + fields.map((d) => {
+        const def = matDefOf(i, d.key);
+        const range = d.max != null ? `${d.min} to ${d.max}` : d.above ? `above ${d.min}` : `${d.min} or more`;
+        return '<div class="sink-row">'
+          + `<input class="mat-str" data-key="${d.key}" type="text" inputmode="decimal" autocomplete="off" value="${matValOf(i, d.key)}">`
+          + `<div><b>${d.name}</b><span>${d.help} ${def != null ? `Default ${def}; ` : ''}${range}.</span></div></div>`;
+      }).join('')
+      + `<div class="mat-note">Powder: ${st.powder ? 'Yes' : 'No'} &mdash; fixed, it decides which settings it has.</div>`
+      + (i < N_MATS ? `<button class="mat-btn mat-reset" data-mat="${i}">Defaults</button>` : '')
+      + '</div>';
+    return `<div class="mat-item">`
+         + '<div class="mat-row">'
          + `<div class="mat-sw" style="background:${hex}"></div>`
-         + `<div class="mat-txt"><b>${name}</b>${stats}</div>`
+         + `<div class="mat-txt"><b>${name}</b><span class="mat-sum">${matSummary(i)}</span></div>`
+         + (fields.length ? `<button class="mat-btn mat-open${open ? ' on' : ''}" data-mat="${i}">${open ? 'Done' : 'Edit'}</button>` : '')
          + (isCustomMat(i) ? `<button class="mat-del" data-mat="${i}">Delete</button>` : '')
-         + '</div>';
+         + '</div>' + edit + '</div>';
   }).join('');
 
-  // Friction, strength (compression) and pull are edited in place: a number above
-  // zero (friction may be 0) goes straight into MAT_STATS and the stress overlay
-  // re-solves with it; anything else is left marked until the field is left, when
-  // it snaps back to the value in force.
-  for (const el of matListEl.querySelectorAll('.mat-str:not(.mat-par)')) {
-    const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
-    el.addEventListener('input', () => {
-      const v = parseFloat(el.value.replace(',', '.'));
-      const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v) && (v > 0 || key === 'friction');
-      el.classList.toggle('bad', !ok);
-      if (!ok || v === st[key]) return;
-      st[key] = v;
-      if (isCustomMat(m)) customMatsStore();
-      if (key !== 'friction') stressInvalidate();
-      else frictionWake();
-    });
-    el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+  // Each field goes into the material as it is typed, once it is a number in
+  // its range (out of range it is marked and left out); the field shows what is
+  // in force once it is left. One off its default is marked, as on the Sink panel.
+  for (const box of matListEl.querySelectorAll('.mat-edit')) {
+    const m = +box.dataset.mat, sum = box.parentNode.querySelector('.mat-sum');
+    for (const el of box.querySelectorAll('input')) {
+      const key = el.dataset.key, d = MAT_FIELDS.find((x) => x.key === key);
+      const mark = () => { const def = matDefOf(m, key); el.classList.toggle('moved', def != null && matValOf(m, key) !== def); };
+      mark();
+      el.addEventListener('input', () => {
+        const v = parseFloat(el.value.replace(',', '.'));
+        const ok = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(v)
+                && (d.above ? v > d.min : v >= d.min) && !(d.max != null && v > d.max);
+        el.classList.toggle('bad', !ok);
+        if (!ok || v === matValOf(m, key)) return;
+        matStatSet(m, key, v);
+        mark();
+        sum.innerHTML = matSummary(m);
+      });
+      el.addEventListener('change', () => { el.value = String(matValOf(m, key)); el.classList.remove('bad'); });
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+    }
   }
-  // A created material's place angle and transparency, the same way: a number
-  // goes in at once, brought into range (0 to 90, 0 to 100) — marked if it had to
-  // be — and the field shows what is in force once it is left.
-  for (const el of matListEl.querySelectorAll('.mat-par')) {
-    const m = +el.dataset.mat, st = MAT_STATS[m], key = el.dataset.key;
-    const fit = key === 'angle' ? matAngleOf : matClearOf;
-    el.addEventListener('input', () => {
-      const raw = parseFloat(el.value.replace(',', '.'));
-      const num = /^\s*(\d+[.,]?\d*|[.,]\d+)\s*$/.test(el.value) && Number.isFinite(raw);
-      const v = num ? fit(raw) : NaN;
-      el.classList.toggle('bad', !num || v !== raw);
-      if (!num || v === st[key]) return;
-      st[key] = v;
-      if (key === 'angle') matAngleSet(m, v);
-      else matClearSet(m, v);
-      customMatsStore();
+  for (const el of matListEl.querySelectorAll('.mat-open')) {
+    bindTap(el, () => {
+      const m = +el.dataset.mat;
+      if (matListEl.contains(document.activeElement)) document.activeElement.blur();
+      matOpen = matOpen === m ? -1 : m;
+      buildMatList();
     });
-    el.addEventListener('change', () => { el.value = String(st[key]); el.classList.remove('bad'); });
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.blur(); });
+  }
+  for (const el of matListEl.querySelectorAll('.mat-reset')) {
+    bindTap(el, () => {
+      const m = +el.dataset.mat;
+      for (const d of matFieldsOf(m)) {
+        const def = matDefOf(m, d.key);
+        if (def != null && matValOf(m, d.key) !== def) matStatSet(m, d.key, def);
+      }
+      buildMatList();
+    });
   }
   for (const el of matListEl.querySelectorAll('.mat-del')) {
     bindTap(el, () => { matNewMsg.textContent = customMatDelete(+el.dataset.mat) || 'Deleted'; });
@@ -12029,7 +13026,8 @@ const escapeHtml = (t) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 buildMatList();
 
 // The New material form. Strength and pull are the same numbers as the rows'
-// fields, and so is friction; weight is fixed once made, as it is for the others.
+// fields, and so is friction; every one of them can be changed later from the
+// row's Edit, as a built-in one's can.
 const matNewEl = document.getElementById('mat-new');
 matNewEl.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
 matNewEl.addEventListener('touchend', (e) => e.stopPropagation(), { passive: true });
@@ -12069,12 +13067,20 @@ mnPowder.addEventListener('change', () => { document.getElementById('mn-angle-ro
 
 // The whole table, laid out as the MAT_STATS source is, so it pastes straight back.
 function matStatsSource() {
+  // A number and its comma, padded to its column — or, an edited one too long
+  // for it, with one space after.
+  const col = (v, n) => { const t = v + ','; return t.length < n ? t.padEnd(n) : t + ' '; };
   const rows = MAT_STATS.slice(0, N_MATS).map((st, i) => {
-    const tag = '  // ' + MAT_NAMES[i].toUpperCase().replace(/ /g, '_');
+    const tag = '  // ' + (MAT_NAMES[i] ? MAT_NAMES[i].toUpperCase().replace(/ /g, '_') : `(retired: ${MAT_RETIRED[i] || i})`);
     if (!st) return '  null,'.padEnd(80) + tag;
-    return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${(st.weight + ',').padEnd(7)}`
-         + `friction: ${(st.friction + ',').padEnd(3)}strength: ${(st.strength + ',').padEnd(9)}`
-         + `pull: ${(st.pull + ',').padEnd(6)}powder: ${String(st.powder).padEnd(6)}},` + tag;
+    // A powder row has its angle where a solid has its strength and pull.
+    const tail = st.powder && st.strength == null
+      ? `angle: ${col(st.angle, 4)}`
+      : `strength: ${col(st.strength, 9)}pull: ${col(st.pull, 8)}`;
+    // A transparency only once there is one, so the shipped table copies as it is.
+    const clear = st.transparency > 0 ? `transparency: ${st.transparency}, ` : '';
+    return `  { name: ${(`'${st.name}',`).padEnd(17)}weight: ${col(st.weight, 7)}`
+         + `friction: ${col(st.friction, 5)}${tail}${clear}powder: ${String(st.powder).padEnd(6)}},` + tag;
   });
   // The created materials after it, as their own list: id, colour and stats.
   const made = customMatDefs().map((d) => '  ' + JSON.stringify(d).replace(/"(\w+)":/g, '$1: ').replace(/,(?=\w+: )/g, ', ') + ',');
@@ -12179,6 +13185,7 @@ function buildSinkList() {
   }
 }
 buildSinkList();
+applyPlayerWeight();   // the body is made at 6 kg, before the cap is defined
 for (const id of ['sink-copy', 'sink-reset']) {
   const b = document.getElementById(id);
   b.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
@@ -12230,22 +13237,25 @@ const CHART_COLS = [
   { key: 'break',    label: 'Break', sub: 'If empty block breaks' },
   { key: 'compress', label: 'Compress' },
 ];
+// v297: one row per material of the owner's table. Renamed rows kept their
+// cells (Hard dirt is Compact dirt, Hard clay Compact clay); Sandstone takes
+// Hard sand's (it breaks to Sand), Wood has none yet. A cell that named a
+// material the table dropped (the muds, Wet sand, Hard sand, Brittle stone) is
+// empty: that change has nothing to become. v301: the owner's new Break column
+// (Dirt no longer breaks; Compact dirt, Compact clay, Sandstone and Wood split
+// half and half), and a Sawdust row.
 const MAT_CHART = [
-  { mat: 'Dirt',          dry: '',              water: 'Mud',        rain: 'Mud',        break: '50% Fine dirt, 50% Dirt',  compress: '' },
-  { mat: 'Mud',           dry: 'Dirt',          water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Fine dirt',     dry: '',              water: 'Fine mud',   rain: 'Fine mud',   break: '',                         compress: '' },
-  { mat: 'Hard dirt',     dry: '',              water: 'Fine mud',   rain: '',           break: 'Dirt',                     compress: '' },
-  { mat: 'Fine mud',      dry: 'Hard dirt',     water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Dirt',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Fine dirt',     dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Compact dirt',  dry: '',              water: '',           rain: '',           break: '50% Dirt, 50% Fine dirt',  compress: '' },
   { mat: 'Stone',         dry: '',              water: '',           rain: '',           break: '50% Stone, 50% Stone dust',compress: '' },
-  { mat: 'Stone dust',    dry: '',              water: 'Stone mud',  rain: 'Stone mud',  break: '',                         compress: '' },
-  { mat: 'Stone mud',     dry: 'Brittle stone', water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Brittle stone', dry: '',              water: '',           rain: '',           break: 'Stone dust',               compress: '' },
-  { mat: 'Clay',          dry: '',              water: 'Clay mud',   rain: 'Clay mud',   break: '',                         compress: '' },
-  { mat: 'Clay mud',      dry: 'Hard clay',     water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Hard clay',     dry: '',              water: '',           rain: '',           break: 'Clay',                     compress: '' },
-  { mat: 'Sand',          dry: '',              water: 'Wet sand',   rain: 'Wet sand',   break: '',                         compress: '' },
-  { mat: 'Wet sand',      dry: 'Hard sand',     water: '',           rain: '',           break: '',                         compress: '' },
-  { mat: 'Hard sand',     dry: '',              water: 'Wet sand',   rain: '',           break: 'Sand',                     compress: '' },
+  { mat: 'Stone dust',    dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Clay',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Compact clay',  dry: '',              water: '',           rain: '',           break: '50% Compact clay, 50% Clay', compress: '' },
+  { mat: 'Sand',          dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
+  { mat: 'Sandstone',     dry: '',              water: '',           rain: '',           break: '50% Sandstone, 50% Sand', compress: '' },
+  { mat: 'Wood',          dry: '',              water: '',           rain: '',           break: '50% Wood, 50% Sawdust',    compress: '' },
+  { mat: 'Sawdust',       dry: '',              water: '',           rain: '',           break: '',                         compress: '' },
 ];
 
 // A created material has no row of its own in MAT_CHART, so it shows with every
@@ -12820,7 +13830,6 @@ function creativeAim() {
 function buildPlacerMatGrid() {
   placerMatGrid.textContent = '';
   for (let m = 0; m < MAT_STATS.length; m++) {
-    if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;
     const btn = document.createElement('button');
@@ -13259,7 +14268,7 @@ function volumeRemove() {
         for (let j = Math.max(0, box.j1); j <= Math.min(GEN_N - 1, box.j2); j++) {
           for (let i = Math.max(0, box.i1); i <= Math.min(GEN_N - 1, box.i2); i++) {
             const m = voxelAt(i, j, lvl);
-            if (m !== AIR && m !== WATER) editBlock(i, j, lvl, AIR);
+            if (m !== AIR) editBlock(i, j, lvl, AIR);
           }
         }
       }
@@ -13375,8 +14384,8 @@ function updatePlacer() {
 // axis-aligned Euler-Bernoulli beam with axial (EA/L), torsional and two-plane
 // bending (EI/L^3) stiffness.
 //
-// Ground hangs when it is not standing on bedrock: a block with a gap (air or
-// water) anywhere under it in its own column — an overhang, the ceiling of a
+// Ground hangs when it is not standing on bedrock: a block with a gap (air)
+// anywhere under it in its own column — an overhang, the ceiling of a
 // tunnel or a cave, the face of a cliff someone has dug under. Its weight has to
 // go sideways to reach anything, so it bends and pulls, and it is laid out and
 // solved and broken exactly as a built block is. Ground that stands on an
@@ -13387,7 +14396,7 @@ function updatePlacer() {
 // is not a node. Generated ground is nearly all of that kind (a heightmap, solid
 // from bedrock up); a write is what opens a gap under something, so the columns
 // written to (stressCols) are looked at, plus the few generated columns with
-// a block over a gap from the start (the surface swap leaves some over water).
+// a block over a gap from the start.
 //
 // Ground standing on bedrock still has stress, though, and the frame's answer
 // for it needs no solve: a run of solid standing on bedrock carries everything
@@ -13488,12 +14497,13 @@ function builtCutCells(i, j, l, ii, jj, ll) {
   if (a === b || !(MAT_STATS[a]?.powder || MAT_STATS[b]?.powder)) return false;
   return builtCut(a, isPlacedCell(i, j, l), b, isPlacedCell(ii, jj, ll));
 }
-// What the player has just built, as flat i, j, lvl: a non-powder block set
-// straight on powder of another material is not built into the ground but
-// stands on it as a piece of its own, free to sink in (sinkYield). Blocks of
-// the same build joined to it come with it, as one piece — a wall built on a
-// beach is one wall on the sand — and nothing else does, however it touches.
-// Whatever is left that touches such powder anywhere else has lost that join
+// What the player has just built, as flat i, j, lvl, taken as units: blocks of
+// the same build joined to each other (builtCut joins excepted) go together.
+// A unit that touches any structural block outside itself, face to face, is
+// built into the world and stays — a block on stone that also meets dirt is
+// on the stone. A unit that touches only powder, or nothing, stands as a piece
+// of its own, free to sink in (sinkYield) — sand on a sand pile too. Whatever
+// stays that touches powder of another material has lost that join
 // (builtCut), and comes down if nothing else holds it.
 function settleBuilt(cells) {
   const mine = new Map();
@@ -13502,25 +14512,37 @@ function settleBuilt(cells) {
     if (gravSolid(i, j, l)) mine.set(gravCell(i, j, l), q);
   }
   if (!mine.size) return;
-  const onPowder = (i, j, l) => {
-    const m = voxelAt(i, j, l), u = voxelAt(i, j, l - 1);
-    return !MAT_STATS[m]?.powder && u !== m && !!MAT_STATS[u]?.powder && !mine.has(gravCell(i, j, l - 1));
-  };
-  const taken = new Set();
+  // Every unit is judged on the world as built, before any of them leaves.
+  const seen = new Set(), leaving = [];
   for (const [k0, q0] of mine) {
-    if (taken.has(k0) || !onPowder(cells[q0], cells[q0 + 1], cells[q0 + 2])) continue;
+    if (seen.has(k0)) continue;
     const unit = new Map(), stack = [q0];
-    taken.add(k0);
+    seen.add(k0);
     while (stack.length) {
       const q = stack.pop(), i = cells[q], j = cells[q + 1], l = cells[q + 2], m = voxelAt(i, j, l);
       unit.set(gravCell(i, j, l), { i, j, lvl: l, m, color: terrainBlockColor(i, j, l, m), placed: 1 });
       for (const [di, dj, dl] of GRAV_DIRS) {
         const k = gravCell(i + di, j + dj, l + dl), nq = mine.get(k);
-        if (nq === undefined || taken.has(k) || builtCutCells(i, j, l, i + di, j + dj, l + dl)) continue;
-        taken.add(k);
+        if (nq === undefined || seen.has(k) || builtCutCells(i, j, l, i + di, j + dj, l + dl)) continue;
+        seen.add(k);
         stack.push(nq);
       }
     }
+    let held = false;
+    for (const b of unit.values()) {
+      for (const [di, dj, dl] of GRAV_DIRS) {
+        const ni = b.i + di, nj = b.j + dj, nl = b.lvl + dl;
+        if (ni < 0 || nj < 0 || ni >= GEN_N || nj >= GEN_N) continue;   // off the field is air
+        if (unit.has(gravCell(ni, nj, nl)) || !gravSolid(ni, nj, nl)) continue;
+        if (!MAT_STATS[voxelAt(ni, nj, nl)]?.powder) { held = true; break; }
+      }
+      if (held) break;
+    }
+    if (!held) leaving.push(unit);
+  }
+  const taken = new Set();
+  for (const unit of leaving) {
+    for (const k of unit.keys()) taken.add(k);
     // Set down where it was built, not thrown: adriftFrame's nudge of spin is
     // for ground that breaks away.
     for (const b of unit.values()) unmarkPlaced(b.i, b.j, b.lvl);
@@ -14521,7 +15543,7 @@ let stressDrain = false;
 const stHeldPieces = new Map();   // mesh -> its red blocks still to go
 const _stM4 = new THREE.Matrix4(), _stQuat = new THREE.Quaternion(), _stV = new THREE.Vector3();
 
-const solidMat = (m) => m !== AIR && m !== WATER && !!MAT_STATS[m];
+const solidMat = (m) => m !== AIR && !!MAT_STATS[m];
 // Fallen-piece node keys: far above any gravCell, one band per piece.
 const stPieceKey = (mesh, gi, gj, lvl) => (mesh.id + 1) * 1e11 + ((lvl + 2048) * 4096 + (gj + 2048)) * 4096 + (gi + 2048);
 
@@ -14815,8 +15837,11 @@ function stressMix(h, v) {
   return h ^ (h >>> 15);
 }
 
+// A beam end's stiffness: the material's strength, or for a powder with none of
+// its own (the built-in ones since v297) what sand's was.
+const matStiff = (m) => { const st = MAT_STATS[m]; return st ? (st.strength ?? (st.powder ? POWDER_STIFF : 0)) : 0; };
 function stressAddEdge(a, b, ax, ma, mb) {
-  const EA = ((MAT_STATS[ma]?.strength ?? 0) + (MAT_STATS[mb]?.strength ?? 0)) / 2;
+  const EA = (matStiff(ma) + matStiff(mb)) / 2;
   stEA[stNE] = a; stEB[stNE] = b; stEAx[stNE] = ax; stEK[stNE] = EA; stEG[stNE] = -1; stEN0[stNE] = 0;
   stNE++;
 }
@@ -14906,8 +15931,8 @@ function stressHangScan() {
   return total;
 }
 
-// The columns ground can hang in: every one written to, and the generated ones
-// the surface swap left with a block sitting on water. Every written column's
+// The columns ground can hang in: every one written to, and any generated one
+// with a block over air. Every written column's
 // ground is looked at for breaking again too.
 function stressSeedCols() {
   stressCols.clear();
@@ -14940,13 +15965,14 @@ stressSeedCols();
 // out again from its bed, as the fill pass laid it — rock, then the deep and the
 // surface soil — with its top block as the surface swap left it.
 function stressGenWeight(k, l) {
-  if (l < VOX_FLOOR || l > bedLvl[k]) return 0;
+  if (l < VOX_FLOOR || l > topLvl[k]) return 0;
   let m;
   if (!colDug[k]) m = voxMat[voxOff[k] + l - VOX_FLOOR];
   else if (l === topLvl[k]) m = topMat[k];
+  else if (l > bedLvl[k]) m = WATER;   // the sea the fill pass laid over the bed
   else {
     const bed = bedLvl[k], soilLo = Math.max(VOX_FLOOR, bed - SOIL_DEPTH), soilMid = Math.max(soilLo, bed - (SOIL_DEPTH >> 1));
-    m = l >= soilMid ? bedMat[k] : l >= soilLo ? DEEP_MAT[bedMat[k]] : ROCK;
+    m = l >= soilMid ? bedMat[k] : l >= soilLo ? genDeep[bedMat[k]] : ROCK;
   }
   return solidMat(m) ? MAT_STATS[m].weight : 0;
 }
@@ -14958,7 +15984,8 @@ function stressGenWeight(k, l) {
 // never generated ground at all.
 function stressSettledN(i, j, lo) {
   if (sandboxMode) return 0;
-  const k = j * GEN_N + i, bed = bedLvl[k];
+  // Up to the generated top, sea included: water weighs on the bed as sand does.
+  const k = j * GEN_N + i, bed = topLvl[k];
   if (bed === NO_COLUMN || voxOff[k] < 0 || lo < VOX_FLOOR || lo + 1 > bed) return 0;
   if (colDug[k]) {
     const placed = placedByChunk[chunkOf(i, j)];
@@ -16123,6 +17150,8 @@ const STRESS_PENDING = 0.35;
 function stressOver(n) {
   const st = MAT_STATS[stCur.mat[n]];
   if (!st) return 0;
+  // A powder without strengths (v297's built-in ones) is never over them.
+  if (st.powder && !(st.strength > 0)) return 0;
   return Math.max(stCur.push[n] / st.strength, stCur.pull[n] / st.pull);
 }
 // A node's place on the ramp, -1 while it is not solved yet.
@@ -16269,7 +17298,6 @@ const matBar = document.getElementById('mat-bar');
 function buildMatBar() {
   matBar.textContent = '';
   for (let m = 0; m < MAT_STATS.length; m++) {
-    if (m === WATER) continue;
     const s = MAT_STATS[m];
     if (!s) continue;
     const sq = document.createElement('div');
@@ -16969,7 +17997,13 @@ function collectWorldMeta() {
 
   return {
     version: SAVE_VERSION,
+    // The material table its ids are (v297's): a save without it is from
+    // before, and its retired ids are mapped on load (remapOldSaveMats).
+    matTable: MAT_TABLE_VER,
+    // The soil bands its world was generated with (genDeep).
+    genDeep: GEN_DEEP_VER,
     timestamp: Date.now(),
+    gripScale: SINK_TUNE.gripScale,
     playerState,
     cameraState,
     toolsState,
@@ -17554,13 +18588,8 @@ function restoreSavedPiece(pc) {
   f.body.velocity.set(...pc.vel);
   f.body.angularVelocity.set(...pc.angVel);
   f.body.updateAABB();
-  if (pc.hold) {
-    const mesh = f.mesh;
-    mesh.userData.powderHold = new THREE.Quaternion(...pc.hold);
-    for (const b of mesh.userData.blocks) if (MAT_STATS[b.mat]?.powder) mesh.userData.grains[b.mat].setMatrixAt(b.k, grainMatrix(mesh, b.pos, debrisM4));
-    for (const L of Object.values(mesh.userData.grains || {})) L.instanceMatrix.needsUpdate = true;
-    debrisFaceMask(mesh);
-  }
+  // A save's powderHold (powder glued into a tilted piece's lattice, before
+  // v309) is not taken up: the piece sheds that powder by world gravity.
   return f;
 }
 // The falling pieces, then the rested ones — under the menu RESTORE_BATCH at a
@@ -17595,6 +18624,7 @@ async function applyWorldState(s) {
     console.warn('Save version mismatch or invalid save');
     return false;
   }
+  if (!(s.matTable >= MAT_TABLE_VER)) remapOldSaveMats(s);
   const split = underMenu();
   let changed;
   storeHold = split;
@@ -17611,6 +18641,24 @@ async function applyWorldState(s) {
   await applyWorldRebuild(split, changed);
   await restoreSavedPieces(s.debrisState, split);
   return true;
+}
+// A save from before the v297 table: every material id it holds — the store,
+// the column records, the pieces, the grains in the air, the hands and the
+// placer — through MAT_REMAP_V297, before anything reads them. Ids it keeps
+// (and AIR, and the created materials') map to themselves.
+function remapOldSaveMats(s) {
+  const R = MAT_REMAP_V297;
+  const all = (a) => { if (a) for (let n = 0; n < a.length; n++) a[n] = R[a[n]]; };
+  const vs = s.voxelStore;
+  if (vs) { all(vs.laid?.mat); all(vs.voxMat); all(vs.bedMat); all(vs.topMat); }
+  const ds = s.debrisState;
+  if (ds) {
+    for (const f of [...(ds.fallingChunks || []), ...(ds.restedChunks || [])]) for (const b of f.blocks || []) b.mat = R[b.mat];
+    for (const g of ds.powderFalling || []) g.mat = R[g.mat];
+  }
+  const ts = s.toolsState;
+  if (ts?.shovel?.held) all(ts.shovel.held);
+  if (ts?.placer && Number.isInteger(ts.placer.mat)) ts.placer.mat = R[ts.placer.mat];
 }
 // The chunks a load changes: those with a column their mesh (or collider) reads
 // — their own and MESH_MARGIN round them, as far as any job looks — that is not
@@ -17654,6 +18702,7 @@ function applyWorldCore(s) {
   const vs = s.voxelStore;
   const laid = vs.laid || null;
   customMatsAdopt(s.customMats);
+  genDeep = s.genDeep >= GEN_DEEP_VER ? DEEP_MAT : DEEP_MAT_V298;
   topLvl.set(vs.topLvl);
   bedLvl.set(vs.bedLvl);
   bedMat.set(vs.bedMat);
@@ -17682,6 +18731,8 @@ function applyWorldCore(s) {
   }
   // An older save has no weight: the default.
   SINK_TUNE.playerWeight = Number.isFinite(ps.weight) && ps.weight >= 0.001 ? ps.weight : PLAYER_WEIGHT_DEF;
+  // An older save has no grip multiplier: the default.
+  SINK_TUNE.gripScale = Number.isFinite(s.gripScale) && s.gripScale >= 0 ? s.gripScale : SINK_TUNE_DEFS.find((d) => d.key === 'gripScale').def;
   applyPlayerWeight();
   buildSinkList();
   playerBody.position.set(...ps.pos);
@@ -17992,8 +19043,8 @@ window.hermes = {
   // AIR are the material values. Editing through setVoxel changes what the
   // world *is* but not what is drawn: the meshes and the collider are baked.
   SAND, DIRT, ROCK, WATER, AIR, SEA_LVL, VOX_FLOOR, SOIL_DEPTH, voxCount,
-  FINE_DIRT, MUD, HARD_DIRT, FINE_MUD, STONE_DUST, STONE_MUD, BRITTLE_STONE,
-  CLAY, CLAY_MUD, HARD_CLAY, MAT_NAMES, MAT_STATS,
+  STONE, FINE_DIRT, WOOD, COMPACT_DIRT, STONE_DUST, SANDSTONE,
+  CLAY, COMPACT_CLAY, MAT_NAMES, MAT_STATS, MAT_ORDER, MAT_REMAP_V297,
   voxelAt, voxelAtWorld, voxelColumn, setVoxel, solidTopAt,
   colI, colJ, colX, colZ, lvlOfY,
   // The island is bare by design — these are how you put something on it from

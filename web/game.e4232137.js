@@ -498,6 +498,7 @@ world.defaultContactMaterial.restitution = 0.0;
   const updateAABB = CANNON.Body.prototype.updateAABB;
   CANNON.Body.prototype.updateAABB = function () {
     updateAABB.call(this);
+    if (sinkers.has(this)) sinkGridStale = true;
     const at = this._aabbAt || (this._aabbAt = new Float64Array(7));
     const p = this.position, q = this.quaternion;
     at[0] = p.x; at[1] = p.y; at[2] = p.z; at[3] = q.x; at[4] = q.y; at[5] = q.z; at[6] = q.w;
@@ -1008,13 +1009,40 @@ const sinkHeldCell = (i, j, l) => sinkHeld.size > 0 && sinkHeld.has(fricKey(i, j
 // over itself: sand poured in lands on it, is caught (catchPowder), and the
 // grains it carries down grip the shaft walls and hold it back. Once it has
 // stopped the shaft fills by the powder's own rules.
+// The busy sinkers filed by the ground squares their boxes cover: a pour asks
+// this ~1000 times a frame, and walking every sinker each time was most of a
+// heavy pour's frame. Refiled when a sinker's box, its busy flag or the set of
+// sinkers changes; the test itself still reads the live box and sleep state.
+var sinkGridStale = true;   // var: the updateAABB patch above may run first
+const sinkGrid = new Map(), SINK_GRID_W = 4 * BLOCK;
+const sinkGridKey = (gx, gz) => (gx + 32768) * 65536 + (gz + 32768);
+function sinkGridBuild() {
+  sinkGridStale = false;
+  for (const l of sinkGrid.values()) l.length = 0;
+  for (const [S, st] of sinkers) {
+    if (!st.busy) continue;
+    const a = S.aabb;
+    const x0 = Math.floor(a.lowerBound.x / SINK_GRID_W), x1 = Math.floor(a.upperBound.x / SINK_GRID_W);
+    const z0 = Math.floor(a.lowerBound.z / SINK_GRID_W), z1 = Math.floor(a.upperBound.z / SINK_GRID_W);
+    for (let gx = x0; gx <= x1; gx++) for (let gz = z0; gz <= z1; gz++) {
+      const k = sinkGridKey(gx, gz);
+      let l = sinkGrid.get(k);
+      if (!l) sinkGrid.set(k, l = []);
+      l.push(S);
+    }
+  }
+}
 function sinkBlocksPowder(i, j, l) {
   if (!sinkers.size) return false;
   if (sinkHeldCell(i, j, l)) return true;
   if (!sinkBusyN) return false;
   const x = colX(i), y = (l + 0.5) * BLOCK, z = colZ(j);
-  for (const [S, st] of sinkers) {
-    if (!st.busy || S.sleepState === CANNON.Body.SLEEPING) continue;
+  if (sinkGridStale) sinkGridBuild();
+  const near = sinkGrid.get(sinkGridKey(Math.floor(x / SINK_GRID_W), Math.floor(z / SINK_GRID_W)));
+  if (!near) return false;
+  for (let q = 0; q < near.length; q++) {
+    const S = near[q];
+    if (S.sleepState === CANNON.Body.SLEEPING) continue;
     const a = S.aabb;
     if (x > a.lowerBound.x && x < a.upperBound.x && z > a.lowerBound.z && z < a.upperBound.z && y > a.lowerBound.y) return true;
   }
@@ -1155,7 +1183,7 @@ const sinkGives = (h, w) => w <= h.minW || w >= h.maxW;
 const sinkBody = (b) => !!b.debrisMesh || b === playerBody;
 function sinkTouch(S, O) {
   let st = sinkers.get(S);
-  if (!st) sinkers.set(S, st = { media: new Map(), rigidAt: -1, busy: false, disp: 0, owed: [] });
+  if (!st) { sinkers.set(S, st = { media: new Map(), rigidAt: -1, busy: false, disp: 0, owed: [] }); sinkGridStale = true; }
   const key = O.voxelGround ? SINK_GROUND : O;
   let M = st.media.get(key);
   if (!M) st.media.set(key, M = { body: O.voxelGround ? null : O, rec: new Map(), touchAt: 0, overAt: -1 });
@@ -1696,6 +1724,7 @@ function sinkPressScan() {
 }
 function sinkForces(h) {
   sinkBusyN = 0;
+  sinkGridStale = true;
   if (world.stepnumber % SINK_PRESS_EVERY === 0) sinkPressScan();
   if (!sinkers.size) return;
   const step = world.stepnumber, gx = world.gravity.x, gy = world.gravity.y, gz = world.gravity.z;
@@ -1748,7 +1777,7 @@ function sinkForces(h) {
     st.busy = Math.abs(hull.W - (disp + press) * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp + press > 0
       && SINK_TUNE.weightSpeed > 0;
     if (st.busy) { sinkBusyN++; if (S.sleepState !== CANNON.Body.AWAKE) S.wakeUp(); }
-    if (!st.media.size && !st.owed.length) sinkers.delete(S);
+    if (!st.media.size && !st.owed.length) { sinkers.delete(S); sinkGridStale = true; }
   }
 }
 // The hold-back and the plow, as one implicit (backward Euler) step of the
@@ -1965,6 +1994,7 @@ function sinkForget(S, st) {
   // Blocks it had taken up and not yet found a place for still go down.
   for (const o of st.owed) sinkPlaceGround(o.i, o.j, o.l, o.m, null);
   sinkers.delete(S);
+  sinkGridStale = true;
 }
 
 // Once a frame, after the step: every displaced cell whose middle a hull cell
@@ -2795,7 +2825,12 @@ let powderFarNone = 0, powderFarNoneI = 0, powderFarNoneJ = 0, powderFarNoneL = 
 // The furthest any material looks: a grain leaving a column can unsettle ones
 // that far off, not just its neighbours (powderDirtySides).
 let reposeReachAll = 1;
+// Bumped on any material number edited or material made/removed: the powder
+// caches keyed on a piece's pose or lattice (lockPoseMemo, powderSolidCells)
+// also read the angle and the powder flag.
+let matStatRev = 0;
 function matReposeSet(m, angle) {
+  matStatRev++;
   reposeStd[m] = angle === 45 ? 1 : 0;
   const t = Math.tan(angle * Math.PI / 180);
   // 90 never rolls; anything else at least looks one column out.
@@ -3390,6 +3425,19 @@ function growColumn(k, needLv) {
 // Bumped on every write, and on every change to a fallen piece's lattice, so the
 // stress overlay (updateStress) knows the structure it last solved is stale.
 let stressRev = 0;
+// The part of stressRev that is ground writes, and when each chunk last had
+// one: a riding grain asks whether anything near it changed, not anything
+// anywhere (powderRideDue) — a pour across the island re-ran every rider's
+// cell search every frame.
+let stressRevGround = 0, groundRevSeq = 0;
+function groundRevNear(x, z) {
+  const i = colI(x), j = colJ(z);
+  const ci0 = (Math.max(0, i - 2) / CHUNK) | 0, ci1 = (Math.min(GEN_N - 1, i + 2) / CHUNK) | 0;
+  const cj0 = (Math.max(0, j - 2) / CHUNK) | 0, cj1 = (Math.min(GEN_N - 1, j + 2) / CHUNK) | 0;
+  let r = 0;
+  for (let cj = cj0; cj <= cj1; cj++) for (let ci = ci0; ci <= ci1; ci++) if (groundRevChunk[cj * CHUNK_N + ci] > r) r = groundRevChunk[cj * CHUNK_N + ci];
+  return r;
+}
 // Columns written since the stress layout last looked at them: the only places
 // ground can have come to hang over a gap (see stressHangScan). Generated ground
 // is solid from bedrock up, so nothing else needs looking at.
@@ -3445,6 +3493,8 @@ function setVoxel(i, j, lvl, m) {
     if (!chunkClear[c]) { chunkClear[c] = 1; chunkClearDirty(c); }
   }
   stressRev++;
+  stressRevGround++;
+  groundRevChunk[chunkOf(i, j)] = ++groundRevSeq;
   stressCols.add(k);
   stressGroundCols.add(k);
   stressWeightCols.add(k);
@@ -3516,6 +3566,7 @@ const MAX_DEPTH  = 80;   // and the most any column will ever draw (16 m)
 // which is fourteen thousand columns rather than nine hundred thousand.
 const CHUNK   = 16;                         // columns per chunk side (3.2 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
+const groundRevChunk = new Int32Array(CHUNK_N * CHUNK_N);   // see groundRevNear
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 // The lowest level anything solid was dug, built or dropped at in each chunk
 // since the world was made, NO_DIG where nothing has: those are the chunks
@@ -7932,7 +7983,7 @@ const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
   const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null, thru: false,
-    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0, lq: -1, lr: -1, lw: false };
+    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0, lq: -1, lr: -1, lgr: -1, lw: false };
   g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1; g.thru = false; g.lk = null; g.lg = null;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
@@ -8217,7 +8268,13 @@ function syncFallingGrains() {
   fallingGrainMask();
   for (const L of fallingGrainLayers.values()) {
     L.visible = L.count > 0;
-    if (L.visible) { L.instanceMatrix.needsUpdate = true; L.geometry.attributes.faceHide.needsUpdate = true; }
+    if (L.visible) {
+      // Only the instances in use go up: the buffers double and never shrink,
+      // and a whole-buffer upload after a big pour sent mostly unused slots.
+      const im = L.instanceMatrix, fh = L.geometry.attributes.faceHide;
+      im.clearUpdateRanges(); im.addUpdateRange(0, L.count * 16); im.needsUpdate = true;
+      fh.clearUpdateRanges(); fh.addUpdateRange(0, L.count); fh.needsUpdate = true;
+    }
   }
 }
 function fallingGrainDraw(p) {
@@ -8255,7 +8312,10 @@ function fallingGrainDraw(p) {
 // wall can be in the cell on either side, and both are looked in.
 const FALL_FLUSH = BLOCK * 1e-3;   // a stack's grains sit within 1e-4 of a block of each other
 const fallingGrainCells = new Map();
-const fallGrainKey = (x, y, z) => ((y + 4096) * 32768 + z + 16384) * 32768 + x + 16384;
+// Wrapped to 10 bits an axis so the key stays a small integer (the ~2^45 keys
+// were heap numbers, slow to hash): cells 1024 apart share a chain, and the
+// position test below tells them apart.
+const fallGrainKey = (x, y, z) => ((y & 1023) * 1024 + (z & 1023)) * 1024 + (x & 1023);
 function fallingGrainMask() {
   const cells = fallingGrainCells, drawn = fallingGrainDrawn;
   cells.clear();
@@ -9144,12 +9204,27 @@ function updateFallingChunks() {
 // sleeping bodies never wake each other, so a piece put to sleep on top of one
 // that is still awake would hang in the air once that one slid away; the
 // player (never asleep) standing on it keeps it awake too.
+// The contacts are filed by body once per step on first need (a heap has
+// thousands, and each candidate walked them all); the partners' sleep state is
+// still read live, so one put to sleep earlier in the same pass counts.
+const _rosBy = new Map();
+let _rosStep = -1, _rosArr = null, _rosLen = -1;
 function restsOnStill(body) {
   const cs = world.contacts;
-  for (let k = 0; k < cs.length; k++) {
-    const c = cs[k];
-    const o = c.bi === body ? c.bj : c.bj === body ? c.bi : null;
-    if (o && o.type !== CANNON.Body.STATIC && o.sleepState !== CANNON.Body.SLEEPING) return false;
+  if (_rosStep !== world.stepnumber || _rosArr !== cs || _rosLen !== cs.length) {
+    _rosStep = world.stepnumber; _rosArr = cs; _rosLen = cs.length;
+    if (_rosBy.size > 4096) _rosBy.clear();   // bodies come and go: do not keep the dead ones' lists forever
+    for (const l of _rosBy.values()) l.length = 0;
+    for (let k = 0; k < cs.length; k++) {
+      const c = cs[k];
+      let l = _rosBy.get(c.bi); if (!l) _rosBy.set(c.bi, l = []); l.push(c.bj);
+      l = _rosBy.get(c.bj); if (!l) _rosBy.set(c.bj, l = []); l.push(c.bi);
+    }
+  }
+  const l = _rosBy.get(body);
+  if (l) for (let k = 0; k < l.length; k++) {
+    const o = l[k];
+    if (o.type !== CANNON.Body.STATIC && o.sleepState !== CANNON.Body.SLEEPING) return false;
   }
   return true;
 }
@@ -9896,7 +9971,11 @@ const powderIdxUsed = [];          // the lists filled since the last filing, to
 const powderIdxNew = [];           // made since the last question, not filed yet
 let powderIdxLive = false;
 function powderIdxAdd(g) {
-  const k = g.ik = (Math.floor(g.pos.x / BLOCK) + 32768) * 65536 + Math.floor(g.pos.z / BLOCK) + 32768;
+  // Small-integer keys (under 2^30): the old ~2^31 keys were heap numbers, and
+  // a Map hashes those far slower — this is asked ~1000 times a frame in a pour.
+  // A square past +-4096 columns could share a key; the overlap test still
+  // reads the real positions, so that only costs time.
+  const k = g.ik = (Math.floor(g.pos.x / BLOCK) + 4096) * 8192 + Math.floor(g.pos.z / BLOCK) + 4096;
   let L = powderIdx.get(k);
   if (!L) powderIdx.set(k, L = []);
   if (!L.length) powderIdxUsed.push(L);
@@ -9929,10 +10008,10 @@ function powderGrainAt(x, y, z, self, stamp = 0, moved = 0) {
     for (const g of powderIdxNew) if (!powderIdx.get(g.ik)?.includes(g)) powderIdxAdd(g);
     powderIdxNew.length = 0;
   }
-  const ci = Math.floor(x / BLOCK) + 32768, cj = Math.floor(z / BLOCK) + 32768;
+  const ci = Math.floor(x / BLOCK) + 4096, cj = Math.floor(z / BLOCK) + 4096;   // keys as powderIdxAdd
   powderUnderTop = -Infinity; powderUnderG = null;
   for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
-    const L = powderIdx.get((ci + a) * 65536 + cj + b);
+    const L = powderIdx.get((ci + a) * 8192 + cj + b);
     if (L) for (const g of L) {
       if (g === self || Math.abs(g.pos.x - x) >= POWDER_GAP || Math.abs(g.pos.z - z) >= POWDER_GAP) continue;
       if (stamp) { if (g.t === stamp && g.pos.y - y < POWDER_GAP && g.pos.y + BLOCK > powderUnderTop) { powderUnderTop = g.pos.y + BLOCK; powderUnderG = g; } }
@@ -9973,9 +10052,19 @@ function powderInGround(x, y, z) {
 // looks; 0 if it was overlapping from the start.
 const _sweepA = new THREE.Vector3(), _sweepD = new THREE.Vector3();
 let powderSweepAx = 0, powderSweepB = null;
+// A piece's world-to-own-frame matrix, inverted again only when its world
+// matrix changed: worldToLocal inverted it on every call, twice a sweep, and a
+// sweep is asked per grain per piece near it. Same arithmetic, so same answers.
+function meshInverse(mesh) {
+  const ud = mesh.userData, e = mesh.matrixWorld.elements;
+  const at = ud.invAt ||= new Float64Array(16).fill(NaN), M = ud.invM ||= new THREE.Matrix4();
+  for (let k = 0; k < 16; k++) if (at[k] !== e[k]) { at.set(e); M.copy(mesh.matrixWorld).invert(); break; }
+  return M;
+}
 function powderSweep(mesh, x, y0, z, y1) {
   mesh.updateWorldMatrix(true, false);
-  const A = mesh.worldToLocal(_sweepA.set(x, y0, z)), D = mesh.worldToLocal(_sweepD.set(x, y1, z)).sub(A);
+  const inv = meshInverse(mesh);
+  const A = _sweepA.set(x, y0, z).applyMatrix4(inv), D = _sweepD.set(x, y1, z).applyMatrix4(inv).sub(A);
   let best = Infinity;
   powderSweepAx = 0; powderSweepB = null;
   blocks: for (const b of mesh.userData.blocks) {
@@ -10056,13 +10145,43 @@ function powderOffPiece(x, y, z, self, stamp) {
 // is never one of the piece's blocks, or it would have touched sooner; one that
 // is (the piece moved onto it, or a block was laid where it was) goes up the
 // piece's own column to the first open cell, as on the ground.
+// Whether some block of the piece sits within 0.1 of own-frame point v on every
+// axis — the test powderCell and debrisRoll made by walking the whole lattice,
+// hundreds of times per grain laid for angles other than 45. Answered from the
+// piece's blocks filed by lattice step (rebuilt on a lattice edit); a point
+// within a hair of half-way between steps, or a step two blocks share, still
+// walks the lattice, so the answer is the walk's in every case.
+const _latC = new THREE.Vector3();
+function latFilled(mesh, v) {
+  const ud = mesh.userData, lat = ud.blocks;
+  if (!lat.length) return false;
+  const lr = ud.stressLat | 0, o = lat[0].pos;
+  let M = ud.latMap;
+  if (!M || ud.latMapRev !== lr || ud.latMapN !== lat.length || ud.latMapB0 !== lat[0]) {
+    M = ud.latMap ||= new Map();
+    M.clear();
+    for (const b of lat) {
+      const k = powderLockKey(_latC.copy(b.pos).sub(o).divideScalar(BLOCK).round());
+      M.set(k, M.has(k) ? true : b);
+    }
+    ud.latMapRev = lr; ud.latMapN = lat.length; ud.latMapB0 = lat[0];
+  }
+  const c = _latC.copy(v).sub(o).divideScalar(BLOCK);
+  const half = (f) => Math.abs(f - Math.floor(f) - 0.5) < 1e-6;
+  let b;
+  if (half(c.x) || half(c.y) || half(c.z) || (b = M.get(powderLockKey(c.round()))) === true) {
+    for (const q of lat) if (Math.abs(q.pos.x - v.x) < 0.1 && Math.abs(q.pos.y - v.y) < 0.1 && Math.abs(q.pos.z - v.z) < 0.1) return true;
+    return false;
+  }
+  return !!b && Math.abs(b.pos.x - v.x) < 0.1 && Math.abs(b.pos.y - v.y) < 0.1 && Math.abs(b.pos.z - v.z) < 0.1;
+}
 const _cellQ = new THREE.Quaternion(), _cellUp = new THREE.Vector3(), _cellAt = new THREE.Vector3();
 function powderCell(mesh, at) {
   const lat = mesh.userData.blocks, r = lat[0].pos;
   const c = mesh.worldToLocal(_cellAt.copy(at));
   c.set(r.x + Math.round((c.x - r.x) / BLOCK) * BLOCK, r.y + Math.round((c.y - r.y) / BLOCK) * BLOCK,
         r.z + Math.round((c.z - r.z) / BLOCK) * BLOCK);
-  const filled = () => lat.some((b) => Math.abs(b.pos.x - c.x) < 0.1 && Math.abs(b.pos.y - c.y) < 0.1 && Math.abs(b.pos.z - c.z) < 0.1);
+  const filled = () => latFilled(mesh, c);
   if (filled()) {
     mesh.getWorldQuaternion(_cellQ).invert();
     const u = _cellUp.set(0, 1, 0).applyQuaternion(_cellQ);
@@ -10296,11 +10415,15 @@ function powderDepen(mesh, p) {
 // The piece's solid (not powder) blocks, as powderLockCells keys, kept with it.
 function powderSolidCells(mesh) {
   const ud = mesh.userData;
-  if (ud.solidCellsAt === powderStamp && ud.solidCellsRev === stressRev) return ud.solidCells;
-  const S = ud.solidCells ||= new Set(), lat = ud.blocks, o = lat[0].pos;
+  // Keyed on the piece's own lattice edits (and a material's powder flag), not
+  // the frame or the world-wide stressRev: refilled every frame it cost a Set
+  // insert per block per carrying piece per frame.
+  const lat = ud.blocks, lr = ud.stressLat | 0;
+  if (ud.solidCells && ud.solidCellsRev === lr && ud.solidCellsN === lat.length && ud.solidCellsB0 === lat[0] && ud.solidCellsMat === matStatRev) return ud.solidCells;
+  const S = ud.solidCells ||= new Set(), o = lat[0].pos;
   S.clear();
   for (const b of lat) if (!MAT_STATS[b.mat]?.powder) S.add(powderLockKey(_lockC.copy(b.pos).sub(o).divideScalar(BLOCK).round()));
-  ud.solidCellsAt = powderStamp; ud.solidCellsRev = stressRev;
+  ud.solidCellsRev = lr; ud.solidCellsN = lat.length; ud.solidCellsB0 = lat[0]; ud.solidCellsMat = matStatRev;
   return S;
 }
 const powderOrder = [], powderOrderLoose = [];
@@ -10356,9 +10479,23 @@ function powderLockSpot(g) {
   return mesh.localToWorld(_lockAt);
 }
 // Whether the piece still holds a locked grain.
+// Per piece, for the pose it is in: whether it is square, and whether each of
+// its faces holds each material. Every grain riding it asked both afresh each
+// frame (24 quaternion dots, a world-matrix decompose); the answers depend only
+// on the pose and the material angles.
+function lockPoseMemo(mesh) {
+  const q = mesh.quaternion, m = mesh.userData.holdMemo ||= { qx: NaN, qy: 0, qz: 0, qw: 0, mr: -1, sq: false, face: new Map() };
+  if (m.qx !== q.x || m.qy !== q.y || m.qz !== q.z || m.qw !== q.w || m.mr !== matStatRev) {
+    m.qx = q.x; m.qy = q.y; m.qz = q.z; m.qw = q.w; m.mr = matStatRev;
+    m.sq = pieceSquare(q); m.face.clear();
+  }
+  return m;
+}
 function powderLockHolds(g) {
   const mesh = g.lk;
-  if (mesh.parent !== debris || !mesh.userData.blocks?.length || pieceSquare(mesh.quaternion)) return false;
+  if (mesh.parent !== debris || !mesh.userData.blocks?.length) return false;
+  const memo = lockPoseMemo(mesh);
+  if (memo.sq) return false;
   if (g.lg) return g.lg.lk === mesh && g.lg.ls === g.lgs;
   const S = mesh.userData.powderShift, cells = powderLockCells(mesh), o = mesh.userData.blocks[0].pos;
   const at = _lockB.copy(g.lb); if (S) at.sub(S);
@@ -10367,7 +10504,10 @@ function powderLockHolds(g) {
   const k = Math.abs(g.lx) - 1, sgn = Math.sign(g.lx);
   at.setComponent(k, at.getComponent(k) + sgn);
   if (cells.has(powderLockKey(at))) return false;
-  return faceRests(_faceAt(mesh, k, sgn), g.mat);
+  const fk = (k * 2 + (sgn > 0)) * 4096 + g.mat;
+  let r = memo.face.get(fk);
+  if (r === undefined) memo.face.set(fk, r = faceRests(_faceAt(mesh, k, sgn), g.mat));
+  return r;
 }
 // A piece's blocks as whole steps from its first block, filed once per frame
 // and again after any edit to a piece (stressRev), so each locked grain asks a
@@ -10376,11 +10516,13 @@ const powderLockKey = (v) => (v.x + 1024) * 4194304 + (v.y + 1024) * 2048 + (v.z
 const _lockC = new THREE.Vector3();
 function powderLockCells(mesh) {
   const ud = mesh.userData;
-  if (ud.lockCellsAt === powderStamp && ud.lockCellsRev === stressRev) return ud.lockCells;
-  const S = ud.lockCells ||= new Set(), lat = ud.blocks, o = lat[0].pos;
+  // Keyed on the piece's own lattice edits, as powderSolidCells.
+  const lat = ud.blocks, lr = ud.stressLat | 0;
+  if (ud.lockCells && ud.lockCellsRev === lr && ud.lockCellsN === lat.length && ud.lockCellsB0 === lat[0]) return ud.lockCells;
+  const S = ud.lockCells ||= new Set(), o = lat[0].pos;
   S.clear();
   for (const b of lat) S.add(powderLockKey(_lockC.copy(b.pos).sub(o).divideScalar(BLOCK).round()));
-  ud.lockCellsAt = powderStamp; ud.lockCellsRev = stressRev;
+  ud.lockCellsRev = lr; ud.lockCellsN = lat.length; ud.lockCellsB0 = lat[0];
   return S;
 }
 
@@ -10525,8 +10667,9 @@ function powderRideDue(p, stamp) {
     for (let k = 0; k < 16; k++) if (Math.abs(e[k] - q[k]) > 1e-5) { moved = true; q[k] = e[k]; }
     ud.ridePoseAt = stamp; ud.rideMoved = moved;
   }
-  if (!ud.rideMoved && p.lq === powderRideStir && p.lr === stressRev && (p.ls + stamp) % POWDER_RIDE_RECHECK) return false;
-  p.lq = powderRideStir; p.lr = stressRev;
+  const rev = stressRev - stressRevGround, grev = groundRevNear(p.pos.x, p.pos.z);
+  if (!ud.rideMoved && p.lq === powderRideStir && p.lr === rev && p.lgr === grev && (p.ls + stamp) % POWDER_RIDE_RECHECK) return false;
+  p.lq = powderRideStir; p.lr = rev; p.lgr = grev;
   return true;
 }
 // Whether a grain's cube at world x, y, z overlaps a block of `mesh`: the
@@ -10610,6 +10753,7 @@ function powderRideRoll(p) {
   const [u, v] = POWDER_SIDES[best];
   return _rideTo.set(x + u * BLOCK, y, z + v * BLOCK);
 }
+const powderLaidOn = new Set();   // pieces catchPowder laid grains into this frame
 function catchPowder(dt) {
   let filed = false;   // the cells are filed on first need, and again after anything that may move or make pieces
   const reach = 2 * BLOCK;   // a grain's cube can touch a block of a turned piece from this far off across
@@ -10861,7 +11005,8 @@ function catchPowder(dt) {
           if (off === null) {
             // It stays: laid into that cell, once no falling grain is in it.
             if (clear !== 1) {
-              placeOnDebris(mesh, local, p.mat);
+              placeOnDebris(mesh, local, p.mat, false);
+              powderLaidOn.add(mesh);
               leave(n);
               powderGrainFree(p);
               filed = false;   // the piece grew and was rebuilt
@@ -10978,6 +11123,16 @@ function catchPowder(dt) {
     if (filed && (chunkSeq !== powderCatchSig || restedChunks.length !== powderCatchRested
                   || fallingChunks.length !== powderCatchFalling)) filed = false;
   }
+  // Each piece grains were laid on is rebuilt once, here, not once per grain:
+  // the lattice took each grain at once, and nothing before the next physics
+  // step reads the body's collider or mass.
+  for (const mesh of powderLaidOn) {
+    if (mesh.parent !== debris || !mesh.userData.blocks?.length) continue;
+    debrisFaceMask(mesh);
+    const f = chunkOfMesh(mesh);
+    if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }
+  }
+  powderLaidOn.clear();
   powderPrevPoses();
   // Close up what went; anything spawned meanwhile is past len and stays.
   if (gone) {
@@ -11170,8 +11325,13 @@ function rebuildDebrisBody(mesh, body) {
   // so the weight shift is felt immediately.  cannon.js only wakes a sleeping
   // body when the *other* body has speed >= sleepSpeedLimit * sqrt(2), which
   // fails when both are nearly still (the "scale" deadlock).
-  wakeDebrisNear(body, 4);
+  wakeDebrisNear(body, DEBRIS_REBUILD_WAKE_PAD);
 }
+// How far past touching a rebuilt piece wakes sleepers (metres). 4 woke the
+// whole heap on every grain laid or shed, so a heap never slept; a block's
+// reach still wakes everything that can be in contact (bounding spheres are
+// looser than the boxes). Perf switch (v315 audit E1): set 4 for the old wake.
+const DEBRIS_REBUILD_WAKE_PAD = BLOCK;
 // Every sleeping piece within `pad` of touching `body`. Also for a piece dug or
 // shed away entirely (a block's reach): nothing tells a sleeper lying on it
 // that it has gone.
@@ -11453,12 +11613,7 @@ function debrisRoll(mesh, local, m) {
   const axis = ay >= ax && ay >= az ? 1 : ax >= az ? 0 : 2;
   const sgn = Math.sign(d.getComponent(axis));
   d.set(0, 0, 0).setComponent(axis, sgn * BLOCK);
-  const filled = (v) => {
-    for (const b of lat) {
-      if (Math.abs(b.pos.x - v.x) < 0.1 && Math.abs(b.pos.y - v.y) < 0.1 && Math.abs(b.pos.z - v.z) < 0.1) return true;
-    }
-    return false;
-  };
+  const filled = (v) => latFilled(mesh, v);
   if (!filled(_debrisRollUnder.copy(local).add(d))) return false;
   const s0 = (Math.random() * 4) | 0;
   // At 90 a grain stays where it lands, as on the ground.
@@ -12694,6 +12849,7 @@ function customMatInstall(d) {
   const { id, name, color, weight, friction, strength, pull, powder, angle, transparency } = d;
   matTablesGrow(id + 1);
   MAT_STATS[id] = { name, weight, friction, strength, pull, powder, color, angle, transparency };
+  matStatRev++;
   MAT_NAMES[id] = name.toLowerCase();
   matReposeSet(id, powder ? angle : MAT_ANGLE_STD);
   matClearSet(id, transparency);
@@ -12718,6 +12874,7 @@ function customMatInstall(d) {
 // An id given up: no material, and back to what the tables hold for none.
 function customMatFree(m) {
   MAT_STATS[m] = null;
+  matStatRev++;
   MAT_NAMES[m] = undefined;
   matReposeSet(m, MAT_ANGLE_STD);
   matClearSet(m, 0);
@@ -12913,6 +13070,7 @@ const matDefOf = (m, key) => MAT_STATS_DEF[m]?.[key] ?? (m < N_MATS && key === '
 const matValOf = (m, key) => matStatsOf(m)[key] ?? (key === 'transparency' ? 0 : undefined);
 // One setting into the material and everything that reads it.
 function matStatSet(m, key, v) {
+  matStatRev++;
   const st = matStatsOf(m);
   st[key] = v;
   if (key === 'transparency') matClearSet(m, v);
@@ -16595,7 +16753,9 @@ function stressRebuild() {
   for (let n = 0; n < stN; n++) {
     const o = stKeyMapPrev.get(S.key[n]);
     if (o !== undefined && o < stOldN) {
-      S.u.set(stOld.u.subarray(o * 6, o * 6 + 6), n * 6);
+      // A plain copy: a subarray view per node was ~10k allocations per layout.
+      const su = S.u, ou = stOld.u;
+      for (let d = 0; d < 6; d++) su[n * 6 + d] = ou[o * 6 + d];
       S.stress[n] = stOld.stress[o];
       S.push[n] = stOld.push[o]; S.pull[n] = stOld.pull[o];
     } else {
@@ -16648,9 +16808,9 @@ function stressPost(dirty, hit) {
       const n = stQueue[k];
       stLocal[n] = x - nStart[q];
       nodes[x] = n; fixed[x] = S.fixed[n];
-      pos.set(S.pos.subarray(n * 3, n * 3 + 3), x * 3);
-      f.set(S.f.subarray(n * 6, n * 6 + 6), x * 6);
-      u.set(S.u.subarray(n * 6, n * 6 + 6), x * 6);
+      // Plain copies: three subarray views per node added up on a 20k-node job.
+      for (let d = 0; d < 3; d++) pos[x * 3 + d] = S.pos[n * 3 + d];
+      for (let d = 0; d < 6; d++) { f[x * 6 + d] = S.f[n * 6 + d]; u[x * 6 + d] = S.u[n * 6 + d]; }
     }
   }
   // Beams, grouped by structure (a counting sort over the slots).

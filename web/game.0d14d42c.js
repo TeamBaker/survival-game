@@ -3495,6 +3495,10 @@ function setVoxel(i, j, lvl, m) {
   stressRev++;
   stressRevGround++;
   groundRevChunk[chunkOf(i, j)] = ++groundRevSeq;
+  // For swapChunkCollider's wake: every write to the chunk, and the ones that
+  // took a solid or powder cell away or changed what it is (anything but
+  // filling air) — only those can take support out from under a sleeper.
+  { const cc = chunkOf(i, j); colWr[cc]++; if (was !== AIR) colWrLost[cc]++; }
   stressCols.add(k);
   stressGroundCols.add(k);
   stressWeightCols.add(k);
@@ -3566,7 +3570,11 @@ const MAX_DEPTH  = 80;   // and the most any column will ever draw (16 m)
 // which is fourteen thousand columns rather than nine hundred thousand.
 const CHUNK   = 16;                         // columns per chunk side (3.2 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
-const groundRevChunk = new Int32Array(CHUNK_N * CHUNK_N);   // see groundRevNear
+const groundRevChunk = new Int32Array(CHUNK_N * CHUNK_N);
+// setVoxel's write counts per chunk (all, and all but air filled), and the
+// counts the chunk's current collider was built from (swapChunkCollider).
+const colWr = new Uint32Array(CHUNK_N * CHUNK_N), colWrLost = new Uint32Array(CHUNK_N * CHUNK_N);
+const colBuiltWr = new Uint32Array(CHUNK_N * CHUNK_N), colBuiltLost = new Uint32Array(CHUNK_N * CHUNK_N);   // see groundRevNear
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 // The lowest level anything solid was dug, built or dropped at in each chunk
 // since the world was made, NO_DIG where nothing has: those are the chunks
@@ -5272,7 +5280,7 @@ onmessage = (e) => {
       let boxes = d.box;
       if (!boxes || boxes.length < n * 6) boxes = new Float32Array(Math.max(n * 6, colOut.length));
       boxes.set(colOut.subarray(0, n * 6));
-      postMessage({ kind: 'collider', id: d.id, c, rev: d.rev, cut: d.cut, boxes, n, snap }, [...snapBufs, boxes.buffer]);
+      postMessage({ kind: 'collider', id: d.id, c, rev: d.rev, cut: d.cut, wr: d.wr, lost: d.lost, boxes, n, snap }, [...snapBufs, boxes.buffer]);
       return;
     }
     const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
@@ -5500,6 +5508,7 @@ function colDispatch(c) {
   s.id = ++meshJobSeq;
   s.rev = chunkRev[c];
   s.cut = chunkColliderCut(c);   // read off the same store as the snapshot
+  s.wr = colWr[c]; s.lost = colWrLost[c];   // and the write counts it is as of
   s.box = colBoxBufs.pop() || null;
   colJob[c] = s.id;
   meshPost(s);
@@ -5823,8 +5832,9 @@ function colliderPart(buf, n, lo, hi, always) {
   world.addBody(body);
   return body;
 }
-function setChunkColliderBody(c, buf, n, cut) {
+function setChunkColliderBody(c, buf, n, cut, wr = colWr[c], lost = colWrLost[c]) {
   colCut[c] = cut;
+  colBuiltWr[c] = wr; colBuiltLost[c] = lost;
   colliderBody[c] = colliderPart(buf, n, cut, Infinity, true);
   colliderDeep[c] = colliderPart(buf, n, -Infinity, cut - 1, false);
   if (_colLoadedAt[c] < 0) { _colLoadedAt[c] = _colLoaded.length; _colLoaded.push(c); }
@@ -5867,10 +5877,10 @@ function buildPendingColliders() {
     if (colJob[c] === r.id) {
       colJob[c] = 0;
       if (colliderBody[c]) {
-        swapChunkCollider(c, r.boxes, r.n, r.cut);
+        swapChunkCollider(c, r.boxes, r.n, r.cut, r.wr, r.lost);
         if (colRedo.delete(c)) colDispatch(c);
       } else if (r.rev !== chunkRev[c] || dirtyChunks.has(c) || dirtyColliders.has(c)) loadChunkCollider(c);
-      else setChunkColliderBody(c, r.boxes, r.n, r.cut);
+      else setChunkColliderBody(c, r.boxes, r.n, r.cut, r.wr, r.lost);
     }
     colBoxBufRecycle(r.boxes);
   }
@@ -6063,11 +6073,22 @@ function rebuildChunkCollider(c) {
   swapChunkCollider(c, colOut, n, chunkColliderCut(c));
 }
 
+// Perf switch (v316, audit E2): true wakes every sleeper over a chunk on every
+// collider swap, as before v316, even when all that changed was air filled.
+const CHUNK_SWAP_WAKE_ALL = false;
+
 // The new bodies go into the world before the old ones come out, so there is
 // never a step or a ray that finds the chunk with nothing there.
-function swapChunkCollider(c, buf, n, cut) {
+function swapChunkCollider(c, buf, n, cut, wr = colWr[c], lost = colWrLost[c]) {
   const oldBody = colliderBody[c], oldDeep = colliderDeep[c];
-  setChunkColliderBody(c, buf, n, cut);
+  // Nothing went from under anything (v316, audit E2): every write to the
+  // chunk since its collider was built filled air — powder landing, settling
+  // in, a block placed — and the deep/surface split is where it was. A cell
+  // filled cannot take support away, so the sleepers stay asleep. Anything
+  // else, including a rebuild no write is counted for (a seam re-split, a
+  // bulk rewrite), wakes them all as before.
+  const fillOnly = !CHUNK_SWAP_WAKE_ALL && wr !== colBuiltWr[c] && lost === colBuiltLost[c] && cut === colCut[c];
+  setChunkColliderBody(c, buf, n, cut, wr, lost);
   world.removeBody(oldBody);
   if (oldDeep) world.removeBody(oldDeep);
   // v124 — wake sleeping debris whose friction surfaces vanished.
@@ -6077,7 +6098,7 @@ function swapChunkCollider(c, buf, n, cut) {
   // column range (its bounds, not its centre: a piece centred in the next
   // chunk can still be lying on this one). The mesh sync picks it up again
   // as soon as it is awake.
-  {
+  if (!fillOnly) {
     const ci0 = (c % CHUNK_N) * CHUNK, cj0 = ((c / CHUNK_N) | 0) * CHUNK;
     const ci1 = Math.min(ci0 + CHUNK, GEN_N), cj1 = Math.min(cj0 + CHUNK, GEN_N);
     const cx0 = colX(ci0) - BLOCK, cx1 = colX(ci1 - 1) + BLOCK;
@@ -8574,6 +8595,10 @@ function updateLoneGlides() {
       b.position.set(at.x, at.y, at.z); b.quaternion.set(q.x, q.y, q.z, q.w);
       b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
       b.aabbNeedsUpdate = true;
+      // A piece asleep when its glide began stays asleep through it (it is
+      // kinematic, moved by hand here), so the ground counted for it where it
+      // fell asleep is counted again where it now is.
+      if (b.sleepState === CANNON.Body.SLEEPING && f.mesh.userData.sync) pieceKeepMark(f.mesh.userData.sync);
       f.mesh.position.copy(at); f.mesh.quaternion.copy(q);
       if (s < 1) continue;
       // There: what it goes into is asked again from where it now lies.

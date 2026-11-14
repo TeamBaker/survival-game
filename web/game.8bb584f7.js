@@ -476,6 +476,7 @@ scene.add(ambLight);
 // Physics world (cannon-es)
 // ---------------------------------------------------------------------------
 const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+// @@SPLIT-NP-BEGIN (the text from here to @@SPLIT-NP-END also runs in the narrowphase workers, see PHYSICS_SPLIT)
 world.broadphase = new CANNON.SAPBroadphase(world);
 world.allowSleep = true;
 // Solver time in a rubble pile is all iterations. At 120 Hz substeps 8 still
@@ -498,6 +499,7 @@ world.defaultContactMaterial.restitution = 0.0;
   const updateAABB = CANNON.Body.prototype.updateAABB;
   CANNON.Body.prototype.updateAABB = function () {
     updateAABB.call(this);
+    if (sinkers.has(this)) sinkGridStale = true;
     const at = this._aabbAt || (this._aabbAt = new Float64Array(7));
     const p = this.position, q = this.quaternion;
     at[0] = p.x; at[1] = p.y; at[2] = p.z; at[3] = q.x; at[4] = q.y; at[5] = q.z; at[6] = q.w;
@@ -592,6 +594,101 @@ world.defaultContactMaterial.restitution = 0.0;
   };
 }
 
+// Narrowphase.getContacts, cannon's loop, with two changes that leave every
+// test and its answer as it was:
+// - For every shape of the first body it worked out each shape of the second
+//   body's world pose afresh (a quaternion product, a turn and an add) — for
+//   a piece against a many-box chunk collider, the same few hundred poses again
+//   for every box of the piece. Both bodies' shape poses are now worked out
+//   once a pair, by the same calls on the same numbers, and copied into the
+//   scratch the shape tests read.
+// - A rubble frame walked ~54,000 shape pairs a substep to find the few
+//   thousand whose bounding spheres meet. A shape whose centre lies farther,
+//   along any one axis, from the box round all the other body's shape centres
+//   than its radius plus the other body's largest radius (and a micrometre)
+//   fails cannon's distance test against every shape of that body, so it is
+//   left out of the walk. The rest go in the same order through the same
+//   tests, so pairs, contacts and their order are exactly as before.
+{
+  const np = world.narrowphase, V = CANNON.Vec3, Q = CANNON.Quaternion;
+  const qa = new Q(), qb = new Q(), xa = new V(), xb = new V();
+  const poseQA = [], poseXA = [], poseQB = [], poseXB = [];
+  let keepA = new Int32Array(64), keepB = new Int32Array(64);
+  const SLACK = 1e-6;
+  const poses = (b, pq, px) => {
+    const n = b.shapes.length;
+    for (let t = 0; t < n; t++) {
+      const q = pq[t] || (pq[t] = new Q()), x = px[t] || (px[t] = new V());
+      b.quaternion.mult(b.shapeOrientations[t], q);
+      b.quaternion.vmult(b.shapeOffsets[t], x);
+      x.vadd(b.position, x);
+    }
+  };
+  // Shapes of b (poses px) that can reach any shape of the other body, whose
+  // shape centres span box[0..5] and whose largest radius is rMax; into keep.
+  const box = new Float64Array(6);
+  const span = (b, px) => {
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity, r = 0;
+    for (let t = 0, n = b.shapes.length; t < n; t++) {
+      const p = px[t];
+      if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+      if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+      if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
+      const rr = b.shapes[t].boundingSphereRadius; if (rr > r) r = rr;
+    }
+    box[0] = x0; box[1] = y0; box[2] = z0; box[3] = x1; box[4] = y1; box[5] = z1;
+    return r;
+  };
+  const near = (b, px, rMax, keep) => {
+    let k = 0;
+    for (let t = 0, n = b.shapes.length; t < n; t++) {
+      const p = px[t], R = b.shapes[t].boundingSphereRadius + rMax + SLACK;
+      if (box[0] - p.x > R || p.x - box[3] > R || box[1] - p.y > R || p.y - box[4] > R || box[2] - p.z > R || p.z - box[5] > R) continue;
+      keep[k++] = t;
+    }
+    return k;
+  };
+  np.getContacts = function (p1, p2, w, result, oldcontacts, frictionResult, frictionPool) {
+    this.contactPointPool = oldcontacts; this.frictionEquationPool = frictionPool;
+    this.result = result; this.frictionResult = frictionResult;
+    for (let k = 0, N = p1.length; k !== N; k++) {
+      const bi = p1[k], bj = p2[k];
+      let bodyCm = null;
+      if (bi.material && bj.material) bodyCm = w.getContactMaterial(bi.material, bj.material) || null;
+      const justTest = (bi.type & CANNON.Body.KINEMATIC && bj.type & CANNON.Body.STATIC) ||
+                       (bi.type & CANNON.Body.STATIC && bj.type & CANNON.Body.KINEMATIC) ||
+                       (bi.type & CANNON.Body.KINEMATIC && bj.type & CANNON.Body.KINEMATIC);
+      const ni = bi.shapes.length, nj = bj.shapes.length;
+      poses(bi, poseQA, poseXA);
+      poses(bj, poseQB, poseXB);
+      if (keepA.length < ni) keepA = new Int32Array(ni * 2);
+      if (keepB.length < nj) keepB = new Int32Array(nj * 2);
+      const rB = span(bj, poseXB), na = near(bi, poseXA, rB, keepA);
+      const rA = span(bi, poseXA), nb = near(bj, poseXB, rA, keepB);
+      for (let ka = 0; ka < na; ka++) {
+        const s = keepA[ka];
+        qa.copy(poseQA[s]); xa.copy(poseXA[s]);
+        const si = bi.shapes[s];
+        for (let kb = 0; kb < nb; kb++) {
+          const t = keepB[kb], sj = bj.shapes[t];
+          if (!(si.collisionFilterMask & sj.collisionFilterGroup && sj.collisionFilterMask & si.collisionFilterGroup)) continue;
+          if (xa.distanceTo(poseXB[t]) > si.boundingSphereRadius + sj.boundingSphereRadius) continue;
+          qb.copy(poseQB[t]); xb.copy(poseXB[t]);
+          let shapeCm = null;
+          if (si.material && sj.material) shapeCm = w.getContactMaterial(si.material, sj.material) || null;
+          this.currentContactMaterial = shapeCm || bodyCm || w.defaultContactMaterial;
+          const resolver = this[si.type | sj.type];
+          if (resolver) {
+            const hit = si.type < sj.type
+              ? resolver.call(this, si, sj, xa, xb, qa, qb, bi, bj, si, sj, justTest)
+              : resolver.call(this, sj, si, xb, xa, qb, qa, bj, bi, si, sj, justTest);
+            if (hit && justTest) { w.shapeOverlapKeeper.set(si.id, sj.id); w.bodyOverlapKeeper.set(bi.id, bj.id); }
+          }
+        }
+      }
+    }
+  };
+}
 // cannon files every contact in two overlap keepers each substep, a sorted
 // insert that is quadratic in contacts (up to ~2 ms a frame in a rockfall).
 // Only begin/end(Shape)Contact listeners read them and the game has none, so
@@ -671,9 +768,20 @@ for (const cm of [world.collisionMatrix, world.collisionMatrixPrevious]) {
         if (d < dmin) { dmin = d; target.copy(sepB); }
       }
     }
-    for (let i = 0; i !== hullA.uniqueEdges.length; i++) {
+    // A box lists each edge direction twice, once each way (+x and -x), so
+    // of its 6 x 6 edge pairs only 9 are different axes: the others are the
+    // same cross product exactly negated (every step here is linear, and
+    // negating rounds exactly), which projects to the same overlap and so
+    // can neither separate nor win where its first twin did not. Each hull
+    // walks only the first edge of each such twin (_edgeRep), in list order,
+    // so the axes tested, their order and the answer are as before.
+    const repA = hullA._edgeRep, repB = hullB._edgeRep;
+    const nA = repA ? repA.length : hullA.uniqueEdges.length, nB = repB ? repB.length : hullB.uniqueEdges.length;
+    for (let ia = 0; ia !== nA; ia++) {
+      const i = repA ? repA[ia] : ia;
       quatA.vmult(hullA.uniqueEdges[i], edgeA);
-      for (let j = 0; j !== hullB.uniqueEdges.length; j++) {
+      for (let jb = 0; jb !== nB; jb++) {
+        const j = repB ? repB[jb] : jb;
         quatB.vmult(hullB.uniqueEdges[j], edgeB);
         edgeA.cross(edgeB, edgeX);
         if (edgeX.almostZero()) continue;
@@ -687,6 +795,61 @@ for (const cm of [world.collisionMatrix, world.collisionMatrixPrevious]) {
     if (sepD.dot(target) > 0) target.negate(target);
     return true;
   };
+
+  // ConvexPolyhedron.project, the inner loop of every SAT test (up to ~40 axes
+  // a box pair, two projections each), for the hull of a CANNON.Box: its eight
+  // corners are (±hx, ±hy, ±hz), so of the eight dot products cannon takes the
+  // biggest is (|hx ax| + |hy ay|) + |hz az| and the smallest its negative —
+  // rounded addition never decreases when a term grows, and rounds a negated
+  // sum to the negated answer, so these are the very numbers the loop finds.
+  // The axis and origin go into the hull's frame by cannon's own steps in
+  // cannon's order (vectorToLocalFrame / pointToLocalFrame, inlined), and the
+  // origin is kept per hull while its pose is unchanged, so every projection
+  // returns the same bits as before. Any other hull takes cannon's path.
+  {
+    const project0 = CANNON.ConvexPolyhedron.project;
+    const boxRep = CANNON.Box.prototype.updateConvexPolyhedronRepresentation;
+    CANNON.Box.prototype.updateConvexPolyhedronRepresentation = function () {
+      boxRep.call(this);
+      const h = this.convexPolyhedronRepresentation, v = h.vertices[6];
+      h._boxH = [v.x, v.y, v.z];
+      h._boxAt = new Float64Array(10).fill(NaN);
+      // First edge of each direction; a later one that is the same vector or
+      // its exact negation is its twin (see findSeparatingAxis).
+      const E = h.uniqueEdges, rep = h._edgeRep = [];
+      // (By value: a twin is never the axis kept, so a zero's sign is moot.)
+      const same = (p, q) => (p.x === q.x && p.y === q.y && p.z === q.z) || (p.x === -q.x && p.y === -q.y && p.z === -q.z);
+      for (let i = 0; i < E.length; i++) if (!rep.some((k) => same(E[k], E[i]))) rep.push(i);
+    };
+    // Boxes made before this point (none in the game) keep cannon's path.
+    CANNON.ConvexPolyhedron.project = function (shape, axis, pos, quat, result) {
+      const H = shape._boxH;
+      if (!H || shape.vertices.length !== 8) return project0(shape, axis, pos, quat, result);
+      const qx = quat.x, qy = quat.y, qz = quat.z, qw = quat.w;
+      // Origin in the hull's frame: (0 - pos) turned by the conjugate.
+      const at = shape._boxAt;
+      if (!Object.is(at[0], pos.x) || !Object.is(at[1], pos.y) || !Object.is(at[2], pos.z) || !Object.is(at[3], qx) ||
+          !Object.is(at[4], qy) || !Object.is(at[5], qz) || !Object.is(at[6], qw)) {
+        const s = 0 - pos.x, i = 0 - pos.y, o = 0 - pos.z, n = -qx, r = -qy, a = -qz, l = qw;
+        const c = l * s + r * o - a * i, h = l * i + a * s - n * o, d = l * o + n * i - r * s, u = -n * s - r * i - a * o;
+        at[0] = pos.x; at[1] = pos.y; at[2] = pos.z; at[3] = qx; at[4] = qy; at[5] = qz; at[6] = qw;
+        at[7] = c * l + u * -n + h * -a - d * -r;
+        at[8] = h * l + u * -r + d * -n - c * -a;
+        at[9] = d * l + u * -a + c * -r - h * -n;
+      }
+      // Axis in the hull's frame: cannon flips w, turns, flips w back.
+      const s = axis.x, i = axis.y, o = axis.z, n = qx, r = qy, a = qz, l = -qw;
+      const c = l * s + r * o - a * i, h = l * i + a * s - n * o, d = l * o + n * i - r * s, u = -n * s - r * i - a * o;
+      const ax = c * l + u * -n + h * -a - d * -r;
+      const ay = h * l + u * -r + d * -n - c * -a;
+      const az = d * l + u * -a + c * -r - h * -n;
+      const add = at[7] * ax + at[8] * ay + at[9] * az;
+      const px = H[0] * ax, py = H[1] * ay, pz = H[2] * az;
+      const M = ((px < 0 ? -px : px) + (py < 0 ? -py : py)) + (pz < 0 ? -pz : pz);
+      result[0] = M - add;
+      result[1] = -M - add;
+    };
+  }
 
   // Two polygons clipped back and forth, each over its own vectors, so a
   // clip never writes a vector it is still reading. Records and counts are
@@ -782,6 +945,7 @@ for (const cm of [world.collisionMatrix, world.collisionMatrixPrevious]) {
   };
 }
 
+// @@SPLIT-NP-END
 const physWorld  = new CANNON.Material('world');
 const physProp   = new CANNON.Material('prop');
 const physPlayer = new CANNON.Material('player');
@@ -920,7 +1084,11 @@ const _fsB = [], _fsInvC = [], _fsLam = [];
 function frictionSolve(h, w) {
   pieceGyro(h);
   sinkForces(h);
-  const eqs = this.equations, n = eqs.length, bodies = w.bodies, nb = bodies.length;
+  return FS_FLAT ? frictionSweepFlat(this, h, w) : frictionSweep(this, h, w);
+}
+// The sweep as first written, on cannon's equation objects (FS_FLAT = false).
+function frictionSweep(solver, h, w) {
+  const eqs = solver.equations, n = eqs.length, bodies = w.bodies, nb = bodies.length;
   if (n === 0) return 0;
   for (let t = 0; t < nb; t++) bodies[t].updateSolveMassProperties();
   const B = _fsB, invC = _fsInvC, lam = _fsLam;
@@ -931,7 +1099,7 @@ function frictionSolve(h, w) {
     e.fricAt = t;
   }
   for (let t = 0; t < nb; t++) { bodies[t].vlambda.set(0, 0, 0); bodies[t].wlambda.set(0, 0, 0); }
-  const tol = this.tolerance * this.tolerance, iters = this.iterations;
+  const tol = solver.tolerance * solver.tolerance, iters = solver.iterations;
   let it = 0;
   for (; it !== iters; it++) {
     let delta = 0;
@@ -962,6 +1130,153 @@ function frictionSolve(h, w) {
   }
   for (let t = 0; t < nb; t++) {
     const b = bodies[t];
+    b.vlambda.vmul(b.linearFactor, b.vlambda); b.velocity.vadd(b.vlambda, b.velocity);
+    b.wlambda.vmul(b.angularFactor, b.wlambda); b.angularVelocity.vadd(b.wlambda, b.angularVelocity);
+  }
+  for (let t = n; t--;) eqs[t].multiplier = lam[t] / h;
+  return it;
+}
+// The same sweep on flat arrays: most of a heap's step went to cannon's
+// per-equation calls (computeGWlambda through multiplyVectors and dot, and
+// addToWlambda turning the jacobian through the inverse inertia on every
+// one of its eight sweeps). Here each equation's jacobian, its two bodies'
+// inverse masses and the inertia-turned jacobian (what addToWlambda works out
+// afresh each call, from values that hold for the whole solve) are packed
+// once, the bodies' vlambda / wlambda live in one array, and every sum and
+// product is taken in cannon's own order on the same numbers — so each
+// impulse, velocity and multiplier comes out to the bit as before (checked
+// against frictionSweep in play). Set FS_FLAT = false for the object sweep.
+const FS_FLAT = true;
+let _fsJ = new Float64Array(0), _fsE = new Float64Array(0), _fsBi = new Int32Array(0), _fsL = new Int32Array(0);
+let _fsV = new Float64Array(0);
+const _fsT = new CANNON.Vec3();
+// The sweep itself in WebAssembly (FS_WASM): the loop below, written in Rust
+// with every sum and product in the same order (WebAssembly has no fused
+// multiply-add and Rust does not reorder floating-point sums), so each
+// impulse is the same to the bit (checked against the JS loop: same solves,
+// every multiplier and velocity) at about a third of the time. The arrays the
+// pack fills live in the module's memory, so nothing is copied. Until the
+// module is ready (it compiles in the background at load), or where there is
+// no WebAssembly, the JS loop runs. Source: wasm/fs_sweep in the repo
+// (cargo build --release --target wasm32-unknown-unknown; base64 of the .wasm).
+const FS_WASM = true;
+let fsWasm = null;
+if (FS_WASM && typeof WebAssembly === 'object') {
+  try {
+    const bin = atob('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iMCAACAEcjYCmIjAgAAMAQsCQAJAAkAgAigCACIEKAIEQXhxIABHDQAgBCEDDAELIABBAEEZIANBAXZrIANBH0YbdCECA0AgBCACQR12QQRxaiIFKAIQIgNFDQIgAkEBdCECIAMhBCADKAIEQXhxIABHDQALCyADKAIIIgAgATYCDCADIAE2AgggAUEANgIYIAEgAzYCDCABIAA2AggMAQsgBUEQaiABNgIAIAEgBDYCGCABIAE2AgwgASABNgIIC0EAIQFBAEEAKAK8iMCAAEF/aiIANgK8iMCAACAARQ0BCw8LAkBBACgChIbAgAAiAEUNAEEAIQEDQCABQQFqIQEgACgCCCIADQALC0EAIAFBACgCxIjAgAAiACABIABLG0F/IAAbNgK8iMCAAAtUAAJAIAAoAgBBf0YNACABKAIAIAAoAgQgACgCCCABKAIEKAIMEYCAgIAAgICAgAAPCyABKAIAIAEoAgQgACgCDCgCACIAKAIAIAAoAgQQioCAgAAL/QECAn8BfiOAgICAAEEgayICJICAgIAAAkAgASgCAEF/Rw0AIAEoAgwhAyACQQA2AhggAkKAgICAEDcCECACQRBqQbCCwIAAIAMoAgAiAygCACADKAIEEIqAgIAAGiACIAIoAhgiAzYCCCACIAIpAhAiBDcDACABIAM2AgggASAENwIACyABKAIIIQMgAUEANgIIIAEpAgAhBCABQoCAgIAQNwIAIAIgAzYCGCACIAQ3AxACQEEMEIGAgIAAIgENAEEEQQwQhYCAgAAACyABIAIoAhg2AgggASACKQMQNwIAIABB7ITAgAA2AgQgACABNgIAIAJBIGokgICAgAALoQECAn8BfiOAgICAAEEgayICJICAgIAAAkAgASgCAEF/Rw0AIAEoAgwhAyACQQA2AhwgAkKAgICAEDcCFCACQRRqQbCCwIAAIAMoAgAiAygCACADKAIEEIqAgIAAGiACIAIoAhwiAzYCECACIAIpAhQiBDcDCCABIAM2AgggASAENwIACyAAQeyEwIAANgIEIAAgATYCACACQSBqJICAgIAAC58BAQF/I4CAgIAAQRBrIgMkgICAgAACQCACIAFqIgEgAk8NAEEAQQAQg4CAgAAACyADQQRqIAAoAgAiAiAAKAIEIAJBAXQiAiABIAIgAUsbIgJBCCACQQhLGyICEJuA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OERsbWFsbG9jTnROdEI3XzNzeXM2U3lzdGVtRTZtYWxsb2NDczVxcUUxZE5QRnJXXzNzdGQCNV9STnZOdENzZDdxemNzaFM0cXhfNWFsbG9jN3Jhd192ZWMxN2NhcGFjaXR5X292ZXJmbG93AzBfUk52TnRDc2Q3cXpjc2hTNHF4XzVhbGxvYzdyYXdfdmVjMTJoYW5kbGVfZXJyb3IEBXN3ZWVwBTRfUk52TnRDc2Q3cXpjc2hTNHF4XzVhbGxvYzVhbGxvYzE4aGFuZGxlX2FsbG9jX2Vycm9yBjhfUk52Q3M1V3FHcDd6TFJuQV83X19fcnVzdGMyNl9fX3J1c3RfYWxsb2NfZXJyb3JfaGFuZGxlcgctX1JOdk50Q3NpRXJaSXU3ZFBRMF80Y29yZTlwYW5pY2tpbmc5cGFuaWNfZm10CDhfUk52WHMxaV9OdENzaUVyWkl1N2RQUTBfNGNvcmUzZm10UmVOdEI2XzdEaXNwbGF5M2ZtdEI4XwkuX1JOdkNzNVdxR3A3ekxSbkFfN19fX3J1c3RjMTdydXN0X2JlZ2luX3Vud2luZAojX1JOdk50Q3NpRXJaSXU3ZFBRMF80Y29yZTNmbXQ1d3JpdGULKV9STnZOdENzaUVyWkl1N2RQUTBfNGNvcmU5cGFuaWNraW5nNXBhbmljDC9fUk52TnRDc2lFclpJdTdkUFEwXzRjb3JlNm9wdGlvbjEzZXhwZWN0X2ZhaWxlZA1LX1JOdk50TnRDc2lFclpJdTdkUFEwXzRjb3JlOXBhbmlja2luZzExcGFuaWNfY29uc3QyM3BhbmljX2NvbnN0X2Rpdl9ieV96ZXJvDjNfUk52TnRDczVxcUUxZE5QRnJXXzNzdGQ5cGFuaWNraW5nMTVwYW5pY193aXRoX2hvb2sPJ19STnZDczVXcUdwN3pMUm5BXzdfX19ydXN0YzEwcnVzdF9wYW5pYxB6X1JOdllJTnROdk50Q3M1cXFFMWROUEZyV18zc3RkOXBhbmlja2luZzExYmVnaW5fcGFuaWM3UGF5bG9hZFJlRU50TnRDc2Q3cXpjc2hTNHF4XzVhbGxvYzlwYW5pY2tpbmcxMlBhbmljUGF5bG9hZDZhc19zdHJCOV8RQ19STnZYTnRDc2lFclpJdTdkUFEwXzRjb3JlM2FueVJlTnRCMl8zQW55N3R5cGVfaWRDczVxcUUxZE5QRnJXXzNzdGQSZF9SSU52TnROdENzNXFxRTFkTlBGcldfM3N0ZDNzeXM5YmFja3RyYWNlMjZfX19ydXN0X2VuZF9zaG9ydF9iYWNrdHJhY2VOQ052TnRCNl81YWxsb2M4cnVzdF9vb20wekVCNl8Tbl9SSU52TnROdENzNXFxRTFkTlBGcldfM3N0ZDNzeXM5YmFja3RyYWNlMjZfX19ydXN0X2VuZF9zaG9ydF9iYWNrdHJhY2VOQ052TnRCNl85cGFuaWNraW5nMTNwYW5pY19oYW5kbGVyMHpFQjZfFDdfUk5DTnZOdENzNXFxRTFkTlBGcldfM3N0ZDlwYW5pY2tpbmcxM3BhbmljX2hhbmRsZXIwQjVfFXJfUklOdk50Q3NpRXJaSXU3ZFBRMF80Y29yZTNwdHI5ZHJvcF9nbHVlTnROdk50Q3M1cXFFMWROUEZyV18zc3RkOXBhbmlja2luZzEzcGFuaWNfaGFuZGxlcjE5Rm9ybWF0U3RyaW5nUGF5bG9hZEVCSF8WY19STnZNczBfTnRDczVUTmdiU1BBU0FrXzhkbG1hbGxvYzhkbG1hbGxvY0lOdEI1XzhEbG1hbGxvY050TnRCN18zc3lzNlN5c3RlbUU0ZnJlZUNzNXFxRTFkTlBGcldfM3N0ZBd4X1JOdlhzMF9Odk50Q3M1cXFFMWROUEZyV18zc3RkOXBhbmlja2luZzEzcGFuaWNfaGFuZGxlck50QjVfMTlGb3JtYXRTdHJpbmdQYXlsb2FkTnROdENzaUVyWkl1N2RQUTBfNGNvcmUzZm10N0Rpc3BsYXkzZm10GIkBX1JOdlhzX052TnRDczVxcUUxZE5QRnJXXzNzdGQ5cGFuaWNraW5nMTNwYW5pY19oYW5kbGVyTnRCNF8xOUZvcm1hdFN0cmluZ1BheWxvYWROdE50Q3NkN3F6Y3NoUzRxeF81YWxsb2M5cGFuaWNraW5nMTJQYW5pY1BheWxvYWQ4dGFrZV9ib3gZhAFfUk52WHNfTnZOdENzNXFxRTFkTlBGcldfM3N0ZDlwYW5pY2tpbmcxM3BhbmljX2hhbmRsZXJOdEI0XzE5Rm9ybWF0U3RyaW5nUGF5bG9hZE50TnRDc2Q3cXpjc2hTNHF4XzVhbGxvYzlwYW5pY2tpbmcxMlBhbmljUGF5bG9hZDNnZXQahAFfUklOdk52TXM1X050Q3NkN3F6Y3NoUzRxeF81YWxsb2M3cmF3X3ZlY0lOdEI4XzExUmF3VmVjSW5uZXJwRTdyZXNlcnZlMjFkb19yZXNlcnZlX2FuZF9oYW5kbGVOdE50QmFfNWFsbG9jNkdsb2JhbEVDczVxcUUxZE5QRnJXXzNzdGQbV19STnZNczhfTnRDc2Q3cXpjc2hTNHF4XzVhbGxvYzdyYXdfdmVjTnRCNV8xMVJhd1ZlY0lubmVyMTFmaW5pc2hfZ3Jvd0NzNXFxRTFkTlBGcldfM3N0ZBxhX1JJTnZOdENzaUVyWkl1N2RQUTBfNGNvcmUzcHRyOWRyb3BfZ2x1ZU50TnRDc2Q3cXpjc2hTNHF4XzVhbGxvYzZzdHJpbmc2U3RyaW5nRUNzNXFxRTFkTlBGcldfM3N0ZB1nX1JOdlhOdENzaUVyWkl1N2RQUTBfNGNvcmUzYW55TnROdENzZDdxemNzaFM0cXhfNWFsbG9jNnN0cmluZzZTdHJpbmdOdEIyXzNBbnk3dHlwZV9pZENzNXFxRTFkTlBGcldfM3N0ZB5fX1JOdlhzWl9OdENzZDdxemNzaFM0cXhfNWFsbG9jNnN0cmluZ050QjVfNlN0cmluZ050TnRDc2lFclpJdTdkUFEwXzRjb3JlM2ZtdDVXcml0ZTl3cml0ZV9zdHIuODgfYV9STnZYc1pfTnRDc2Q3cXpjc2hTNHF4XzVhbGxvYzZzdHJpbmdOdEI1XzZTdHJpbmdOdE50Q3NpRXJaSXU3ZFBRMF80Y29yZTNmbXQ1V3JpdGUxMHdyaXRlX2NoYXIuODkgaF9STnZZTnROdENzZDdxemNzaFM0cXhfNWFsbG9jNnN0cmluZzZTdHJpbmdOdE50Q3NpRXJaSXU3ZFBRMF80Y29yZTNmbXQ1V3JpdGU5d3JpdGVfZm10Q3M1cXFFMWROUEZyV18zc3RkIWxfUk52TXMwX050Q3M1VE5nYlNQQVNBa184ZGxtYWxsb2M4ZGxtYWxsb2NJTnRCNV84RGxtYWxsb2NOdE50QjdfM3N5czZTeXN0ZW1FMTJ1bmxpbmtfY2h1bmtDczVxcUUxZE5QRnJXXzNzdGQibV9STnZNczBfTnRDczVUTmdiU1BBU0FrXzhkbG1hbGxvYzhkbG1hbGxvY0lOdEI1XzhEbG1hbGxvY050TnRCN18zc3lzNlN5c3RlbUUxM2Rpc3Bvc2VfY2h1bmtDczVxcUUxZE5QRnJXXzNzdGQjdV9STnZYczJfTnZOdENzNXFxRTFkTlBGcldfM3N0ZDlwYW5pY2tpbmcxM3BhbmljX2hhbmRsZXJOdEI1XzE2U3RhdGljU3RyUGF5bG9hZE50TnRDc2lFclpJdTdkUFEwXzRjb3JlM2ZtdDdEaXNwbGF5M2ZtdCSHAV9STnZYczFfTnZOdENzNXFxRTFkTlBGcldfM3N0ZDlwYW5pY2tpbmcxM3BhbmljX2hhbmRsZXJOdEI1XzE2U3RhdGljU3RyUGF5bG9hZE50TnRDc2Q3cXpjc2hTNHF4XzVhbGxvYzlwYW5pY2tpbmcxMlBhbmljUGF5bG9hZDh0YWtlX2JveCWCAV9STnZYczFfTnZOdENzNXFxRTFkTlBGcldfM3N0ZDlwYW5pY2tpbmcxM3BhbmljX2hhbmRsZXJOdEI1XzE2U3RhdGljU3RyUGF5bG9hZE50TnRDc2Q3cXpjc2hTNHF4XzVhbGxvYzlwYW5pY2tpbmcxMlBhbmljUGF5bG9hZDNnZXQmhQFfUk52WHMxX052TnRDczVxcUUxZE5QRnJXXzNzdGQ5cGFuaWNraW5nMTNwYW5pY19oYW5kbGVyTnRCNV8xNlN0YXRpY1N0clBheWxvYWROdE50Q3NkN3F6Y3NoUzRxeF81YWxsb2M5cGFuaWNraW5nMTJQYW5pY1BheWxvYWQ2YXNfc3RyJ3JfUk52TXMwX050Q3M1VE5nYlNQQVNBa184ZGxtYWxsb2M4ZGxtYWxsb2NJTnRCNV84RGxtYWxsb2NOdE50QjdfM3N5czZTeXN0ZW1FMThpbnNlcnRfbGFyZ2VfY2h1bmtDczVxcUUxZE5QRnJXXzNzdGQoJ19STnZOdENzNXFxRTFkTlBGcldfM3N0ZDVhbGxvYzhydXN0X29vbQcSAQAPX19zdGFja19wb2ludGVyCRECAAcucm9kYXRhAQUuZGF0YQBOCXByb2R1Y2VycwIIbGFuZ3VhZ2UBBFJ1c3QADHByb2Nlc3NlZC1ieQEFcnVzdGMeMS4xMDAuMCAoMGVmMWJjMzg2IDIwMjYtMTEtMDkpAJQBD3RhcmdldF9mZWF0dXJlcwgrC2J1bGstbWVtb3J5Kw9idWxrLW1lbW9yeS1vcHQrFmNhbGwtaW5kaXJlY3Qtb3ZlcmxvbmcrCm11bHRpdmFsdWUrD211dGFibGUtZ2xvYmFscysTbm9udHJhcHBpbmctZnB0b2ludCsPcmVmZXJlbmNlLXR5cGVzKwhzaWduLWV4dA==');
+    const bytes = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+    WebAssembly.instantiate(bytes, {}).then(({ instance }) => { fsWasm = { ex: instance.exports, cap: 0, nbCap: 0, p: null, buf: null, v: null }; })
+      .catch((e) => console.warn('physics sweep: WebAssembly unavailable, using JS', e));
+  } catch (e) { console.warn('physics sweep: WebAssembly unavailable, using JS', e); }
+}
+// Views over the module's memory big enough for n equations and nb bodies.
+// Growing the room can grow the memory, which detaches old views, so views
+// are made afresh whenever the memory's buffer changes.
+function fsWasmViews(n, nb) {
+  const W = fsWasm;
+  if (n > W.cap || nb > W.nbCap) {
+    const cap = Math.max(n * 2, 1024), nbc = Math.max(nb * 2, 256), a = (bytes) => W.ex.alloc(bytes);
+    W.p = { J: a(cap * 160), E: a(cap * 32), BI: a(cap * 8), L: a(cap * 16), B: a(cap * 8), IC: a(cap * 8), lam: a(cap * 8), V: a(nbc * 48) };
+    W.cap = cap; W.nbCap = nbc; W.buf = null;
+  }
+  if (W.buf !== W.ex.memory.buffer) {
+    const m = W.buf = W.ex.memory.buffer, p = W.p, c = W.cap;
+    W.v = { J: new Float64Array(m, p.J, c * 20), E: new Float64Array(m, p.E, c * 4), BI: new Int32Array(m, p.BI, c * 2), L: new Int32Array(m, p.L, c * 4),
+      B: new Float64Array(m, p.B, c), IC: new Float64Array(m, p.IC, c), lam: new Float64Array(m, p.lam, c), V: new Float64Array(m, p.V, W.nbCap * 6) };
+  }
+  return W.v;
+}
+function frictionSweepFlat(solver, h, w) {
+  const eqs = solver.equations, n = eqs.length, bodies = w.bodies, nb = bodies.length;
+  if (n === 0) return 0;
+  for (let t = 0; t < nb; t++) { const b = bodies[t]; b.updateSolveMassProperties(); b._fsI = t; }
+  const WV = fsWasm ? fsWasmViews(n, nb) : null;
+  const B = WV ? WV.B : _fsB, invC = WV ? WV.IC : _fsInvC, lam = WV ? WV.lam : _fsLam;
+  if (!WV) B.length = invC.length = lam.length = n;
+  for (let t = 0; t < n; t++) {
+    const e = eqs[t];
+    lam[t] = 0; B[t] = e.computeB(h); invC[t] = 1 / e.computeC();
+    e.fricAt = t;
+  }
+  if (!WV && _fsJ.length < n * 20) { _fsJ = new Float64Array(n * 40); _fsE = new Float64Array(n * 8); _fsBi = new Int32Array(n * 4); _fsL = new Int32Array(n * 8); }
+  if (!WV && _fsV.length < nb * 12) _fsV = new Float64Array(nb * 24);
+  const J = WV ? WV.J : _fsJ, E = WV ? WV.E : _fsE, BI = WV ? WV.BI : _fsBi, L = WV ? WV.L : _fsL, V = WV ? WV.V : _fsV, T = _fsT;
+  // An equation on a body outside the world's list has nowhere to go here.
+  for (let t = 0; t < n; t++) { const e = eqs[t]; if (bodies[e.bi._fsI] !== e.bi || bodies[e.bj._fsI] !== e.bj) return frictionSweep(solver, h, w); }
+  V.fill(0, 0, WV ? nb * 6 : nb * 12);
+  for (let t = 0; t < n; t++) {
+    const e = eqs[t], a = e.jacobianElementA, b = e.jacobianElementB, bi = e.bi, bj = e.bj, o = t * 20;
+    J[o] = a.spatial.x; J[o + 1] = a.spatial.y; J[o + 2] = a.spatial.z;
+    J[o + 3] = a.rotational.x; J[o + 4] = a.rotational.y; J[o + 5] = a.rotational.z;
+    J[o + 6] = b.spatial.x; J[o + 7] = b.spatial.y; J[o + 8] = b.spatial.z;
+    J[o + 9] = b.rotational.x; J[o + 10] = b.rotational.y; J[o + 11] = b.rotational.z;
+    bi.invInertiaWorldSolve.vmult(a.rotational, T); J[o + 12] = T.x; J[o + 13] = T.y; J[o + 14] = T.z;
+    bj.invInertiaWorldSolve.vmult(b.rotational, T); J[o + 15] = T.x; J[o + 16] = T.y; J[o + 17] = T.z;
+    J[o + 18] = bi.invMassSolve; J[o + 19] = bj.invMassSolve;
+    BI[t * 2] = bi._fsI * 6; BI[t * 2 + 1] = bj._fsI * 6;
+    E[t * 4] = e.eps; E[t * 4 + 1] = e.minForce; E[t * 4 + 2] = e.maxForce; E[t * 4 + 3] = e.fricMu;
+    // Friction links, fixed for the solve: 0 none, 1 first of a pair
+    // (unbounded), 2 second (circle with the partner at L[t*4+2]), 3 alone;
+    // L[t*4+1] the contact's index, or -1 when it is not in this solve (bound 0).
+    const c = e.fricContact;
+    let kind = 0, ci = -1, pi = -1;
+    if (c) {
+      ci = eqs[c.fricAt] === c ? c.fricAt : -1;
+      const p = e.fricPair, q = e.fricNext;
+      if (q && eqs[q.fricAt] === q) kind = 1;
+      else if (p && eqs[p.fricAt] === p) { kind = 2; pi = p.fricAt; }
+      else kind = 3;
+    }
+    L[t * 4] = kind; L[t * 4 + 1] = ci; L[t * 4 + 2] = pi;
+  }
+  // addToWlambda(u) for equation t, as cannon orders it: A's then B's linear
+  // part, then A's and B's angular part.
+  const add = (t, u) => {
+    const o = t * 20, ia = BI[t * 2], ib = BI[t * 2 + 1];
+    let m = J[o + 18] * u;
+    V[ia] = V[ia] + m * J[o]; V[ia + 1] = V[ia + 1] + m * J[o + 1]; V[ia + 2] = V[ia + 2] + m * J[o + 2];
+    m = J[o + 19] * u;
+    V[ib] = V[ib] + m * J[o + 6]; V[ib + 1] = V[ib + 1] + m * J[o + 7]; V[ib + 2] = V[ib + 2] + m * J[o + 8];
+    V[ia + 3] = V[ia + 3] + u * J[o + 12]; V[ia + 4] = V[ia + 4] + u * J[o + 13]; V[ia + 5] = V[ia + 5] + u * J[o + 14];
+    V[ib + 3] = V[ib + 3] + u * J[o + 15]; V[ib + 4] = V[ib + 4] + u * J[o + 16]; V[ib + 5] = V[ib + 5] + u * J[o + 17];
+  };
+  const tol = solver.tolerance * solver.tolerance, iters = solver.iterations;
+  let it = 0;
+  if (WV) { const p = fsWasm.p; it = fsWasm.ex.sweep(p.J, p.E, p.BI, p.L, p.B, p.IC, p.lam, p.V, n, iters, tol); }
+  else for (; it !== iters; it++) {
+    let delta = 0;
+    for (let t = 0; t < n; t++) {
+      const o = t * 20, ia = BI[t * 2], ib = BI[t * 2 + 1], v = lam[t];
+      // computeGWlambda: (vlA.spA + wlA.rotA) + (vlB.spB + wlB.rotB)
+      const gw = ((V[ia] * J[o] + V[ia + 1] * J[o + 1] + V[ia + 2] * J[o + 2]) + (V[ia + 3] * J[o + 3] + V[ia + 4] * J[o + 4] + V[ia + 5] * J[o + 5])) +
+                 ((V[ib] * J[o + 6] + V[ib + 1] * J[o + 7] + V[ib + 2] * J[o + 8]) + (V[ib + 3] * J[o + 9] + V[ib + 4] * J[o + 10] + V[ib + 5] * J[o + 11]));
+      let u = invC[t] * (B[t] - gw - E[t * 4] * v), lo = E[t * 4 + 1], hi = E[t * 4 + 2];
+      const kind = L[t * 4];
+      if (kind) {
+        const ci = L[t * 4 + 1];
+        hi = ci >= 0 ? E[t * 4 + 3] * lam[ci] : 0; lo = -hi;
+        if (kind === 1) { lo = -Infinity; hi = Infinity; }
+        else if (kind === 2) {
+          const pi = L[t * 4 + 2], pa = lam[pi], nb2 = v + u, r = Math.sqrt(pa * pa + nb2 * nb2);
+          if (r > hi) {
+            const s = hi / r, dp = pa * s - pa;
+            lam[pi] += dp; add(pi, dp); delta += dp > 0 ? dp : -dp;
+            u = nb2 * s - v;
+          }
+          lo = -Infinity; hi = Infinity;
+        }
+      }
+      if (v + u < lo) u = lo - v; else if (v + u > hi) u = hi - v;
+      lam[t] += u;
+      delta += u > 0 ? u : -u;
+      add(t, u);
+    }
+    if (delta * delta < tol) break;
+  }
+  for (let t = 0; t < nb; t++) {
+    const b = bodies[t], o = t * 6;
+    b.vlambda.set(V[o], V[o + 1], V[o + 2]); b.wlambda.set(V[o + 3], V[o + 4], V[o + 5]);
     b.vlambda.vmul(b.linearFactor, b.vlambda); b.velocity.vadd(b.vlambda, b.velocity);
     b.wlambda.vmul(b.angularFactor, b.wlambda); b.angularVelocity.vadd(b.wlambda, b.angularVelocity);
   }
@@ -1008,13 +1323,40 @@ const sinkHeldCell = (i, j, l) => sinkHeld.size > 0 && sinkHeld.has(fricKey(i, j
 // over itself: sand poured in lands on it, is caught (catchPowder), and the
 // grains it carries down grip the shaft walls and hold it back. Once it has
 // stopped the shaft fills by the powder's own rules.
+// The busy sinkers filed by the ground squares their boxes cover: a pour asks
+// this ~1000 times a frame, and walking every sinker each time was most of a
+// heavy pour's frame. Refiled when a sinker's box, its busy flag or the set of
+// sinkers changes; the test itself still reads the live box and sleep state.
+var sinkGridStale = true;   // var: the updateAABB patch above may run first
+const sinkGrid = new Map(), SINK_GRID_W = 4 * BLOCK;
+const sinkGridKey = (gx, gz) => (gx + 32768) * 65536 + (gz + 32768);
+function sinkGridBuild() {
+  sinkGridStale = false;
+  for (const l of sinkGrid.values()) l.length = 0;
+  for (const [S, st] of sinkers) {
+    if (!st.busy) continue;
+    const a = S.aabb;
+    const x0 = Math.floor(a.lowerBound.x / SINK_GRID_W), x1 = Math.floor(a.upperBound.x / SINK_GRID_W);
+    const z0 = Math.floor(a.lowerBound.z / SINK_GRID_W), z1 = Math.floor(a.upperBound.z / SINK_GRID_W);
+    for (let gx = x0; gx <= x1; gx++) for (let gz = z0; gz <= z1; gz++) {
+      const k = sinkGridKey(gx, gz);
+      let l = sinkGrid.get(k);
+      if (!l) sinkGrid.set(k, l = []);
+      l.push(S);
+    }
+  }
+}
 function sinkBlocksPowder(i, j, l) {
   if (!sinkers.size) return false;
   if (sinkHeldCell(i, j, l)) return true;
   if (!sinkBusyN) return false;
   const x = colX(i), y = (l + 0.5) * BLOCK, z = colZ(j);
-  for (const [S, st] of sinkers) {
-    if (!st.busy || S.sleepState === CANNON.Body.SLEEPING) continue;
+  if (sinkGridStale) sinkGridBuild();
+  const near = sinkGrid.get(sinkGridKey(Math.floor(x / SINK_GRID_W), Math.floor(z / SINK_GRID_W)));
+  if (!near) return false;
+  for (let q = 0; q < near.length; q++) {
+    const S = near[q];
+    if (S.sleepState === CANNON.Body.SLEEPING) continue;
     const a = S.aabb;
     if (x > a.lowerBound.x && x < a.upperBound.x && z > a.lowerBound.z && z < a.upperBound.z && y > a.lowerBound.y) return true;
   }
@@ -1155,7 +1497,7 @@ const sinkGives = (h, w) => w <= h.minW || w >= h.maxW;
 const sinkBody = (b) => !!b.debrisMesh || b === playerBody;
 function sinkTouch(S, O) {
   let st = sinkers.get(S);
-  if (!st) sinkers.set(S, st = { media: new Map(), rigidAt: -1, busy: false, disp: 0, owed: [] });
+  if (!st) { sinkers.set(S, st = { media: new Map(), rigidAt: -1, busy: false, disp: 0, owed: [] }); sinkGridStale = true; }
   const key = O.voxelGround ? SINK_GROUND : O;
   let M = st.media.get(key);
   if (!M) st.media.set(key, M = { body: O.voxelGround ? null : O, rec: new Map(), touchAt: 0, overAt: -1 });
@@ -1696,6 +2038,7 @@ function sinkPressScan() {
 }
 function sinkForces(h) {
   sinkBusyN = 0;
+  sinkGridStale = true;
   if (world.stepnumber % SINK_PRESS_EVERY === 0) sinkPressScan();
   if (!sinkers.size) return;
   const step = world.stepnumber, gx = world.gravity.x, gy = world.gravity.y, gz = world.gravity.z;
@@ -1748,7 +2091,7 @@ function sinkForces(h) {
     st.busy = Math.abs(hull.W - (disp + press) * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp + press > 0
       && SINK_TUNE.weightSpeed > 0;
     if (st.busy) { sinkBusyN++; if (S.sleepState !== CANNON.Body.AWAKE) S.wakeUp(); }
-    if (!st.media.size && !st.owed.length) sinkers.delete(S);
+    if (!st.media.size && !st.owed.length) { sinkers.delete(S); sinkGridStale = true; }
   }
 }
 // The hold-back and the plow, as one implicit (backward Euler) step of the
@@ -1965,6 +2308,7 @@ function sinkForget(S, st) {
   // Blocks it had taken up and not yet found a place for still go down.
   for (const o of st.owed) sinkPlaceGround(o.i, o.j, o.l, o.m, null);
   sinkers.delete(S);
+  sinkGridStale = true;
 }
 
 // Once a frame, after the step: every displaced cell whose middle a hull cell
@@ -2795,7 +3139,12 @@ let powderFarNone = 0, powderFarNoneI = 0, powderFarNoneJ = 0, powderFarNoneL = 
 // The furthest any material looks: a grain leaving a column can unsettle ones
 // that far off, not just its neighbours (powderDirtySides).
 let reposeReachAll = 1;
+// Bumped on any material number edited or material made/removed: the powder
+// caches keyed on a piece's pose or lattice (lockPoseMemo, powderSolidCells)
+// also read the angle and the powder flag.
+let matStatRev = 0;
 function matReposeSet(m, angle) {
+  matStatRev++;
   reposeStd[m] = angle === 45 ? 1 : 0;
   const t = Math.tan(angle * Math.PI / 180);
   // 90 never rolls; anything else at least looks one column out.
@@ -3390,6 +3739,19 @@ function growColumn(k, needLv) {
 // Bumped on every write, and on every change to a fallen piece's lattice, so the
 // stress overlay (updateStress) knows the structure it last solved is stale.
 let stressRev = 0;
+// The part of stressRev that is ground writes, and when each chunk last had
+// one: a riding grain asks whether anything near it changed, not anything
+// anywhere (powderRideDue) — a pour across the island re-ran every rider's
+// cell search every frame.
+let stressRevGround = 0, groundRevSeq = 0;
+function groundRevNear(x, z) {
+  const i = colI(x), j = colJ(z);
+  const ci0 = (Math.max(0, i - 2) / CHUNK) | 0, ci1 = (Math.min(GEN_N - 1, i + 2) / CHUNK) | 0;
+  const cj0 = (Math.max(0, j - 2) / CHUNK) | 0, cj1 = (Math.min(GEN_N - 1, j + 2) / CHUNK) | 0;
+  let r = 0;
+  for (let cj = cj0; cj <= cj1; cj++) for (let ci = ci0; ci <= ci1; ci++) if (groundRevChunk[cj * CHUNK_N + ci] > r) r = groundRevChunk[cj * CHUNK_N + ci];
+  return r;
+}
 // Columns written since the stress layout last looked at them: the only places
 // ground can have come to hang over a gap (see stressHangScan). Generated ground
 // is solid from bedrock up, so nothing else needs looking at.
@@ -3445,6 +3807,12 @@ function setVoxel(i, j, lvl, m) {
     if (!chunkClear[c]) { chunkClear[c] = 1; chunkClearDirty(c); }
   }
   stressRev++;
+  stressRevGround++;
+  groundRevChunk[chunkOf(i, j)] = ++groundRevSeq;
+  // For swapChunkCollider's wake: every write to the chunk, and the ones that
+  // took a solid or powder cell away or changed what it is (anything but
+  // filling air) — only those can take support out from under a sleeper.
+  { const cc = chunkOf(i, j); colWr[cc]++; if (was !== AIR) colWrLost[cc]++; }
   stressCols.add(k);
   stressGroundCols.add(k);
   stressWeightCols.add(k);
@@ -3516,6 +3884,11 @@ const MAX_DEPTH  = 80;   // and the most any column will ever draw (16 m)
 // which is fourteen thousand columns rather than nine hundred thousand.
 const CHUNK   = 16;                         // columns per chunk side (3.2 m)
 const CHUNK_N = Math.ceil(GEN_N / CHUNK);
+const groundRevChunk = new Int32Array(CHUNK_N * CHUNK_N);
+// setVoxel's write counts per chunk (all, and all but air filled), and the
+// counts the chunk's current collider was built from (swapChunkCollider).
+const colWr = new Uint32Array(CHUNK_N * CHUNK_N), colWrLost = new Uint32Array(CHUNK_N * CHUNK_N);
+const colBuiltWr = new Uint32Array(CHUNK_N * CHUNK_N), colBuiltLost = new Uint32Array(CHUNK_N * CHUNK_N);   // see groundRevNear
 const chunkOf = (i, j) => ((j / CHUNK) | 0) * CHUNK_N + ((i / CHUNK) | 0);
 // The lowest level anything solid was dug, built or dropped at in each chunk
 // since the world was made, NO_DIG where nothing has: those are the chunks
@@ -5221,7 +5594,7 @@ onmessage = (e) => {
       let boxes = d.box;
       if (!boxes || boxes.length < n * 6) boxes = new Float32Array(Math.max(n * 6, colOut.length));
       boxes.set(colOut.subarray(0, n * 6));
-      postMessage({ kind: 'collider', id: d.id, c, rev: d.rev, cut: d.cut, boxes, n, snap }, [...snapBufs, boxes.buffer]);
+      postMessage({ kind: 'collider', id: d.id, c, rev: d.rev, cut: d.cut, wr: d.wr, lost: d.lost, boxes, n, snap }, [...snapBufs, boxes.buffer]);
       return;
     }
     const i0 = (c % CHUNK_N) * CHUNK, j0 = ((c / CHUNK_N) | 0) * CHUNK;
@@ -5449,6 +5822,7 @@ function colDispatch(c) {
   s.id = ++meshJobSeq;
   s.rev = chunkRev[c];
   s.cut = chunkColliderCut(c);   // read off the same store as the snapshot
+  s.wr = colWr[c]; s.lost = colWrLost[c];   // and the write counts it is as of
   s.box = colBoxBufs.pop() || null;
   colJob[c] = s.id;
   meshPost(s);
@@ -5772,8 +6146,9 @@ function colliderPart(buf, n, lo, hi, always) {
   world.addBody(body);
   return body;
 }
-function setChunkColliderBody(c, buf, n, cut) {
+function setChunkColliderBody(c, buf, n, cut, wr = colWr[c], lost = colWrLost[c]) {
   colCut[c] = cut;
+  colBuiltWr[c] = wr; colBuiltLost[c] = lost;
   colliderBody[c] = colliderPart(buf, n, cut, Infinity, true);
   colliderDeep[c] = colliderPart(buf, n, -Infinity, cut - 1, false);
   if (_colLoadedAt[c] < 0) { _colLoadedAt[c] = _colLoaded.length; _colLoaded.push(c); }
@@ -5816,10 +6191,10 @@ function buildPendingColliders() {
     if (colJob[c] === r.id) {
       colJob[c] = 0;
       if (colliderBody[c]) {
-        swapChunkCollider(c, r.boxes, r.n, r.cut);
+        swapChunkCollider(c, r.boxes, r.n, r.cut, r.wr, r.lost);
         if (colRedo.delete(c)) colDispatch(c);
       } else if (r.rev !== chunkRev[c] || dirtyChunks.has(c) || dirtyColliders.has(c)) loadChunkCollider(c);
-      else setChunkColliderBody(c, r.boxes, r.n, r.cut);
+      else setChunkColliderBody(c, r.boxes, r.n, r.cut, r.wr, r.lost);
     }
     colBoxBufRecycle(r.boxes);
   }
@@ -6012,11 +6387,22 @@ function rebuildChunkCollider(c) {
   swapChunkCollider(c, colOut, n, chunkColliderCut(c));
 }
 
+// Perf switch (v316, audit E2): true wakes every sleeper over a chunk on every
+// collider swap, as before v316, even when all that changed was air filled.
+const CHUNK_SWAP_WAKE_ALL = false;
+
 // The new bodies go into the world before the old ones come out, so there is
 // never a step or a ray that finds the chunk with nothing there.
-function swapChunkCollider(c, buf, n, cut) {
+function swapChunkCollider(c, buf, n, cut, wr = colWr[c], lost = colWrLost[c]) {
   const oldBody = colliderBody[c], oldDeep = colliderDeep[c];
-  setChunkColliderBody(c, buf, n, cut);
+  // Nothing went from under anything (v316, audit E2): every write to the
+  // chunk since its collider was built filled air — powder landing, settling
+  // in, a block placed — and the deep/surface split is where it was. A cell
+  // filled cannot take support away, so the sleepers stay asleep. Anything
+  // else, including a rebuild no write is counted for (a seam re-split, a
+  // bulk rewrite), wakes them all as before.
+  const fillOnly = !CHUNK_SWAP_WAKE_ALL && wr !== colBuiltWr[c] && lost === colBuiltLost[c] && cut === colCut[c];
+  setChunkColliderBody(c, buf, n, cut, wr, lost);
   world.removeBody(oldBody);
   if (oldDeep) world.removeBody(oldDeep);
   // v124 — wake sleeping debris whose friction surfaces vanished.
@@ -6026,7 +6412,7 @@ function swapChunkCollider(c, buf, n, cut) {
   // column range (its bounds, not its centre: a piece centred in the next
   // chunk can still be lying on this one). The mesh sync picks it up again
   // as soon as it is awake.
-  {
+  if (!fillOnly) {
     const ci0 = (c % CHUNK_N) * CHUNK, cj0 = ((c / CHUNK_N) | 0) * CHUNK;
     const ci1 = Math.min(ci0 + CHUNK, GEN_N), cj1 = Math.min(cj0 + CHUNK, GEN_N);
     const cx0 = colX(ci0) - BLOCK, cx1 = colX(ci1 - 1) + BLOCK;
@@ -6686,6 +7072,488 @@ world.addEventListener('postStep', () => {
   groundNy = stepGroundNy;
   stepGroundNy = 0;
 });
+
+// ----- the narrowphase, split across workers -----
+// In a heap most of a substep's narrowphase is shape tests between pairs the
+// broadphase found, and every pair's tests read only the two bodies' poses and
+// shapes. With the page cross-origin isolated (SharedArrayBuffer), up to three
+// workers each keep a copy of every body's shapes and run the game's own
+// getContacts (its text, cut from this very module between the @@SPLIT marks)
+// over a share of the pairs while this thread runs the first share. Their
+// contacts come back as numbers (bodies, shapes, contact material, points,
+// normal), and this thread turns them into contact equations, friction and
+// all, in pair order, exactly where the one-thread loop would have made them;
+// so the equations, their order and everything the solver sees are as before.
+// - The copies are kept by comparing, every substep, each paired body's shape
+//   list (shapes, sizes, offsets, turns, materials, filters) with what was last
+//   sent, and sending what changed; bodies added and removed go across as the
+//   new list. Nothing depends on the game calling a hook.
+// - Pairs with the player (its ground normal is read off its contacts) and
+//   bodies with shapes other than boxes and spheres stay on this thread.
+// - A sinker's ground skip reads the voxels, so it is worked out here before
+//   the workers start and handed across; what the skip does to the sinker's
+//   state is done here afterwards, as the loop would have done it.
+// - Only when a substep's narrowphase took long enough to be worth it
+//   (PHYSICS_SPLIT_MIN_MS); a light scene runs the one-thread loop.
+// - Any worker that is late, errs or runs out of room hands its share back to
+//   this thread, which runs it itself, and the split shuts down.
+// PHYSICS_SPLIT = false keeps the one-thread loop always.
+const PHYSICS_SPLIT = true;
+const PHYSICS_SPLIT_MIN_MS = 2.5, PHYSICS_SPLIT_OFF_MS = 1.5, PHYSICS_SPLIT_MIN_PAIRS = 24;
+const PHYSICS_SPLIT_TIMEOUT_MS = 250;
+let PHYSICS_SPLIT_VERIFY = false;   // debug: run the loop here and compare the workers' contacts against it
+const physSplitStats = { state: 'off', why: '', workers: 0, steps: 0, serial: 0, split: 0, pairs: 0, mainPairs: 0, fallbacks: 0, verified: 0, mismatches: 0, firstMismatch: null, force: null, t: { sync: 0, flags: 0, main: 0, spin: 0, merge: 0 } };
+{
+  const np = world.narrowphase, gcOrig = np.getContacts;
+  const NONE = -1, REC = 17, SIDE = 1 << 20;
+  const MAXP = 1 << 16, MAXB = 1 << 15, MAXC = 1 << 16, MAXCMD = 1 << 21;
+  let S = null;          // the running split, or null
+  let busy = false;      // inside a split getContacts
+  let lastMs = 0;        // last substep's narrowphase, as the one-thread loop would have taken
+  let engaged = false, restartAt = 0;
+  const q1 = [null], q2 = [null];
+
+  // ---- this thread's record of what each worker holds ----
+  let sent = new WeakMap();      // body -> { key, shapes: [], sig: Float64Array }
+  let sentList = null;           // world.bodies as last sent
+  let sentCms = null;            // world.contactmaterials as last sent
+  let nextKey = 1;
+  const matIdx = new Map();      // CANNON.Material -> index
+  const matOf = (m) => { if (!m) return -1; let k = matIdx.get(m); if (k === undefined) matIdx.set(m, k = matIdx.size); return k; };
+  const SHN = 17;                // numbers per shape in a signature and a command
+  // Each shape: type, three sizes, bounding radius, offset (3), turn (4), material, group, mask, response, and
+  // whether a box's hull matches its sizes (a box whose sizes moved without its hull is not copied).
+  const shapeSig = (b, t, out, o) => {
+    const s = b.shapes[t], off = b.shapeOffsets[t], q = b.shapeOrientations[t];
+    let a0 = 0, a1 = 0, a2 = 0, ok = 1;
+    if (s.type === CANNON.Shape.types.BOX) {
+      const h = s.halfExtents, H = s.convexPolyhedronRepresentation && s.convexPolyhedronRepresentation._boxH;
+      a0 = h.x; a1 = h.y; a2 = h.z;
+      if (!H || H[0] !== h.x || H[1] !== h.y || H[2] !== h.z || s.convexPolyhedronRepresentation.vertices.length !== 8) ok = 0;
+    } else if (s.type === CANNON.Shape.types.SPHERE) a0 = s.radius;
+    else ok = 0;
+    out[o] = s.type; out[o + 1] = a0; out[o + 2] = a1; out[o + 3] = a2; out[o + 4] = s.boundingSphereRadius;
+    out[o + 5] = off.x; out[o + 6] = off.y; out[o + 7] = off.z; out[o + 8] = q.x; out[o + 9] = q.y; out[o + 10] = q.z; out[o + 11] = q.w;
+    out[o + 12] = matOf(s.material); out[o + 13] = s.collisionFilterGroup; out[o + 14] = s.collisionFilterMask; out[o + 15] = s.collisionResponse ? 1 : 0; out[o + 16] = ok;
+  };
+  const tmpSig = { a: new Float64Array(SHN * 64) };
+  // 0 = the worker's copy is current, 1 = sent now, -1 = the body stays here (or no room)
+  function syncBody(b) {
+    let e = sent.get(b);
+    const n = b.shapes.length;
+    if (e && e.n === n && e.mat === b.material && e.vg === !!b.voxelGround) {
+      let same = true;
+      for (let t = 0; t < n && same; t++) if (e.shapes[t] !== b.shapes[t]) same = false;
+      if (same) {
+        if (tmpSig.a.length < SHN) tmpSig.a = new Float64Array(SHN * 64);
+        const sig = e.sig, x = tmpSig.a;
+        for (let t = 0; t < n; t++) {
+          shapeSig(b, t, x, 0);
+          const o = t * SHN;
+          for (let k = 0; k < SHN; k++) if (!Object.is(sig[o + k], x[k])) { same = false; break; }
+          if (!same) break;
+        }
+        if (same) return e.local ? -1 : 0;
+      }
+    }
+    if (!e) { e = { key: nextKey++ }; sent.set(b, e); }
+    e.n = n; e.mat = b.material; e.vg = !!b.voxelGround; e.shapes = b.shapes.slice();
+    const sig = e.sig = new Float64Array(SHN * n);
+    let local = b === playerBody;
+    for (let t = 0; t < n; t++) { shapeSig(b, t, sig, t * SHN); if (!sig[t * SHN + 16]) local = true; }
+    e.local = local;
+    // command: 1, key, body material, voxelGround, local, n, then SHN a shape
+    const C = S.cmd;
+    if (S.cmdN + 6 + SHN * n > MAXCMD) { S.overflow = true; return -1; }
+    let p = S.cmdN;
+    C[p++] = 1; C[p++] = e.key; C[p++] = matOf(b.material); C[p++] = b.voxelGround ? 1 : 0; C[p++] = local ? 1 : 0; C[p++] = n;
+    for (let k = 0; k < SHN * n; k++) C[p++] = sig[k];
+    S.cmdN = p;
+    return local ? -1 : 1;
+  }
+  function syncLists(w) {
+    const bs = w.bodies, C = S.cmd;
+    let same = sentList !== null && sentList.length === bs.length;
+    if (same) for (let k = 0; k < bs.length; k++) if (sentList[k] !== bs[k]) { same = false; break; }
+    if (!same) {
+      if (sentList) { const now = new Set(bs); for (const b of sentList) if (!now.has(b)) sent.delete(b); }
+      if (S.cmdN + 2 + bs.length > MAXCMD) { S.overflow = true; return; }
+      let p = S.cmdN; C[p++] = 2; C[p++] = bs.length;
+      for (let k = 0; k < bs.length; k++) {
+        let e = sent.get(bs[k]);
+        if (!e) { e = { key: nextKey++, n: -1, shapes: [], sig: new Float64Array(0), local: false }; sent.set(bs[k], e); }
+        C[p++] = e.key;
+      }
+      S.cmdN = p; sentList = bs.slice();
+    }
+    const cms = w.contactmaterials;
+    same = sentCms !== null && sentCms.length === cms.length;
+    if (same) for (let k = 0; k < cms.length; k++) if (sentCms[k] !== cms[k] || sentCms[k].__m0 !== cms[k].materials[0] || sentCms[k].__m1 !== cms[k].materials[1]) { same = false; break; }
+    if (!same) {
+      if (S.cmdN + 2 + 2 * cms.length > MAXCMD) { S.overflow = true; return; }
+      let p = S.cmdN; C[p++] = 3; C[p++] = cms.length;
+      for (const c of cms) { C[p++] = matOf(c.materials[0]); C[p++] = matOf(c.materials[1]); c.__m0 = c.materials[0]; c.__m1 = c.materials[1]; }
+      S.cmdN = p; sentCms = cms.slice();
+    }
+  }
+
+  // ---- the worker ----
+  function workerSource(np0) {
+    return `self.window = self; importScripts(${JSON.stringify(new URL('lib/cannon-global.min.js', location.href).href)});
+const sinkers = new Map(); var sinkGridStale = false;
+const world = new CANNON.World();
+${np0}
+let ctl, pose, pairs, pflag, cnt, res, cmd, flg, reach, touch, pcost, wid;
+const REC = ${REC}, SIDE = ${SIDE}, MAXC = ${MAXC};
+const mats = [], byKey = new Map(); let list = [];
+const matAt = (i) => { if (i < 0) return undefined; while (mats.length <= i) mats.push(new CANNON.Material()); return mats[i]; };
+const V = CANNON.Vec3, Q = CANNON.Quaternion;
+function applyCmds(n) {
+  const c = cmd; let p = 0;
+  while (p < n) {
+    const op = c[p++];
+    if (op === 1) {
+      const key = c[p++]; let b = byKey.get(key);
+      if (!b) { b = new CANNON.Body({ mass: 0 }); byKey.set(key, b); }
+      b.material = matAt(c[p++]); b.voxelGround = c[p++] === 1; b.__local = c[p++] === 1;
+      const ns = c[p++];
+      b.shapes.length = 0; b.shapeOffsets.length = 0; b.shapeOrientations.length = 0;
+      for (let t = 0; t < ns; t++, p += ${SHN}) {
+        const ty = c[p]; let s;
+        if (ty === CANNON.Shape.types.BOX) s = new CANNON.Box(new V(c[p + 1], c[p + 2], c[p + 3]));
+        else if (ty === CANNON.Shape.types.SPHERE) s = new CANNON.Sphere(c[p + 1]);
+        else s = new CANNON.Sphere(0);
+        s.boundingSphereRadius = c[p + 4];
+        s.material = matAt(c[p + 12]); s.collisionFilterGroup = c[p + 13]; s.collisionFilterMask = c[p + 14]; s.collisionResponse = c[p + 15] === 1;
+        s.body = b; s.__own = b; s.__slot = t;
+        if (s.convexPolyhedronRepresentation) { s.convexPolyhedronRepresentation.__own = b; s.convexPolyhedronRepresentation.__slot = t; s.convexPolyhedronRepresentation.__hull = 1; }
+        b.shapes.push(s); b.shapeOffsets.push(new V(c[p + 5], c[p + 6], c[p + 7])); b.shapeOrientations.push(new Q(c[p + 8], c[p + 9], c[p + 10], c[p + 11]));
+      }
+      b.updateBoundingRadius();
+    } else if (op === 2) {
+      const nb = c[p++]; const keep = new Set(); list = new Array(nb);
+      for (let k = 0; k < nb; k++) { const key = c[p++]; let b = byKey.get(key); if (!b) { b = new CANNON.Body({ mass: 0 }); byKey.set(key, b); } list[k] = b; keep.add(key); }
+      for (const key of [...byKey.keys()]) if (!keep.has(key)) byKey.delete(key);
+    } else if (op === 3) {
+      const n2 = c[p++]; world.contactmaterials.length = 0; world.contactMaterialTable = new world.contactMaterialTable.constructor();
+      for (let k = 0; k < n2; k++) { const a = matAt(c[p++]), b = matAt(c[p++]); world.addContactMaterial(new CANNON.ContactMaterial(a, b, {})); }
+    } else throw new Error('bad command ' + op);
+  }
+}
+const log = [], pool = [], fpool = [], result = [], fr = [];
+let cmIx = null;
+{
+  const bb = world.narrowphase.boxBox;
+  const skipOK = (S, shape, x) => { const k = S.__k, f = flg[k]; if (!f || !shape.halfExtents) return false; if (x.y - shape.halfExtents.y > S.position.y) return false; reach[k] = 1; if (f === 1) return false; touch[k] = 1; return true; };
+  world.narrowphase.boxBox = function (si, sj, xi, xj, qi, qj, bi, bj, rsi, rsj, justTest) {
+    if (ctl[3] && !justTest) { if (bi.voxelGround) { if (skipOK(bj, si, xi)) return false; } else if (bj.voxelGround && skipOK(bi, sj, xj)) return false; }
+    return bb.call(this, si, sj, xi, xj, qi, qj, bi, bj, rsi, rsj, justTest);
+  };
+  const mk = world.narrowphase.createContactEquation;
+  world.narrowphase.createContactEquation = function (bi, bj, si, sj, oa, ob) { const c = mk.call(this, bi, bj, si, sj, oa, ob); log.push(c, bi, bj, si, sj, oa, ob, this.currentContactMaterial); return c; };
+  world.narrowphase.createFrictionEquationsFromContact = () => false;
+}
+let A = null;
+const at = (b, x, gen) => { const o = x * 8; b.position.set(pose[o], pose[o + 1], pose[o + 2]); b.quaternion.set(pose[o + 3], pose[o + 4], pose[o + 5], pose[o + 6]); b.type = pose[o + 7]; b.__k = x; b.__gen = gen; };
+const code = (s) => !s ? -1 : (s.__own === A ? 0 : SIDE) + s.__slot * 2 + (s.__hull ? 1 : 0);
+function work(gen) {
+  const n = ctl[4]; if (n) applyCmds(n);
+  if (!cmIx || cmIx.size !== world.contactmaterials.length || n) { cmIx = new Map(); world.contactmaterials.forEach((c, k) => cmIx.set(c, k)); }
+  const a = ctl[8 + 2 * wid], e = ctl[9 + 2 * wid], R = res; let m = 0;
+  const np1 = [null], np2 = [null];
+  for (let k = a; k < e; k++) {
+    if (pflag[k]) { cnt[k] = 0; continue; }
+    const i = pairs[2 * k], j = pairs[2 * k + 1], bi = list[i], bj = list[j];
+    if (bi.__gen !== gen) at(bi, i, gen);
+    if (bj.__gen !== gen) at(bj, j, gen);
+    const tq = performance.now();
+    log.length = 0; result.length = 0; fr.length = 0; A = bi;
+    np1[0] = bi; np2[0] = bj;
+    world.narrowphase.getContacts(np1, np2, world, result, pool, fr, fpool);
+    const nr = log.length / 8;
+    if (m + nr > MAXC) throw new Error('room');
+    for (let q = 0; q < log.length; q += 8) {
+      const c = log[q], o = m * REC;
+      R[o] = log[q + 1] === bi ? 0 : 1;
+      R[o + 2] = code(log[q + 3]); R[o + 3] = code(log[q + 4]); R[o + 4] = code(log[q + 5]); R[o + 5] = code(log[q + 6]);
+      const cm = log[q + 7]; R[o + 6] = cm === world.defaultContactMaterial ? -1 : (cmIx.get(cm) ?? -3);
+      R[o + 7] = result.indexOf(c) >= 0 ? 1 : 0; R[o + 1] = 0;
+      R[o + 8] = c.ri.x; R[o + 9] = c.ri.y; R[o + 10] = c.ri.z; R[o + 11] = c.rj.x; R[o + 12] = c.rj.y; R[o + 13] = c.rj.z; R[o + 14] = c.ni.x; R[o + 15] = c.ni.y; R[o + 16] = c.ni.z;
+      if (R[o + 6] === -3) throw new Error('contact material');
+      m++;
+    }
+    for (const c of result) pool.push(c);
+    for (const f of fr) fpool.push(f);
+    cnt[k] = nr; pcost[k] = performance.now() - tq;
+  }
+  ctl[16 + wid] = m;
+}
+onmessage = (ev) => {
+  ({ ctl, pose, pairs, pflag, cnt, res, cmd, flg, reach, touch, pcost, wid } = ev.data);
+  postMessage('ready');
+  let g = Atomics.load(ctl, 0);
+  for (;;) {
+    Atomics.wait(ctl, 0, g); g = Atomics.load(ctl, 0); if (g < 0) return;
+    let ok = 1;
+    try { work(g); } catch (err) { ok = 2; ctl[16 + wid] = 0; if (!self.__told) { self.__told = 1; postMessage(String(err && err.stack || err)); } }
+    Atomics.store(ctl, 24 + wid, ok === 1 ? g : -g);
+  }
+};
+`;
+  }
+
+  async function start() {
+    if (!PHYSICS_SPLIT) return (physSplitStats.why = 'switched off');
+    if (!self.crossOriginIsolated || typeof SharedArrayBuffer !== 'function' || typeof Atomics !== 'object' || typeof Worker !== 'function')
+      return (physSplitStats.why = 'page not cross-origin isolated');
+    const hc = navigator.hardwareConcurrency || 4;
+    const NW = Math.min(3, hc - 1);
+    if (NW < 1) return (physSplitStats.why = 'one core');
+    const text = await (await fetch(import.meta.url)).text();
+    const a = text.indexOf('// @@SPLIT-NP-BEGIN'), b = text.indexOf('// @@SPLIT-NP-END');
+    if (a < 0 || b < a) return (physSplitStats.why = 'markers missing');
+    const src = workerSource(text.slice(a, b));
+    const sab = (n, T) => new T(new SharedArrayBuffer(n * T.BYTES_PER_ELEMENT));
+    const s = {
+      NW, ctl: sab(64, Int32Array), pose: sab(MAXB * 8, Float64Array), pairs: sab(2 * MAXP, Int32Array), pflag: sab(MAXP, Uint8Array),
+      cnt: sab(MAXP, Int32Array), pcost: sab(MAXP, Float64Array), cmd: sab(MAXCMD, Float64Array), flg: sab(MAXB, Int8Array),
+      reach: [], touch: [], res: [], workers: [], gen: 0, flagged: [], gnd: [], dummy: { boxAt: -1, boxGives: false }, cmdN: 0, overflow: false, cost: new Map(), stamp: 0,
+    };
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    try {
+      for (let w = 0; w < NW; w++) {
+        s.reach.push(sab(MAXB, Int8Array)); s.touch.push(sab(MAXB, Int8Array)); s.res.push(sab(MAXC * REC, Float64Array));
+        const wk = new Worker(url); s.workers.push(wk);
+        await new Promise((ok, bad) => {
+          wk.onmessage = (e) => (e.data === 'ready' ? ok() : bad(new Error(e.data)));
+          wk.onerror = (e) => bad(new Error(e.message || 'worker failed'));
+          wk.postMessage({ ctl: s.ctl, pose: s.pose, pairs: s.pairs, pflag: s.pflag, cnt: s.cnt, res: s.res[w], cmd: s.cmd, flg: s.flg, reach: s.reach[w], touch: s.touch[w], pcost: s.pcost, wid: w });
+        });
+        wk.onmessage = (e) => { physSplitStats.lastErr = String(e.data).slice(0, 400); };
+        wk.onerror = (e) => { physSplitStats.lastErr = String(e.message).slice(0, 400); };
+      }
+    } catch (err) {
+      for (const wk of s.workers) wk.terminate();
+      URL.revokeObjectURL(url);
+      return (physSplitStats.why = 'worker failed: ' + String(err.message || err).slice(0, 200));
+    }
+    URL.revokeObjectURL(url);
+    sent = new WeakMap(); sentList = null; sentCms = null;
+    S = s; physSplitStats.state = 'on'; physSplitStats.workers = NW; physSplitStats.why = '';
+  }
+  function stop(why) {
+    if (!S) return;
+    Atomics.store(S.ctl, 0, -1); Atomics.notify(S.ctl, 0);
+    for (const wk of S.workers) wk.terminate();
+    S = null; engaged = false; physSplitStats.state = 'off'; physSplitStats.why = why;
+    // A worker can be late for reasons of its own (the machine busy); try again a little later.
+    if (why === 'worker late' && !restartAt) restartAt = setTimeout(() => { restartAt = 0; physSplitStats.start(); }, 5000);
+  }
+  physSplitStats.stop = stop;
+  physSplitStats.start = () => start().catch((e) => { physSplitStats.why = 'start failed: ' + String(e.message || e).slice(0, 200); });
+
+  // One pair through the one-thread loop.
+  const one = (self, a, b, w, result, old, fr, fp) => { q1[0] = a; q2[0] = b; gcOrig.call(self, q1, q2, w, result, old, fr, fp); };
+  // A worker record's shape: side (which body of the pair), slot, hull.
+  const shapeAt = (c, A, B) => {
+    if (c < 0) return undefined;
+    const b = c >= SIDE ? B : A, r = c >= SIDE ? c - SIDE : c, s = b.shapes[r >> 1];
+    return r & 1 ? s.convexPolyhedronRepresentation : s;
+  };
+
+  function prep(s, x, stamp) {
+    x._splitStamp = stamp;
+    x._splitLocal = syncBody(x) < 0;
+    const o = x.index * 8, P = s.pose;
+    P[o] = x.position.x; P[o + 1] = x.position.y; P[o + 2] = x.position.z;
+    P[o + 3] = x.quaternion.x; P[o + 4] = x.quaternion.y; P[o + 5] = x.quaternion.z; P[o + 6] = x.quaternion.w; P[o + 7] = x.type;
+  }
+  // Whether any cell of the box sinkGroundGives reads is not air: with none, no ground box is there to touch,
+  // so the piece cannot be filed as sinking into the ground in this walk.
+  const groundNear = (S) => {
+    const a = S.aabb, e = SINK_TUNE.skipPad * BLOCK;
+    const i0 = colI(a.lowerBound.x - e), i1 = colI(a.upperBound.x + e);
+    const j0 = colJ(a.lowerBound.z - e), j1 = colJ(a.upperBound.z + e);
+    const l0 = lvlOfY(a.lowerBound.y - e), l1 = lvlOfY(a.upperBound.y + e);
+    for (let l = l0; l <= l1; l++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) if (voxelAt(i, j, l) !== AIR) return true;
+    return false;
+  };
+  const gnd = (s, b, stamp) => { if (b._splitGnd !== stamp) { b._splitGnd = stamp; s.gnd.push(b); } };
+  function split(self, p1, p2, w, result, old, fr, fp) {
+    const N = p1.length, bs = w.bodies, s = S, ctl = s.ctl, NW = s.NW, T = physSplitStats.t;
+    let t0 = performance.now();
+    // ---- copies, poses, pairs ----
+    s.cmdN = 0; s.overflow = false;
+    syncLists(w);
+    const stamp = ++s.stamp;
+    let mainOnly = 0;
+    for (let k = 0; k < N; k++) {
+      const a = p1[k], b = p2[k];
+      if (a._splitStamp !== stamp) prep(s, a, stamp);
+      if (b._splitStamp !== stamp) prep(s, b, stamp);
+      if (a.voxelGround && b.debrisMesh) gnd(s, b, stamp);
+      else if (b.voxelGround && a.debrisMesh) gnd(s, a, stamp);
+      s.pairs[2 * k] = a.index; s.pairs[2 * k + 1] = b.index;
+    }
+    if (s.overflow) { s.gnd.length = 0; stop('command room'); gcOrig.call(self, p1, p2, w, result, old, fr, fp); return; }
+    let t1 = performance.now(); T.sync += t1 - t0; t0 = t1;
+    // ---- sinkers' ground skip, worked out here ----
+    ctl[3] = sinkers.size ? 1 : 0;
+    const flagged = s.flagged;
+    if (sinkers.size) {
+      for (const [Sb, st] of sinkers) {
+        if (Sb.sleepState === CANNON.Body.SLEEPING || bs[Sb.index] !== Sb || Sb._splitStamp !== stamp) continue;
+        if (!st.media.get(SINK_GROUND)) continue;
+        const a0 = st.boxAt, g0 = st.boxGives;
+        const g = sinkGroundGives(Sb, st, sinkHull(Sb.debrisMesh, Sb));
+        st.boxAt = a0; st.boxGives = g0;
+        s.flg[Sb.index] = g ? 2 : 1; flagged.push(Sb);
+      }
+      for (let q = 0; q < NW; q++) { const R = s.reach[q], T = s.touch[q]; for (const Sb of flagged) { R[Sb.index] = 0; T[Sb.index] = 0; } }
+    }
+    // A piece not yet sinking into the ground can start to in this very walk (a contact
+    // pressing into powder files it, sinkTouch), and from then on its pairs with the
+    // ground are skipped if the ground round it gives way. Such a piece stays here.
+    for (const b of s.gnd) {
+      if (s.flg[b.index] || b._splitLocal || b.sleepState === CANNON.Body.SLEEPING) continue;
+      if (sinkGroundGives(b, s.dummy, sinkHull(b.debrisMesh, b)) && groundNear(b)) b._splitLocal = true;
+      s.dummy.boxAt = -1;
+    }
+    s.gnd.length = 0;
+    for (let k = 0; k < N; k++) { const local = p1[k]._splitLocal || p2[k]._splitLocal; s.pflag[k] = local ? 1 : 0; if (local) mainOnly++; }
+    // ---- shares, by each pair's cost last time ----
+    let tot = 0; const cost = s.cost, wt = s.wt && s.wt.length >= N ? s.wt : (s.wt = new Float64Array(N * 2));
+    for (let k = 0; k < N; k++) { const c = cost.get(p1[k].id * 2097152 + p2[k].id); wt[k] = c === undefined ? 0.02 : c; tot += wt[k]; }
+    const F0 = 0.25, cuts = s.cuts || (s.cuts = new Int32Array(8));
+    cuts[0] = 0; let acc = 0, at = 1;
+    for (let k = 0; k < N && at <= NW; k++) { acc += wt[k]; while (at <= NW && acc >= tot * F0 + (tot * (1 - F0) / NW) * (at - 1)) cuts[at++] = k + 1; }
+    while (at <= NW) cuts[at++] = N;
+    cuts[NW + 1] = N;
+    ctl[4] = s.cmdN;
+    for (let q = 0; q < NW; q++) { ctl[8 + 2 * q] = cuts[q + 1]; ctl[9 + 2 * q] = cuts[q + 2]; }
+    const gen = ++s.gen;
+    Atomics.store(ctl, 0, gen); Atomics.notify(ctl, 0);
+    t1 = performance.now(); T.flags += t1 - t0; t0 = t1;
+    // ---- this thread's share ----
+    const verify = PHYSICS_SPLIT_VERIFY;
+    if (verify) {
+      // The loop runs here for every pair, as without the split; the workers' contacts are only compared.
+      const rec = [], mk = self.createContactEquation, mf = self.createFrictionEquationsFromContact, at0 = new Map();
+      self.createContactEquation = function (bi, bj, si, sj, oa, ob) { const c = mk.call(this, bi, bj, si, sj, oa, ob); rec.push([c, bi, bj, si, sj, oa, ob, this.currentContactMaterial]); return c; };
+      // friction making can move a contact's point (a sinker's depth cut); the workers' numbers are from before it
+      self.createFrictionEquationsFromContact = function (c, out) { at0.set(c, [c.ri.x, c.ri.y, c.ri.z, c.rj.x, c.rj.y, c.rj.z, c.ni.x, c.ni.y, c.ni.z]); return mf.call(this, c, out); };
+      const per = [];
+      try {
+        for (let k = 0; k < N; k++) { const r0 = rec.length, n0 = result.length; one(self, p1[k], p2[k], w, result, old, fr, fp); per.push([r0, rec.length, n0, result.length]); }
+      } finally { self.createContactEquation = mk; self.createFrictionEquationsFromContact = mf; }
+      const okW = waitAll(s, gen);
+      for (let q = 0; q < NW; q++) {
+        if (!okW[q]) continue;
+        const R = s.res[q]; let m = 0;
+        for (let k = cuts[q + 1]; k < cuts[q + 2]; k++) {
+          if (s.pflag[k]) continue;
+          const [r0, r1, n0, n1] = per[k], n = s.cnt[k], kept = new Set(result.slice(n0, n1));
+          let bad = n !== r1 - r0 ? 'count ' + n + ' vs ' + (r1 - r0) : '';
+          for (let r = 0; r < n && !bad && r < r1 - r0; r++) {
+            const o = (m + r) * REC, [c, bi, bj, si, sj, oa, ob, cm] = rec[r0 + r], A = p1[k], B = p2[k];
+            const v = at0.get(c) || [c.ri.x, c.ri.y, c.ri.z, c.rj.x, c.rj.y, c.rj.z, c.ni.x, c.ni.y, c.ni.z];
+            const want = [bi === A ? 0 : 1, 0, si, sj, oa, ob, cm === w.defaultContactMaterial ? -1 : w.contactmaterials.indexOf(cm), kept.has(c) ? 1 : 0, ...v];
+            for (let f = 0; f < REC && !bad; f++) {
+              if (f >= 2 && f <= 5) { if (shapeAt(R[o + f], A, B) !== want[f]) bad = 'shape field ' + f; }
+              else if (!Object.is(R[o + f], want[f])) bad = 'field ' + f + ' ' + R[o + f] + ' vs ' + want[f];
+            }
+          }
+          m += n; physSplitStats.verified++;
+          if (bad) { physSplitStats.mismatches++; if (!physSplitStats.firstMismatch) physSplitStats.firstMismatch = { step: w.stepnumber, pair: [p1[k].id, p2[k].id], bad }; }
+        }
+      }
+      lastMs = Infinity;
+      return;
+    }
+    for (let k = 0; k < cuts[1]; k++) {
+      const t0 = performance.now();
+      one(self, p1[k], p2[k], w, result, old, fr, fp);
+      s.pcost[k] = performance.now() - t0;
+    }
+    t1 = performance.now(); T.main += t1 - t0; t0 = t1;
+    const okW = waitAll(s, gen);
+    t1 = performance.now(); T.spin += t1 - t0; t0 = t1;
+    // ---- the workers' shares, in pair order ----
+    self.contactPointPool = old; self.frictionEquationPool = fp; self.result = result; self.frictionResult = fr;
+    const cms = w.contactmaterials;
+    let down = '';
+    for (let q = 0; q < NW; q++) {
+      const a = cuts[q + 1], e = cuts[q + 2];
+      if (!okW[q]) {
+        down = down || okW.why[q];
+        for (let k = a; k < e; k++) { const t0 = performance.now(); one(self, p1[k], p2[k], w, result, old, fr, fp); s.pcost[k] = performance.now() - t0; }
+        physSplitStats.fallbacks++;
+        continue;
+      }
+      const R = s.res[q]; let m = 0;
+      for (let k = a; k < e; k++) {
+        const A = p1[k], B = p2[k];
+        if (s.pflag[k]) { const t0 = performance.now(); one(self, A, B, w, result, old, fr, fp); s.pcost[k] = performance.now() - t0; continue; }
+        for (let r = 0, n = s.cnt[k]; r < n; r++, m++) {
+          const o = m * REC, cmI = R[o + 6];
+          self.currentContactMaterial = cmI === -1 ? w.defaultContactMaterial : cms[cmI];
+          const bi = R[o] ? B : A, bj = R[o] ? A : B;
+          const c = self.createContactEquation(bi, bj, shapeAt(R[o + 2], A, B), shapeAt(R[o + 3], A, B), shapeAt(R[o + 4], A, B), shapeAt(R[o + 5], A, B));
+          c.ri.set(R[o + 8], R[o + 9], R[o + 10]); c.rj.set(R[o + 11], R[o + 12], R[o + 13]); c.ni.set(R[o + 14], R[o + 15], R[o + 16]);
+          if (R[o + 7]) { result.push(c); self.createFrictionEquationsFromContact(c, fr); }
+        }
+      }
+    }
+    // ---- what the sinkers' skip did, done here ----
+    if (flagged.length) for (let q = 0; q < NW; q++) {
+      if (!okW[q]) continue;
+      for (const Sb of flagged) {
+        const st = sinkers.get(Sb); if (!st) continue;
+        if (s.reach[q][Sb.index]) sinkGroundGives(Sb, st, sinkHull(Sb.debrisMesh, Sb));
+        if (s.touch[q][Sb.index]) { const M = st.media.get(SINK_GROUND); if (M) M.touchAt = w.stepnumber; }
+      }
+    }
+    let sum = 0;
+    for (let k = 0; k < N; k++) { const c = s.pcost[k]; sum += c; cost.set(p1[k].id * 2097152 + p2[k].id, c); }
+    if (cost.size > 4 * N + 4096) cost.clear();
+    lastMs = sum;
+    T.merge += performance.now() - t0;
+    physSplitStats.split++; physSplitStats.pairs += N; physSplitStats.mainPairs += mainOnly;
+    if (down) stop(down);
+  }
+  // Waits for every worker's share; a late or failed one is marked so its share runs here.
+  function waitAll(s, gen) {
+    const ok = s.okW || (s.okW = []), why = ok.why || (ok.why = []);
+    const t0 = performance.now();
+    for (let q = 0; q < s.NW; q++) {
+      let v;
+      while ((v = Atomics.load(s.ctl, 24 + q)) !== gen && v !== -gen) {
+        if (performance.now() - t0 > PHYSICS_SPLIT_TIMEOUT_MS) { v = 0; break; }
+      }
+      ok[q] = v === gen; why[q] = v === gen ? '' : v === 0 ? 'worker late' : 'worker error';
+    }
+    return ok;
+  }
+
+  np.getContacts = function (p1, p2, w, result, oldcontacts, frictionResult, frictionPool) {
+    physSplitStats.steps++;
+    const N = p1.length;
+    const force = physSplitStats.force;   // tests only: 'on' skips the cost gate, 'off' keeps the loop here
+    if (S && !busy && force !== 'off' && N >= PHYSICS_SPLIT_MIN_PAIRS && N <= MAXP && w.bodies.length <= MAXB &&
+        (PHYSICS_SPLIT_VERIFY || force === 'on' || lastMs >= (engaged ? PHYSICS_SPLIT_OFF_MS : PHYSICS_SPLIT_MIN_MS))) {
+      engaged = true; busy = true;
+      const s = S;
+      try { split(this, p1, p2, w, result, oldcontacts, frictionResult, frictionPool); }
+      finally { busy = false; for (const Sb of s.flagged) s.flg[Sb.index] = 0; s.flagged.length = 0; }
+      return;
+    }
+    engaged = false; physSplitStats.serial++;
+    const t0 = performance.now();
+    gcOrig.call(this, p1, p2, w, result, oldcontacts, frictionResult, frictionPool);
+    lastMs = performance.now() - t0;
+  };
+  physSplitStats.start();
+}
 
 let coyote = 0;                       // grace period for late jump presses
 let jumpLock = 0;                     // contacts survive a step after take-off
@@ -7932,7 +8800,7 @@ const powderFalling = [];  // { pos, mat, v, from, push } — a grain in the air
 const powderGrainPool = [];
 function powderGrain(x, y, z, mat, from) {
   const g = powderGrainPool.pop() || { pos: new THREE.Vector3(), mat: 0, v: 0, from: null, c: -1, k: 0, ik: 0, t: 0, d: 1, dn: null, push: 1, far: null, dL: null, dK: 0, dS: 0, dNx: null, thru: false,
-    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0, lq: -1, lr: -1, lw: false };
+    lk: null, lp: new THREE.Vector3(), lb: new THREE.Vector3(), lx: 0, ls: 0, lg: null, lgs: 0, lq: -1, lr: -1, lgr: -1, lw: false };
   g.pos.set(x, y, z); g.mat = mat; g.v = 0; g.from = from; g.push = 1; g.thru = false; g.lk = null; g.lg = null;
   powderFalling.push(g);
   if (powderIdxLive) powderIdxNew.push(g);   // filed where it is by the next question (catchPowder)
@@ -8217,7 +9085,13 @@ function syncFallingGrains() {
   fallingGrainMask();
   for (const L of fallingGrainLayers.values()) {
     L.visible = L.count > 0;
-    if (L.visible) { L.instanceMatrix.needsUpdate = true; L.geometry.attributes.faceHide.needsUpdate = true; }
+    if (L.visible) {
+      // Only the instances in use go up: the buffers double and never shrink,
+      // and a whole-buffer upload after a big pour sent mostly unused slots.
+      const im = L.instanceMatrix, fh = L.geometry.attributes.faceHide;
+      im.clearUpdateRanges(); im.addUpdateRange(0, L.count * 16); im.needsUpdate = true;
+      fh.clearUpdateRanges(); fh.addUpdateRange(0, L.count); fh.needsUpdate = true;
+    }
   }
 }
 function fallingGrainDraw(p) {
@@ -8255,7 +9129,10 @@ function fallingGrainDraw(p) {
 // wall can be in the cell on either side, and both are looked in.
 const FALL_FLUSH = BLOCK * 1e-3;   // a stack's grains sit within 1e-4 of a block of each other
 const fallingGrainCells = new Map();
-const fallGrainKey = (x, y, z) => ((y + 4096) * 32768 + z + 16384) * 32768 + x + 16384;
+// Wrapped to 10 bits an axis so the key stays a small integer (the ~2^45 keys
+// were heap numbers, slow to hash): cells 1024 apart share a chain, and the
+// position test below tells them apart.
+const fallGrainKey = (x, y, z) => ((y & 1023) * 1024 + (z & 1023)) * 1024 + (x & 1023);
 function fallingGrainMask() {
   const cells = fallingGrainCells, drawn = fallingGrainDrawn;
   cells.clear();
@@ -8514,6 +9391,10 @@ function updateLoneGlides() {
       b.position.set(at.x, at.y, at.z); b.quaternion.set(q.x, q.y, q.z, q.w);
       b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
       b.aabbNeedsUpdate = true;
+      // A piece asleep when its glide began stays asleep through it (it is
+      // kinematic, moved by hand here), so the ground counted for it where it
+      // fell asleep is counted again where it now is.
+      if (b.sleepState === CANNON.Body.SLEEPING && f.mesh.userData.sync) pieceKeepMark(f.mesh.userData.sync);
       f.mesh.position.copy(at); f.mesh.quaternion.copy(q);
       if (s < 1) continue;
       // There: what it goes into is asked again from where it now lies.
@@ -9144,12 +10025,27 @@ function updateFallingChunks() {
 // sleeping bodies never wake each other, so a piece put to sleep on top of one
 // that is still awake would hang in the air once that one slid away; the
 // player (never asleep) standing on it keeps it awake too.
+// The contacts are filed by body once per step on first need (a heap has
+// thousands, and each candidate walked them all); the partners' sleep state is
+// still read live, so one put to sleep earlier in the same pass counts.
+const _rosBy = new Map();
+let _rosStep = -1, _rosArr = null, _rosLen = -1;
 function restsOnStill(body) {
   const cs = world.contacts;
-  for (let k = 0; k < cs.length; k++) {
-    const c = cs[k];
-    const o = c.bi === body ? c.bj : c.bj === body ? c.bi : null;
-    if (o && o.type !== CANNON.Body.STATIC && o.sleepState !== CANNON.Body.SLEEPING) return false;
+  if (_rosStep !== world.stepnumber || _rosArr !== cs || _rosLen !== cs.length) {
+    _rosStep = world.stepnumber; _rosArr = cs; _rosLen = cs.length;
+    if (_rosBy.size > 4096) _rosBy.clear();   // bodies come and go: do not keep the dead ones' lists forever
+    for (const l of _rosBy.values()) l.length = 0;
+    for (let k = 0; k < cs.length; k++) {
+      const c = cs[k];
+      let l = _rosBy.get(c.bi); if (!l) _rosBy.set(c.bi, l = []); l.push(c.bj);
+      l = _rosBy.get(c.bj); if (!l) _rosBy.set(c.bj, l = []); l.push(c.bi);
+    }
+  }
+  const l = _rosBy.get(body);
+  if (l) for (let k = 0; k < l.length; k++) {
+    const o = l[k];
+    if (o.type !== CANNON.Body.STATIC && o.sleepState !== CANNON.Body.SLEEPING) return false;
   }
   return true;
 }
@@ -9896,7 +10792,11 @@ const powderIdxUsed = [];          // the lists filled since the last filing, to
 const powderIdxNew = [];           // made since the last question, not filed yet
 let powderIdxLive = false;
 function powderIdxAdd(g) {
-  const k = g.ik = (Math.floor(g.pos.x / BLOCK) + 32768) * 65536 + Math.floor(g.pos.z / BLOCK) + 32768;
+  // Small-integer keys (under 2^30): the old ~2^31 keys were heap numbers, and
+  // a Map hashes those far slower — this is asked ~1000 times a frame in a pour.
+  // A square past +-4096 columns could share a key; the overlap test still
+  // reads the real positions, so that only costs time.
+  const k = g.ik = (Math.floor(g.pos.x / BLOCK) + 4096) * 8192 + Math.floor(g.pos.z / BLOCK) + 4096;
   let L = powderIdx.get(k);
   if (!L) powderIdx.set(k, L = []);
   if (!L.length) powderIdxUsed.push(L);
@@ -9929,10 +10829,10 @@ function powderGrainAt(x, y, z, self, stamp = 0, moved = 0) {
     for (const g of powderIdxNew) if (!powderIdx.get(g.ik)?.includes(g)) powderIdxAdd(g);
     powderIdxNew.length = 0;
   }
-  const ci = Math.floor(x / BLOCK) + 32768, cj = Math.floor(z / BLOCK) + 32768;
+  const ci = Math.floor(x / BLOCK) + 4096, cj = Math.floor(z / BLOCK) + 4096;   // keys as powderIdxAdd
   powderUnderTop = -Infinity; powderUnderG = null;
   for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
-    const L = powderIdx.get((ci + a) * 65536 + cj + b);
+    const L = powderIdx.get((ci + a) * 8192 + cj + b);
     if (L) for (const g of L) {
       if (g === self || Math.abs(g.pos.x - x) >= POWDER_GAP || Math.abs(g.pos.z - z) >= POWDER_GAP) continue;
       if (stamp) { if (g.t === stamp && g.pos.y - y < POWDER_GAP && g.pos.y + BLOCK > powderUnderTop) { powderUnderTop = g.pos.y + BLOCK; powderUnderG = g; } }
@@ -9973,9 +10873,19 @@ function powderInGround(x, y, z) {
 // looks; 0 if it was overlapping from the start.
 const _sweepA = new THREE.Vector3(), _sweepD = new THREE.Vector3();
 let powderSweepAx = 0, powderSweepB = null;
+// A piece's world-to-own-frame matrix, inverted again only when its world
+// matrix changed: worldToLocal inverted it on every call, twice a sweep, and a
+// sweep is asked per grain per piece near it. Same arithmetic, so same answers.
+function meshInverse(mesh) {
+  const ud = mesh.userData, e = mesh.matrixWorld.elements;
+  const at = ud.invAt ||= new Float64Array(16).fill(NaN), M = ud.invM ||= new THREE.Matrix4();
+  for (let k = 0; k < 16; k++) if (at[k] !== e[k]) { at.set(e); M.copy(mesh.matrixWorld).invert(); break; }
+  return M;
+}
 function powderSweep(mesh, x, y0, z, y1) {
   mesh.updateWorldMatrix(true, false);
-  const A = mesh.worldToLocal(_sweepA.set(x, y0, z)), D = mesh.worldToLocal(_sweepD.set(x, y1, z)).sub(A);
+  const inv = meshInverse(mesh);
+  const A = _sweepA.set(x, y0, z).applyMatrix4(inv), D = _sweepD.set(x, y1, z).applyMatrix4(inv).sub(A);
   let best = Infinity;
   powderSweepAx = 0; powderSweepB = null;
   blocks: for (const b of mesh.userData.blocks) {
@@ -10056,13 +10966,43 @@ function powderOffPiece(x, y, z, self, stamp) {
 // is never one of the piece's blocks, or it would have touched sooner; one that
 // is (the piece moved onto it, or a block was laid where it was) goes up the
 // piece's own column to the first open cell, as on the ground.
+// Whether some block of the piece sits within 0.1 of own-frame point v on every
+// axis — the test powderCell and debrisRoll made by walking the whole lattice,
+// hundreds of times per grain laid for angles other than 45. Answered from the
+// piece's blocks filed by lattice step (rebuilt on a lattice edit); a point
+// within a hair of half-way between steps, or a step two blocks share, still
+// walks the lattice, so the answer is the walk's in every case.
+const _latC = new THREE.Vector3();
+function latFilled(mesh, v) {
+  const ud = mesh.userData, lat = ud.blocks;
+  if (!lat.length) return false;
+  const lr = ud.stressLat | 0, o = lat[0].pos;
+  let M = ud.latMap;
+  if (!M || ud.latMapRev !== lr || ud.latMapN !== lat.length || ud.latMapB0 !== lat[0]) {
+    M = ud.latMap ||= new Map();
+    M.clear();
+    for (const b of lat) {
+      const k = powderLockKey(_latC.copy(b.pos).sub(o).divideScalar(BLOCK).round());
+      M.set(k, M.has(k) ? true : b);
+    }
+    ud.latMapRev = lr; ud.latMapN = lat.length; ud.latMapB0 = lat[0];
+  }
+  const c = _latC.copy(v).sub(o).divideScalar(BLOCK);
+  const half = (f) => Math.abs(f - Math.floor(f) - 0.5) < 1e-6;
+  let b;
+  if (half(c.x) || half(c.y) || half(c.z) || (b = M.get(powderLockKey(c.round()))) === true) {
+    for (const q of lat) if (Math.abs(q.pos.x - v.x) < 0.1 && Math.abs(q.pos.y - v.y) < 0.1 && Math.abs(q.pos.z - v.z) < 0.1) return true;
+    return false;
+  }
+  return !!b && Math.abs(b.pos.x - v.x) < 0.1 && Math.abs(b.pos.y - v.y) < 0.1 && Math.abs(b.pos.z - v.z) < 0.1;
+}
 const _cellQ = new THREE.Quaternion(), _cellUp = new THREE.Vector3(), _cellAt = new THREE.Vector3();
 function powderCell(mesh, at) {
   const lat = mesh.userData.blocks, r = lat[0].pos;
   const c = mesh.worldToLocal(_cellAt.copy(at));
   c.set(r.x + Math.round((c.x - r.x) / BLOCK) * BLOCK, r.y + Math.round((c.y - r.y) / BLOCK) * BLOCK,
         r.z + Math.round((c.z - r.z) / BLOCK) * BLOCK);
-  const filled = () => lat.some((b) => Math.abs(b.pos.x - c.x) < 0.1 && Math.abs(b.pos.y - c.y) < 0.1 && Math.abs(b.pos.z - c.z) < 0.1);
+  const filled = () => latFilled(mesh, c);
   if (filled()) {
     mesh.getWorldQuaternion(_cellQ).invert();
     const u = _cellUp.set(0, 1, 0).applyQuaternion(_cellQ);
@@ -10296,11 +11236,15 @@ function powderDepen(mesh, p) {
 // The piece's solid (not powder) blocks, as powderLockCells keys, kept with it.
 function powderSolidCells(mesh) {
   const ud = mesh.userData;
-  if (ud.solidCellsAt === powderStamp && ud.solidCellsRev === stressRev) return ud.solidCells;
-  const S = ud.solidCells ||= new Set(), lat = ud.blocks, o = lat[0].pos;
+  // Keyed on the piece's own lattice edits (and a material's powder flag), not
+  // the frame or the world-wide stressRev: refilled every frame it cost a Set
+  // insert per block per carrying piece per frame.
+  const lat = ud.blocks, lr = ud.stressLat | 0;
+  if (ud.solidCells && ud.solidCellsRev === lr && ud.solidCellsN === lat.length && ud.solidCellsB0 === lat[0] && ud.solidCellsMat === matStatRev) return ud.solidCells;
+  const S = ud.solidCells ||= new Set(), o = lat[0].pos;
   S.clear();
   for (const b of lat) if (!MAT_STATS[b.mat]?.powder) S.add(powderLockKey(_lockC.copy(b.pos).sub(o).divideScalar(BLOCK).round()));
-  ud.solidCellsAt = powderStamp; ud.solidCellsRev = stressRev;
+  ud.solidCellsRev = lr; ud.solidCellsN = lat.length; ud.solidCellsB0 = lat[0]; ud.solidCellsMat = matStatRev;
   return S;
 }
 const powderOrder = [], powderOrderLoose = [];
@@ -10356,9 +11300,23 @@ function powderLockSpot(g) {
   return mesh.localToWorld(_lockAt);
 }
 // Whether the piece still holds a locked grain.
+// Per piece, for the pose it is in: whether it is square, and whether each of
+// its faces holds each material. Every grain riding it asked both afresh each
+// frame (24 quaternion dots, a world-matrix decompose); the answers depend only
+// on the pose and the material angles.
+function lockPoseMemo(mesh) {
+  const q = mesh.quaternion, m = mesh.userData.holdMemo ||= { qx: NaN, qy: 0, qz: 0, qw: 0, mr: -1, sq: false, face: new Map() };
+  if (m.qx !== q.x || m.qy !== q.y || m.qz !== q.z || m.qw !== q.w || m.mr !== matStatRev) {
+    m.qx = q.x; m.qy = q.y; m.qz = q.z; m.qw = q.w; m.mr = matStatRev;
+    m.sq = pieceSquare(q); m.face.clear();
+  }
+  return m;
+}
 function powderLockHolds(g) {
   const mesh = g.lk;
-  if (mesh.parent !== debris || !mesh.userData.blocks?.length || pieceSquare(mesh.quaternion)) return false;
+  if (mesh.parent !== debris || !mesh.userData.blocks?.length) return false;
+  const memo = lockPoseMemo(mesh);
+  if (memo.sq) return false;
   if (g.lg) return g.lg.lk === mesh && g.lg.ls === g.lgs;
   const S = mesh.userData.powderShift, cells = powderLockCells(mesh), o = mesh.userData.blocks[0].pos;
   const at = _lockB.copy(g.lb); if (S) at.sub(S);
@@ -10367,7 +11325,10 @@ function powderLockHolds(g) {
   const k = Math.abs(g.lx) - 1, sgn = Math.sign(g.lx);
   at.setComponent(k, at.getComponent(k) + sgn);
   if (cells.has(powderLockKey(at))) return false;
-  return faceRests(_faceAt(mesh, k, sgn), g.mat);
+  const fk = (k * 2 + (sgn > 0)) * 4096 + g.mat;
+  let r = memo.face.get(fk);
+  if (r === undefined) memo.face.set(fk, r = faceRests(_faceAt(mesh, k, sgn), g.mat));
+  return r;
 }
 // A piece's blocks as whole steps from its first block, filed once per frame
 // and again after any edit to a piece (stressRev), so each locked grain asks a
@@ -10376,11 +11337,13 @@ const powderLockKey = (v) => (v.x + 1024) * 4194304 + (v.y + 1024) * 2048 + (v.z
 const _lockC = new THREE.Vector3();
 function powderLockCells(mesh) {
   const ud = mesh.userData;
-  if (ud.lockCellsAt === powderStamp && ud.lockCellsRev === stressRev) return ud.lockCells;
-  const S = ud.lockCells ||= new Set(), lat = ud.blocks, o = lat[0].pos;
+  // Keyed on the piece's own lattice edits, as powderSolidCells.
+  const lat = ud.blocks, lr = ud.stressLat | 0;
+  if (ud.lockCells && ud.lockCellsRev === lr && ud.lockCellsN === lat.length && ud.lockCellsB0 === lat[0]) return ud.lockCells;
+  const S = ud.lockCells ||= new Set(), o = lat[0].pos;
   S.clear();
   for (const b of lat) S.add(powderLockKey(_lockC.copy(b.pos).sub(o).divideScalar(BLOCK).round()));
-  ud.lockCellsAt = powderStamp; ud.lockCellsRev = stressRev;
+  ud.lockCellsRev = lr; ud.lockCellsN = lat.length; ud.lockCellsB0 = lat[0];
   return S;
 }
 
@@ -10525,8 +11488,9 @@ function powderRideDue(p, stamp) {
     for (let k = 0; k < 16; k++) if (Math.abs(e[k] - q[k]) > 1e-5) { moved = true; q[k] = e[k]; }
     ud.ridePoseAt = stamp; ud.rideMoved = moved;
   }
-  if (!ud.rideMoved && p.lq === powderRideStir && p.lr === stressRev && (p.ls + stamp) % POWDER_RIDE_RECHECK) return false;
-  p.lq = powderRideStir; p.lr = stressRev;
+  const rev = stressRev - stressRevGround, grev = groundRevNear(p.pos.x, p.pos.z);
+  if (!ud.rideMoved && p.lq === powderRideStir && p.lr === rev && p.lgr === grev && (p.ls + stamp) % POWDER_RIDE_RECHECK) return false;
+  p.lq = powderRideStir; p.lr = rev; p.lgr = grev;
   return true;
 }
 // Whether a grain's cube at world x, y, z overlaps a block of `mesh`: the
@@ -10610,6 +11574,7 @@ function powderRideRoll(p) {
   const [u, v] = POWDER_SIDES[best];
   return _rideTo.set(x + u * BLOCK, y, z + v * BLOCK);
 }
+const powderLaidOn = new Set();   // pieces catchPowder laid grains into this frame
 function catchPowder(dt) {
   let filed = false;   // the cells are filed on first need, and again after anything that may move or make pieces
   const reach = 2 * BLOCK;   // a grain's cube can touch a block of a turned piece from this far off across
@@ -10861,7 +11826,8 @@ function catchPowder(dt) {
           if (off === null) {
             // It stays: laid into that cell, once no falling grain is in it.
             if (clear !== 1) {
-              placeOnDebris(mesh, local, p.mat);
+              placeOnDebris(mesh, local, p.mat, false);
+              powderLaidOn.add(mesh);
               leave(n);
               powderGrainFree(p);
               filed = false;   // the piece grew and was rebuilt
@@ -10978,6 +11944,16 @@ function catchPowder(dt) {
     if (filed && (chunkSeq !== powderCatchSig || restedChunks.length !== powderCatchRested
                   || fallingChunks.length !== powderCatchFalling)) filed = false;
   }
+  // Each piece grains were laid on is rebuilt once, here, not once per grain:
+  // the lattice took each grain at once, and nothing before the next physics
+  // step reads the body's collider or mass.
+  for (const mesh of powderLaidOn) {
+    if (mesh.parent !== debris || !mesh.userData.blocks?.length) continue;
+    debrisFaceMask(mesh);
+    const f = chunkOfMesh(mesh);
+    if (f) { rebuildDebrisBody(mesh, f.body); f.still = 0; }
+  }
+  powderLaidOn.clear();
   powderPrevPoses();
   // Close up what went; anything spawned meanwhile is past len and stays.
   if (gone) {
@@ -11170,8 +12146,13 @@ function rebuildDebrisBody(mesh, body) {
   // so the weight shift is felt immediately.  cannon.js only wakes a sleeping
   // body when the *other* body has speed >= sleepSpeedLimit * sqrt(2), which
   // fails when both are nearly still (the "scale" deadlock).
-  wakeDebrisNear(body, 4);
+  wakeDebrisNear(body, DEBRIS_REBUILD_WAKE_PAD);
 }
+// How far past touching a rebuilt piece wakes sleepers (metres). 4 woke the
+// whole heap on every grain laid or shed, so a heap never slept; a block's
+// reach still wakes everything that can be in contact (bounding spheres are
+// looser than the boxes). Perf switch (v315 audit E1): set 4 for the old wake.
+const DEBRIS_REBUILD_WAKE_PAD = BLOCK;
 // Every sleeping piece within `pad` of touching `body`. Also for a piece dug or
 // shed away entirely (a block's reach): nothing tells a sleeper lying on it
 // that it has gone.
@@ -11453,12 +12434,7 @@ function debrisRoll(mesh, local, m) {
   const axis = ay >= ax && ay >= az ? 1 : ax >= az ? 0 : 2;
   const sgn = Math.sign(d.getComponent(axis));
   d.set(0, 0, 0).setComponent(axis, sgn * BLOCK);
-  const filled = (v) => {
-    for (const b of lat) {
-      if (Math.abs(b.pos.x - v.x) < 0.1 && Math.abs(b.pos.y - v.y) < 0.1 && Math.abs(b.pos.z - v.z) < 0.1) return true;
-    }
-    return false;
-  };
+  const filled = (v) => latFilled(mesh, v);
   if (!filled(_debrisRollUnder.copy(local).add(d))) return false;
   const s0 = (Math.random() * 4) | 0;
   // At 90 a grain stays where it lands, as on the ground.
@@ -12694,6 +13670,7 @@ function customMatInstall(d) {
   const { id, name, color, weight, friction, strength, pull, powder, angle, transparency } = d;
   matTablesGrow(id + 1);
   MAT_STATS[id] = { name, weight, friction, strength, pull, powder, color, angle, transparency };
+  matStatRev++;
   MAT_NAMES[id] = name.toLowerCase();
   matReposeSet(id, powder ? angle : MAT_ANGLE_STD);
   matClearSet(id, transparency);
@@ -12718,6 +13695,7 @@ function customMatInstall(d) {
 // An id given up: no material, and back to what the tables hold for none.
 function customMatFree(m) {
   MAT_STATS[m] = null;
+  matStatRev++;
   MAT_NAMES[m] = undefined;
   matReposeSet(m, MAT_ANGLE_STD);
   matClearSet(m, 0);
@@ -12913,6 +13891,7 @@ const matDefOf = (m, key) => MAT_STATS_DEF[m]?.[key] ?? (m < N_MATS && key === '
 const matValOf = (m, key) => matStatsOf(m)[key] ?? (key === 'transparency' ? 0 : undefined);
 // One setting into the material and everything that reads it.
 function matStatSet(m, key, v) {
+  matStatRev++;
   const st = matStatsOf(m);
   st[key] = v;
   if (key === 'transparency') matClearSet(m, v);
@@ -16595,7 +17574,9 @@ function stressRebuild() {
   for (let n = 0; n < stN; n++) {
     const o = stKeyMapPrev.get(S.key[n]);
     if (o !== undefined && o < stOldN) {
-      S.u.set(stOld.u.subarray(o * 6, o * 6 + 6), n * 6);
+      // A plain copy: a subarray view per node was ~10k allocations per layout.
+      const su = S.u, ou = stOld.u;
+      for (let d = 0; d < 6; d++) su[n * 6 + d] = ou[o * 6 + d];
       S.stress[n] = stOld.stress[o];
       S.push[n] = stOld.push[o]; S.pull[n] = stOld.pull[o];
     } else {
@@ -16648,9 +17629,9 @@ function stressPost(dirty, hit) {
       const n = stQueue[k];
       stLocal[n] = x - nStart[q];
       nodes[x] = n; fixed[x] = S.fixed[n];
-      pos.set(S.pos.subarray(n * 3, n * 3 + 3), x * 3);
-      f.set(S.f.subarray(n * 6, n * 6 + 6), x * 6);
-      u.set(S.u.subarray(n * 6, n * 6 + 6), x * 6);
+      // Plain copies: three subarray views per node added up on a 20k-node job.
+      for (let d = 0; d < 3; d++) pos[x * 3 + d] = S.pos[n * 3 + d];
+      for (let d = 0; d < 6; d++) { f[x * 6 + d] = S.f[n * 6 + d]; u[x * 6 + d] = S.u[n * 6 + d]; }
     }
   }
   // Beams, grouped by structure (a counting sort over the slots).
@@ -17479,7 +18460,16 @@ function updateFreeCam(dt) {
 // is redrawn this frame.
 const shadowSig = [];
 let shadowSigN = 0, shadowSigDirty = false;
+// The terrain's casters go in a list of their own (SHADOW_TERRAIN_CACHE), so a
+// change to the terrain's shadow can be told from a change to anything else's.
+const shadowSigT = [];
+let shadowSigTN = 0, shadowSigTDirty = false, shadowSigInT = false, shadowTerrainChanged = true;
 function shadowSigPut(v) {
+  if (shadowSigInT) {
+    if (shadowSigT[shadowSigTN] !== v) { shadowSigT[shadowSigTN] = v; shadowSigTDirty = true; }
+    shadowSigTN++;
+    return;
+  }
   if (shadowSig[shadowSigN] !== v) { shadowSig[shadowSigN] = v; shadowSigDirty = true; }
   shadowSigN++;
 }
@@ -17512,15 +18502,101 @@ function shadowSigWalk(o) {
   if (!o.visible) return;
   if (o.layers.test(shadowLayers)) shadowSigVisit(o);
   const ch = o.children;
-  for (let k = 0; k < ch.length; k++) if (TERRAIN_CASTS || ch[k] !== terrain) shadowSigWalk(ch[k]);
+  for (let k = 0; k < ch.length; k++) {
+    if (ch[k] !== terrain) shadowSigWalk(ch[k]);
+    else if (TERRAIN_CASTS) { shadowSigInT = true; shadowSigWalk(ch[k]); shadowSigInT = false; }
+  }
 }
 function shadowCastersChanged() {
-  const n0 = shadowSigN;
-  shadowSigN = 0;
-  shadowSigDirty = false;
+  const n0 = shadowSigN, t0 = shadowSigTN;
+  shadowSigN = shadowSigTN = 0;
+  shadowSigDirty = shadowSigTDirty = false;
   shadowSigWalk(scene);
+  // What else the terrain's depth shaders read: see-through blocks' opacity
+  // and the textures that place them.
+  if (TERRAIN_CASTS) {
+    shadowSigInT = true;
+    for (let k = 0; k < TERRAIN_ALPHA.length; k++) shadowSigPut(TERRAIN_ALPHA[k]);
+    shadowSigPut(clearAtlasU.value); shadowSigPut(clearAtlasU.value.version); shadowSigPut(clearIdx.version);
+    shadowSigInT = false;
+  }
   if (shadowSigN < n0) shadowSig.length = shadowSigN;
-  return shadowSigDirty || shadowSigN !== n0;
+  if (shadowSigTN < t0) shadowSigT.length = shadowSigTN;
+  const tChanged = shadowSigTDirty || shadowSigTN !== t0;
+  if (tChanged) shadowTerrainChanged = true;
+  return shadowSigDirty || shadowSigN !== n0 || tChanged;
+}
+
+// The sun's shadow map with the terrain kept (SHADOW_TERRAIN_CACHE): where the
+// terrain casts (desktop), the whole 4096 map was redrawn, every chunk of it,
+// on any frame anything casting moved — the player walking included — about
+// a thousand draws a frame of which most were ground that had not changed.
+// Now the terrain is drawn alone into the map once, and a copy kept; a frame
+// that has to redraw copies that in where three would clear the map and draws
+// only the rest on top. Depth testing keeps the nearest of everything either
+// way, so the map comes out as a full redraw makes it. The copy is drawn again
+// when the terrain's own casters change (shadowCastersChanged), when the sun's
+// shadow camera moves or changes, or when the map is made afresh.
+// SHADOW_TERRAIN_CACHE = false redraws everything every time.
+const SHADOW_TERRAIN_CACHE = true;
+const shadowCacheStats = { cached: 0, rebuilt: 0, force: null };   // force: tests only ('off')
+{
+  const SM = renderer.shadowMap, draw = SM.render, gl = renderer.getContext();
+  const clear0 = renderer.clear;
+  let cache = null, cacheOf = null, valid = false;
+  const key = new Float64Array(40);
+  const fbo = (rt) => renderer.properties.get(rt).__webglFramebuffer;
+  const keyChanged = () => {
+    const c = sun.shadow.camera, a = sun.matrixWorld.elements, b = sun.target.matrixWorld.elements;
+    let ch = false;
+    const put = (k, v) => { if (!Object.is(key[k], v)) { key[k] = v; ch = true; } };
+    for (let k = 0; k < 16; k++) { put(k, a[k]); put(16 + k, b[k]); }
+    put(32, c.left); put(33, c.right); put(34, c.top); put(35, c.bottom); put(36, c.near); put(37, c.far);
+    put(38, sun.shadow.mapSize.x); put(39, sun.shadow.mapSize.y);
+    return ch;
+  };
+  const blit = (from, to, w, h) => {
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, from);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, to);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+  };
+  // Drawn with the terrain hidden and three's clear of the map replaced by `clear`.
+  const drawRest = (self, args, clear) => {
+    terrain.visible = false; renderer.clear = clear;
+    try { draw.apply(self, args); } finally { terrain.visible = true; renderer.clear = clear0; }
+  };
+  SM.render = function (lights, scn, cam) {
+    const ok = shadowCacheStats.force !== 'off' && SHADOW_TERRAIN_CACHE && TERRAIN_CASTS && typeof gl.blitFramebuffer === 'function' && terrain.visible && terrain.parent === scn &&
+      lights.length === 1 && lights[0] === sun && SM.type !== THREE.VSMShadowMap && SM.enabled && (SM.autoUpdate || SM.needsUpdate);
+    if (!ok) return draw.apply(this, arguments);   // the kept copy stays good: terrain changes are tracked either way
+    const sh = sun.shadow;
+    if (keyChanged() || shadowTerrainChanged || sh.map === null || sh.map !== cacheOf) valid = false;
+    if (valid) {
+      const w = sh.map.width, h = sh.map.height, from = fbo(cache), to = fbo(sh.map);
+      drawRest(this, arguments, () => { blit(from, to, w, h); gl.bindFramebuffer(gl.READ_FRAMEBUFFER, to); });
+      shadowCacheStats.cached++;
+      return;
+    }
+    // The terrain alone: everything else beside it hidden for the one pass.
+    const hid = [];
+    for (const o of scn.children) if (o !== terrain && o.visible) { o.visible = false; hid.push(o); }
+    try { draw.apply(this, arguments); } finally { for (const o of hid) o.visible = true; }
+    const w = sh.map.width, h = sh.map.height;
+    if (!cache || cache.width !== w || cache.height !== h) {
+      if (cache) cache.dispose();
+      cache = new THREE.WebGLRenderTarget(w, h, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    }
+    const prev = renderer.getRenderTarget();
+    renderer.setRenderTarget(cache);
+    blit(fbo(sh.map), fbo(cache), w, h);
+    renderer.setRenderTarget(prev);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prev ? fbo(prev) : null);
+    cacheOf = sh.map; valid = true; shadowTerrainChanged = false; shadowCacheStats.rebuilt++;
+    // Then the rest on top of it, the map not cleared.
+    SM.needsUpdate = true;
+    drawRest(this, arguments, () => {});
+  };
+  canvas.addEventListener('webglcontextlost', () => { valid = false; cache = null; cacheOf = null; });
 }
 
 let frameCount = 0;

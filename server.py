@@ -70,6 +70,13 @@ class CustomHandler(SimpleHTTPRequestHandler):
         return super().send_head()
 
     def end_headers(self):
+        # Cross-origin isolation (matches server.js): lets the game use
+        # SharedArrayBuffer, which its physics workers need (PHYSICS_SPLIT).
+        # Everything the page loads is from this server, so nothing is blocked.
+        # Over plain http from another machine the browser ignores it and the
+        # game runs its one-thread physics instead.
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Cache-Control', getattr(self, '_cache', REVALIDATE))
         if getattr(self, '_etag', None):

@@ -47,6 +47,17 @@ function gameHashOk(file) {
     return ok;
 }
 
+// Cross-origin isolation (matches server.py): lets the game use
+// SharedArrayBuffer, which its physics workers need (PHYSICS_SPLIT). Everything
+// the page loads is from this server, so nothing is blocked. Over plain http
+// from another machine the browser ignores it and the game runs its one-thread
+// physics instead.
+app.use((req, res, next) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    next();
+});
+
 // Serve static files from the web directory
 app.use(express.static(WEB, {
     setHeaders(res, file) {

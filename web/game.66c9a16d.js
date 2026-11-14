@@ -593,6 +593,101 @@ world.defaultContactMaterial.restitution = 0.0;
   };
 }
 
+// Narrowphase.getContacts, cannon's loop, with two changes that leave every
+// test and its answer as it was:
+// - For every shape of the first body it worked out each shape of the second
+//   body's world pose afresh (a quaternion product, a turn and an add) — for
+//   a piece against a many-box chunk collider, the same few hundred poses again
+//   for every box of the piece. Both bodies' shape poses are now worked out
+//   once a pair, by the same calls on the same numbers, and copied into the
+//   scratch the shape tests read.
+// - A rubble frame walked ~54,000 shape pairs a substep to find the few
+//   thousand whose bounding spheres meet. A shape whose centre lies farther,
+//   along any one axis, from the box round all the other body's shape centres
+//   than its radius plus the other body's largest radius (and a micrometre)
+//   fails cannon's distance test against every shape of that body, so it is
+//   left out of the walk. The rest go in the same order through the same
+//   tests, so pairs, contacts and their order are exactly as before.
+{
+  const np = world.narrowphase, V = CANNON.Vec3, Q = CANNON.Quaternion;
+  const qa = new Q(), qb = new Q(), xa = new V(), xb = new V();
+  const poseQA = [], poseXA = [], poseQB = [], poseXB = [];
+  let keepA = new Int32Array(64), keepB = new Int32Array(64);
+  const SLACK = 1e-6;
+  const poses = (b, pq, px) => {
+    const n = b.shapes.length;
+    for (let t = 0; t < n; t++) {
+      const q = pq[t] || (pq[t] = new Q()), x = px[t] || (px[t] = new V());
+      b.quaternion.mult(b.shapeOrientations[t], q);
+      b.quaternion.vmult(b.shapeOffsets[t], x);
+      x.vadd(b.position, x);
+    }
+  };
+  // Shapes of b (poses px) that can reach any shape of the other body, whose
+  // shape centres span box[0..5] and whose largest radius is rMax; into keep.
+  const box = new Float64Array(6);
+  const span = (b, px) => {
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity, r = 0;
+    for (let t = 0, n = b.shapes.length; t < n; t++) {
+      const p = px[t];
+      if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+      if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+      if (p.z < z0) z0 = p.z; if (p.z > z1) z1 = p.z;
+      const rr = b.shapes[t].boundingSphereRadius; if (rr > r) r = rr;
+    }
+    box[0] = x0; box[1] = y0; box[2] = z0; box[3] = x1; box[4] = y1; box[5] = z1;
+    return r;
+  };
+  const near = (b, px, rMax, keep) => {
+    let k = 0;
+    for (let t = 0, n = b.shapes.length; t < n; t++) {
+      const p = px[t], R = b.shapes[t].boundingSphereRadius + rMax + SLACK;
+      if (box[0] - p.x > R || p.x - box[3] > R || box[1] - p.y > R || p.y - box[4] > R || box[2] - p.z > R || p.z - box[5] > R) continue;
+      keep[k++] = t;
+    }
+    return k;
+  };
+  np.getContacts = function (p1, p2, w, result, oldcontacts, frictionResult, frictionPool) {
+    this.contactPointPool = oldcontacts; this.frictionEquationPool = frictionPool;
+    this.result = result; this.frictionResult = frictionResult;
+    for (let k = 0, N = p1.length; k !== N; k++) {
+      const bi = p1[k], bj = p2[k];
+      let bodyCm = null;
+      if (bi.material && bj.material) bodyCm = w.getContactMaterial(bi.material, bj.material) || null;
+      const justTest = (bi.type & CANNON.Body.KINEMATIC && bj.type & CANNON.Body.STATIC) ||
+                       (bi.type & CANNON.Body.STATIC && bj.type & CANNON.Body.KINEMATIC) ||
+                       (bi.type & CANNON.Body.KINEMATIC && bj.type & CANNON.Body.KINEMATIC);
+      const ni = bi.shapes.length, nj = bj.shapes.length;
+      poses(bi, poseQA, poseXA);
+      poses(bj, poseQB, poseXB);
+      if (keepA.length < ni) keepA = new Int32Array(ni * 2);
+      if (keepB.length < nj) keepB = new Int32Array(nj * 2);
+      const rB = span(bj, poseXB), na = near(bi, poseXA, rB, keepA);
+      const rA = span(bi, poseXA), nb = near(bj, poseXB, rA, keepB);
+      for (let ka = 0; ka < na; ka++) {
+        const s = keepA[ka];
+        qa.copy(poseQA[s]); xa.copy(poseXA[s]);
+        const si = bi.shapes[s];
+        for (let kb = 0; kb < nb; kb++) {
+          const t = keepB[kb], sj = bj.shapes[t];
+          if (!(si.collisionFilterMask & sj.collisionFilterGroup && sj.collisionFilterMask & si.collisionFilterGroup)) continue;
+          if (xa.distanceTo(poseXB[t]) > si.boundingSphereRadius + sj.boundingSphereRadius) continue;
+          qb.copy(poseQB[t]); xb.copy(poseXB[t]);
+          let shapeCm = null;
+          if (si.material && sj.material) shapeCm = w.getContactMaterial(si.material, sj.material) || null;
+          this.currentContactMaterial = shapeCm || bodyCm || w.defaultContactMaterial;
+          const resolver = this[si.type | sj.type];
+          if (resolver) {
+            const hit = si.type < sj.type
+              ? resolver.call(this, si, sj, xa, xb, qa, qb, bi, bj, si, sj, justTest)
+              : resolver.call(this, sj, si, xb, xa, qb, qa, bj, bi, si, sj, justTest);
+            if (hit && justTest) { w.shapeOverlapKeeper.set(si.id, sj.id); w.bodyOverlapKeeper.set(bi.id, bj.id); }
+          }
+        }
+      }
+    }
+  };
+}
 // cannon files every contact in two overlap keepers each substep, a sorted
 // insert that is quadratic in contacts (up to ~2 ms a frame in a rockfall).
 // Only begin/end(Shape)Contact listeners read them and the game has none, so
@@ -672,9 +767,20 @@ for (const cm of [world.collisionMatrix, world.collisionMatrixPrevious]) {
         if (d < dmin) { dmin = d; target.copy(sepB); }
       }
     }
-    for (let i = 0; i !== hullA.uniqueEdges.length; i++) {
+    // A box lists each edge direction twice, once each way (+x and -x), so
+    // of its 6 x 6 edge pairs only 9 are different axes: the others are the
+    // same cross product exactly negated (every step here is linear, and
+    // negating rounds exactly), which projects to the same overlap and so
+    // can neither separate nor win where its first twin did not. Each hull
+    // walks only the first edge of each such twin (_edgeRep), in list order,
+    // so the axes tested, their order and the answer are as before.
+    const repA = hullA._edgeRep, repB = hullB._edgeRep;
+    const nA = repA ? repA.length : hullA.uniqueEdges.length, nB = repB ? repB.length : hullB.uniqueEdges.length;
+    for (let ia = 0; ia !== nA; ia++) {
+      const i = repA ? repA[ia] : ia;
       quatA.vmult(hullA.uniqueEdges[i], edgeA);
-      for (let j = 0; j !== hullB.uniqueEdges.length; j++) {
+      for (let jb = 0; jb !== nB; jb++) {
+        const j = repB ? repB[jb] : jb;
         quatB.vmult(hullB.uniqueEdges[j], edgeB);
         edgeA.cross(edgeB, edgeX);
         if (edgeX.almostZero()) continue;
@@ -688,6 +794,61 @@ for (const cm of [world.collisionMatrix, world.collisionMatrixPrevious]) {
     if (sepD.dot(target) > 0) target.negate(target);
     return true;
   };
+
+  // ConvexPolyhedron.project, the inner loop of every SAT test (up to ~40 axes
+  // a box pair, two projections each), for the hull of a CANNON.Box: its eight
+  // corners are (±hx, ±hy, ±hz), so of the eight dot products cannon takes the
+  // biggest is (|hx ax| + |hy ay|) + |hz az| and the smallest its negative —
+  // rounded addition never decreases when a term grows, and rounds a negated
+  // sum to the negated answer, so these are the very numbers the loop finds.
+  // The axis and origin go into the hull's frame by cannon's own steps in
+  // cannon's order (vectorToLocalFrame / pointToLocalFrame, inlined), and the
+  // origin is kept per hull while its pose is unchanged, so every projection
+  // returns the same bits as before. Any other hull takes cannon's path.
+  {
+    const project0 = CANNON.ConvexPolyhedron.project;
+    const boxRep = CANNON.Box.prototype.updateConvexPolyhedronRepresentation;
+    CANNON.Box.prototype.updateConvexPolyhedronRepresentation = function () {
+      boxRep.call(this);
+      const h = this.convexPolyhedronRepresentation, v = h.vertices[6];
+      h._boxH = [v.x, v.y, v.z];
+      h._boxAt = new Float64Array(10).fill(NaN);
+      // First edge of each direction; a later one that is the same vector or
+      // its exact negation is its twin (see findSeparatingAxis).
+      const E = h.uniqueEdges, rep = h._edgeRep = [];
+      // (By value: a twin is never the axis kept, so a zero's sign is moot.)
+      const same = (p, q) => (p.x === q.x && p.y === q.y && p.z === q.z) || (p.x === -q.x && p.y === -q.y && p.z === -q.z);
+      for (let i = 0; i < E.length; i++) if (!rep.some((k) => same(E[k], E[i]))) rep.push(i);
+    };
+    // Boxes made before this point (none in the game) keep cannon's path.
+    CANNON.ConvexPolyhedron.project = function (shape, axis, pos, quat, result) {
+      const H = shape._boxH;
+      if (!H || shape.vertices.length !== 8) return project0(shape, axis, pos, quat, result);
+      const qx = quat.x, qy = quat.y, qz = quat.z, qw = quat.w;
+      // Origin in the hull's frame: (0 - pos) turned by the conjugate.
+      const at = shape._boxAt;
+      if (!Object.is(at[0], pos.x) || !Object.is(at[1], pos.y) || !Object.is(at[2], pos.z) || !Object.is(at[3], qx) ||
+          !Object.is(at[4], qy) || !Object.is(at[5], qz) || !Object.is(at[6], qw)) {
+        const s = 0 - pos.x, i = 0 - pos.y, o = 0 - pos.z, n = -qx, r = -qy, a = -qz, l = qw;
+        const c = l * s + r * o - a * i, h = l * i + a * s - n * o, d = l * o + n * i - r * s, u = -n * s - r * i - a * o;
+        at[0] = pos.x; at[1] = pos.y; at[2] = pos.z; at[3] = qx; at[4] = qy; at[5] = qz; at[6] = qw;
+        at[7] = c * l + u * -n + h * -a - d * -r;
+        at[8] = h * l + u * -r + d * -n - c * -a;
+        at[9] = d * l + u * -a + c * -r - h * -n;
+      }
+      // Axis in the hull's frame: cannon flips w, turns, flips w back.
+      const s = axis.x, i = axis.y, o = axis.z, n = qx, r = qy, a = qz, l = -qw;
+      const c = l * s + r * o - a * i, h = l * i + a * s - n * o, d = l * o + n * i - r * s, u = -n * s - r * i - a * o;
+      const ax = c * l + u * -n + h * -a - d * -r;
+      const ay = h * l + u * -r + d * -n - c * -a;
+      const az = d * l + u * -a + c * -r - h * -n;
+      const add = at[7] * ax + at[8] * ay + at[9] * az;
+      const px = H[0] * ax, py = H[1] * ay, pz = H[2] * az;
+      const M = ((px < 0 ? -px : px) + (py < 0 ? -py : py)) + (pz < 0 ? -pz : pz);
+      result[0] = M - add;
+      result[1] = -M - add;
+    };
+  }
 
   // Two polygons clipped back and forth, each over its own vectors, so a
   // clip never writes a vector it is still reading. Records and counts are
@@ -921,7 +1082,11 @@ const _fsB = [], _fsInvC = [], _fsLam = [];
 function frictionSolve(h, w) {
   pieceGyro(h);
   sinkForces(h);
-  const eqs = this.equations, n = eqs.length, bodies = w.bodies, nb = bodies.length;
+  return FS_FLAT ? frictionSweepFlat(this, h, w) : frictionSweep(this, h, w);
+}
+// The sweep as first written, on cannon's equation objects (FS_FLAT = false).
+function frictionSweep(solver, h, w) {
+  const eqs = solver.equations, n = eqs.length, bodies = w.bodies, nb = bodies.length;
   if (n === 0) return 0;
   for (let t = 0; t < nb; t++) bodies[t].updateSolveMassProperties();
   const B = _fsB, invC = _fsInvC, lam = _fsLam;
@@ -932,7 +1097,7 @@ function frictionSolve(h, w) {
     e.fricAt = t;
   }
   for (let t = 0; t < nb; t++) { bodies[t].vlambda.set(0, 0, 0); bodies[t].wlambda.set(0, 0, 0); }
-  const tol = this.tolerance * this.tolerance, iters = this.iterations;
+  const tol = solver.tolerance * solver.tolerance, iters = solver.iterations;
   let it = 0;
   for (; it !== iters; it++) {
     let delta = 0;
@@ -963,6 +1128,114 @@ function frictionSolve(h, w) {
   }
   for (let t = 0; t < nb; t++) {
     const b = bodies[t];
+    b.vlambda.vmul(b.linearFactor, b.vlambda); b.velocity.vadd(b.vlambda, b.velocity);
+    b.wlambda.vmul(b.angularFactor, b.wlambda); b.angularVelocity.vadd(b.wlambda, b.angularVelocity);
+  }
+  for (let t = n; t--;) eqs[t].multiplier = lam[t] / h;
+  return it;
+}
+// The same sweep on flat arrays: most of a heap's step went to cannon's
+// per-equation calls (computeGWlambda through multiplyVectors and dot, and
+// addToWlambda turning the jacobian through the inverse inertia on every
+// one of its eight sweeps). Here each equation's jacobian, its two bodies'
+// inverse masses and the inertia-turned jacobian (what addToWlambda works out
+// afresh each call, from values that hold for the whole solve) are packed
+// once, the bodies' vlambda / wlambda live in one array, and every sum and
+// product is taken in cannon's own order on the same numbers — so each
+// impulse, velocity and multiplier comes out to the bit as before (checked
+// against frictionSweep in play). Set FS_FLAT = false for the object sweep.
+const FS_FLAT = true;
+let _fsJ = new Float64Array(0), _fsE = new Float64Array(0), _fsBi = new Int32Array(0), _fsL = new Int32Array(0);
+let _fsV = new Float64Array(0);
+const _fsT = new CANNON.Vec3();
+function frictionSweepFlat(solver, h, w) {
+  const eqs = solver.equations, n = eqs.length, bodies = w.bodies, nb = bodies.length;
+  if (n === 0) return 0;
+  for (let t = 0; t < nb; t++) { const b = bodies[t]; b.updateSolveMassProperties(); b._fsI = t; }
+  const B = _fsB, invC = _fsInvC, lam = _fsLam;
+  B.length = invC.length = lam.length = n;
+  for (let t = 0; t < n; t++) {
+    const e = eqs[t];
+    lam[t] = 0; B[t] = e.computeB(h); invC[t] = 1 / e.computeC();
+    e.fricAt = t;
+  }
+  if (_fsJ.length < n * 20) { _fsJ = new Float64Array(n * 40); _fsE = new Float64Array(n * 8); _fsBi = new Int32Array(n * 4); _fsL = new Int32Array(n * 8); }
+  if (_fsV.length < nb * 12) _fsV = new Float64Array(nb * 24);
+  const J = _fsJ, E = _fsE, BI = _fsBi, L = _fsL, V = _fsV, T = _fsT;
+  // An equation on a body outside the world's list has nowhere to go here.
+  for (let t = 0; t < n; t++) { const e = eqs[t]; if (bodies[e.bi._fsI] !== e.bi || bodies[e.bj._fsI] !== e.bj) return frictionSweep(solver, h, w); }
+  V.fill(0, 0, nb * 12);
+  for (let t = 0; t < n; t++) {
+    const e = eqs[t], a = e.jacobianElementA, b = e.jacobianElementB, bi = e.bi, bj = e.bj, o = t * 20;
+    J[o] = a.spatial.x; J[o + 1] = a.spatial.y; J[o + 2] = a.spatial.z;
+    J[o + 3] = a.rotational.x; J[o + 4] = a.rotational.y; J[o + 5] = a.rotational.z;
+    J[o + 6] = b.spatial.x; J[o + 7] = b.spatial.y; J[o + 8] = b.spatial.z;
+    J[o + 9] = b.rotational.x; J[o + 10] = b.rotational.y; J[o + 11] = b.rotational.z;
+    bi.invInertiaWorldSolve.vmult(a.rotational, T); J[o + 12] = T.x; J[o + 13] = T.y; J[o + 14] = T.z;
+    bj.invInertiaWorldSolve.vmult(b.rotational, T); J[o + 15] = T.x; J[o + 16] = T.y; J[o + 17] = T.z;
+    J[o + 18] = bi.invMassSolve; J[o + 19] = bj.invMassSolve;
+    BI[t * 2] = bi._fsI * 6; BI[t * 2 + 1] = bj._fsI * 6;
+    E[t * 4] = e.eps; E[t * 4 + 1] = e.minForce; E[t * 4 + 2] = e.maxForce; E[t * 4 + 3] = e.fricMu;
+    // Friction links, fixed for the solve: 0 none, 1 first of a pair
+    // (unbounded), 2 second (circle with the partner at L[t*4+2]), 3 alone;
+    // L[t*4+1] the contact's index, or -1 when it is not in this solve (bound 0).
+    const c = e.fricContact;
+    let kind = 0, ci = -1, pi = -1;
+    if (c) {
+      ci = eqs[c.fricAt] === c ? c.fricAt : -1;
+      const p = e.fricPair, q = e.fricNext;
+      if (q && eqs[q.fricAt] === q) kind = 1;
+      else if (p && eqs[p.fricAt] === p) { kind = 2; pi = p.fricAt; }
+      else kind = 3;
+    }
+    L[t * 4] = kind; L[t * 4 + 1] = ci; L[t * 4 + 2] = pi;
+  }
+  // addToWlambda(u) for equation t, as cannon orders it: A's then B's linear
+  // part, then A's and B's angular part.
+  const add = (t, u) => {
+    const o = t * 20, ia = BI[t * 2], ib = BI[t * 2 + 1];
+    let m = J[o + 18] * u;
+    V[ia] = V[ia] + m * J[o]; V[ia + 1] = V[ia + 1] + m * J[o + 1]; V[ia + 2] = V[ia + 2] + m * J[o + 2];
+    m = J[o + 19] * u;
+    V[ib] = V[ib] + m * J[o + 6]; V[ib + 1] = V[ib + 1] + m * J[o + 7]; V[ib + 2] = V[ib + 2] + m * J[o + 8];
+    V[ia + 3] = V[ia + 3] + u * J[o + 12]; V[ia + 4] = V[ia + 4] + u * J[o + 13]; V[ia + 5] = V[ia + 5] + u * J[o + 14];
+    V[ib + 3] = V[ib + 3] + u * J[o + 15]; V[ib + 4] = V[ib + 4] + u * J[o + 16]; V[ib + 5] = V[ib + 5] + u * J[o + 17];
+  };
+  const tol = solver.tolerance * solver.tolerance, iters = solver.iterations;
+  let it = 0;
+  for (; it !== iters; it++) {
+    let delta = 0;
+    for (let t = 0; t < n; t++) {
+      const o = t * 20, ia = BI[t * 2], ib = BI[t * 2 + 1], v = lam[t];
+      // computeGWlambda: (vlA.spA + wlA.rotA) + (vlB.spB + wlB.rotB)
+      const gw = ((V[ia] * J[o] + V[ia + 1] * J[o + 1] + V[ia + 2] * J[o + 2]) + (V[ia + 3] * J[o + 3] + V[ia + 4] * J[o + 4] + V[ia + 5] * J[o + 5])) +
+                 ((V[ib] * J[o + 6] + V[ib + 1] * J[o + 7] + V[ib + 2] * J[o + 8]) + (V[ib + 3] * J[o + 9] + V[ib + 4] * J[o + 10] + V[ib + 5] * J[o + 11]));
+      let u = invC[t] * (B[t] - gw - E[t * 4] * v), lo = E[t * 4 + 1], hi = E[t * 4 + 2];
+      const kind = L[t * 4];
+      if (kind) {
+        const ci = L[t * 4 + 1];
+        hi = ci >= 0 ? E[t * 4 + 3] * lam[ci] : 0; lo = -hi;
+        if (kind === 1) { lo = -Infinity; hi = Infinity; }
+        else if (kind === 2) {
+          const pi = L[t * 4 + 2], pa = lam[pi], nb2 = v + u, r = Math.sqrt(pa * pa + nb2 * nb2);
+          if (r > hi) {
+            const s = hi / r, dp = pa * s - pa;
+            lam[pi] += dp; add(pi, dp); delta += dp > 0 ? dp : -dp;
+            u = nb2 * s - v;
+          }
+          lo = -Infinity; hi = Infinity;
+        }
+      }
+      if (v + u < lo) u = lo - v; else if (v + u > hi) u = hi - v;
+      lam[t] += u;
+      delta += u > 0 ? u : -u;
+      add(t, u);
+    }
+    if (delta * delta < tol) break;
+  }
+  for (let t = 0; t < nb; t++) {
+    const b = bodies[t], o = t * 6;
+    b.vlambda.set(V[o], V[o + 1], V[o + 2]); b.wlambda.set(V[o + 3], V[o + 4], V[o + 5]);
     b.vlambda.vmul(b.linearFactor, b.vlambda); b.velocity.vadd(b.vlambda, b.velocity);
     b.wlambda.vmul(b.angularFactor, b.wlambda); b.angularVelocity.vadd(b.wlambda, b.angularVelocity);
   }

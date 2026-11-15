@@ -1093,7 +1093,9 @@ const _fsB = [], _fsInvC = [], _fsLam = [];
 function frictionSolve(h, w) {
   pieceGyro(h);
   sinkForces(h);
-  return FS_FLAT ? frictionSweepFlat(this, h, w) : frictionSweep(this, h, w);
+  if (!playerSoles.length) return FS_FLAT ? frictionSweepFlat(this, h, w) : frictionSweep(this, h, w);
+  playerSoleCap(h);
+  try { return FS_FLAT ? frictionSweepFlat(this, h, w) : frictionSweep(this, h, w); } finally { playerSoleUncap(); }
 }
 // The sweep as first written, on cannon's equation objects (FS_FLAT = false).
 function frictionSweep(solver, h, w) {
@@ -1650,6 +1652,7 @@ function sinkGroundAround(S, rS, n, sg) {
 function sinkYield(c) {
   const bi = c.bi, bj = c.bj;
   if (!sinkBody(bi) && !sinkBody(bj)) return false;
+  if ((bi === playerBody || bj === playerBody) && playerSoleHold(c)) return false;
   const ni = c.ni;
   const depth = -((bj.position.x + c.rj.x - bi.position.x - c.ri.x) * ni.x
                 + (bj.position.y + c.rj.y - bi.position.y - c.ri.y) * ni.y
@@ -1666,6 +1669,56 @@ function sinkYield(c) {
     if (b && !(-ni.y > cut)) b.rigidAt = world.stepnumber;
   }
   return false;
+}
+
+// The player's soles on the open top of a powder that piles. A footing on
+// sand or soil is not held only by the grains it has pushed down into (the
+// depth term, N_q, sinkFeetBear): at the surface itself the grains under it
+// are locked by friction across the whole width of the foot, and they bear
+// q = 1/2 x gamma x B x N_gamma per area before they give (Terzaghi's width
+// term), gamma the powder's weight per volume and B the foot's width. Over
+// his soles that is many times his weight on every piling powder, so he
+// stands on the surface as on rock and only a load past it presses him in.
+// So the contact under his feet holds, as rock's does, up to that bearing
+// (playerSoleCap, applied in frictionSolve); past it the grains give at that
+// force and his hull's own forces (lift, N_q, friction) take him from there.
+// Only his soles (the underside of his lowest sphere), only pressing down
+// onto powder with open air over it: what he walks into from the side and
+// powder over him stay forces (sinkPresses). Water (angle 0) has
+// N_gamma 0 and bears nothing: it lets go as before and swallows him.
+const playerSoles = [];   // this step's holding sole contacts: [contact, bearing N, ...]
+let playerSolesAt = -1;
+function playerSoleHold(c) {
+  const sg = c.bi === playerBody ? 1 : -1, O = sg > 0 ? c.bj : c.bi;
+  if (!O.voxelGround) return false;
+  const rS = sg > 0 ? c.ri : c.rj, rO = sg > 0 ? c.rj : c.ri, n = c.ni;
+  if (!(sg * n.y < 0)) return false;
+  if (!(rS.y < (crouched ? 0 : PLAYER.radius - PLAYER.standCenter))) return false;
+  const m = contactMatOf(O, rO, _sinkN.set(sg * n.x, sg * n.y, sg * n.z));
+  if (!sinkMedium(m)) return false;
+  const ng = bearingNgamma(m);
+  if (!(ng > 0)) return false;
+  const gx = O.position.x + rO.x, gy = O.position.y + rO.y, gz = O.position.z + rO.z;
+  if (voxelAtWorld(gx, gy + SINK_TUNE.edgeProbe * BLOCK, gz) !== AIR) return false;
+  const hull = playerSinkHull(), K = playerBody.mass / hull.W;
+  const cap = hull.soles * 0.5 * sinkWeight(m) * (2 * PLAYER.radius / BLOCK) * ng * K * Math.abs(world.gravity.y);
+  // Filed with the powder like any contact into it, so his hull's forces are
+  // there the moment the grains give.
+  sinkTouch(playerBody, O);
+  if (playerSolesAt !== world.stepnumber) { playerSoleUncap(); playerSolesAt = world.stepnumber; }
+  playerSoles.push(c, cap);
+  return true;
+}
+// The sole contacts share his soles' bearing: n of them each hold up to 1/n
+// of it, as an impulse over the step (the solver's contact bound).
+function playerSoleCap(h) {
+  const n = playerSoles.length / 2;
+  for (let k = 0; k < playerSoles.length; k += 2) playerSoles[k].maxForce = playerSoles[k + 1] * h / n;
+}
+// Contact equations are pooled: put the bound back once solved.
+function playerSoleUncap() {
+  for (let k = 0; k < playerSoles.length; k += 2) playerSoles[k].maxForce = 1e6;
+  playerSoles.length = 0;
 }
 
 // A contact on a sinker that holds can come up already deep: a piece part
@@ -2062,10 +2115,14 @@ function sinkForces(h) {
     const K = S.mass / hull.W;
     let disp = 0, vol = 0, press = 0;
     // What rests on it, at its true weight (sinkLoadsGather, last step).
-    const ld = sinkLoad.get(S), load = ld && ld.at === step ? ld.w : 0;   // gathered after the step before (stepnumber already on)
+    // A landing's blow is no weight: what pushed is never made up to more
+    // than all that rests on it weighs (ld.wb), or the blow on a light piece
+    // under a heavy one came back K_below / K_above times over.
+    const ld = sinkLoad.get(S), load = ld && ld.at === step ? Math.min(ld.w, ld.wb) : 0;   // gathered after the step before (stepnumber already on)
     if (load) {
-      S.force.x += ld.fx; S.force.y += ld.fy; S.force.z += ld.fz;
-      S.torque.x += ld.tx; S.torque.y += ld.ty; S.torque.z += ld.tz;
+      const sc = load / ld.w;
+      S.force.x += ld.fx * sc; S.force.y += ld.fy * sc; S.force.z += ld.fz * sc;
+      S.torque.x += ld.tx * sc; S.torque.y += ld.ty * sc; S.torque.z += ld.tz * sc;
     }
     st.load = load;
     if (S === playerBody) {
@@ -2139,19 +2196,22 @@ function sinkForces(h) {
 // weight it carries is counted in its balance (st.busy) and wakes it if it
 // puts a sleeping one off balance. Ground and anything not in powder are
 // left to the solver as they were.
-const sinkLoad = new Map();   // body -> { at, w, fx, fy, fz, tx, ty, tz }
+const sinkLoad = new Map();   // body -> { at, w (weight carried), wb (most it can be), f/t (correction), p/q (whole push), on }
 function sinkLoadsGather() {
-  if (!sinkers.size) return;
+  if (!sinkers.size) { if (stackMatched.size) sinkStackMatch(world.stepnumber); return; }
   const step = world.stepnumber, cs = world.contacts, gy = Math.abs(world.gravity.y), cut = SINK_TUNE.upCut;
   for (let k = 0; k < cs.length; k++) {
     const c = cs[k];
-    if (!c.enabled || !(c.multiplier > 0)) continue;
+    if (!c.enabled) continue;
     const bi = c.bi, bj = c.bj;
     if (!sinkBody(bi) || !sinkBody(bj)) continue;
     for (let side = 0; side < 2; side++) {
       // The force on b is along ni for bj, against it for bi.
       const b = side ? bi : bj, o = side ? bj : bi, sg = side ? -1 : 1;
       if (!(-sg * c.ni.y > cut) || b.type !== CANNON.Body.DYNAMIC) continue;
+      // Touching is enough to be one stack; a step with no push is no load.
+      if (b.debrisMesh && o.debrisMesh && o.type === CANNON.Body.DYNAMIC) _stackPairs.push(b, o);
+      if (!(c.multiplier > 0)) continue;
       const st = sinkers.get(b);
       if (!st || !st.media.size) continue;
       // Not asleep on it while it is still on its way: asleep, the solver
@@ -2162,15 +2222,22 @@ function sinkLoadsGather() {
       if (!(hb.W > 0) || !(ho.W > 0)) continue;
       const Kb = b.mass / hb.W, Ko = o.mass / ho.W, f = c.multiplier, g = Kb / Ko - 1;
       let e = sinkLoad.get(b);
-      if (!e) sinkLoad.set(b, e = { at: -1, w: 0, fx: 0, fy: 0, fz: 0, tx: 0, ty: 0, tz: 0 });
-      if (e.at !== step) { e.at = step; e.w = e.fx = e.fy = e.fz = e.tx = e.ty = e.tz = 0; }
+      if (!e) sinkLoad.set(b, e = { at: -1, w: 0, fx: 0, fy: 0, fz: 0, tx: 0, ty: 0, tz: 0, px: 0, py: 0, pz: 0, qx: 0, qy: 0, qz: 0, wb: 0, on: new Set() });
+      if (e.at !== step) { e.at = step; e.w = e.fx = e.fy = e.fz = e.tx = e.ty = e.tz = e.px = e.py = e.pz = e.qx = e.qy = e.qz = e.wb = 0; e.on.clear(); }
+      // The most a resting load can weigh: all that is on it, and on that.
+      if (!e.on.has(o)) { e.on.add(o); const lo = sinkLoad.get(o); e.wb += ho.W + (lo && step - lo.at <= 1 ? lo.wb : 0); }
       const fx = sg * c.ni.x * f * g, fy = sg * c.ni.y * f * g, fz = sg * c.ni.z * f * g;
       const r = side ? c.ri : c.rj;
       e.fx += fx; e.fy += fy; e.fz += fz;
       e.tx += r.y * fz - r.z * fy; e.ty += r.z * fx - r.x * fz; e.tz += r.x * fy - r.y * fx;
+      // The whole push, as the solver will make it again (sinkHoldSolve).
+      const px = fx + sg * c.ni.x * f, py = fy + sg * c.ni.y * f, pz = fz + sg * c.ni.z * f;
+      e.px += px; e.py += py; e.pz += pz;
+      e.qx += r.y * pz - r.z * py; e.qy += r.z * px - r.x * pz; e.qz += r.x * py - r.y * px;
       e.w += -sg * c.ni.y * f / (Ko * gy);
     }
   }
+  sinkStackMatch(step);
   for (const [b, e] of sinkLoad) {
     if (e.at !== step) { if (step - e.at > 1) sinkLoad.delete(b); continue; }
     if (b.sleepState !== CANNON.Body.SLEEPING) continue;
@@ -2179,6 +2246,64 @@ function sinkLoadsGather() {
   }
 }
 world.addEventListener('postStep', sinkLoadsGather);
+// A stack sinking into powder, in the solver's own masses. Made up after the
+// step, the weight above arrived a step late and against the wrong body
+// masses for everything else the solver does with them: a stone on a raft
+// was as heavy as the raft to the solver (both at FALL_MASS_CAP), so the
+// pair rocked like a top-heavy stack, the raft tipped and the stone slid off
+// into the water - the raft then floated as if nothing had been on it.
+// So the pieces resting on one another over a piece in powder all take the
+// same kg per unit of weight, the least of theirs (a mass only goes down,
+// never past the cap): each body's mass is then its weight to the solver, it
+// hands the true weight down the stack itself, and the correction above
+// comes to nothing. Each takes its own mass back once it has been off the
+// stack a few steps (forgetSteps); one asleep keeps it until it wakes.
+// Pieces on solid ground, and the player, are left as they were. So is a
+// stack whose matching would make a body lighter than any the solver ever
+// has (one block of the lightest material): a lone wood block under a
+// heavy stone would be 0.5 kg under 40, and the solver throws a pair that
+// far apart. Such a stack keeps its own masses and the correction above.
+const _stackPairs = [], _stackUp = new Map(), stackMatched = new Map();   // body -> step last matched
+const stackRoot = (b) => { let r = b; while (_stackUp.get(r) !== r) r = _stackUp.get(r); _stackUp.set(b, r); return r; };
+const debrisKgPerW = (b) => { const h = sinkHull(b.debrisMesh, b); return h.W > 0 ? debrisMass(b.debrisMesh.userData.blocks) / h.W : 0; };
+function sinkStackMatch(step) {
+  const P = _stackPairs;
+  if (P.length) {
+    _stackUp.clear();
+    for (const b of P) _stackUp.set(b, b);
+    for (let k = 0; k < P.length; k += 2) { const a = stackRoot(P[k]), c = stackRoot(P[k + 1]); if (a !== c) _stackUp.set(a, c); }
+    const K = new Map();   // root -> least kg per weight, if a piece of it is in powder
+    for (const b of _stackUp.keys()) {
+      const r = stackRoot(b), k = debrisKgPerW(b);
+      if (!(k > 0)) continue;
+      if (!K.has(r)) K.set(r, { k, sink: false, wmin: Infinity });
+      const e = K.get(r);
+      if (k < e.k) e.k = k;
+      const w = sinkHull(b.debrisMesh, b).W;
+      if (w < e.wmin) e.wmin = w;
+      if (sinkers.get(b)?.media.size) e.sink = true;
+    }
+    let wl = Infinity;
+    for (const st of MAT_STATS) if (st && st.weight > 0 && st.weight < wl) wl = st.weight;
+    const floor = wl * FALL_KG_PER_WEIGHT;
+    for (const b of _stackUp.keys()) {
+      const e = K.get(stackRoot(b));
+      if (!e || !e.sink || e.k * e.wmin < floor * (1 - 1e-9)) continue;
+      const m = sinkHull(b.debrisMesh, b).W * e.k;
+      if (Math.abs(b.mass - m) > 1e-9 * m) { b.mass = m; b.updateMassProperties(); }
+      stackMatched.set(b, step);
+    }
+    P.length = 0;
+  }
+  for (const [b, at] of stackMatched) {
+    if (at === step) continue;
+    if (b.world !== world || !b.debrisMesh?.userData.blocks?.length) { stackMatched.delete(b); continue; }
+    if (step - at <= SINK_TUNE.forgetSteps || b.sleepState === CANNON.Body.SLEEPING) continue;
+    b.mass = debrisMass(b.debrisMesh.userData.blocks);
+    b.updateMassProperties();
+    stackMatched.delete(b);
+  }
+}
 // The hold-back and the plow, as one implicit (backward Euler) step of the
 // whole rigid body. Each listed cell is held back by c per unit of its point's
 // speed through the powder, and together they make D, a 6x6 matrix on the
@@ -2236,6 +2361,25 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
   U[3] = w.x + h * (Iv[0] * T.x + Iv[1] * T.y + Iv[2] * T.z);
   U[4] = w.y + h * (Iv[3] * T.x + Iv[4] * T.y + Iv[5] * T.z);
   U[5] = w.z + h * (Iv[6] * T.x + Iv[7] * T.y + Iv[8] * T.z);
+  // And the weight of what rests on it. Its contacts are solved after this,
+  // so unseen here the hold-back cancelled the lift it saw and left that
+  // weight to push the piece on down unopposed, at the same speed however
+  // far in it was: a loaded raft sank on past its balance and was buried.
+  // (Only its part over the correction in S.force, which is in U already.)
+  // Bounded as the correction is (sinkForces): told a landing's blow, the
+  // hold-back threw the piece back up.
+  const ld = sinkLoad.get(S);
+  if (ld && ld.at === world.stepnumber && ld.w > 0) {
+    const sc = ld.w > ld.wb ? ld.wb / ld.w : 1;
+    const lx = (ld.px - ld.fx) * sc, ly = (ld.py - ld.fy) * sc, lz = (ld.pz - ld.fz) * sc;
+    const qx = (ld.qx - ld.tx) * sc, qy = (ld.qy - ld.ty) * sc, qz = (ld.qz - ld.tz) * sc;
+    U[0] += lx * h / S.mass; U[1] += ly * h / S.mass; U[2] += lz * h / S.mass;
+    if (!S.fixedRotation) {
+      U[3] += h * (Iv[0] * qx + Iv[1] * qy + Iv[2] * qz);
+      U[4] += h * (Iv[3] * qx + Iv[4] * qy + Iv[5] * qz);
+      U[5] += h * (Iv[6] * qx + Iv[7] * qy + Iv[8] * qz);
+    }
+  }
   let dpx = 0, dpy = 0, dpz = 0;
   if (O) {
     const ow = O.angularVelocity;
@@ -2373,6 +2517,15 @@ function bearingNq(m) {
   if (a >= 90) return Infinity;
   const t = Math.tan((45 + a / 2) * DEG);
   return Math.exp(Math.PI * Math.tan(a * DEG)) * t * t;
+}
+// Its width factor (Vesic): N_gamma = 2 (N_q + 1) tan phi, what the grains
+// under a foot at the very surface bear for its width (playerSoleHold).
+// 0 for Water: a liquid bears nothing at its surface.
+function bearingNgamma(m) {
+  const a = MAT_STATS[m]?.angle;
+  if (!(a > 0)) return 0;
+  if (a >= 90) return Infinity;
+  return 2 * (bearingNq(m) + 1) * Math.tan(a * DEG);
 }
 // The player's feet on powder. Grains pressed down by a sole do not flow away
 // as a liquid would: friction between them locks them, and they push back
@@ -7125,8 +7278,18 @@ playerBody.updateAABB();
 world.addBody(playerBody);
 
 // Visible body — hidden in first person, shown everywhere else.
-const playerGeoStand  = new THREE.CapsuleGeometry(PLAYER.radius, 2 * (PLAYER.standCenter - PLAYER.radius), 6, 18);
-const playerGeoCrouch = new THREE.CapsuleGeometry(PLAYER.radius, 0.0, 6, 18);
+// Flat soles under straight sides and a round head: he stands on his feet,
+// spread on the ground (playerSoleHold), and his body shows it rather than
+// the point a capsule comes to. The collision spheres keep their round
+// bottom so he still rides up over a block's step on rock.
+function playerBodyGeo(half) {
+  const r = PLAYER.radius, top = half - r, pts = [new THREE.Vector2(0, -half), new THREE.Vector2(r, -half)];
+  for (let k = 0; k <= 8; k++) { const a = k / 8 * Math.PI / 2; pts.push(new THREE.Vector2(r * Math.cos(a), top + r * Math.sin(a))); }
+  pts[pts.length - 1].x = 0;
+  return new THREE.LatheGeometry(pts, 18);
+}
+const playerGeoStand  = playerBodyGeo(PLAYER.standCenter);
+const playerGeoCrouch = playerBodyGeo(PLAYER.crouchCenter);
 const playerMesh = new THREE.Mesh(
   playerGeoStand,
   mat(0x63b9ff, 0.42, 0.28, { emissive: 0x0d2c4a, emissiveIntensity: 0.55 })

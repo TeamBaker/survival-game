@@ -24,7 +24,10 @@ let physStep = PHYS_STEP, physFrameAvg = 1 / 60;
 const physMaxSubsteps = () => (physStep === PHYS_STEP ? 8 : 4);   // 66 ms of catch-up either way
 const PLAYER = {
   radius:       0.4,
-  standCenter:  0.8,              // body origin above the feet, standing
+  // 10 blocks tall standing (2 m). Only the height grew from the old 8 blocks:
+  // the radius and every eye height are as they were, so the view sits where
+  // it always did and the extra 0.4 m is head above it.
+  standCenter:  1.0,              // body origin above the feet, standing (half the height)
   crouchCenter: 0.4,              // ... and crouched
   standEye:     1.7,
   crouchEye:    0.72,
@@ -956,6 +959,12 @@ const physDebris = new CANNON.Material('debris');
 // the player sticks (walkable ground) and when they slide (steep ground).
 world.addContactMaterial(new CANNON.ContactMaterial(physPlayer, physWorld, { friction: 0.0, restitution: 0.0 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physPlayer, physProp,  { friction: 0.0, restitution: 0.0 }));
+// A fallen piece is ground to his feet like any other. With no pair of its own
+// he got the world's default grip (0.4, at cannon's per-step cap: a weld), so
+// a piece under him took his stride and he walked it along with him. What a
+// moving piece does to him is carried by his legs instead: he walks relative
+// to what he stands on (updatePlayer).
+world.addContactMaterial(new CANNON.ContactMaterial(physPlayer, physDebris, { friction: 0.0, restitution: 0.0 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physWorld, { friction: 0.45, restitution: 0.06 }));
 world.addContactMaterial(new CANNON.ContactMaterial(physProp,   physProp,  { friction: 0.4,  restitution: 0.06 }));
 // Rubble that has broken off the terrain: grabbier than a prop so a chunk does
@@ -1084,7 +1093,9 @@ const _fsB = [], _fsInvC = [], _fsLam = [];
 function frictionSolve(h, w) {
   pieceGyro(h);
   sinkForces(h);
-  return FS_FLAT ? frictionSweepFlat(this, h, w) : frictionSweep(this, h, w);
+  if (!playerSoles.length) return FS_FLAT ? frictionSweepFlat(this, h, w) : frictionSweep(this, h, w);
+  playerSoleCap(h);
+  try { return FS_FLAT ? frictionSweepFlat(this, h, w) : frictionSweep(this, h, w); } finally { playerSoleUncap(); }
 }
 // The sweep as first written, on cannon's equation objects (FS_FLAT = false).
 function frictionSweep(solver, h, w) {
@@ -1423,7 +1434,9 @@ function sinkBlocksPowder(i, j, l) {
 const PLAYER_WEIGHT_DEF = 3, PLAYER_WEIGHT_KG = 400;
 const SINK_TUNE_DEFS = [
   { key: 'playerWeight', group: 'Player', name: 'Player weight', def: PLAYER_WEIGHT_DEF, min: 0.001,
-    help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 2.2, Fine Dirt 2): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper; of a powder\'s own weight he goes in and holds where he stops, under its surface. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
+    help: 'How heavy the player is, per block of his body, in the same units as a material\'s Weight (Sand 12.8, Dirt 9.7, Water 8): he goes into powder as a piece does, and rests where the powder he displaces weighs what he does, so lighter rides higher and heavier sinks deeper. On a powder that piles (place angle over 0) his feet are borne up as well, N_q times the lift (from the place angle), so he stands on its surface; on Water (angle 0) only the lift holds him. It also sets how hard he shoves what he walks into (his body mass follows it, up to the 40 kg the heaviest piece has). Kept in saves.' },
+  { key: 'swimForce', group: 'Player', name: 'Swim force', def: 1435, min: 0,
+    help: 'How hard the player\'s swim stroke pushes, in newtons, while he swims (3 blocks or more into powder): a force on his body along where he looks, as his weight and the powder\'s lift are. How fast it takes him is up to the powder: its friction holds him back and the powder he pushes aside takes momentum, so the same stroke is quick in water (friction 0) and a crawl in dirt. 0: he cannot swim, only float or sink.' },
   { key: 'frictionScale', group: 'Speed', name: 'Friction effect', def: 1000, min: 0,
     help: 'How much the friction of the powder slows a sinker, on the part of it that is in the powder: held back by this x the divider x friction x the weight it displaces there, per m/s, so the hold grows as it goes in. 0: nothing slows sinking but the momentum the grains take (always there) and the piece\'s own damping.' },
   { key: 'gripScale', group: 'Speed', name: 'Grip multiplier', def: 0.03, min: 0,
@@ -1520,29 +1533,19 @@ function sinkTouch(S, O) {
 // under), any other piece block for block as sideways (what moves it up
 // through powder is its own momentum, and the hold-back answers it there as
 // in any direction). A piece not in powder is held by powder over it.
-// Powder heavier than the player is a wall to him where he is walking into it
-// near the surface, on a contact steeper than ground he could walk on: he
-// goes down into powder by his weight, but a light body does not push through
-// a sand bank side on, and his rounded feet ride up it as up any step. Only
-// where his legs are taking him: the rim of the hole he is sinking into, which
-// is as steep, is no wall to him. nx, nz: from him into the powder.
-function sinkPlayerWall(S, ws, wo, nx, ny, nz) {
-  if (S !== playerBody || !(ws < wo) || Math.abs(ny) >= GROUND_DOT) return false;
-  if (sinkDriveX * nx + sinkDriveZ * nz <= 0) return false;
-  return !(sinkers.get(S)?.vol >= playerSinkHull().count * 0.5);
-}
 // A floater rises on into powder heavier than it (lighter powder over it is
-// a lid). The player also into powder of his own weight: that gives round
-// him as it does under him (sinkGives), so he swims up through it as through
-// any other, where held as a lid it threw every stroke up back down.
-const sinkFloatsInto = (S, fl, w) => S === playerBody
-  ? fl.W <= SINK_TUNE.floatScale * w * fl.count
-  : fl.W < SINK_TUNE.floatScale * w * fl.count;
+// a lid).
+const sinkFloatsInto = (S, fl, w) => fl.W < SINK_TUNE.floatScale * w * fl.count;
+// The player meets powder by forces only, from every side and at any weight:
+// every contact of his with a powder block lets go, and what the powder does
+// to him is its lift, its hold-back, its plow and the bearing under his feet
+// (sinkForces). No bank is a wall to him and no powder over him a lid; what
+// slows him walking into a bank is the bank's hold on the part of him in it.
 function sinkPresses(S, rS, O, rO, n, sg, depth) {
   if (!O.voxelGround && !O.debrisMesh) return false;
   if (S.type !== CANNON.Body.DYNAMIC) return false;
   let fl = null, ws = 0;
-  const up = sg * n.y > SINK_TUNE.upCut;
+  const up = S !== playerBody && sg * n.y > SINK_TUNE.upCut;
   if (up) {
     const st = sinkers.get(S);
     if (!st || !(st.disp > 0) || !(st.vol > 0)) return false;
@@ -1572,7 +1575,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     // against the powder there as going down.
     if (O.voxelGround && sg * n.y >= -SINK_TUNE.upCut && sinkers.get(S)?.disp > 0) {
       const w = sinkGroundAround(S, rS, n, sg);
-      if (w < 0 || (w > 0 && sinkPlayerWall(S, ws, w, sg * n.x, sg * n.y, sg * n.z))) return false;
+      if (w < 0) return false;
       sinkTouch(S, O);
       return true;
     }
@@ -1616,7 +1619,7 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
-  if (fl ? !(wo === 0 || sinkFloatsInto(S, fl, wo)) : sinkPlayerWall(S, ws, wo, _sinkN.x, _sinkN.y, _sinkN.z)) return false;
+  if (fl && !(wo === 0 || sinkFloatsInto(S, fl, wo))) return false;
   sinkTouch(S, O);
   return true;
 }
@@ -1649,6 +1652,7 @@ function sinkGroundAround(S, rS, n, sg) {
 function sinkYield(c) {
   const bi = c.bi, bj = c.bj;
   if (!sinkBody(bi) && !sinkBody(bj)) return false;
+  if ((bi === playerBody || bj === playerBody) && playerSoleHold(c)) return false;
   const ni = c.ni;
   const depth = -((bj.position.x + c.rj.x - bi.position.x - c.ri.x) * ni.x
                 + (bj.position.y + c.rj.y - bi.position.y - c.ri.y) * ni.y
@@ -1656,13 +1660,65 @@ function sinkYield(c) {
   if (sinkBody(bi) && sinkPresses(bi, c.ri, bj, c.rj, ni, 1, depth)) return true;
   if (sinkBody(bj) && sinkPresses(bj, c.rj, bi, c.ri, ni, -1, depth)) return true;
   // A contact that holds: a sinker leaning on it is held up by more than the
-  // lift, and may sleep there even off balance.
+  // lift, and may sleep there even off balance. Not one that presses it down
+  // (a piece resting on top of it): that is a load on it, which sinks it
+  // deeper (sinkLoadsGather), and holds nothing up.
   if (sinkers.size) {
-    const a = sinkers.get(bi), b = sinkers.get(bj);
-    if (a) a.rigidAt = world.stepnumber;
-    if (b) b.rigidAt = world.stepnumber;
+    const a = sinkers.get(bi), b = sinkers.get(bj), cut = SINK_TUNE.upCut;
+    if (a && !(ni.y > cut)) a.rigidAt = world.stepnumber;
+    if (b && !(-ni.y > cut)) b.rigidAt = world.stepnumber;
   }
   return false;
+}
+
+// The player's soles on the open top of a powder that piles. A footing on
+// sand or soil is not held only by the grains it has pushed down into (the
+// depth term, N_q, sinkFeetBear): at the surface itself the grains under it
+// are locked by friction across the whole width of the foot, and they bear
+// q = 1/2 x gamma x B x N_gamma per area before they give (Terzaghi's width
+// term), gamma the powder's weight per volume and B the foot's width. Over
+// his soles that is many times his weight on every piling powder, so he
+// stands on the surface as on rock and only a load past it presses him in.
+// So the contact under his feet holds, as rock's does, up to that bearing
+// (playerSoleCap, applied in frictionSolve); past it the grains give at that
+// force and his hull's own forces (lift, N_q, friction) take him from there.
+// Only his soles (the underside of his lowest sphere), only pressing down
+// onto powder with open air over it: what he walks into from the side and
+// powder over him stay forces (sinkPresses). Water (angle 0) has
+// N_gamma 0 and bears nothing: it lets go as before and swallows him.
+const playerSoles = [];   // this step's holding sole contacts: [contact, bearing N, ...]
+let playerSolesAt = -1;
+function playerSoleHold(c) {
+  const sg = c.bi === playerBody ? 1 : -1, O = sg > 0 ? c.bj : c.bi;
+  if (!O.voxelGround) return false;
+  const rS = sg > 0 ? c.ri : c.rj, rO = sg > 0 ? c.rj : c.ri, n = c.ni;
+  if (!(sg * n.y < 0)) return false;
+  if (!(rS.y < (crouched ? 0 : PLAYER.radius - PLAYER.standCenter))) return false;
+  const m = contactMatOf(O, rO, _sinkN.set(sg * n.x, sg * n.y, sg * n.z));
+  if (!sinkMedium(m)) return false;
+  const ng = bearingNgamma(m);
+  if (!(ng > 0)) return false;
+  const gx = O.position.x + rO.x, gy = O.position.y + rO.y, gz = O.position.z + rO.z;
+  if (voxelAtWorld(gx, gy + SINK_TUNE.edgeProbe * BLOCK, gz) !== AIR) return false;
+  const hull = playerSinkHull(), K = playerBody.mass / hull.W;
+  const cap = hull.soles * 0.5 * sinkWeight(m) * (2 * PLAYER.radius / BLOCK) * ng * K * Math.abs(world.gravity.y);
+  // Filed with the powder like any contact into it, so his hull's forces are
+  // there the moment the grains give.
+  sinkTouch(playerBody, O);
+  if (playerSolesAt !== world.stepnumber) { playerSoleUncap(); playerSolesAt = world.stepnumber; }
+  playerSoles.push(c, cap);
+  return true;
+}
+// The sole contacts share his soles' bearing: n of them each hold up to 1/n
+// of it, as an impulse over the step (the solver's contact bound).
+function playerSoleCap(h) {
+  const n = playerSoles.length / 2;
+  for (let k = 0; k < playerSoles.length; k += 2) playerSoles[k].maxForce = playerSoles[k + 1] * h / n;
+}
+// Contact equations are pooled: put the bound back once solved.
+function playerSoleUncap() {
+  for (let k = 0; k < playerSoles.length; k += 2) playerSoles[k].maxForce = 1e6;
+  playerSoles.length = 0;
 }
 
 // A contact on a sinker that holds can come up already deep: a piece part
@@ -1819,21 +1875,30 @@ function sinkHull(mesh, body) {
 // The player's hull: the blocks of his capsule (or, crouched, his one sphere),
 // square to the world as he never turns, each of his weight. The hollow-hold
 // reading of a piece's hull has nothing to do here.
+// His feet: the lowest level is his soles, flat across the whole width of
+// his body, where the capsule's round bottom had only its middle four cells.
+// His weight goes down through them, so they are what powder under him is
+// pressed by (the bearing, sinkFeetBear) and what his legs drive from. They
+// come first in the list (cells 0 .. soles - 1).
 let _playerHull = null, _playerHullCrouch = false, _playerHullW = 0;
 function playerSinkHull() {
   const w = SINK_TUNE.playerWeight;
   if (_playerHull && _playerHullCrouch === crouched && _playerHullW === w) return _playerHull;
-  const seg = crouched ? 0 : 0.4, r = PLAYER.radius, c = [];
-  for (let iy = -Math.ceil((seg + r) / BLOCK); iy < Math.ceil((seg + r) / BLOCK); iy++) {
-    const y = (iy + 0.5) * BLOCK, dy = Math.max(Math.abs(y) - seg, 0);
-    for (let iz = -Math.ceil(r / BLOCK); iz < Math.ceil(r / BLOCK); iz++) for (let ix = -Math.ceil(r / BLOCK); ix < Math.ceil(r / BLOCK); ix++) {
+  const r = PLAYER.radius, seg = crouched ? 0 : PLAYER.standCenter - r, c = [];
+  const nl = Math.ceil((seg + r) / BLOCK), nr = Math.ceil(r / BLOCK);
+  let soles = 0;
+  const lvl = [], levels = [];   // each cell's level from the soles up; cells per level
+  for (let iy = -nl; iy < nl; iy++) {
+    const y = (iy + 0.5) * BLOCK, dy = iy === -nl ? 0 : Math.max(Math.abs(y) - seg, 0);
+    levels.push(0);
+    for (let iz = -nr; iz < nr; iz++) for (let ix = -nr; ix < nr; ix++) {
       const x = (ix + 0.5) * BLOCK, z = (iz + 0.5) * BLOCK;
-      if (x * x + z * z + dy * dy <= r * r) c.push(x, y, z, w);
+      if (x * x + z * z + dy * dy <= r * r) { c.push(x, y, z, w); lvl.push(iy + nl); levels[iy + nl]++; if (iy === -nl) soles++; }
     }
   }
   const count = c.length / 4;
   _playerHullCrouch = crouched; _playerHullW = w;
-  return (_playerHull = { cells: Float32Array.from(c), count, hold: 0, W: w * count, minW: w, maxW: w });
+  return (_playerHull = { cells: Float32Array.from(c), count, soles, lvl: Uint8Array.from(lvl), levels, hold: 0, W: w * count, minW: w, maxW: w });
 }
 // Where a world point is in a medium's own grid, as continuous cell
 // coordinates: a cell's centre is at whole numbers. The ground's grid is the
@@ -2049,7 +2114,25 @@ function sinkForces(h) {
     if (!(hull.W > 0)) continue;
     const K = S.mass / hull.W;
     let disp = 0, vol = 0, press = 0;
-    if (S === playerBody) { playerPowderVol = 0; playerPowderAt = step; }
+    // What rests on it, at its true weight (sinkLoadsGather, last step).
+    // A landing's blow is no weight: what pushed is never made up to more
+    // than all that rests on it weighs (ld.wb), or the blow on a light piece
+    // under a heavy one came back K_below / K_above times over.
+    const ld = sinkLoad.get(S), load = ld && ld.at === step ? Math.min(ld.w, ld.wb) : 0;   // gathered after the step before (stepnumber already on)
+    if (load) {
+      const sc = load / ld.w;
+      S.force.x += ld.fx * sc; S.force.y += ld.fy * sc; S.force.z += ld.fz * sc;
+      S.torque.x += ld.tx * sc; S.torque.y += ld.ty * sc; S.torque.z += ld.tz * sc;
+    }
+    st.load = load;
+    if (S === playerBody) {
+      playerPowderVol = 0; playerPowderAt = step;
+      if (playerLevelVol.length !== hull.levels.length) playerLevelVol = new Float64Array(hull.levels.length);
+      else playerLevelVol.fill(0);
+      // His stroke is a force on his body like any other; the powder's own
+      // forces answer it, so how fast it takes him is the powder's doing.
+      if (swimming) { S.force.x += swimFX; S.force.y += swimFY; S.force.z += swimFZ; }
+    }
     for (const [key, M] of st.media) {
       const O = M.body;
       if (O && (O.world !== world || !O.debrisMesh)) { sinkDropMedium(st, key, M); continue; }
@@ -2073,8 +2156,13 @@ function sinkForces(h) {
       }
       // The player's volume in the ground's powder (cells of it he has pushed
       // aside and is sitting in count, as they do for his lift).
-      if (S === playerBody && !O) for (let t = 0; t < nIn; t++) playerPowderVol += sinkShare(L, t * SINK_L, acc);
+      if (S === playerBody && !O) for (let t = 0; t < nIn; t++) {
+        const sh = sinkShare(L, t * SINK_L, acc);
+        playerPowderVol += sh;
+        playerLevelVol[hull.lvl[L[t * SINK_L]]] += sh;
+      }
       sinkHoldSolve(S, O, Od, h, L, acc, K, hull);
+      if (S === playerBody && nIn) sinkFeetBear(S, O, Od, h, L, acc, K);
       // A record no part of the hull reaches any more has been left behind:
       // it is room the powder the piece pushes out of its way flows back into
       // (sinkFillBehind), and stays the piece's until it does.
@@ -2088,10 +2176,132 @@ function sinkForces(h) {
     // against the lift as felt (floatScale), while being in the powder at all
     // is the raw overlap, so a piece lifted by nothing still counts as on its
     // way down. With weightSpeed 0 the weight moves it nowhere, so it is not.
-    st.busy = Math.abs(hull.W - (disp + press) * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * hull.W && step - st.rigidAt > SINK_TUNE.rigidSteps && disp + press > 0
+    st.busy = Math.abs(hull.W + load - (disp + press) * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * (hull.W + load) && step - st.rigidAt > SINK_TUNE.rigidSteps && disp + press > 0
       && SINK_TUNE.weightSpeed > 0;
     if (st.busy) { sinkBusyN++; if (S.sleepState !== CANNON.Body.AWAKE) S.wakeUp(); }
     if (!st.media.size && !st.owed.length) { sinkers.delete(S); sinkGridStale = true; }
+  }
+}
+// A piece resting on a sinker weighs on it. The solver hands its weight down
+// through their contact, but in body masses, and a body's mass is not its
+// weight: every piece over a few blocks is at FALL_MASS_CAP, so a lone stone
+// block on a raft pressed it with as much as the whole raft weighs, and a
+// slab on a small block with no more than the block's own. The sinking is
+// in weights: K, a body's kg per unit of weight, turns one into the other
+// (sinkForces), and the contact's force f from the body above, worth
+// f / K_above of its weight, is worth that x K_below of the body below.
+// So after each step, every contact a sinker in powder is pressed down by
+// (from another piece or the player) is made up to that the next step: the
+// difference, f x (K_below / K_above - 1), on it at the contact, and the
+// weight it carries is counted in its balance (st.busy) and wakes it if it
+// puts a sleeping one off balance. Ground and anything not in powder are
+// left to the solver as they were.
+const sinkLoad = new Map();   // body -> { at, w (weight carried), wb (most it can be), f/t (correction), p/q (whole push), on }
+function sinkLoadsGather() {
+  if (!sinkers.size) { if (stackMatched.size) sinkStackMatch(world.stepnumber); return; }
+  const step = world.stepnumber, cs = world.contacts, gy = Math.abs(world.gravity.y), cut = SINK_TUNE.upCut;
+  for (let k = 0; k < cs.length; k++) {
+    const c = cs[k];
+    if (!c.enabled) continue;
+    const bi = c.bi, bj = c.bj;
+    if (!sinkBody(bi) || !sinkBody(bj)) continue;
+    for (let side = 0; side < 2; side++) {
+      // The force on b is along ni for bj, against it for bi.
+      const b = side ? bi : bj, o = side ? bj : bi, sg = side ? -1 : 1;
+      if (!(-sg * c.ni.y > cut) || b.type !== CANNON.Body.DYNAMIC) continue;
+      // Touching is enough to be one stack; a step with no push is no load.
+      if (b.debrisMesh && o.debrisMesh && o.type === CANNON.Body.DYNAMIC) _stackPairs.push(b, o);
+      if (!(c.multiplier > 0)) continue;
+      const st = sinkers.get(b);
+      if (!st || !st.media.size) continue;
+      // Not asleep on it while it is still on its way: asleep, the solver
+      // holds it still as a lid, and the contact then carries what keeps the
+      // sinker from rising, not the weight of what is on it.
+      if (st.busy && o.sleepState !== CANNON.Body.AWAKE && o.type === CANNON.Body.DYNAMIC) o.wakeUp();
+      const hb = sinkHull(b.debrisMesh, b), ho = sinkHull(o.debrisMesh, o);
+      if (!(hb.W > 0) || !(ho.W > 0)) continue;
+      const Kb = b.mass / hb.W, Ko = o.mass / ho.W, f = c.multiplier, g = Kb / Ko - 1;
+      let e = sinkLoad.get(b);
+      if (!e) sinkLoad.set(b, e = { at: -1, w: 0, fx: 0, fy: 0, fz: 0, tx: 0, ty: 0, tz: 0, px: 0, py: 0, pz: 0, qx: 0, qy: 0, qz: 0, wb: 0, on: new Set() });
+      if (e.at !== step) { e.at = step; e.w = e.fx = e.fy = e.fz = e.tx = e.ty = e.tz = e.px = e.py = e.pz = e.qx = e.qy = e.qz = e.wb = 0; e.on.clear(); }
+      // The most a resting load can weigh: all that is on it, and on that.
+      if (!e.on.has(o)) { e.on.add(o); const lo = sinkLoad.get(o); e.wb += ho.W + (lo && step - lo.at <= 1 ? lo.wb : 0); }
+      const fx = sg * c.ni.x * f * g, fy = sg * c.ni.y * f * g, fz = sg * c.ni.z * f * g;
+      const r = side ? c.ri : c.rj;
+      e.fx += fx; e.fy += fy; e.fz += fz;
+      e.tx += r.y * fz - r.z * fy; e.ty += r.z * fx - r.x * fz; e.tz += r.x * fy - r.y * fx;
+      // The whole push, as the solver will make it again (sinkHoldSolve).
+      const px = fx + sg * c.ni.x * f, py = fy + sg * c.ni.y * f, pz = fz + sg * c.ni.z * f;
+      e.px += px; e.py += py; e.pz += pz;
+      e.qx += r.y * pz - r.z * py; e.qy += r.z * px - r.x * pz; e.qz += r.x * py - r.y * px;
+      e.w += -sg * c.ni.y * f / (Ko * gy);
+    }
+  }
+  sinkStackMatch(step);
+  for (const [b, e] of sinkLoad) {
+    if (e.at !== step) { if (step - e.at > 1) sinkLoad.delete(b); continue; }
+    if (b.sleepState !== CANNON.Body.SLEEPING) continue;
+    const st = sinkers.get(b), hb = sinkHull(b.debrisMesh, b);
+    if (st && hb.W + e.w > (st.disp || 0) * SINK_TUNE.floatScale * (1 + SINK_TUNE.sleepImb)) b.wakeUp();
+  }
+}
+world.addEventListener('postStep', sinkLoadsGather);
+// A stack sinking into powder, in the solver's own masses. Made up after the
+// step, the weight above arrived a step late and against the wrong body
+// masses for everything else the solver does with them: a stone on a raft
+// was as heavy as the raft to the solver (both at FALL_MASS_CAP), so the
+// pair rocked like a top-heavy stack, the raft tipped and the stone slid off
+// into the water - the raft then floated as if nothing had been on it.
+// So the pieces resting on one another over a piece in powder all take the
+// same kg per unit of weight, the least of theirs (a mass only goes down,
+// never past the cap): each body's mass is then its weight to the solver, it
+// hands the true weight down the stack itself, and the correction above
+// comes to nothing. Each takes its own mass back once it has been off the
+// stack a few steps (forgetSteps); one asleep keeps it until it wakes.
+// Pieces on solid ground, and the player, are left as they were. So is a
+// stack whose matching would make a body lighter than any the solver ever
+// has (one block of the lightest material): a lone wood block under a
+// heavy stone would be 0.5 kg under 40, and the solver throws a pair that
+// far apart. Such a stack keeps its own masses and the correction above.
+const _stackPairs = [], _stackUp = new Map(), stackMatched = new Map();   // body -> step last matched
+const stackRoot = (b) => { let r = b; while (_stackUp.get(r) !== r) r = _stackUp.get(r); _stackUp.set(b, r); return r; };
+const debrisKgPerW = (b) => { const h = sinkHull(b.debrisMesh, b); return h.W > 0 ? debrisMass(b.debrisMesh.userData.blocks) / h.W : 0; };
+function sinkStackMatch(step) {
+  const P = _stackPairs;
+  if (P.length) {
+    _stackUp.clear();
+    for (const b of P) _stackUp.set(b, b);
+    for (let k = 0; k < P.length; k += 2) { const a = stackRoot(P[k]), c = stackRoot(P[k + 1]); if (a !== c) _stackUp.set(a, c); }
+    const K = new Map();   // root -> least kg per weight, if a piece of it is in powder
+    for (const b of _stackUp.keys()) {
+      const r = stackRoot(b), k = debrisKgPerW(b);
+      if (!(k > 0)) continue;
+      if (!K.has(r)) K.set(r, { k, sink: false, wmin: Infinity });
+      const e = K.get(r);
+      if (k < e.k) e.k = k;
+      const w = sinkHull(b.debrisMesh, b).W;
+      if (w < e.wmin) e.wmin = w;
+      if (sinkers.get(b)?.media.size) e.sink = true;
+    }
+    let wl = Infinity;
+    for (const st of MAT_STATS) if (st && st.weight > 0 && st.weight < wl) wl = st.weight;
+    const floor = wl * FALL_KG_PER_WEIGHT;
+    for (const b of _stackUp.keys()) {
+      const e = K.get(stackRoot(b));
+      if (!e || !e.sink || e.k * e.wmin < floor * (1 - 1e-9)) continue;
+      const m = sinkHull(b.debrisMesh, b).W * e.k;
+      if (Math.abs(b.mass - m) > 1e-9 * m) { b.mass = m; b.updateMassProperties(); }
+      stackMatched.set(b, step);
+    }
+    P.length = 0;
+  }
+  for (const [b, at] of stackMatched) {
+    if (at === step) continue;
+    if (b.world !== world || !b.debrisMesh?.userData.blocks?.length) { stackMatched.delete(b); continue; }
+    if (step - at <= SINK_TUNE.forgetSteps || b.sleepState === CANNON.Body.SLEEPING) continue;
+    b.mass = debrisMass(b.debrisMesh.userData.blocks);
+    b.updateMassProperties();
+    stackMatched.delete(b);
   }
 }
 // The hold-back and the plow, as one implicit (backward Euler) step of the
@@ -2130,12 +2340,13 @@ function sinkForces(h) {
 // steady sink that would be most of it) and the step is solved implicitly
 // with it, so the plow can stop a piece but never turn it round.
 let sinkDriveX = 0, sinkDriveZ = 0;   // the velocity the player's legs are asking for, world x and z
-// ... and up, while he swims (updatePlayer): 0 on land, so nothing changes there.
-let sinkDriveY = 0;
+// The force of his swim stroke while he swims (updatePlayer), newtons, world axes.
+let swimFX = 0, swimFY = 0, swimFZ = 0;
 // How much of his hull is in the ground's powder (cells, as the lift counts
 // them), as of the last step that measured it (sinkForces): the swim depth is
 // read from it (playerSwimDepth).
 let playerPowderVol = 0, playerPowderAt = -1;
+let playerLevelVol = new Float64Array(0);   // ... and of each level of it, soles first
 const _skD = new Float64Array(36), _skA = new Float64Array(42), _skX = new Float64Array(6);
 const _skIw = new Float64Array(9), _skU = new Float64Array(6), _skV = new Float64Array(6), _skDead = [false, false, false, false, false, false];
 let _skUG = new Float64Array(192), _skDW = new Float64Array(512), _skRate = new Float64Array(512), _skPos = new Float64Array(512);
@@ -2150,9 +2361,25 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
   U[3] = w.x + h * (Iv[0] * T.x + Iv[1] * T.y + Iv[2] * T.z);
   U[4] = w.y + h * (Iv[3] * T.x + Iv[4] * T.y + Iv[5] * T.z);
   U[5] = w.z + h * (Iv[6] * T.x + Iv[7] * T.y + Iv[8] * T.z);
-  // The player's legs: where he is walking is the motion the powder holds him
-  // to, not still, so friction answers his sinking and rising, not his stride.
-  if (S === playerBody) { U[0] -= sinkDriveX; U[1] -= sinkDriveY; U[2] -= sinkDriveZ; }
+  // And the weight of what rests on it. Its contacts are solved after this,
+  // so unseen here the hold-back cancelled the lift it saw and left that
+  // weight to push the piece on down unopposed, at the same speed however
+  // far in it was: a loaded raft sank on past its balance and was buried.
+  // (Only its part over the correction in S.force, which is in U already.)
+  // Bounded as the correction is (sinkForces): told a landing's blow, the
+  // hold-back threw the piece back up.
+  const ld = sinkLoad.get(S);
+  if (ld && ld.at === world.stepnumber && ld.w > 0) {
+    const sc = ld.w > ld.wb ? ld.wb / ld.w : 1;
+    const lx = (ld.px - ld.fx) * sc, ly = (ld.py - ld.fy) * sc, lz = (ld.pz - ld.fz) * sc;
+    const qx = (ld.qx - ld.tx) * sc, qy = (ld.qy - ld.ty) * sc, qz = (ld.qz - ld.tz) * sc;
+    U[0] += lx * h / S.mass; U[1] += ly * h / S.mass; U[2] += lz * h / S.mass;
+    if (!S.fixedRotation) {
+      U[3] += h * (Iv[0] * qx + Iv[1] * qy + Iv[2] * qz);
+      U[4] += h * (Iv[3] * qx + Iv[4] * qy + Iv[5] * qz);
+      U[5] += h * (Iv[6] * qx + Iv[7] * qy + Iv[8] * qz);
+    }
+  }
   let dpx = 0, dpy = 0, dpz = 0;
   if (O) {
     const ow = O.angularVelocity;
@@ -2161,6 +2388,14 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
     U[3] -= ow.x; U[4] -= ow.y; U[5] -= ow.z;
   }
   const k1 = SINK_TUNE.weightSpeed, n = _sinkLen;
+  // The player's legs: where he is walking is the motion the powder's friction
+  // holds him to, not still, so friction answers his sinking and rising, not
+  // his stride. The grains he pushes out of his way are another matter: they
+  // leave with his speed whatever his legs are doing, so the plow is from the
+  // powder as it lies, for all of him but his soles, which step on it. That is
+  // the force a bank he walks into puts on him (no bank is a wall to him).
+  // While he swims his legs drive nothing (0).
+  const soles = S === playerBody ? hull.soles : 0;
   // Each hull cell's speed through the medium, in the medium's cells per
   // second along its grid's axes (x, level, z: the order sinkScan keeps).
   const nc = hull.count, cells = hull.cells, q = S.quaternion, G = _sinkGC;
@@ -2171,7 +2406,6 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
   if (k1 > 0) {
     const V = _skV;
     V[0] = S.velocity.x; V[1] = S.velocity.y; V[2] = S.velocity.z; V[3] = w.x; V[4] = w.y; V[5] = w.z;
-    if (S === playerBody) { V[0] -= sinkDriveX; V[1] -= sinkDriveY; V[2] -= sinkDriveZ; }
     if (O) {
       const ow = O.angularVelocity;
       V[0] -= O.velocity.x + ow.y * dpz - ow.z * dpy; V[1] -= O.velocity.y + ow.z * dpx - ow.x * dpz; V[2] -= O.velocity.z + ow.x * dpy - ow.y * dpx;
@@ -2180,6 +2414,7 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
     for (let c = 0; c < nc; c++) {
       q.vmult(_sinkV.set(cells[c * 4], cells[c * 4 + 1], cells[c * 4 + 2]), _sinkV);
       _sinkW.set(V[0] + V[4] * _sinkV.z - V[5] * _sinkV.y, V[1] + V[5] * _sinkV.x - V[3] * _sinkV.z, V[2] + V[3] * _sinkV.y - V[4] * _sinkV.x);
+      if (c < soles) { _sinkW.x -= sinkDriveX; _sinkW.z -= sinkDriveZ; }
       if (O) O.quaternion.conjugate(_sinkQ).vmult(_sinkW, _sinkW);
       UG[c * 3] = _sinkW.x / BLOCK; UG[c * 3 + 1] = _sinkW.y / BLOCK; UG[c * 3 + 2] = _sinkW.z / BLOCK;
     }
@@ -2195,11 +2430,16 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
     }
   }
   const pd = k1 > 0 ? SINK_TUNE.speedDiv ** 2 / k1 : 0;
-  let c0 = 0, mx = 0, my = 0, mz = 0, xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
+  let c0 = 0, mx = 0, my = 0, mz = 0, xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0, cs = 0;
   for (let t = 0; t < n; t++) {
     const k = t * SINK_L, r = L[k + 1];
     let c = sinkShare(L, k, acc) * K * sinkCellHold(L, k);
-    if (k1 > 0 && DW[t] > 0 && rate[r] > 0 && acc[r] < 1) c += pd * K * sinkWeight(L[k + 5]) * DW[t] * rate[r] / pos[r];
+    if (S === playerBody) cs += c;
+    if (k1 > 0 && DW[t] > 0 && rate[r] > 0 && acc[r] < 1) {
+      const cp = pd * K * sinkWeight(L[k + 5]) * DW[t] * rate[r] / pos[r];
+      c += cp;
+      if (L[k] < soles) cs += cp;
+    }
     const rx = L[k + 8] - S.position.x, ry = L[k + 9] - S.position.y, rz = L[k + 10] - S.position.z;
     c0 += c; mx += c * rx; my += c * ry; mz += c * rz;
     xx += c * rx * rx; yy += c * ry * ry; zz += c * rz * rz; xy += c * rx * ry; xz += c * rx * rz; yz += c * ry * rz;
@@ -2226,6 +2466,8 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
       A[a * 7 + b] = k1 * mi + h * D[a * 6 + b];
       r -= h * D[a * 6 + b] * U[b];
     }
+    // What of the hold is toward the legs' drive, not toward rest.
+    if (cs > 0 && a !== 1 && a < 3) r += h * cs * (a === 0 ? sinkDriveX : sinkDriveZ);
     A[a * 7 + 6] = r;
     big = Math.max(big, Math.abs(A[a * 7 + a]));
   }
@@ -2263,6 +2505,60 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
     O.force.x -= px; O.force.y -= py; O.force.z -= pz;
     O.torque.x -= dpy * pz - dpz * py + lx; O.torque.y -= dpz * px - dpx * pz + ly; O.torque.z -= dpx * py - dpy * px + lz;
   }
+}
+// What a powder's grains bear under a foot pressed into it, as a factor on
+// what a liquid of its weight would (its lift): Prandtl's bearing factor
+// N_q = e^(pi tan phi) tan^2(45 + phi / 2), phi the grains' friction angle,
+// which for loose grain is its angle of repose: the material's place angle.
+// At 0 (Water) it is 1, a liquid, so only the lift holds a foot up there.
+function bearingNq(m) {
+  const a = MAT_STATS[m]?.angle;
+  if (!(a > 0)) return 1;
+  if (a >= 90) return Infinity;
+  const t = Math.tan((45 + a / 2) * DEG);
+  return Math.exp(Math.PI * Math.tan(a * DEG)) * t * t;
+}
+// Its width factor (Vesic): N_gamma = 2 (N_q + 1) tan phi, what the grains
+// under a foot at the very surface bear for its width (playerSoleHold).
+// 0 for Water: a liquid bears nothing at its surface.
+function bearingNgamma(m) {
+  const a = MAT_STATS[m]?.angle;
+  if (!(a > 0)) return 0;
+  if (a >= 90) return Infinity;
+  return 2 * (bearingNq(m) + 1) * Math.tan(a * DEG);
+}
+// The player's feet on powder. Grains pressed down by a sole do not flow away
+// as a liquid would: friction between them locks them, and they push back
+// N_q times as hard as the lift a liquid of their weight would give, up to
+// which they hold without giving at all (rigid-plastic; past it they yield
+// and he goes in, his downward motion taken at that most).
+// So: the force it takes to stop his feet going down through the medium this
+// step, held to (N_q - 1) times the weight he displaces there (the lift
+// itself is the 1, already on him). Never pushes him up, never anything
+// sideways. Everything of him that is in it counts, as all of his hull stands
+// over his soles. With weightSpeed 0 the medium holds him outright already.
+// Set by a step in which powder bore his feet: he stands on it (postStep).
+let playerBore = false;
+function sinkFeetBear(S, O, Od, h, L, acc, K) {
+  let cap = 0;
+  for (let t = 0; t < _sinkLen; t++) {
+    const k = t * SINK_L, nq = bearingNq(L[k + 5]);
+    const sh = sinkShare(L, k, acc);
+    if (nq > 1 && sh > 0) cap += sh * sinkWeight(L[k + 5]) * (nq - 1);
+  }
+  if (!(cap > 0)) return;
+  let vy = S.velocity.y + S.force.y * h / S.mass, wl = 1 / S.mass;
+  const fx = S.position.x, fy = S.position.y - centerOffset(), fz = S.position.z;
+  if (O) {
+    const ow = O.angularVelocity, rx = fx - O.position.x, rz = fz - O.position.z;
+    vy -= O.velocity.y + ow.z * rx - ow.x * rz;
+    if (Od) wl += 1 / O.mass;
+  }
+  if (!(vy < 0)) return;
+  const f = Math.min(-vy / wl / h, cap * K * Math.abs(world.gravity.y));
+  _sinkP.set(fx, fy, fz);
+  sinkPush(S, O, Od, _sinkP, 0, f, 0);
+  playerBore = true;
 }
 // Force f at world point p on S, and its opposite on a moving medium O.
 function sinkPush(S, O, Od, p, fx, fy, fz) {
@@ -6942,12 +7238,12 @@ function setPlayerShape(crouch) {
   if (crouch) {
     playerBody.addShape(new CANNON.Sphere(r));                            // 0.8 tall
   } else {
-    // Three stacked spheres stand in for a 1.6-tall capsule (cannon has no
-    // capsule primitive). Rounded feet ride over kerbs and up ramps without a
-    // dedicated step-up hack.
-    playerBody.addShape(new CANNON.Sphere(r), new CANNON.Vec3(0, -0.4, 0));
-    playerBody.addShape(new CANNON.Sphere(r), new CANNON.Vec3(0,  0.0, 0));
-    playerBody.addShape(new CANNON.Sphere(r), new CANNON.Vec3(0,  0.4, 0));
+    // Stacked spheres stand in for the capsule (cannon has no capsule
+    // primitive). Rounded feet ride over kerbs and up ramps without a
+    // dedicated step-up hack. Spaced no more than 0.4 apart, as the 8-block
+    // body's three were, so the waist between two is no narrower than it was.
+    const seg = PLAYER.standCenter - r, n = Math.ceil(2 * seg / 0.4) + 1;
+    for (let k = 0; k < n; k++) playerBody.addShape(new CANNON.Sphere(r), new CANNON.Vec3(0, -seg + 2 * seg * k / (n - 1), 0));
   }
   playerBody.updateBoundingRadius();
   playerBody.updateMassProperties();   // honours fixedRotation, leaves the mass as it is
@@ -6982,8 +7278,18 @@ playerBody.updateAABB();
 world.addBody(playerBody);
 
 // Visible body — hidden in first person, shown everywhere else.
-const playerGeoStand  = new THREE.CapsuleGeometry(PLAYER.radius, 0.8, 6, 18);
-const playerGeoCrouch = new THREE.CapsuleGeometry(PLAYER.radius, 0.0, 6, 18);
+// Flat soles under straight sides and a round head: he stands on his feet,
+// spread on the ground (playerSoleHold), and his body shows it rather than
+// the point a capsule comes to. The collision spheres keep their round
+// bottom so he still rides up over a block's step on rock.
+function playerBodyGeo(half) {
+  const r = PLAYER.radius, top = half - r, pts = [new THREE.Vector2(0, -half), new THREE.Vector2(r, -half)];
+  for (let k = 0; k <= 8; k++) { const a = k / 8 * Math.PI / 2; pts.push(new THREE.Vector2(r * Math.cos(a), top + r * Math.sin(a))); }
+  pts[pts.length - 1].x = 0;
+  return new THREE.LatheGeometry(pts, 18);
+}
+const playerGeoStand  = playerBodyGeo(PLAYER.standCenter);
+const playerGeoCrouch = playerBodyGeo(PLAYER.crouchCenter);
 const playerMesh = new THREE.Mesh(
   playerGeoStand,
   mat(0x63b9ff, 0.42, 0.28, { emissive: 0x0d2c4a, emissiveIntensity: 0.55 })
@@ -6994,7 +7300,9 @@ const visor = new THREE.Mesh(
   new THREE.BoxGeometry(0.34, 0.12, 0.14),
   mat(0xffe6a8, 0.3, 0.1, { emissive: 0x6a4a10, emissiveIntensity: 0.9 })
 );
-visor.position.set(0, 0.42, -0.34);
+// The face: as far under the top of the head as it was on the 8-block body.
+const VISOR_Y = PLAYER.standCenter - 0.38;
+visor.position.set(0, VISOR_Y, -0.34);
 playerMesh.add(visor);
 scene.add(playerMesh);
 // gfx.blobShadow (phones): the player casts nothing and a soft dark disc under
@@ -7042,6 +7350,10 @@ applyBlobShadow();
 // keeps the wrapper cheap for the engine to run.
 let groundNy = 0;
 let stepGroundNy = 0, sphereDepth = 0;
+// What that steepest-up contact is on, and the point of it on that body
+// (relative to its middle): the legs push off it, so they walk relative to it.
+let groundBody = null, stepGroundBody = null;
+const groundR = new CANNON.Vec3(), stepGroundR = new CANNON.Vec3();
 {
   const np = world.narrowphase;
   for (const name of ['sphereSphere', 'spherePlane', 'sphereBox', 'sphereConvex',
@@ -7057,11 +7369,17 @@ let stepGroundNy = 0, sphereDepth = 0;
       if (sphereDepth === 0) {
         for (let k = n0, n = res.length; k < n; k++) {
           const c = res[k];
+          // A contact with powder lets go (sinkYield): nothing under him there.
+          if (!c.enabled) continue;
           let ny;
           if (c.bi === playerBody) ny = -c.ni.y;  // ni runs from bi to bj
           else if (c.bj === playerBody) ny = c.ni.y;
           else continue;
-          if (ny > stepGroundNy) stepGroundNy = ny;
+          if (ny > stepGroundNy) {
+            stepGroundNy = ny;
+            stepGroundBody = c.bi === playerBody ? c.bj : c.bi;
+            stepGroundR.copy(c.bi === playerBody ? c.rj : c.ri);
+          }
         }
       }
       return out;
@@ -7069,8 +7387,14 @@ let stepGroundNy = 0, sphereDepth = 0;
   }
 }
 world.addEventListener('postStep', () => {
+  // Powder bearing his feet is ground under them, pushing straight up (his
+  // contacts with it have all let go, so none of them says so).
+  if (playerBore && stepGroundNy < 1) stepGroundNy = 1;
+  playerBore = false;
   groundNy = stepGroundNy;
   stepGroundNy = 0;
+  groundBody = stepGroundBody; groundR.copy(stepGroundR);
+  stepGroundBody = null;
 });
 
 // ----- the narrowphase, split across workers -----
@@ -7573,7 +7897,8 @@ function hasHeadroom() {
   flushDirtyColliders();
   const p = playerBody.position;
   _headFrom.set(p.x, p.y, p.z);
-  _headTo.set(p.x, p.y + 1.35, p.z);
+  // From the crouched middle to the standing head's top, and 0.15 over it.
+  _headTo.set(p.x, p.y + 2 * PLAYER.standCenter - PLAYER.crouchCenter + 0.15, p.z);
   _headBlocked = false;
   world.raycastAll(_headFrom, _headTo, _headOpts, _headHit);
   return !_headBlocked;
@@ -7601,7 +7926,7 @@ function respawn() {
   }
   playerBody.position.set(SPAWN.x, spawnY, SPAWN.z);
   playerBody.velocity.setZero();
-  sinkDriveY = 0;                       // a stroke in progress does not come along
+  swimFX = swimFY = swimFZ = 0;          // a stroke in progress does not come along
   playerBody.wakeUp();
   state.yaw = SPAWN_YAW * DEG;
   state.pitch = 0;
@@ -7609,26 +7934,24 @@ function respawn() {
 
 // Swimming: the player SWIM_DEPTH blocks or more into powder of the world's
 // ground (a piece's powder does not count). Under that he walks as he does
-// anywhere. The depth is his volume in it as the sink step last read it, laid
-// level from his feet up through his hull a level at a time: under a flat
-// surface exactly how far his soles are below it, and a grain heaped on his
-// rim moves it by its own share of a level, not a whole block.
+// anywhere. The depth is read level by level of his hull from the soles up,
+// as the sink step last measured them: each level counts for the share of it
+// that is in powder, and the first one not wholly in ends the count. Under a
+// flat surface that is exactly how far his soles are below it; a bank beside
+// him fills a side of every level and puts him no deeper than that share of
+// one, however much of it is in his hull (counted as a volume, a bank as tall
+// as he is was a swim, and with no stride to walk him out of it he was stuck).
 const SWIM_DEPTH = 3;
 let swimming = false;
 function playerSwimDepth() {
   if (!(playerPowderVol > 0) || world.stepnumber - playerPowderAt > 1) return 0;
   const h = playerSinkHull();
-  if (!h.levels) {
-    // Hull cells per level from the feet up (cell centres sit on half-blocks).
-    const lv = [], c = h.cells, bot = -centerOffset();
-    for (let k = 0; k < h.count; k++) { const l = Math.round((c[k * 4 + 1] - bot) / BLOCK - 0.5); lv[l] = (lv[l] || 0) + 1; }
-    h.levels = Array.from(lv, (n) => n || 0);
-  }
-  let v = playerPowderVol, d = 0;
-  for (const n of h.levels) {
-    if (v >= n) { v -= n; d++; continue; }
-    d += v / n;
-    break;
+  if (playerLevelVol.length !== h.levels.length) return 0;
+  let d = 0;
+  for (let l = 0; l < h.levels.length; l++) {
+    const f = Math.min(1, playerLevelVol[l] / h.levels[l]);
+    d += f;
+    if (f < 1 - 1e-6) break;
   }
   return d * BLOCK;
 }
@@ -7683,34 +8006,23 @@ function updatePlayer(dt) {
   sinkDriveX = tx; sinkDriveZ = tz;
 
   // --- swim: SWIM_DEPTH blocks into the ground's powder, the input follows the
-  // look, pitch and all. Steered as the legs are on the ground (the same speeds
-  // and grip), but in three dimensions: the drive is what the powder holds him
-  // to (sinkHoldSolve), so his weight against its lift still sinks or floats
-  // him under it, as slowly as the powder lets anything. The vertical drive
-  // eases in and out at that grip and the body takes its every change, so a
-  // swim up and out carries on a little past the line and settles, never
-  // jumps; on land it is 0 and stays 0.
+  // look, pitch and all. The stroke is a force on his body (Swim force),
+  // applied every step with the powder's own forces (sinkForces): its lift
+  // against his weight, its hold-back (friction) and the momentum of what he
+  // pushes aside (the plow). How fast a stroke takes him is what those leave
+  // of it: water, with no friction, lets him go fast; a gripping powder holds
+  // him to a crawl. Nothing sets his speed, and his legs drive nothing.
   swimming = playerSwimDepth() >= (SWIM_DEPTH - 1e-4) * BLOCK;   // the volume is a float sum
-  const ka = 1 - Math.exp(-PLAYER.groundAccel * dt);
+  swimFX = swimFY = swimFZ = 0;
   if (swimming) {
     const sp = Math.sin(state.pitch), cp = Math.cos(state.pitch);
     const fx = -sy * cp, fy = sp, fz = -cy * cp;          // the look, unit length
     let wx = fx * fwd + cy * str, wy = fy * fwd, wz = fz * fwd - sy * str;
     const w3 = Math.hypot(wx, wy, wz);
     if (w3 > 1) { wx /= w3; wy /= w3; wz /= w3; }
-    let sx = wx * speed, sY = wy * speed, sz = wz * speed;
-    const back = sx * fx + sY * fy + sz * fz;
-    if (back < -backCap) { const over = back + backCap; sx -= over * fx; sY -= over * fy; sz -= over * fz; }
-    sinkDriveX = sx; sinkDriveZ = sz;
-    v.x += (sx - v.x) * ka;
-    v.z += (sz - v.z) * ka;
-    const dy = (sY - sinkDriveY) * ka;
-    sinkDriveY += dy;
-    v.y += dy;
-  } else if (sinkDriveY !== 0) {
-    // Out of the swim: the stroke runs out at the same rate it came in.
-    sinkDriveY -= sinkDriveY * ka;
-    if (Math.abs(sinkDriveY) < 1e-4) sinkDriveY = 0;
+    const F = SINK_TUNE.swimForce;
+    swimFX = wx * F; swimFY = wy * F; swimFZ = wz * F;
+    sinkDriveX = sinkDriveZ = 0;
   }
 
   if (swimming) {
@@ -7719,8 +8031,17 @@ function updatePlayer(dt) {
     // A hard landing takes the grip away for a moment (impactJolt): the speed
     // you came in with carries on rather than being caught at once.
     const k = 1 - Math.exp(-PLAYER.groundAccel * (1 - PLAYER_STAGGER * impactJolt) * dt);
-    v.x += (tx - v.x) * k;
-    v.z += (tz - v.z) * k;
+    // The legs set his speed over what is under his feet: still ground is 0,
+    // a piece that is moving carries him as it goes, at the point he stands on.
+    let gx = 0, gz = 0;
+    const gb = groundBody;
+    if (gb && gb.type === CANNON.Body.DYNAMIC && gb.world === world) {
+      const w = gb.angularVelocity, r = groundR;
+      gx = gb.velocity.x + w.y * r.z - w.z * r.y;
+      gz = gb.velocity.z + w.x * r.y - w.y * r.x;
+    }
+    v.x += (tx + gx - v.x) * k;
+    v.z += (tz + gz - v.z) * k;
   } else if (!onSteep) {
     // Reduced authority in the air; never scrubs speed you already carried, so a
     // sprint jump keeps its momentum even if shift is released mid-flight.
@@ -7842,7 +8163,7 @@ function updateCamera(dt) {
 
   playerMesh.visible = camMode !== CAM.FIRST;
   playerMesh.geometry = crouched ? playerGeoCrouch : playerGeoStand;
-  visor.position.y = crouched ? 0.10 : 0.42;
+  visor.position.y = crouched ? 0.10 : VISOR_Y;
   playerMesh.position.set(p.x, p.y, p.z);
   playerMesh.rotation.y = playerYaw;
   if (blobShadowOn()) {
@@ -7984,7 +8305,11 @@ function playerHeldMat(key) {
 // Before a frame is drawn: is the eye in powder, and with what. True when the
 // picture changes from the last call (so a paused frame knows to draw again).
 function powderViewUpdate() {
-  const m = cameraPowderMat();
+  let m = cameraPowderMat();
+  // The flying cameras are no one's eyes: inside a powder nothing can be seen
+  // through (transparency 0) they show the world as it is, cut open, rather
+  // than a screen of the powder. Only see-through powder is still looked through.
+  if (m >= 0 && camMode !== CAM.FIRST && !(MAT_STATS[m].transparency > 0)) m = -1;
   const was = powderView.on, wasM = powderView.mat, wasT = powderView.t, wasStale = powderView.stale;
   powderView.on = m >= 0;
   powderView.mat = m;
@@ -18674,7 +18999,8 @@ function tick() {
     // Nobody is driving the character — park it so it does not creep away.
     playerBody.velocity.x = 0;
     playerBody.velocity.z = 0;
-    sinkDriveX = sinkDriveY = sinkDriveZ = 0;
+    sinkDriveX = sinkDriveZ = 0;
+    swimFX = swimFY = swimFZ = 0;
     swimming = false;
   } else {
     updatePlayer(dt);
@@ -18980,6 +19306,8 @@ function collectWorldMeta() {
   // Player state
   const playerState = {
     pos: playerBody.position.toArray(),
+    // Where his feet are: the body's middle moves whenever his height does.
+    feetY: playerBody.position.y - centerOffset(),
     vel: playerBody.velocity.toArray(),
     angVel: playerBody.angularVelocity.toArray(),
     yaw: state.yaw,
@@ -19803,7 +20131,7 @@ function applyWorldCore(s) {
   {
     const st = sinkers.get(playerBody);
     if (st) { st.owed.length = 0; sinkForget(playerBody, st); }
-    sinkDriveY = 0; swimming = false; playerPowderVol = 0;   // no stroke carries into the loaded world
+    swimFX = swimFY = swimFZ = 0; swimming = false; playerPowderVol = 0;   // no stroke carries into the loaded world
   }
   // An older save has no weight: the default.
   SINK_TUNE.playerWeight = Number.isFinite(ps.weight) && ps.weight >= 0.001 ? ps.weight : PLAYER_WEIGHT_DEF;
@@ -19812,6 +20140,13 @@ function applyWorldCore(s) {
   applyPlayerWeight();
   buildSinkList();
   playerBody.position.set(...ps.pos);
+  // On his feet where he stood: a save from before v321 has no feet, and its
+  // standing body's middle was 0.8 over them (8 blocks tall).
+  {
+    const off = ps.crouched ? PLAYER.crouchCenter : PLAYER.standCenter;
+    const feet = Number.isFinite(ps.feetY) ? ps.feetY : ps.pos[1] - (ps.crouched ? PLAYER.crouchCenter : 0.8);
+    playerBody.position.y = feet + off;
+  }
   playerBody.velocity.set(...ps.vel);
   playerBody.angularVelocity.set(...ps.angVel);
   playerBody.updateAABB();

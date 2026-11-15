@@ -1297,7 +1297,7 @@ function frictionSweepFlat(solver, h, w) {
 world.solver.solve = frictionSolve;
 
 // ----- sinking: weight over volume decides who gives way to whom -----
-// A block pressed down or sideways into powder of another weight does not
+// A block pressed into powder from any side does not
 // rest on it: that contact is let go (sinkYield) and the powder holds it up
 // the way a fluid does, by the weight of what it has had to make room for
 // (sinkForces). Heavier or lighter makes no difference to how: a light piece
@@ -1458,7 +1458,7 @@ const SINK_TUNE_DEFS = [
   { key: 'wakeSpeed', group: 'Settling', name: 'Wake medium speed', def: 0.01, min: 0,
     help: 'm/s a sinker must move at to wake a sleeping piece it is sinking into.' },
   { key: 'upCut', group: 'Contacts', name: 'Up-push cutoff', def: 0.5, min: 0, max: 1,
-    help: 'A contact pushing the sinker up harder than this (normal\'s up part) holds, unless the sinker is in powder (a floater rises through it; any other piece goes block for block, as sideways). 1: even straight down gives.' },
+    help: 'How upright a contact must be (its normal\'s up or down part) to count as under a sinker or on top of it rather than beside it. One on top presses it down (a load, never what holds it up); powder under a sinker is read at the contact point, beside or over it round the point. Powder never holds a sinker from any side: this only sorts contacts. 1: only straight up or down counts.' },
   { key: 'probe', group: 'Contacts', name: 'Air probe (blocks)', def: 0.25, min: 0.05, max: 1,
     help: 'How far past a contact point the ground is read when the point itself is in air.' },
   { key: 'staleDepth', group: 'Contacts', name: 'Stale box depth (blocks)', def: 0.5, min: 0.1,
@@ -1518,67 +1518,41 @@ function sinkTouch(S, O) {
 }
 // The contact between piece S (its point rS, n pointing from S into O when sg
 // is 1) and O lets go if O's block where S's block is is powder, whatever S's
-// block there weighs (heavier sinks in; lighter goes in too, and the lift
-// turns it back up to its own depth; equal weight goes in and the lift
-// balances it once it is under): read at S's own point, not at O's face, because a sunk piece is
+// block there weighs and from whichever side S meets it (heavier sinks in;
+// lighter goes in too, and the lift turns it back up to its own depth; equal
+// weight goes in and the lift balances it once it is under; powder over S is
+// grains S has to push up through, not a ceiling): read at S's own point, not
+// at O's face, because a sunk piece is
 // deep inside the old box of ground it is going through and that box's face
-// says nothing about the cells round it. Pushing up into O never sinks S into
-// it. A cell of ground that reads as air there gives way only if a sinker has
+// says nothing about the cells round it. What then holds S back, up or down,
+// is the powder's forces (sinkForces): its lift, its hold-back on the part of
+// S in it, its plow. A floater under lighter powder rises into it until the
+// weight it displaces there no longer carries it. A cell of ground that reads
+// as air there gives way only if a sinker has
 // already moved it out (the collider is a frame or two behind the store); any
 // other air is an edge stepped off, and the contact holds. So does one a good
 // way into ground S is not sinking in: a collider box that deep is stale.
-// Pushing up into O, a piece that is in powder is let through it: a floater
-// as a whole, lighter than it cell for cell of its hull (the lift pushes it
-// up through what lies over it as it pushes a sinker down through what lies
-// under), any other piece block for block as sideways (what moves it up
-// through powder is its own momentum, and the hold-back answers it there as
-// in any direction). A piece not in powder is held by powder over it.
-// A floater rises on into powder heavier than it (lighter powder over it is
-// a lid).
-const sinkFloatsInto = (S, fl, w) => fl.W < SINK_TUNE.floatScale * w * fl.count;
-// The player meets powder by forces only, from every side and at any weight:
-// every contact of his with a powder block lets go, and what the powder does
-// to him is its lift, its hold-back, its plow and the bearing under his feet
-// (sinkForces). No bank is a wall to him and no powder over him a lid; what
-// slows him walking into a bank is the bank's hold on the part of him in it.
+// The player meets powder the same way, from every side and at any weight:
+// what slows him walking into a bank is the bank's hold on the part of him in
+// it, and only the open top under his soles bears him (playerSoleHold).
 function sinkPresses(S, rS, O, rO, n, sg, depth) {
   if (!O.voxelGround && !O.debrisMesh) return false;
   if (S.type !== CANNON.Body.DYNAMIC) return false;
-  let fl = null, ws = 0;
-  const up = S !== playerBody && sg * n.y > SINK_TUNE.upCut;
-  if (up) {
-    const st = sinkers.get(S);
-    if (!st || !(st.disp > 0) || !(st.vol > 0)) return false;
-    fl = sinkHull(S.debrisMesh, S);
-    // Not a floater: a piece in powder moving up into it (a sunk rock
-    // toppling, its top corner swinging up into the sand that closed over
-    // it) goes block for block, as sideways. Held as a lid instead, that sand
-    // wedges it against the floor and it never comes to rest.
-    if (!(fl.W < SINK_TUNE.floatScale * (st.disp / st.vol) * fl.count)) fl = null;
+  let ws;
+  if (S === playerBody) ws = SINK_TUNE.playerWeight;
+  else {
+    const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
+    ws = ms < 0 ? 0 : sinkWeight(ms);
   }
-  if (fl) {
-    if (O.voxelGround) {
-      const w = sinkGroundAround(S, rS, n, sg);
-      if (w < 0 || (w > 0 && !sinkFloatsInto(S, fl, w))) return false;
-      sinkTouch(S, O);
-      return true;
-    }
-  } else {
-    if (S === playerBody) ws = SINK_TUNE.playerWeight;
-    else {
-      const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
-      ws = ms < 0 ? 0 : sinkWeight(ms);
-    }
-    if (!(ws > 0)) return false;
-    // A piece in powder pushed sideways or up against the ground: the same
-    // read round the point as a floater's (see sinkGroundAround), its blocks
-    // against the powder there as going down.
-    if (O.voxelGround && sg * n.y >= -SINK_TUNE.upCut && sinkers.get(S)?.disp > 0) {
-      const w = sinkGroundAround(S, rS, n, sg);
-      if (w < 0) return false;
-      sinkTouch(S, O);
-      return true;
-    }
+  if (!(ws > 0)) return false;
+  // A piece in powder pushed sideways or up against the ground: the ground's
+  // boxes are merged, so its point is read round about (sinkGroundAround),
+  // its blocks against the powder there as going down.
+  if (O.voxelGround && sg * n.y >= -SINK_TUNE.upCut && sinkers.get(S)?.disp > 0) {
+    const w = sinkGroundAround(S, rS, n, sg);
+    if (w < 0) return false;
+    sinkTouch(S, O);
+    return true;
   }
   _sinkP.set(S.position.x + rS.x - O.position.x, S.position.y + rS.y - O.position.y, S.position.z + rS.z - O.position.z);
   _sinkN.set(sg * n.x, sg * n.y, sg * n.z);
@@ -1619,7 +1593,6 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
-  if (fl && !(wo === 0 || sinkFloatsInto(S, fl, wo))) return false;
   sinkTouch(S, O);
   return true;
 }
@@ -1639,10 +1612,16 @@ function sinkGroundAround(S, rS, n, sg) {
     const v = voxelAt(i, j, l);
     if (v === AIR || !MAT_STATS[v]) continue;
     if (!sinkMedium(v)) {
-      // The top of a block with powder (or a moved-out cell) over it, a hair
-      // under the point: the bottom edge of a piece resting on it, not a wall.
+      // The top of a block with no solid over it, a hair under the point: the
+      // floor under the bottom edge of a piece resting on it, which faces up
+      // and pushes nothing sideways, not a wall. Over it is the powder the
+      // piece sank into, a cell it moved out, or the air of the pocket it lay
+      // in before powder closed round it.
       const lu = lvlOfY(y + e);
-      if (ey < 0 && lu !== l && (sinkMedium(voxelAt(i, j, lu)) || sinkHeldCell(i, j, lu))) continue;
+      if (ey < 0 && lu !== l) {
+        const u = voxelAt(i, j, lu);
+        if (u === AIR || !MAT_STATS[u] || sinkMedium(u) || sinkHeldCell(i, j, lu)) continue;
+      }
       return -1;
     }
     w = Math.max(w, sinkWeight(v));
@@ -1765,8 +1744,9 @@ function sinkPlayerFloorDepth(c) {
 // way to all its blocks (sinkGives), every contact it could make with the ground is one
 // sinkYield lets go, and its pairs with the ground are not taken to the
 // narrowphase at all (but count as touched). Read once a step per sinker.
-// Not a box over the sinker's middle: a piece pressing up into ground is held
-// by it whatever it weighs.
+// A box over the sinker's middle is not skipped: its contacts are made and
+// each let go on its own read (sinkPresses), as the physics workers' copy of
+// this skip does, so the split stays the same contacts as one thread.
 function sinkGroundGives(S, st, hull) {
   const step = world.stepnumber;
   if (st.boxAt === step) return st.boxGives;

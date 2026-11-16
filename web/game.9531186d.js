@@ -1297,7 +1297,7 @@ function frictionSweepFlat(solver, h, w) {
 world.solver.solve = frictionSolve;
 
 // ----- sinking: weight over volume decides who gives way to whom -----
-// A block pressed down or sideways into powder of another weight does not
+// A block pressed into powder from any side does not
 // rest on it: that contact is let go (sinkYield) and the powder holds it up
 // the way a fluid does, by the weight of what it has had to make room for
 // (sinkForces). Heavier or lighter makes no difference to how: a light piece
@@ -1329,7 +1329,19 @@ let sinkBusyN = 0;                      // sinkers awake and still on their way,
 // Ground cells some sinker has moved out of its way and is sitting in, with
 // how many records hold each: powder beside one does not roll into it.
 const sinkHeld = new Map();
-const sinkHeldCell = (i, j, l) => sinkHeld.size > 0 && sinkHeld.has(fricKey(i, j, l));
+// Keyed by the field cell as gravCell numbers it, which stays a small integer;
+// fricKey's lvl*8192*8192 is past V8's small-integer range at every level over
+// 15, and a Map of heap-number keys hashes them slowly (the v315 F8 case; the v324
+// audit measured sinkHeldCell at 4% of a big landing). No cell off the field or
+// under the floor is ever held, so those need no key. false: fricKey keys.
+const SINK_HELD_SMI = true;
+const sinkHeldKey = (i, j, l) => SINK_HELD_SMI ? gravCell(i, j, l) : fricKey(i, j, l);
+const sinkHeldCell = (i, j, l) => sinkHeld.size > 0 && (!SINK_HELD_SMI || (i >= 0 && j >= 0 && i < GEN_N && j < GEN_N && l >= VOX_FLOOR))
+  && sinkHeld.has(sinkHeldKey(i, j, l));
+function sinkHeldDrop(i, j, l) {
+  const key = sinkHeldKey(i, j, l), n = sinkHeld.get(key);
+  if (n > 1) sinkHeld.set(key, n - 1); else sinkHeld.delete(key);
+}
 // Nor, while a sinker is still on its way down, into the shaft it leaves
 // over itself: sand poured in lands on it, is caught (catchPowder), and the
 // grains it carries down grip the shaft walls and hold it back. Once it has
@@ -1458,7 +1470,7 @@ const SINK_TUNE_DEFS = [
   { key: 'wakeSpeed', group: 'Settling', name: 'Wake medium speed', def: 0.01, min: 0,
     help: 'm/s a sinker must move at to wake a sleeping piece it is sinking into.' },
   { key: 'upCut', group: 'Contacts', name: 'Up-push cutoff', def: 0.5, min: 0, max: 1,
-    help: 'A contact pushing the sinker up harder than this (normal\'s up part) holds, unless the sinker is in powder (a floater rises through it; any other piece goes block for block, as sideways). 1: even straight down gives.' },
+    help: 'How upright a contact must be (its normal\'s up or down part) to count as under a sinker or on top of it rather than beside it. One on top presses it down (a load, never what holds it up); powder under a sinker is read at the contact point, beside or over it round the point. Powder never holds a sinker from any side: this only sorts contacts. 1: only straight up or down counts.' },
   { key: 'probe', group: 'Contacts', name: 'Air probe (blocks)', def: 0.25, min: 0.05, max: 1,
     help: 'How far past a contact point the ground is read when the point itself is in air.' },
   { key: 'staleDepth', group: 'Contacts', name: 'Stale box depth (blocks)', def: 0.5, min: 0.1,
@@ -1518,67 +1530,41 @@ function sinkTouch(S, O) {
 }
 // The contact between piece S (its point rS, n pointing from S into O when sg
 // is 1) and O lets go if O's block where S's block is is powder, whatever S's
-// block there weighs (heavier sinks in; lighter goes in too, and the lift
-// turns it back up to its own depth; equal weight goes in and the lift
-// balances it once it is under): read at S's own point, not at O's face, because a sunk piece is
+// block there weighs and from whichever side S meets it (heavier sinks in;
+// lighter goes in too, and the lift turns it back up to its own depth; equal
+// weight goes in and the lift balances it once it is under; powder over S is
+// grains S has to push up through, not a ceiling): read at S's own point, not
+// at O's face, because a sunk piece is
 // deep inside the old box of ground it is going through and that box's face
-// says nothing about the cells round it. Pushing up into O never sinks S into
-// it. A cell of ground that reads as air there gives way only if a sinker has
+// says nothing about the cells round it. What then holds S back, up or down,
+// is the powder's forces (sinkForces): its lift, its hold-back on the part of
+// S in it, its plow. A floater under lighter powder rises into it until the
+// weight it displaces there no longer carries it. A cell of ground that reads
+// as air there gives way only if a sinker has
 // already moved it out (the collider is a frame or two behind the store); any
 // other air is an edge stepped off, and the contact holds. So does one a good
 // way into ground S is not sinking in: a collider box that deep is stale.
-// Pushing up into O, a piece that is in powder is let through it: a floater
-// as a whole, lighter than it cell for cell of its hull (the lift pushes it
-// up through what lies over it as it pushes a sinker down through what lies
-// under), any other piece block for block as sideways (what moves it up
-// through powder is its own momentum, and the hold-back answers it there as
-// in any direction). A piece not in powder is held by powder over it.
-// A floater rises on into powder heavier than it (lighter powder over it is
-// a lid).
-const sinkFloatsInto = (S, fl, w) => fl.W < SINK_TUNE.floatScale * w * fl.count;
-// The player meets powder by forces only, from every side and at any weight:
-// every contact of his with a powder block lets go, and what the powder does
-// to him is its lift, its hold-back, its plow and the bearing under his feet
-// (sinkForces). No bank is a wall to him and no powder over him a lid; what
-// slows him walking into a bank is the bank's hold on the part of him in it.
+// The player meets powder the same way, from every side and at any weight:
+// what slows him walking into a bank is the bank's hold on the part of him in
+// it, and only the open top under his soles bears him (playerSoleHold).
 function sinkPresses(S, rS, O, rO, n, sg, depth) {
   if (!O.voxelGround && !O.debrisMesh) return false;
   if (S.type !== CANNON.Body.DYNAMIC) return false;
-  let fl = null, ws = 0;
-  const up = S !== playerBody && sg * n.y > SINK_TUNE.upCut;
-  if (up) {
-    const st = sinkers.get(S);
-    if (!st || !(st.disp > 0) || !(st.vol > 0)) return false;
-    fl = sinkHull(S.debrisMesh, S);
-    // Not a floater: a piece in powder moving up into it (a sunk rock
-    // toppling, its top corner swinging up into the sand that closed over
-    // it) goes block for block, as sideways. Held as a lid instead, that sand
-    // wedges it against the floor and it never comes to rest.
-    if (!(fl.W < SINK_TUNE.floatScale * (st.disp / st.vol) * fl.count)) fl = null;
+  let ws;
+  if (S === playerBody) ws = SINK_TUNE.playerWeight;
+  else {
+    const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
+    ws = ms < 0 ? 0 : sinkWeight(ms);
   }
-  if (fl) {
-    if (O.voxelGround) {
-      const w = sinkGroundAround(S, rS, n, sg);
-      if (w < 0 || (w > 0 && !sinkFloatsInto(S, fl, w))) return false;
-      sinkTouch(S, O);
-      return true;
-    }
-  } else {
-    if (S === playerBody) ws = SINK_TUNE.playerWeight;
-    else {
-      const ms = contactMatOf(S, rS, _sinkN.set(-sg * n.x, -sg * n.y, -sg * n.z));
-      ws = ms < 0 ? 0 : sinkWeight(ms);
-    }
-    if (!(ws > 0)) return false;
-    // A piece in powder pushed sideways or up against the ground: the same
-    // read round the point as a floater's (see sinkGroundAround), its blocks
-    // against the powder there as going down.
-    if (O.voxelGround && sg * n.y >= -SINK_TUNE.upCut && sinkers.get(S)?.disp > 0) {
-      const w = sinkGroundAround(S, rS, n, sg);
-      if (w < 0) return false;
-      sinkTouch(S, O);
-      return true;
-    }
+  if (!(ws > 0)) return false;
+  // A piece in powder pushed sideways or up against the ground: the ground's
+  // boxes are merged, so its point is read round about (sinkGroundAround),
+  // its blocks against the powder there as going down.
+  if (O.voxelGround && sg * n.y >= -SINK_TUNE.upCut && sinkers.get(S)?.disp > 0) {
+    const w = sinkGroundAround(S, rS, n, sg);
+    if (w < 0) return false;
+    sinkTouch(S, O);
+    return true;
   }
   _sinkP.set(S.position.x + rS.x - O.position.x, S.position.y + rS.y - O.position.y, S.position.z + rS.z - O.position.z);
   _sinkN.set(sg * n.x, sg * n.y, sg * n.z);
@@ -1619,7 +1605,6 @@ function sinkPresses(S, rS, O, rO, n, sg, depth) {
     if (mo < 0 || !sinkMedium(mo)) return false;
     wo = sinkWeight(mo);
   }
-  if (fl && !(wo === 0 || sinkFloatsInto(S, fl, wo))) return false;
   sinkTouch(S, O);
   return true;
 }
@@ -1639,10 +1624,16 @@ function sinkGroundAround(S, rS, n, sg) {
     const v = voxelAt(i, j, l);
     if (v === AIR || !MAT_STATS[v]) continue;
     if (!sinkMedium(v)) {
-      // The top of a block with powder (or a moved-out cell) over it, a hair
-      // under the point: the bottom edge of a piece resting on it, not a wall.
+      // The top of a block with no solid over it, a hair under the point: the
+      // floor under the bottom edge of a piece resting on it, which faces up
+      // and pushes nothing sideways, not a wall. Over it is the powder the
+      // piece sank into, a cell it moved out, or the air of the pocket it lay
+      // in before powder closed round it.
       const lu = lvlOfY(y + e);
-      if (ey < 0 && lu !== l && (sinkMedium(voxelAt(i, j, lu)) || sinkHeldCell(i, j, lu))) continue;
+      if (ey < 0 && lu !== l) {
+        const u = voxelAt(i, j, lu);
+        if (u === AIR || !MAT_STATS[u] || sinkMedium(u) || sinkHeldCell(i, j, lu)) continue;
+      }
       return -1;
     }
     w = Math.max(w, sinkWeight(v));
@@ -1765,8 +1756,9 @@ function sinkPlayerFloorDepth(c) {
 // way to all its blocks (sinkGives), every contact it could make with the ground is one
 // sinkYield lets go, and its pairs with the ground are not taken to the
 // narrowphase at all (but count as touched). Read once a step per sinker.
-// Not a box over the sinker's middle: a piece pressing up into ground is held
-// by it whatever it weighs.
+// A box over the sinker's middle is not skipped: its contacts are made and
+// each let go on its own read (sinkPresses), as the physics workers' copy of
+// this skip does, so the split stays the same contacts as one thread.
 function sinkGroundGives(S, st, hull) {
   const step = world.stepnumber;
   if (st.boxAt === step) return st.boxGives;
@@ -2572,10 +2564,10 @@ function sinkPush(S, O, Od, p, fx, fy, fz) {
 }
 const sinkBusy = (b) => !!sinkers.get(b)?.busy;
 function sinkUnrecord(M, key) {
+  const r = M.rec.get(key);
   M.rec.delete(key);
   if (M.body) return;
-  const n = sinkHeld.get(key);
-  if (n > 1) sinkHeld.set(key, n - 1); else sinkHeld.delete(key);
+  sinkHeldDrop(r.i, r.j, r.l);
 }
 function sinkDropMedium(st, key, M) {
   for (const rk of [...M.rec.keys()]) sinkUnrecord(M, rk);
@@ -2594,8 +2586,7 @@ function sinkLeave(M, key, r) {
 function sinkUnbehind(M, key, b) {
   M.behind.delete(key);
   if (M.body) return;
-  const n = sinkHeld.get(key);
-  if (n > 1) sinkHeld.set(key, n - 1); else sinkHeld.delete(key);
+  sinkHeldDrop(b.i, b.j, b.l);
   // What was held up over it, or kept from rolling into it, may go now.
   if (b.i >= 0 && b.j >= 0 && b.i < GEN_N && b.j < GEN_N) powderDirty.add(b.j * GEN_N + b.i);
 }
@@ -2621,8 +2612,38 @@ function sinkForget(S, st) {
 // a piece is there for it to displace from any depth, so where it comes to
 // rest is set by the weights alone, never by how deep its fall took it.
 const sinkStats = { moved: 0, placedGround: 0, placedPiece: 0, owed: 0, placedBehind: 0, pulled: 0 };
+// Each cell a sinker displaces is an edit, and one by one each paid
+// applyGravity's six flood fills to bedrock, its face refresh and its chunk
+// marks on the spot: a big piece landing in sand moves thousands in one frame
+// (v324 audit H5: 284-778 ms). The pass owes them as the powder pass does
+// (gravDefer), with one difference: a removal that leaves a group hanging pays
+// what is owed there and then (sinkOwedLoose), so the group comes away at the
+// very edit it did before and every later question in the pass sees the store
+// as it was. What is still deferred — the face refresh and the chunk marks —
+// reads only how things stand, so once at the end gives the same answer.
+// false: every edit pays as it goes, as before.
+const SINK_RELOCATE_DEFER = true;
+let sinkDeferring = false;
+function sinkOwedLoose(i, j, lvl) {
+  for (const [di, dj, dl] of GRAV_DIRS) {
+    const ii = i + di, jj = j + dj, ll = lvl + dl;
+    if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N || !gravSolid(ii, jj, ll)) continue;
+    if (gravFate(ii, jj, ll, null, true) === GRAV_DOOMED) return true;
+  }
+  return false;
+}
 function sinkRelocate() {
   if (!sinkers.size) return;
+  if (!SINK_RELOCATE_DEFER || gravDefer) { sinkRelocatePass(); return; }
+  gravDefer = true; sinkDeferring = true;
+  try { sinkRelocatePass(); } finally {
+    gravDefer = false; sinkDeferring = false;
+    flushGravity();
+    flushGravTouched();
+    gravAnchorClear();
+  }
+}
+function sinkRelocatePass() {
   const step = world.stepnumber;
   for (const [S, st] of sinkers) {
     if (S.world !== world || !sinkBody(S)) continue;
@@ -2710,7 +2731,7 @@ function sinkRelocateScan(S, st, hull, step) {
           if (voxelAt(e.i, e.j, e.l) !== e.m) continue;
           editBlock(e.i, e.j, e.l, AIR);
           M.rec.set(e.key, { m: e.m, at: step, i: e.i, j: e.j, l: e.l });
-          sinkHeld.set(e.key, (sinkHeld.get(e.key) || 0) + 1);
+          { const hk = sinkHeldKey(e.i, e.j, e.l); sinkHeld.set(hk, (sinkHeld.get(hk) || 0) + 1); }
           sinkStats.moved++;
           // Right on top of something it does not sink into: the next step
           // has to meet that cell's real face, not a box the worker has yet
@@ -6419,6 +6440,27 @@ function colPiece(buf, q, lo, hi) {
 // every chunk near it for the narrowphase to sort out box by box. A part with
 // no boxes is no body, unless asked for: a chunk keeps one even with nothing in
 // it, which is what says it has been built.
+// cannon's addShape redoes the body's mass, inertia, AABB and bounding radius
+// over every shape it has, per shape: O(boxes^2) for a chunk or a piece. Each of
+// those is a pure function of the final shape list (and pose), so the boxes go
+// in as addShape would put them and the sums run once (v324 audit H3); the body
+// comes out field-for-field what the per-shape adds made. false: addShape per box.
+const BULK_SHAPES = true;
+function bulkShape(body, shape, off) {
+  if (!BULK_SHAPES) { body.addShape(shape, off); return; }
+  body.shapes.push(shape);
+  body.shapeOffsets.push(new CANNON.Vec3(off.x, off.y, off.z));
+  body.shapeOrientations.push(new CANNON.Quaternion());
+  shape.body = body;
+  body._bulkShapes = true;
+}
+function bulkShapesDone(body) {
+  if (!body._bulkShapes) return;
+  body._bulkShapes = false;
+  body.updateMassProperties();
+  body.updateBoundingRadius();
+  body.aabbNeedsUpdate = true;
+}
 function colliderPart(buf, n, lo, hi, always) {
   const p = _colPiece;
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity, m = 0;
@@ -6436,8 +6478,9 @@ function colliderPart(buf, n, lo, hi, always) {
   body.voxelGround = true;   // its contacts grip by the block they touch (contactMatOf)
   for (let q = 0; q < n; q++) {
     if (!colPiece(buf, q, lo, hi)) continue;
-    body.addShape(colBox(p[0], p[1], p[2]), _colOff.set(p[3] - cx, p[4] - cy, p[5] - cz));
+    bulkShape(body, colBox(p[0], p[1], p[2]), _colOff.set(p[3] - cx, p[4] - cy, p[5] - cz));
   }
+  bulkShapesDone(body);
   body.updateAABB();
   world.addBody(body);
   return body;
@@ -10154,6 +10197,25 @@ function powderDirtyFar(i, j) {
 }
 // Shed whatever powder in column c has nothing under it, up to `budget` blocks.
 // Returns what is left of the budget.
+// A grain with no open side at its own level cannot roll (powderRoll's first
+// look out along the level stops at every side), and at angle > 0 nothing else
+// is asked: its answer is -1. A bank's buried cells are asked that ~170 times per
+// grain that actually moves (v324 audit, wall/tunnel), each paying the full side
+// probes. The shortcut gives powderRoll's answer and its side effects, the one
+// random draw included, so every later draw is the one it was. false: always ask.
+const SHED_WALLED_SKIP = true;
+function powderWalled(i, j, lvl) {
+  for (let s = 0; s < 4; s++) {
+    const ni = i + POWDER_SIDES[s][0], nj = j + POWDER_SIDES[s][1];
+    if (canBuildAt(ni, nj, lvl - 1) && voxelAt(ni, nj, lvl) === AIR) return false;
+  }
+  return true;
+}
+function powderRollWalled() {
+  powderFarWait = false; powderFarWay = null;
+  Math.random();
+  return -1;
+}
 function shedColumn(c, budget) {
   const top = topLvl[c];
   if (top === NO_COLUMN) return budget;
@@ -10183,7 +10245,9 @@ function shedColumn(c, budget) {
     // the slope (on powder it still rolls, so a hand-built pile keeps its angle;
     // angle 0 still runs). With the ground gone from under it, it falls as any.
     if (voxMat[o + lvl - 1] !== AIR && !MAT_STATS[voxMat[o + lvl - 1]]?.powder && !reposeFlat[m] && isPlacedCell(i, j, lvl)) continue;
-    let roll = voxMat[o + lvl - 1] !== AIR ? powderRoll(i, j, lvl, m) : -1;
+    let roll = voxMat[o + lvl - 1] === AIR ? -1
+      : SHED_WALLED_SKIP && !reposeFlat[m] && powderWalled(i, j, lvl) ? powderRollWalled()
+      : powderRoll(i, j, lvl, m);
     // Nor off into a piece lying beside it: the piece holds it in (see catchPowder).
     // Nor down onto one: a piece in the cell under the side is ground to the slope, not a hole.
     if (roll >= 0 && (powderPieceBeside(colX(i + POWDER_SIDES[roll][0]), (lvl + 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1]))
@@ -10229,7 +10293,7 @@ function checkTerrainPowder(dt = 0) {
     powderLate = true;
     flushGravTouched();
     powderLate = false;
-    gravAnchored.clear();
+    gravAnchorClear();
   }
 }
 function shedTerrainPowder(dt) {
@@ -10754,7 +10818,7 @@ function digImpactPending() {
     gravDefer = false;
     flushGravity();
     flushGravTouched();
-    gravAnchored.clear();
+    gravAnchorClear();
   }
   impactPending.splice(0, n);
 }
@@ -10969,6 +11033,12 @@ function debrisBelow(S, c, step) {
   }
   return false;
 }
+// The face mask is a pure function of the lattice as it stands, read only by
+// the renderer, and the shed walk keeps its own cell lookup (debrisCellsShed):
+// nothing between two cuts reads it, so one mask after the walk is the mask the
+// last per-cut one made. Per cut it was a whole-lattice rebuild per grain, O(N^2)
+// for a piece shedding N grains (v324 audit H1). false: one mask per cut, as before.
+const SHED_MASK_ONCE = true;
 function shedPowder() {
   // Awake pieces only: a sleeping one lies as it did when last looked at, and
   // anything that changes its lattice wakes it (rebuildDebrisBody).
@@ -11019,10 +11089,11 @@ function shedPowder() {
         // a cup, an arch) and lands on that, not through it to whatever is under.
         powderGrain(at.x, at.y, at.z, b.mat, turned || debrisBelow(debrisCellsShed, cell[q], step) ? null : mesh);
         grid[cell[q]] = 0;
-        cutDebrisLat(mesh, q);   // the same gap-close a dig does
+        cutDebrisLat(mesh, q, !SHED_MASK_ONCE);   // the same gap-close a dig does
         cut = true;
       }
       if (!cut) continue;
+      if (SHED_MASK_ONCE) debrisFaceMask(mesh);
       // After removing powder blocks, the remaining lattice may have split
       // into disconnected pieces (e.g. sand was the only bridge between two
       // stone chunks). Break them into separate debris pieces.
@@ -12444,12 +12515,13 @@ function addDebrisColliders(body, lat) {
 
         const mi0 = gi0 + ii, mi1 = gi0 + ii1 - 1, mj0 = gj0 + jj, mj1 = gj0 + jj1 - 1;
         const lvl = l0 + r, botLvl = l0 + rb;
-        body.addShape(
+        bulkShape(body,
           colBox((mi1 - mi0 + 1) * BLOCK * 0.5, (lvl - botLvl + 1) * h, (mj1 - mj0 + 1) * BLOCK * 0.5),
           _colOff.set(((mi0 + mi1) / 2) * BLOCK + kx, ((botLvl + lvl) / 2 + 0.5) * BLOCK + ky, ((mj0 + mj1) / 2) * BLOCK + kz));
       }
     }
   }
+  bulkShapesDone(body);
 }
 
 // Redo a piece's collider and its weight from the lattice it has left. Runs
@@ -12506,7 +12578,7 @@ function wakeDebrisNear(body, pad) {
 // one fewer is drawn, and the slot that cube leaves — now the first of the
 // powder — takes the lattice's last entry. Only slots at or past q change, so a
 // walk from the back still never sees a block it has yet to reach move.
-function cutDebrisLat(mesh, q) {
+function cutDebrisLat(mesh, q, mask = true) {
   const lat = mesh.userData.blocks;
   let hole = q;
   if (q >= mesh.count) {
@@ -12529,7 +12601,7 @@ function cutDebrisLat(mesh, q) {
   lat.pop();
   stressRev++;
   stressLatEdit(mesh);
-  debrisFaceMask(mesh);
+  if (mask) debrisFaceMask(mesh);
 }
 
 // After blocks are cut from a debris piece, check if the remaining lattice
@@ -13125,6 +13197,43 @@ const gravTouched = new Set(); // cells whose faces and chunks are owed a refres
 // Cells this pass has shown reach bedrock, each through a chain of others in the
 // set. Only removals break a chain, so the set goes whenever one takes a member.
 const gravAnchored = new Set();
+// Each member's next cell along the chain it was found by (-1: it reached
+// bedrock itself), and the members chained through it. A removal breaks only
+// the chains that run through the cell it takes — the members chained through
+// it, and theirs — and every other chain still stands cell for cell, so those
+// stay known. Dropping the whole set on every such removal made each shed of a
+// bank walk to bedrock again (v324 audit H4: 14-17% of a bank collapse in
+// gravFate). false: the whole set goes, as before.
+const GRAV_ANCHOR_KEEP = true;
+const gravAnchorNext = new Map(), gravAnchorKids = new Map(), _gravDrop = [];
+function gravAnchorAdd(c, next) {
+  if (gravAnchored.has(c)) return;   // a member keeps the chain it was found by
+  gravAnchored.add(c);
+  if (!GRAV_ANCHOR_KEEP) return;
+  gravAnchorNext.set(c, next);
+  if (next !== -1) { const k = gravAnchorKids.get(next); if (k) k.push(c); else gravAnchorKids.set(next, [c]); }
+}
+function gravAnchorDrop(c) {
+  if (!GRAV_ANCHOR_KEEP) { gravAnchored.clear(); return; }
+  _gravDrop.length = 0;
+  _gravDrop.push(c);
+  while (_gravDrop.length) {
+    const x = _gravDrop.pop();
+    gravAnchored.delete(x);
+    gravAnchorNext.delete(x);
+    const kids = gravAnchorKids.get(x);
+    if (!kids) continue;
+    gravAnchorKids.delete(x);
+    // A kid that has since been dropped and found again by another chain is no
+    // longer chained through x.
+    for (const k of kids) if (gravAnchorNext.get(k) === x) _gravDrop.push(k);
+  }
+}
+function gravAnchorClear() {
+  gravAnchored.clear();
+  gravAnchorNext.clear();
+  gravAnchorKids.clear();
+}
 const gravCell = (i, j, lvl) => ((lvl - VOX_FLOOR) * GEN_N + j) * GEN_N + i;
 const GRAV_SAFE = 0, GRAV_DOOMED = 1;
 const gravFrom = new Map();    // the last walk: cell -> the cell it was reached from
@@ -13167,7 +13276,7 @@ function gravFate(i, j, lvl, stop, keepStart) {
   if (hit < 0) return solid ? GRAV_DOOMED : GRAV_SAFE;
   // A `stop` cell need not be anchored, only safe, so its route is not one.
   if (stop?.has(hit) && !gravAnchored.has(hit)) return GRAV_SAFE;
-  for (let c = hit; c !== -1; c = gravFrom.get(c)) if (c !== k0 || keepStart) gravAnchored.add(c);
+  for (let c = hit, next = -1; c !== -1; next = c, c = gravFrom.get(c)) if (c !== k0 || keepStart) gravAnchorAdd(c, next);
   return GRAV_SAFE;
 }
 
@@ -13277,7 +13386,8 @@ function editBlock(i, j, lvl, m) {
     gravTouched.add(key);
     if (m === AIR && was !== AIR) {
       gravPending.push(i, j, lvl);
-      if (gravAnchored.has(key)) gravAnchored.clear();
+      if (gravAnchored.has(key)) gravAnchorDrop(key);
+      if (sinkDeferring && sinkOwedLoose(i, j, lvl)) flushGravity();
     }
     return was;
   }
@@ -15580,7 +15690,7 @@ function volumeRemove() {
       gravDefer = false;
       flushGravity();
       flushGravTouched();
-      gravAnchored.clear();
+      gravAnchorClear();
     }
   }
   resetVolume();

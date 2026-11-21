@@ -4396,6 +4396,7 @@ const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 // glass there is.
 const CLEAR_ATLAS_TW = 64;                      // tiles across the atlas
 const CLEAR_ATLAS_MAX = CLEAR_ATLAS_TW * 256;   // ... and at most, 4096 texels deep
+const CLEAR_VOL_QUICK = true;                    // internal: false packs and uploads the whole atlas every flush (v327)
 const clearTiles = new Array(CHUNK_N * CHUNK_N).fill(null);   // per chunk: { lo, n, ids }
 let clearVolDirty = false;
 const clearIdx = new THREE.DataTexture(new Float32Array(CHUNK_N * CHUNK_N * 4), CHUNK_N, CHUNK_N, THREE.RGBAFormat, THREE.FloatType);
@@ -4440,29 +4441,84 @@ function clearVolChunk(c) {
       t = { lo, n, ids };
     }
   }
-  if (t || clearTiles[c]) { clearTiles[c] = t; clearVolDirty = true; }
+  if (t || clearTiles[c]) { clearTiles[c] = t; clearVolDirty = true; clearVolChanged.add(c); }
+}
+// The atlas used to be packed again and sent up whole on every frame a chunk
+// with any see-through block in it was rebuilt: a lake's water settling round
+// a floating piece remeshes a few chunks a frame, and the whole island's water
+// (some six thousand tiles, a 1.5 MB texture) went up each time. The packing is
+// a function of each chunk's tile count alone, in chunk order, so when none of
+// the chunks that changed has a different count, every tile is where it was:
+// only those chunks' tiles are written, over themselves, and only their rows of
+// the atlas go up. The bytes come out as a full pack makes them. Anything else
+// (a count changes, the atlas grows or shrinks, the texture has not been up
+// yet) packs it all again as before.
+const clearVolChanged = new Set();
+const clearPackAt = new Int32Array(CHUNK_N * CHUNK_N).fill(-1);   // where the last full pack put each chunk's first tile
+const clearPackN = new Int32Array(CHUNK_N * CHUNK_N);             // and its count then (0: none)
+let clearVolPacked = false, clearVolSeq = 0;
+function clearTileWrite(A, W, t, at) {
+  for (let l = 0; l < t.n; l++, at++) {
+    const x0 = (at % CLEAR_ATLAS_TW) * 16, y0 = ((at / CLEAR_ATLAS_TW) | 0) * 16, ids = t.ids;
+    for (let r = 0, s = l * 256; r < 16; r++, s += 16) {
+      for (let x = 0, d = (y0 + r) * W + x0; x < 16; x++) A[d + x] = ids[s + x];
+    }
+  }
 }
 function clearVolFlush() {
   if (!clearVolDirty) return;
   clearVolDirty = false;
+  clearVolSeq++;
+  const W = CLEAR_ATLAS_TW * 16, I = clearIdx.image.data;
+  let quick = clearVolPacked && CLEAR_VOL_QUICK;
+  if (quick) for (const c of clearVolChanged) { const t = clearTiles[c]; if ((t ? t.n : 0) !== clearPackN[c]) { quick = false; break; } }
+  if (quick) {
+    const atlas = clearAtlasU.value, A = atlas.image.data;
+    const gl = renderer.getContext(), tp = renderer.properties.get(atlas);
+    const up = !atlas.needsUpdate && tp.__webglTexture && tp.__version === atlas.version;
+    let idx = false;
+    for (const c of clearVolChanged) {
+      const t = clearTiles[c], at = clearPackAt[c];
+      if (!t || at < 0) continue;              // none here, or past the cap: as the full pack leaves it
+      clearTileWrite(A, W, t, at);
+      if (I[c * 4 + 1] !== t.lo) { I[c * 4 + 1] = t.lo; idx = true; }
+      if (up) {
+        const y0 = ((at / CLEAR_ATLAS_TW) | 0) * 16, y1 = (((at + t.n - 1) / CLEAR_ATLAS_TW) | 0) * 16 + 16;
+        renderer.state.activeTexture(gl.TEXTURE0);
+        renderer.state.bindTexture(gl.TEXTURE_2D, tp.__webglTexture);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, y0, W, y1 - y0, gl.RED, gl.UNSIGNED_BYTE, A.subarray(y0 * W, y1 * W));
+      }
+    }
+    clearVolChanged.clear();
+    if (!up) atlas.needsUpdate = true;
+    if (idx) clearIdx.needsUpdate = true;
+    return;
+  }
+  clearVolChanged.clear();
   let tiles = 0;
   for (const t of clearTiles) if (t) tiles += t.n;
   tiles = Math.min(tiles, CLEAR_ATLAS_MAX);
   const rows = Math.max(1, Math.ceil(tiles / CLEAR_ATLAS_TW));
   let atlas = clearAtlasU.value;
   if (atlas.image.height !== rows * 16) { atlas.dispose(); atlas = clearAtlasU.value = clearAtlasOf(rows); }
-  const A = atlas.image.data, W = CLEAR_ATLAS_TW * 16, I = clearIdx.image.data;
+  const A = atlas.image.data;
   I.fill(0);
   let at = 0;
   for (let c = 0; c < clearTiles.length; c++) {
     const t = clearTiles[c];
+    clearPackN[c] = t ? t.n : 0;
+    clearPackAt[c] = -1;
     if (!t || at + t.n > CLEAR_ATLAS_MAX) continue;   // past the cap a chunk's glass reads one block deep
     I[c * 4] = at; I[c * 4 + 1] = t.lo; I[c * 4 + 2] = t.n;
-    for (let l = 0; l < t.n; l++, at++) {
-      const x0 = (at % CLEAR_ATLAS_TW) * 16, y0 = ((at / CLEAR_ATLAS_TW) | 0) * 16;
-      for (let r = 0; r < 16; r++) A.set(t.ids.subarray(l * 256 + r * 16, l * 256 + r * 16 + 16), (y0 + r) * W + x0);
-    }
+    clearPackAt[c] = at;
+    clearTileWrite(A, W, t, at);
+    at += t.n;
   }
+  clearVolPacked = true;
   atlas.needsUpdate = true;
   clearIdx.needsUpdate = true;
 }
@@ -18680,7 +18736,7 @@ function shadowCastersChanged() {
   if (TERRAIN_CASTS) {
     shadowSigInT = true;
     for (let k = 0; k < TERRAIN_ALPHA.length; k++) shadowSigPut(TERRAIN_ALPHA[k]);
-    shadowSigPut(clearAtlasU.value); shadowSigPut(clearAtlasU.value.version); shadowSigPut(clearIdx.version);
+    shadowSigPut(clearAtlasU.value); shadowSigPut(clearVolSeq);   // every flush, as the textures' versions were
     shadowSigInT = false;
   }
   if (shadowSigN < n0) shadowSig.length = shadowSigN;

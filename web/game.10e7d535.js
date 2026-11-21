@@ -1336,11 +1336,23 @@ const sinkHeld = new Map();
 // under the floor is ever held, so those need no key. false: fricKey keys.
 const SINK_HELD_SMI = true;
 const sinkHeldKey = (i, j, l) => SINK_HELD_SMI ? gravCell(i, j, l) : fricKey(i, j, l);
-const sinkHeldCell = (i, j, l) => sinkHeld.size > 0 && (!SINK_HELD_SMI || (i >= 0 && j >= 0 && i < GEN_N && j < GEN_N && l >= VOX_FLOOR))
-  && sinkHeld.has(sinkHeldKey(i, j, l));
+// A column with no held cell has none at any level (sinkHeldCols, v327): the
+// far look and every settling step ask this of columns nowhere near a sinker.
+const sinkHeldCell = (i, j, l) => sinkHeld.size > 0 && (!SINK_HELD_SMI || (i >= 0 && j >= 0 && i < GEN_N && j < GEN_N && l >= VOX_FLOOR
+  && sinkHeldCols[j * GEN_N + i] !== 0)) && sinkHeld.has(sinkHeldKey(i, j, l));
 function sinkHeldDrop(i, j, l) {
   const key = sinkHeldKey(i, j, l), n = sinkHeld.get(key);
-  if (n > 1) sinkHeld.set(key, n - 1); else sinkHeld.delete(key);
+  if (n > 1) sinkHeld.set(key, n - 1);
+  else if (sinkHeld.delete(key)) sinkHeldCols[j * GEN_N + i]--;
+}
+// How many held cells each column has (v327): the far look's column memo
+// (powderFarCanM) can only trust an answer that no held cell could change, and
+// asking the map level by level was what it is there to save.
+const sinkHeldCols = new Uint16Array(GEN_N * GEN_N);
+function sinkHeldAdd(i, j, l) {
+  const hk = sinkHeldKey(i, j, l), n = sinkHeld.get(hk) || 0;
+  sinkHeld.set(hk, n + 1);
+  if (!n) { sinkHeldCols[j * GEN_N + i]++; powderFarMemoNear(i, j); }
 }
 // Nor, while a sinker is still on its way down, into the shaft it leaves
 // over itself: sand poured in lands on it, is laid on it (powderFlow), and the
@@ -1353,12 +1365,24 @@ function sinkHeldDrop(i, j, l) {
 var sinkGridStale = true;   // var: the updateAABB patch above may run first
 const sinkGrid = new Map(), SINK_GRID_W = 4 * BLOCK;
 const sinkGridKey = (gx, gz) => (gx + 32768) * 65536 + (gz + 32768);
+// sinkGridSeq counts the builds, and sinkBusyBox is the box round every busy
+// sinker filed: what the far look's memo (powderFarCanM) needs to know that a
+// column's answer cannot have been one a sinker's box changes.
+var sinkGridSeq = 0;
+const sinkBusyBox = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity };
 function sinkGridBuild() {
   sinkGridStale = false;
+  sinkGridSeq++;
+  const B = sinkBusyBox;
+  B.x0 = B.z0 = Infinity; B.x1 = B.z1 = -Infinity;
   for (const l of sinkGrid.values()) l.length = 0;
   for (const [S, st] of sinkers) {
     if (!st.busy) continue;
     const a = S.aabb;
+    if (a.lowerBound.x < B.x0) B.x0 = a.lowerBound.x;
+    if (a.upperBound.x > B.x1) B.x1 = a.upperBound.x;
+    if (a.lowerBound.z < B.z0) B.z0 = a.lowerBound.z;
+    if (a.upperBound.z > B.z1) B.z1 = a.upperBound.z;
     const x0 = Math.floor(a.lowerBound.x / SINK_GRID_W), x1 = Math.floor(a.upperBound.x / SINK_GRID_W);
     const z0 = Math.floor(a.lowerBound.z / SINK_GRID_W), z1 = Math.floor(a.upperBound.z / SINK_GRID_W);
     for (let gx = x0; gx <= x1; gx++) for (let gz = z0; gz <= z1; gz++) {
@@ -1375,6 +1399,9 @@ function sinkBlocksPowder(i, j, l) {
   if (!sinkBusyN) return false;
   const x = colX(i), y = (l + 0.5) * BLOCK, z = colZ(j);
   if (sinkGridStale) sinkGridBuild();
+  // Outside the box round every busy sinker filed, inside none of their boxes.
+  const B = sinkBusyBox;
+  if (!(x > B.x0 && x < B.x1 && z > B.z0 && z < B.z1)) return false;
   const near = sinkGrid.get(sinkGridKey(Math.floor(x / SINK_GRID_W), Math.floor(z / SINK_GRID_W)));
   if (!near) return false;
   for (let q = 0; q < near.length; q++) {
@@ -2731,7 +2758,7 @@ function sinkRelocateScan(S, st, hull, step) {
           if (voxelAt(e.i, e.j, e.l) !== e.m) continue;
           editBlock(e.i, e.j, e.l, AIR);
           M.rec.set(e.key, { m: e.m, at: step, i: e.i, j: e.j, l: e.l });
-          { const hk = sinkHeldKey(e.i, e.j, e.l); sinkHeld.set(hk, (sinkHeld.get(hk) || 0) + 1); }
+          sinkHeldAdd(e.i, e.j, e.l);
           sinkStats.moved++;
           // Right on top of something it does not sink into: the next step
           // has to meet that cell's real face, not a box the worker has yet
@@ -4118,6 +4145,7 @@ function setVoxel(i, j, lvl, m) {
   if (was === m) return was;
   voxMat[p] = m;
   if (powderFarNone) powderFarTouch(i, j, lvl, m);
+  if (farMemoVal) powderFarMemoTouch(i, j, lvl);
   if (matClear[m]) {
     colClear[k] = 1;
     const c = chunkOf(i, j);
@@ -10006,6 +10034,7 @@ const POWDER_FAR_SHARE = 8;
 let powderFarSeen = null, powderFarFrom = null, powderFarQ = null, powderFarStamp = 0;
 let powderFarWay = null;     // the way the last powderRoll found, for a grain not falling yet (shedColumn)
 let powderFarLast = -1, powderFarLastL = 0, powderFarLastF = 0;   // the column the last way went to, its level, the frame
+const POWDER_SIDE_DI = Int8Array.from(POWDER_SIDES, (d) => d[0]), POWDER_SIDE_DJ = Int8Array.from(POWDER_SIDES, (d) => d[1]);
 const powderSideOf = (di, dj) => di > 0 ? 0 : dj > 0 ? 1 : di < 0 ? 2 : 3;
 // Nor is it drawn to the lip of a cliff, the column one down with a drop of two
 // or more beside it: a grain there would only roll on over (powderRoll's first
@@ -10017,6 +10046,73 @@ const powderSideOf = (di, dj) => di > 0 ? 0 : dj > 0 ? 1 : di < 0 ? 2 : 3;
 // 48 columns a frame and carried it, so the water round a sinker was rewritten
 // every frame; v326, which walks a settle to its end, met it as a cycle).
 const powderFarOpen = (i, j, l) => voxelAt(i, j, l) === AIR && !sinkBlocksPowder(i, j, l);
+// The far look's column answers, kept (v327). A cell sitting one high on a wide
+// level surface — the water a sinking piece pushes out onto the top of a basin —
+// stands in every other such cell's way, so none of them is on the level ground
+// the last fruitless look went over and each is looked for afresh over the whole
+// surface: ~650 looks of ~4400 columns in one frame of a basin a cube was dropped
+// into, 2.9 million powderFarCan calls, seconds of frame on a desktop. The look
+// itself is unchanged (same order, same random draw, same marks), only its
+// questions are answered from here where nothing they read has changed since:
+// powderFarCan(i, j, L) reads the column's own cells L..L-2, its four sides'
+// L-1..L-3 (the lip), canBuildAt, and sinkBlocksPowder. A write to any of those
+// cells (setVoxel -> powderFarMemoTouch), a column made (createColumn) or a level
+// change drops the answer; one a sinker could have changed is never kept: a
+// column with a held cell in it or beside it, or one in or beside the box round
+// the busy sinkers, is asked every time, and a rebuilt sinker filing
+// (sinkGridSeq — every move of a sinker's box marks it stale) drops all of them.
+// false: every question is asked.
+const POWDER_FAR_MEMO = true;
+// One 16-bit word a column, its generation over its answer (gen << 2 | can):
+// a look reads one array, half the size of a stamp and an answer apart, and
+// the look is mostly that read. Generation 0 is never current.
+// var: setVoxel asks farMemoVal, and the world is written before this line runs.
+var farMemoL = NaN, farMemoGen = 0, farMemoSeq = -1, farMemoVal = null;
+const FAR_MEMO_GEN_MAX = 0x3fff;
+function powderFarMemoFlush() {
+  if (!farMemoVal) return;
+  if (++farMemoGen > FAR_MEMO_GEN_MAX) { farMemoVal.fill(0); farMemoGen = 1; }
+}
+function powderFarMemoDrop(i, j) {
+  if (i >= 0 && j >= 0 && i < GEN_N && j < GEN_N) farMemoVal[j * GEN_N + i] = 0;
+}
+// A held cell new in column (i, j): its answer and its sides' are not to be kept.
+function powderFarMemoNear(i, j) {
+  if (!farMemoVal) return;
+  powderFarMemoDrop(i, j);
+  for (let s = 0; s < 4; s++) powderFarMemoDrop(i + POWDER_SIDES[s][0], j + POWDER_SIDES[s][1]);
+}
+function powderFarMemoTouch(i, j, lvl) {
+  const d = farMemoL - lvl;
+  if (!(d >= 0 && d <= 3)) return;   // NaN (no level yet) included
+  if (d <= 2) powderFarMemoDrop(i, j);
+  if (d >= 1) for (let s = 0; s < 4; s++) powderFarMemoDrop(i + POWDER_SIDES[s][0], j + POWDER_SIDES[s][1]);
+}
+// Nothing a sinker holds or covers can bear on column (i, j)'s answer.
+function powderFarSinkFree(i, j) {
+  if (!sinkers.size) return true;
+  if (sinkHeldCols[j * GEN_N + i]) return false;
+  for (let s = 0; s < 4; s++) {
+    const ni = i + POWDER_SIDES[s][0], nj = j + POWDER_SIDES[s][1];
+    if (ni >= 0 && nj >= 0 && ni < GEN_N && nj < GEN_N && sinkHeldCols[nj * GEN_N + ni]) return false;
+  }
+  if (!sinkBusyN) return true;
+  const B = sinkBusyBox;
+  return colX(i + 1) <= B.x0 || colX(i - 1) >= B.x1 || colZ(j + 1) <= B.z0 || colZ(j - 1) >= B.z1;
+}
+// Made ready for a look at level lvl, once per look: nothing the look itself
+// does writes a cell or moves a sinker's box.
+function powderFarMemoPrep(lvl) {
+  if (!farMemoVal) { farMemoVal = new Uint16Array(GEN_N * GEN_N); farMemoGen = 1; }
+  if (sinkGridStale && sinkers.size) sinkGridBuild();
+  if (lvl !== farMemoL || sinkGridSeq !== farMemoSeq) { farMemoL = lvl; farMemoSeq = sinkGridSeq; powderFarMemoFlush(); }
+}
+// Column (i, j), in the field, not in the memo: asked, and kept if it may be.
+function powderFarCanMiss(k, i, j, lvl) {
+  const v = powderFarCan(i, j, lvl);
+  if (powderFarSinkFree(i, j)) farMemoVal[k] = (farMemoGen << 2) | v;
+  return v;
+}
 function powderFarLip(i, j, lvl) {
   if (lvl - 2 < VOX_FLOOR) return false;
   for (const [di, dj] of POWDER_SIDES) {
@@ -10081,17 +10177,30 @@ function powderFar(i, j, lvl, g, open) {
   const st = powderFarStamp, seen = powderFarSeen, from = powderFarFrom, q = powderFarQ, o = R * W + R;
   seen[o] = st; q[0] = o;
   const s0 = (Math.random() * 4) | 0;
+  if (POWDER_FAR_MEMO) powderFarMemoPrep(lvl);
+  // Window column (wi, wj) is field column base + wj * GEN_N + wi; a window
+  // wholly in the field needs no edge test per column.
+  const memo = POWDER_FAR_MEMO ? farMemoVal : null, mg = farMemoGen;
+  const inField = i - R >= 0 && j - R >= 0 && i + R < GEN_N && j + R < GEN_N, base = (j - R) * GEN_N + i - R;
   let head = 0, tail = 1, n = 1, found = -1;
   look: while (head < tail) {
     const at = q[head++], ai = at % W, aj = (at - ai) / W;
     for (let s = 0; s < 4; s++) {
-      const [di, dj] = POWDER_SIDES[(s0 + s) & 3], wi = ai + di, wj = aj + dj;
+      const sd = (s0 + s) & 3, wi = ai + POWDER_SIDE_DI[sd], wj = aj + POWDER_SIDE_DJ[sd];
       if (wi < 0 || wj < 0 || wi >= W || wj >= W) continue;
       const wk = wj * W + wi;
       if ((seen[wk] & 0x7fffffff) === st) continue;
       seen[wk] = st | 0x80000000;   // looked at; plain st once it is level ground the look went over
       if (++n > POWDER_FAR_CAP) break look;
-      const can = powderFarCan(i + wi - R, j + wj - R, lvl);
+      let can;
+      if (memo && inField) {
+        const k = base + wj * GEN_N + wi, e = memo[k];
+        can = e >> 2 === mg ? e & 3 : powderFarCanMiss(k, i + wi - R, j + wj - R, lvl);
+      } else if (memo) {
+        const ci = i + wi - R, cj = j + wj - R;
+        if (ci < 0 || cj < 0 || ci >= GEN_N || cj >= GEN_N) can = powderFarCan(ci, cj, lvl);
+        else { const k = cj * GEN_N + ci, e = memo[k]; can = e >> 2 === mg ? e & 3 : powderFarCanMiss(k, ci, cj, lvl); }
+      } else can = powderFarCan(i + wi - R, j + wj - R, lvl);
       if (!can) continue;
       from[wk] = at;
       if (can === 2) { found = wk; break look; }
@@ -10177,6 +10286,47 @@ function powderRollWalled() {
   Math.random();
   return -1;
 }
+// A column a surface cell rolls out of again and again in one frame (v327).
+// Water by pieces resting on its top (stone cubes come down on a basin) has
+// cells one over the level shuffled to and fro between columns beside them,
+// the far look (which does not see pieces) drawing each toward a gap the piece
+// side then refuses: 103 columns dirty for all 4096 shed rounds of a frame,
+// seconds a frame on a desktop, every frame. A cell that rolls is always
+// written on ground, so a column past POWDER_SHED_HOT rolls in a frame keeps
+// its surface where it is for the rest of the frame: nothing is left in the
+// air, the shuffle only stops. Legit settling never comes near it: a tunnel
+// bored through a sand bank peaks at 9 in a frame, an impact crater at 4
+// (the v327 kit's heaviest legit scenes). false: no count.
+const POWDER_SHED_CAP = true, POWDER_SHED_HOT = 64;
+const powderShedN = new Map();
+let powderShedFrame = -1;
+function powderShedHot(c) {
+  if (!POWDER_SHED_CAP) return false;
+  if (powderShedFrame !== frameCount) { powderShedFrame = frameCount; powderShedN.clear(); }
+  const n = (powderShedN.get(c) || 0) + 1;
+  powderShedN.set(c, n);
+  if (n > POWDER_SHED_HOT) { if (n === POWDER_SHED_HOT + 1) powderSnapGuard.hot++; return true; }
+  return false;
+}
+// A roll that comes straight back (v327). The roll out of a surface cell
+// follows the far look's way, and the settle from the side it rolled to looks
+// afresh; neither sees pieces, so beside a resting piece the two can disagree:
+// traced on water by stone cubes on a basin top, the cell rolls +i on the
+// shared way, the new look from there plans back through the cell it left and
+// on into the piece's column, the piece side refuses that step, and the cell is
+// written into the very cell it rolled out of. Nothing in the world changed,
+// but both writes marked the column dirty, so the next shed round did it
+// again, round after round (only POWDER_SHED_CAP ended it, at 64). A cell
+// whose roll ends where it began has had its answer for this frame: it stays,
+// on the ground it was already on, until next frame. false: it is asked again.
+const POWDER_SHED_STAY = true;
+const powderShedStay = new Set();
+let powderShedStayFrame = -1;
+let powderSettleAt = -1;   // the cell the last powderSettle wrote (gravCell), or -1
+function powderShedStays(i, j, lvl) {
+  if (powderShedStayFrame !== frameCount) { powderShedStayFrame = frameCount; powderShedStay.clear(); return false; }
+  return powderShedStay.size > 0 && powderShedStay.has(gravCell(i, j, lvl));
+}
 const powderShedMats = [];
 function shedColumn(c) {
   const top = topLvl[c];
@@ -10231,6 +10381,7 @@ function shedColumn(c) {
     // the slope (on powder it still rolls, so a hand-built pile keeps its angle;
     // angle 0 still runs).
     if (!MAT_STATS[under]?.powder && !reposeFlat[m] && isPlacedCell(i, j, lvl)) continue;
+    if (POWDER_SHED_STAY && powderShedStays(i, j, lvl)) continue;
     let roll = SHED_WALLED_SKIP && !reposeFlat[m] && powderWalled(i, j, lvl) ? powderRollWalled() : powderRoll(i, j, lvl, m);
     // Nor off into a piece lying beside it: the piece holds it in.
     // Nor down onto one: a piece in the cell under the side is ground to the slope, not a hole.
@@ -10238,6 +10389,7 @@ function shedColumn(c) {
                    || powderPieceBeside(colX(i + POWDER_SIDES[roll][0]), (lvl - 0.5) * BLOCK, colZ(j + POWDER_SIDES[roll][1])))) roll = -1;
     if (roll < 0) continue;
     if (gravGuard(i, j, lvl)) { o = voxOff[c] - VOX_FLOOR; lvl++; continue; }
+    if (powderShedHot(c)) continue;
     const far = powderFarWay;
     editBlock(i, j, lvl, AIR);   // brings down what was above, once the pass is done
     o = voxOff[c] - VOX_FLOOR;   // and whatever that placed may have moved the store
@@ -10253,7 +10405,11 @@ function shedColumn(c) {
     const ri = i + POWDER_SIDES[roll][0], rj = j + POWDER_SIDES[roll][1];
     const l = powderDropTo(ri, rj, lvl);
     if (l < 0) powderPour(colX(ri), (lvl + 0.5) * BLOCK, colZ(rj), m, null);
-    else powderSettle(ri, rj, l, m, far);
+    else {
+      powderSettleAt = -1;
+      powderSettle(ri, rj, l, m, far);
+      if (POWDER_SHED_STAY && powderSettleAt === gravCell(i, j, lvl)) powderShedStay.add(powderSettleAt);
+    }
   }
 }
 // (v277) No "press powder out from under" rule any more: a loose piece on powder
@@ -11183,12 +11339,37 @@ function meshInverse(mesh) {
 // `side` is how near the way's line a block's middle must be across it to be
 // met, POWDER_GAP (a cube's reach) unless given: a run on a piece square to the
 // grid asks with half a block, so it meets only the piece's column it is over.
-function powderSweep(mesh, x, y0, z, y1, side = POWDER_GAP) {
+// A piece's world matrix, made again only when what it is made from changed
+// (v327): every point question of every settling step near a piece composed it
+// afresh from the same pose, ~2 s of a basin frame. Kept for pieces in debris,
+// whose parents never move: the pose (or, not auto-updated, the matrix itself)
+// unchanged, updateWorldMatrix would write the same numbers.
+function pieceMatrixFresh(mesh) {
+  if (mesh.parent !== debris) { mesh.updateWorldMatrix(true, false); return; }
+  const ud = mesh.userData, a = ud.wmAt || (ud.wmAt = new Float64Array(16).fill(NaN));
+  if (mesh.matrixAutoUpdate) {
+    const p = mesh.position, q = mesh.quaternion, sc = mesh.scale;
+    if (ud.wmAuto && a[0] === p.x && a[1] === p.y && a[2] === p.z && a[3] === q.x && a[4] === q.y && a[5] === q.z && a[6] === q.w
+        && a[7] === sc.x && a[8] === sc.y && a[9] === sc.z) return;
+    mesh.updateWorldMatrix(true, false);
+    a[0] = p.x; a[1] = p.y; a[2] = p.z; a[3] = q.x; a[4] = q.y; a[5] = q.z; a[6] = q.w; a[7] = sc.x; a[8] = sc.y; a[9] = sc.z;
+    ud.wmAuto = true;
+    return;
+  }
+  const e = mesh.matrix.elements;
+  if (!ud.wmAuto && ud.wmAt0) { let same = true; for (let k = 0; k < 16; k++) if (a[k] !== e[k]) { same = false; break; } if (same) return; }
   mesh.updateWorldMatrix(true, false);
+  a.set(e); ud.wmAuto = false; ud.wmAt0 = true;
+}
+function powderSweep(mesh, x, y0, z, y1, side = POWDER_GAP) {
+  if (POWDER_MATRIX_KEEP) pieceMatrixFresh(mesh); else mesh.updateWorldMatrix(true, false);
   const inv = meshInverse(mesh);
   const A = _sweepA.set(x, y0, z).applyMatrix4(inv), D = _sweepD.set(x, y1, z).applyMatrix4(inv).sub(A);
   let best = Infinity;
   powderSweepAx = 0; powderSweepB = null;
+  // (A not finite: the loop's comparisons read NaN as near, the filing cannot.)
+  if (POWDER_POINT_GRID && y0 === y1 && side === POWDER_GAP && mesh.userData.blocks.length >= POWDER_POINT_GRID_MIN
+      && Number.isFinite(A.x + A.y + A.z) && powderPointFile(mesh).ok) return powderPointIn(mesh, A);
   // The way's own axis in the piece's frame: across it the reach is `side`.
   const dx = Math.abs(D.x), dy = Math.abs(D.y), dz = Math.abs(D.z);
   const along = dy >= dx && dy >= dz ? 1 : dx >= dz ? 0 : 2;
@@ -11206,6 +11387,57 @@ function powderSweep(mesh, x, y0, z, y1, side = POWDER_GAP) {
     if (t0 < best) { best = t0; powderSweepAx = ax; powderSweepB = b; }
   }
   return best;
+}
+// A point asked of a big piece (powderInPiece, every step of every settling cell
+// near it: a stone cube of 8^3 dropped into water was ~3 s of one frame's walks,
+// all of it the loop over 512 blocks per question). With no way to go along (D
+// is 0 exactly, y0 === y1) and every reach POWDER_GAP, the loop above only asks
+// which blocks are nearer than POWDER_GAP to A on every axis, and answers 0 with
+// the first such block in lattice order, or Infinity with none. The same
+// question here, asked only of the blocks filed in the piece's own-frame cells
+// round A (one cell wider each way than the reach, so rounding in the filing
+// can never leave one out), with the same comparisons and the lowest index
+// kept. Refiled when the lattice is another array, another length or edited
+// (stressLat, which every move of a block's spot bumps). false: always the loop.
+const POWDER_POINT_GRID = true, POWDER_POINT_GRID_MIN = 64;
+const POWDER_MATRIX_KEEP = true;   // false: every sweep composes the piece's matrix
+function powderPointFile(mesh) {
+  const ud = mesh.userData, lat = ud.blocks, rev = ud.stressLat | 0;
+  let G = ud.pointGrid;
+  if (G && G.lat === lat && G.n === lat.length && G.rev === rev) return G;
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (const b of lat) {
+    const cx = Math.floor(b.pos.x / BLOCK), cy = Math.floor(b.pos.y / BLOCK), cz = Math.floor(b.pos.z / BLOCK);
+    if (cx < x0) x0 = cx; if (cx > x1) x1 = cx; if (cy < y0) y0 = cy; if (cy > y1) y1 = cy; if (cz < z0) z0 = cz; if (cz > z1) z1 = cz;
+  }
+  const ok = Number.isFinite(x0 + x1 + y0 + y1 + z0 + z1);   // a block's spot not finite: the loop answers
+  const nx = ok ? x1 - x0 + 1 : 1, ny = ok ? y1 - y0 + 1 : 1, nz = ok ? z1 - z0 + 1 : 1;
+  G = ud.pointGrid = { ok, lat, n: lat.length, rev, x0, y0, z0, nx, ny, nz, head: new Int32Array(nx * ny * nz).fill(-1), next: new Int32Array(lat.length) };
+  if (ok) for (let q = lat.length - 1; q >= 0; q--) {
+    const b = lat[q], c = ((Math.floor(b.pos.y / BLOCK) - y0) * nz + Math.floor(b.pos.z / BLOCK) - z0) * nx + Math.floor(b.pos.x / BLOCK) - x0;
+    G.next[q] = G.head[c]; G.head[c] = q;
+  }
+  return G;
+}
+function powderPointIn(mesh, A) {
+  const G = powderPointFile(mesh), lat = G.lat, g = POWDER_GAP;
+  const ax = A.x, ay = A.y, az = A.z;
+  const ix0 = Math.max(0, Math.floor((ax - g) / BLOCK) - 1 - G.x0), ix1 = Math.min(G.nx - 1, Math.floor((ax + g) / BLOCK) + 1 - G.x0);
+  const iy0 = Math.max(0, Math.floor((ay - g) / BLOCK) - 1 - G.y0), iy1 = Math.min(G.ny - 1, Math.floor((ay + g) / BLOCK) + 1 - G.y0);
+  const iz0 = Math.max(0, Math.floor((az - g) / BLOCK) - 1 - G.z0), iz1 = Math.min(G.nz - 1, Math.floor((az + g) / BLOCK) + 1 - G.z0);
+  let first = -1;
+  for (let iy = iy0; iy <= iy1; iy++) for (let iz = iz0; iz <= iz1; iz++) for (let ix = ix0; ix <= ix1; ix++) {
+    for (let q = G.head[(iy * G.nz + iz) * G.nx + ix]; q >= 0; q = G.next[q]) {
+      if (first >= 0 && q > first) break;   // filed in lattice order: the rest come later
+      const p = lat[q].pos;
+      if (Math.abs(p.x - ax) >= g || Math.abs(p.y - ay) >= g || Math.abs(p.z - az) >= g) continue;
+      first = q;
+      break;
+    }
+  }
+  powderSweepAx = 0;
+  powderSweepB = first >= 0 ? lat[first] : null;
+  return first >= 0 ? 0 : Infinity;
 }
 // A grain falling on past a piece goes on down the piece's own column it came
 // to — the lattice axis nearest world down — `dist` further, short of any block
@@ -11385,7 +11617,7 @@ const POWDER_WALK_DROP = 2;
 // left is picked up next frame.
 const POWDER_SNAP_ROUNDS = 4096;   // flow passes, shed rounds, or snap rounds in one frame
 const POWDER_WALK_GUARD = 1 << 14; // columns one settling cell may cross
-const powderSnapGuard = { flow: 0, shed: 0, rounds: 0, walk: 0, sealed: 0 };
+const powderSnapGuard = { flow: 0, shed: 0, rounds: 0, walk: 0, sealed: 0, hot: 0, bounce: 0 };
 // Whether a run made now is a touch (snap). Off only while a save's falling
 // runs are put back.
 let powderTouch = true;
@@ -11398,8 +11630,8 @@ let powderTouch = true;
 // poured on; what is built onto one by hand is still built on).
 const POWDER_PIECE_CARRY = true;
 function powderRunNew(i, j, y, v, from) {
-  const r = powderRunPool.pop() || { i: 0, j: 0, c: 0, y: 0, v: 0, mats: [], from: null, dead: false, snap: false };
-  r.i = i; r.j = j; r.c = j * GEN_N + i; r.y = y; r.v = v; r.mats.length = 0; r.from = from; r.dead = false; r.snap = powderTouch;
+  const r = powderRunPool.pop() || { i: 0, j: 0, c: 0, y: 0, v: 0, mats: [], from: null, past: null, pastC: -1, pastY: NaN, ground: -1, dead: false, snap: false };
+  r.i = i; r.j = j; r.c = j * GEN_N + i; r.y = y; r.v = v; r.mats.length = 0; r.from = from; r.past = null; r.ground = -1; r.dead = false; r.snap = powderTouch;
   powderRuns.push(r);
   let L = powderRunCols.get(r.c);
   if (!L) powderRunCols.set(r.c, L = []);
@@ -11419,6 +11651,7 @@ function powderRunKill(r) {
   r.dead = true;
   powderRunUnfile(r);
   r.from = null;   // a mesh held here would outlive its piece
+  r.past = null;
 }
 function powderRunMove(r, i, j) {
   powderRunUnfile(r);
@@ -11553,6 +11786,7 @@ function powderSettle(i, j, lvl, m, far = null) {
   powderLate = true;
   editBlock(i, j, lvl, m);
   powderLate = false;
+  powderSettleAt = gravCell(i, j, lvl);
   powderLandedAdd(i, j, lvl, m);
 }
 // Cells written by a settle but not yet in their chunk's mesh (powderLateMark):
@@ -11602,7 +11836,15 @@ function powderRunOnPiece(r, mesh, hitY) {
     const to = powderRunOff(x, hitY, z);
     if (to) { powderRunMove(r, colI(to.x), colJ(to.z)); r.y = hitY / BLOCK - 0.5; return; }
     // Nowhere clear within reach: it goes on past this piece, not into it.
-    r.from = mesh;
+    // And past every other one it was sent past from this same spot (v327):
+    // `from` alone forgot the last, so a cell between two turned chips with
+    // nowhere clear went past one into the other, past that into the first,
+    // every pass for good — the 4096 x 4096 snap guards of a frame, minutes on
+    // a desktop, a frozen phone (an impact's chips in a pocket of the floor).
+    // Only a hit on a piece it has already been sent past without moving
+    // since is answered differently, and that hit had no other answer than
+    // the same cycle. false: `from` only.
+    powderRunPast(r, mesh);
     return;
   }
   const M = r.mats, at = powderSpot.set(x, hitY, z);
@@ -11630,11 +11872,52 @@ function powderRunOnPiece(r, mesh, hitY) {
   powderRunKill(r);
 }
 const _runPast = new THREE.Vector3();
+function powderRunPast(r, mesh) {
+  if (POWDER_PAST_ALL) {
+    if (r.from && r.pastC === r.c && r.pastY === r.y) (r.past ||= []).push(r.from);
+    else if (r.past) r.past.length = 0;
+    r.pastC = r.c; r.pastY = r.y;
+  }
+  r.from = mesh;
+}
 // The nearest column to x, z, within POWDER_OFF_R, a run at height y can go to
 // and fall from without meeting any piece, its cell there free of the ground;
 // null if none. Into powderSpot. Clear all the way down, so a run is never
 // passed to and fro between two pieces lying together.
 const POWDER_OFF_R = 12;
+const POWDER_PAST_ALL = true;
+// A piece met over and over from one spot in one frame (v327). Angle-0 powder
+// is drawn to the lowest ground it can find, and the far look does not see
+// pieces: a gap beside a sinking cube, or a pocket of the floor an impact's
+// chips lie in, draws a basin's water, which drops onto the piece, is sent off
+// it (or past it, or laid on and rolled off), and walks straight back, the runs
+// it meets joining on the way — 14,317 cells of water in one run in the air, or
+// 27,887 one-cell runs queued at one pocket, the frame's 4096 x 4096 snap
+// guards spun out every frame: minutes a frame on a desktop, the frozen phone.
+// Past POWDER_BOUNCE_MAX meetings from one spot in a frame, a run from there
+// goes on by the ground's rules alone and lands as it would with no piece
+// there; the cell it settles in is then the piece's medium, which the sink
+// rules move out of its way as for any powder it lies in. Below that count
+// nothing differs. A run the piece sends to another column meets it from a
+// new spot each time, so the frame's meetings are counted too: past
+// POWDER_BOUNCE_FRAME every run lands by the ground's rules for the rest of the
+// frame. Both sit well over play: sand poured over sixteen stone cubes peaks
+// at 22 from one spot and 407 in a frame (the v327 kit's heaviest legit scene).
+// false: no count.
+const POWDER_BOUNCE = true, POWDER_BOUNCE_MAX = 128, POWDER_BOUNCE_FRAME = 8192;
+const powderBounce = new Map();
+let powderBounceFrame = -1, powderBounceN = 0;
+// Counted for run r meeting a piece where it is now; true once it is past the limit.
+function powderBounced(r) {
+  if (!POWDER_BOUNCE) return false;
+  if (powderBounceFrame !== frameCount) { powderBounceFrame = frameCount; powderBounce.clear(); powderBounceN = 0; }
+  if (++powderBounceN > POWDER_BOUNCE_FRAME) { if (powderBounceN === POWDER_BOUNCE_FRAME + 1) powderSnapGuard.bounce++; return true; }
+  const key = r.c * 8192 + Math.floor(r.y);
+  const n = (powderBounce.get(key) || 0) + 1;
+  powderBounce.set(key, n);
+  if (n === POWDER_BOUNCE_MAX + 1) powderSnapGuard.bounce++;
+  return n > POWDER_BOUNCE_MAX;
+}
 const POWDER_OFF_RING = [];
 for (let a = -POWDER_OFF_R; a <= POWDER_OFF_R; a++) for (let b = -POWDER_OFF_R; b <= POWDER_OFF_R; b++) if (a || b) POWDER_OFF_RING.push([a, b, a * a + b * b]);
 POWDER_OFF_RING.sort((u, w) => u[2] - w[2]);
@@ -11741,14 +12024,14 @@ function powderFlowPass(dt, snapOnly) {
       }
     }
     // A piece on the way, over the ground it would stop on; never the one it left.
-    if (pieces) {
+    if (pieces && r.ground !== frameCount) {
       powderFlowFile();
       const x = colX(i), z = colZ(j), yb0 = (y0 + 0.5) * BLOCK, yb1 = (Math.max(y1, land === -Infinity ? y1 : land) + 0.5) * BLOCK;
       const near = powderCatchCells.get(debrisCellKey(Math.floor(x / CATCH_CELL), Math.floor(z / CATCH_CELL)));
       let hit = null, t = Infinity;
       if (near) for (let e = 0; e < near.length; e += 2) {
         const m = near[e], c = near[e + 1];
-        if (m === r.from) continue;
+        if (m === r.from || (r.past && r.past.length && r.pastC === r.c && r.pastY === y0 && r.past.includes(m))) continue;
         if (yb1 > c.maxY + 2 * BLOCK || yb0 < c.minY - 2 * BLOCK || x < c.minX - 2 * BLOCK || x > c.maxX + 2 * BLOCK
          || z < c.minZ - 2 * BLOCK || z > c.maxZ + 2 * BLOCK) continue;
         // Square to the grid, a run is met only by the piece's column nearest its
@@ -11758,7 +12041,8 @@ function powderFlowPass(dt, snapOnly) {
         const tm = powderSweep(m, x, yb0, z, yb1, POWDER_PIECE_CARRY && pieceSquare(m.quaternion) ? HALF_BLOCK * (1 + 1e-9) : POWDER_GAP);
         if (tm < t) { t = tm; hit = m; }
       }
-      if (hit) {
+      if (hit && powderBounced(r)) r.ground = frameCount;   // this frame, on to the ground's rules below
+      else if (hit) {
         powderRunOnPiece(r, hit, yb0 + (yb1 - yb0) * t);
         continue;
       }
@@ -14558,6 +14842,7 @@ const sandboxBtn = document.getElementById('btn-sandbox');
 // existing columns in place rather than tearing down their metadata.
 function createColumn(k, lvl) {
   if (topLvl[k] !== NO_COLUMN) return;
+  powderFarMemoFlush();   // canBuildAt changes here, under no setVoxel
   topLvl[k] = lvl;
   bedLvl[k] = lvl;
   bedMat[k] = ROCK;
@@ -14590,7 +14875,7 @@ function toggleSandbox() {
     colClear.fill(0);
     powderDirty.clear();
     powderCarry.length = 0;
-    powderFarNone = 0; powderFarLast = -1;
+    powderFarNone = 0; powderFarLast = -1; powderFarMemoFlush();
     for (let c = 0; c < chunkMesh.length; c++) {
       if (chunkMesh[c]) rebuildChunk(c);
     }
@@ -19758,7 +20043,7 @@ function applyWorldCore(s) {
   powderQHead = 0;
   powderDirty.clear();
   powderCarry.length = 0;
-  powderFarNone = 0; powderFarLast = -1;
+  powderFarNone = 0; powderFarLast = -1; powderFarMemoFlush();
   impactPending.length = 0;   // a crater still being dug in the world that was left
   loneGlides.length = 0; loneScanAt = 0;   // its pieces are gone, and this world's clock starts over
 

@@ -2120,11 +2120,130 @@ function sinkPressScan() {
     if (asleep && disp * SINK_TUNE.floatScale > hull.W * (1 + SINK_TUNE.sleepImb)) S.wakeUp();
   }
 }
+// FLOAT_SETTLE: the lift on a floater as flat liquid gives it. The lift by
+// cells (each cube's overlap with each liquid cell) is a vertical force that
+// changes with where across the cells a cube is, and a liquid's surface is
+// only flat to a cell: a lake lies a level higher on one side of a piece than
+// the other wherever its count of cells does not divide evenly, and the cells
+// the piece moved out round itself make steps of their own. A force upward
+// that is stronger on one side than the other has no potential behind it, so
+// a piece rolling over such a step is a waterwheel: a cube coming up on the
+// high side is lifted further than one going down on the low side is held,
+// and every turn draws work in (v328 kit, 30 floaters touching: lift's work on
+// their turning +573k against -746k of hold-back, at the cubes' own middles
+// as much as at the overlaps', so the overlap's offset was not it; all 30
+// rolling at ~2 rad/s at frame 900). Real water levels itself far finer than
+// a block, so a floater in one liquid takes the lift flat water would give:
+// how much it displaces is what the cells say (sinkScan, unchanged, so it
+// floats no higher or lower, and the balance tests read the same weight), put
+// on its cubes as the volume of each under the one level at which their
+// volumes under it add up to that, through each cube's own middle. Its
+// spread over the cubes no longer changes with where across the grid they
+// are, only with how high, so there is nothing to draw on in a roll: a
+// floater rights itself to the pose flat water puts it in and the bob dies
+// out (sinkHoldSolve's wave). Floaters only (lighter than the liquid, all of
+// what they are in that one liquid): a piece sinking in it, the player, and
+// a piece in grains keep the lift by cells. _sinkFT: its turn about the
+// body's middle, for the rest tests.
+const _sinkFT = [0, 0, 0], _sinkFR = new CANNON.Vec3();
+// The one liquid all of the scan's overlaps are in, if the hull floats in it; else -1.
+function sinkFlatMat(S, O, hull, L, n) {
+  if (!FLOAT_SETTLE || O || S === playerBody || !n) return -1;
+  const m = L[5];
+  if (MAT_STATS[m].angle !== 0 || !sinkFloatsIn(hull, m)) return -1;
+  for (let t = 1; t < n; t++) if (L[t * SINK_L + 5] !== m) return -1;
+  return m;
+}
+// Puts the flat lift on S (with push; else only _sinkFT) for overlaps worth
+// vol cells in liquid m; G is the scan's grid of the hull's cube middles.
+function sinkFlatLift(S, O, Od, hull, K, m, vol, push) {
+  const G = _sinkGC, nc = hull.count, g = world.gravity, wm = sinkWeight(m);
+  let lo = Infinity, hi = -Infinity;
+  for (let c = 0; c < nc; c++) { const y = G[c * 3 + 1]; if (y - 0.5 < lo) lo = y - 0.5; if (y + 0.5 > hi) hi = y + 0.5; }
+  // The level: what is under it grows with it, so halving finds it (to 1e-12 of a block).
+  const V = Math.min(vol, nc);
+  for (let it = 0; it < 40; it++) {
+    const mid = (lo + hi) * 0.5;
+    let u = 0;
+    for (let c = 0; c < nc; c++) u += Math.min(1, Math.max(0, mid - G[c * 3 + 1] + 0.5));
+    if (u < V) lo = mid; else hi = mid;
+  }
+  const lv = (lo + hi) * 0.5;
+  _sinkFT[0] = 0; _sinkFT[1] = 0; _sinkFT[2] = 0;
+  for (let c = 0; c < nc; c++) {
+    const f = Math.min(1, Math.max(0, lv - G[c * 3 + 1] + 0.5));
+    if (!(f > 0)) continue;
+    const kg = f * wm * K * SINK_TUNE.floatScale;
+    S.quaternion.vmult(_sinkV.set(hull.cells[c * 4], hull.cells[c * 4 + 1], hull.cells[c * 4 + 2]), _sinkFR);
+    const rx = _sinkFR.x, ry = _sinkFR.y, rz = _sinkFR.z;
+    _sinkFT[0] += -ry * g.z * kg + rz * g.y * kg; _sinkFT[1] += -rz * g.x * kg + rx * g.z * kg; _sinkFT[2] += -rx * g.y * kg + ry * g.x * kg;
+    if (push) { _sinkP.set(S.position.x + rx, S.position.y + ry, S.position.z + rz); sinkPush(S, O, Od, _sinkP, -g.x * kg, -g.y * kg, -g.z * kg); }
+  }
+}
+// FLOAT_SETTLE: a collider swap woke every sleeper over the chunk unless
+// all its writes filled air (swapChunkCollider). A lake's chunk swaps every
+// time a cell of water moves anywhere in it, so a resting floater was woken
+// over and over by water moving a dozen blocks off, and each time had to go
+// a whole Rest ticks awake again before it could sleep (v328 kit: most of a
+// 30-floater crowd asleep by frame ~100, all woken together at ~345, asleep
+// again at ~430). A floater borne by a liquid alone (st.wet, as it went to
+// sleep) is not held by the collider at all; the water round it is what
+// holds it. So for it the swap - any swap, filling ones too, since water
+// rising round it lifts it as surely as water going lowers it - asks the
+// question the step would: with the liquid as it lies now, is it still in
+// balance, in weight and in turn (the same sleepImb tests as st.busy)? If
+// not it is woken and goes on from there; if so it sleeps on. Dug out from
+// under, it is woken the moment its water drains; pushed, or a load put on
+// it, its contacts wake it as before.
+const sinkRecheck = new Set();
+function sinkFloatRecheck() {
+  const gx = world.gravity.x, gy = world.gravity.y, gz = world.gravity.z;
+  for (const S of sinkRecheck) {
+    const st = sinkers.get(S);
+    if (!st || S.world !== world || S.sleepState !== CANNON.Body.SLEEPING) continue;
+    const hull = sinkHull(S.debrisMesh, S);
+    if (!(hull.W > 0)) continue;
+    const K = S.mass / hull.W;
+    let disp = 0, liq = 0, ltx = 0, lty = 0, ltz = 0, gone = false;
+    for (const M of st.media.values()) {
+      const F = sinkFrame(M);
+      if (F === false || (M.body && M.body.world !== world)) { gone = true; break; }
+      sinkScan(S, hull, M, F);
+      const L = _sinkList, acc = _sinkAcc;
+      // The turn the step would put on it: flat liquid's, as sinkForces does.
+      const fm = sinkFlatMat(S, M.body, hull, L, _sinkLen);
+      if (fm >= 0) {
+        let vol = 0;
+        for (let t = 0; t < _sinkLen; t++) vol += sinkShare(L, t * SINK_L, acc);
+        const wm = sinkWeight(fm);
+        disp += vol * wm; liq += vol * wm;
+        sinkFlatLift(S, null, false, hull, K, fm, vol, false);
+        ltx += _sinkFT[0]; lty += _sinkFT[1]; ltz += _sinkFT[2];
+        continue;
+      }
+      for (let t = 0; t < _sinkLen; t++) {
+        const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
+        const wm = sinkWeight(m), kg = share * wm * K * SINK_TUNE.floatScale;
+        disp += share * wm;
+        if (MAT_STATS[m].angle !== 0) continue;
+        liq += share * wm;
+        const rx = L[k + 8] - S.position.x, ry = L[k + 9] - S.position.y, rz = L[k + 10] - S.position.z;
+        ltx += -ry * gz * kg + rz * gy * kg; lty += -rz * gx * kg + rx * gz * kg; ltz += -rx * gy * kg + ry * gx * kg;
+      }
+    }
+    if (gone || !(disp > 0) || liq < disp * (1 - 1e-9)
+      || Math.abs(hull.W - disp * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * hull.W
+      || Math.hypot(ltx, lty, ltz) > SINK_TUNE.sleepImb * S.mass * Math.abs(gy) * BLOCK) { sinkFloatRecheckWoke++; S.wakeUp(); }
+  }
+  sinkRecheck.clear();
+}
+let sinkFloatRecheckWoke = 0;   // (for the test kit)
 function sinkForces(h) {
   sinkBusyN = 0;
   sinkGridStale = true;
   if (world.stepnumber % SINK_PRESS_EVERY === 0) sinkPressScan();
   if (!sinkers.size) return;
+  if (sinkRecheck.size) sinkFloatRecheck();
   const step = world.stepnumber, gx = world.gravity.x, gy = world.gravity.y, gz = world.gravity.z;
   for (const [S, st] of sinkers) {
     if (S.world !== world || !sinkBody(S)) { sinkForget(S, st); continue; }
@@ -2132,7 +2251,7 @@ function sinkForces(h) {
     const hull = sinkHull(S.debrisMesh, S);
     if (!(hull.W > 0)) continue;
     const K = S.mass / hull.W;
-    let disp = 0, vol = 0, press = 0;
+    let disp = 0, vol = 0, press = 0, liq = 0, ltx = 0, lty = 0, ltz = 0;
     // What rests on it, at its true weight (sinkLoadsGather, last step).
     // A landing's blow is no weight: what pushed is never made up to more
     // than all that rests on it weighs (ld.wb), or the blow on a light piece
@@ -2164,15 +2283,30 @@ function sinkForces(h) {
       press += pr;
       const Od = O && O.type === CANNON.Body.DYNAMIC;
       // Lift first, so the hold-back is solved against the motion the step is
-      // heading for with it in.
+      // heading for with it in. A floater in one liquid takes flat liquid's
+      // (sinkFlatLift): the same weight displaced, spread by level alone.
+      const fm = sinkFlatMat(S, O, hull, L, nIn);
+      let fv = 0;
       for (let t = 0; t < nIn; t++) {
         const k = t * SINK_L, m = L[k + 5], share = L[k + 6] / Math.max(1, acc[L[k + 1]]);
         const wm = sinkWeight(m), kg = share * wm * K * SINK_TUNE.floatScale;
         disp += share * wm; vol += share;
+        if (fm >= 0) {
+          fv += share; liq += share * wm;
+          if (L[k + 7]) { const r = M.rec.get(fricKey(L[k + 2], L[k + 3], L[k + 4])); if (r) r.at = step; }
+          continue;
+        }
         _sinkP.set(L[k + 8], L[k + 9], L[k + 10]);
         sinkPush(S, O, Od, _sinkP, -gx * kg, -gy * kg, -gz * kg);
+        if (FLOAT_SETTLE && MAT_STATS[m].angle === 0) {
+          // The lift's turn on it about its middle (for the rest test below).
+          const rx = _sinkP.x - S.position.x, ry = _sinkP.y - S.position.y, rz = _sinkP.z - S.position.z;
+          liq += share * wm;
+          ltx += -ry * gz * kg + rz * gy * kg; lty += -rz * gx * kg + rx * gz * kg; ltz += -rx * gy * kg + ry * gx * kg;
+        }
         if (L[k + 7]) { const r = M.rec.get(fricKey(L[k + 2], L[k + 3], L[k + 4])); if (r) r.at = step; }
       }
+      if (fm >= 0) { sinkFlatLift(S, O, Od, hull, K, fm, fv, true); ltx += _sinkFT[0]; lty += _sinkFT[1]; ltz += _sinkFT[2]; }
       // The player's volume in the ground's powder (cells of it he has pushed
       // aside and is sitting in count, as they do for his lift).
       if (S === playerBody && !O) for (let t = 0; t < nIn; t++) {
@@ -2180,7 +2314,7 @@ function sinkForces(h) {
         playerPowderVol += sh;
         playerLevelVol[hull.lvl[L[t * SINK_L]]] += sh;
       }
-      sinkHoldSolve(S, O, Od, h, L, acc, K, hull);
+      sinkHoldSolve(S, O, Od, h, L, acc, K, hull, M, F);
       if (S === playerBody && nIn) sinkFeetBear(S, O, Od, h, L, acc, K);
       // A record no part of the hull reaches any more has been left behind:
       // it is room the powder the piece pushes out of its way flows back into
@@ -2197,6 +2331,21 @@ function sinkForces(h) {
     // way down. With weightSpeed 0 the weight moves it nowhere, so it is not.
     st.busy = Math.abs(hull.W + load - (disp + press) * SINK_TUNE.floatScale) > SINK_TUNE.sleepImb * (hull.W + load) && step - st.rigidAt > SINK_TUNE.rigidSteps && disp + press > 0
       && SINK_TUNE.weightSpeed > 0;
+    // FLOAT_SETTLE: a floater rocking at its waterline is in balance by weight
+    // at every moment of the swing, and slow at the ends of it (under cannon's
+    // sleep speed), so cannon put it to sleep tilted part way through a roll.
+    // Off balance in turn is still on its way, as off balance in weight is:
+    // the lift's turn on it over Sleep balance of its weight on a block's arm.
+    // Only a piece borne wholly by a liquid: in a grain the friction holds a
+    // turned piece where it is (it may sleep there, as before), and a load on
+    // it, or anything rigid it leans on, turns it too.
+    if (FLOAT_SETTLE && !st.busy && !load && S !== playerBody && !S.fixedRotation && step - st.rigidAt > SINK_TUNE.rigidSteps && disp > 0 && !press
+      && liq >= disp * (1 - 1e-9) && SINK_TUNE.weightSpeed > 0
+      && Math.hypot(ltx, lty, ltz) > SINK_TUNE.sleepImb * S.mass * Math.abs(gy) * BLOCK) st.busy = true;
+    // Borne by a liquid and nothing else (no load, nothing rigid, no press):
+    // if it sleeps like this, what can move it is the liquid round it, and
+    // that is what the collider swap asks about (sinkFloatRecheck).
+    st.wet = FLOAT_SETTLE && !load && !press && S !== playerBody && disp > 0 && liq >= disp * (1 - 1e-9) && step - st.rigidAt > SINK_TUNE.rigidSteps;
     if (st.busy) { sinkBusyN++; if (S.sleepState !== CANNON.Body.AWAKE) S.wakeUp(); }
     if (!st.media.size && !st.owed.length) { sinkers.delete(S); sinkGridStale = true; }
   }
@@ -2369,7 +2518,48 @@ let playerLevelVol = new Float64Array(0);   // ... and of each level of it, sole
 const _skD = new Float64Array(36), _skA = new Float64Array(42), _skX = new Float64Array(6);
 const _skIw = new Float64Array(9), _skU = new Float64Array(6), _skV = new Float64Array(6), _skDead = [false, false, false, false, false, false];
 let _skUG = new Float64Array(192), _skDW = new Float64Array(512), _skRate = new Float64Array(512), _skPos = new Float64Array(512);
-function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
+// FLOAT_SETTLE (v329). Floaters in water never came to rest: a crowd of
+// small wood pieces kept bobbing and turning for good (v328: 30 of 30 awake
+// after 30 s, their spin growing from 1.3 to 3 rad/s), and every frame of it
+// moved water, remeshed, re-laid the stress layout and kept the step busy.
+// Nothing took a bob out: water's friction is 0, and the plow only bites
+// cells being freshly pushed into, as the square of the speed, so a small
+// bob never died; and the lift, a vertical force whose size depends on where
+// across the cells a cube is, has no side pressure to go with it, so it is
+// not quite a potential and a turning piece can draw a little energy from it
+// each turn. What a real floater loses its motion to is the waves it makes:
+// a piece moving the water's surface radiates its motion away. The surface's
+// impedance is its density times the speed of the shortest wave the grid
+// holds (2 blocks long, c = sqrt(g BLOCK / pi)) over the area of the surface
+// the piece cuts: a surface cell it covers ox x oz of holds it back with
+// sinkWeight x ox x oz x K x sqrt(g / (pi BLOCK)) per m/s (a whole cell's
+// water mass x ~4/s), in the same hold-back as friction (speedDiv scales and
+// weightSpeed divides it as they do friction). By area, not by how deep the
+// cube is in that cell: a piece standing on end cuts a whole cell of surface
+// with a sliver of its top cube in it. Only cells at a liquid's surface
+// (place angle 0: no grain makes waves), and only for a piece that floats in
+// that liquid (lighter than it, all told): a piece that sinks in it passes
+// its surface once, and its way down - momentum first, weight speed - is
+// left exactly as it was. None of it is in the lift, so no rest depth moves.
+// Not the player: his strokes and wading answer to the water as tuned.
+// The same switch puts flat liquid's lift on a floater (sinkFlatLift: the
+// waterwheel the cell-stepped surface made of a rolling piece was the energy
+// the bob never lost), keeps a floater asleep through water moving elsewhere
+// in its chunk unless its balance is really gone (sinkFloatRecheck), keeps
+// one rocking from sleeping tilted part way (the turn test in sinkForces),
+// and fills the dry well a plunge left round it (sinkLiquidPit).
+// false: v328 (floaters tumble on).
+let FLOAT_SETTLE = true;
+// Whether hull h floats in medium m: lighter than the liquid it displaces.
+const sinkFloatsIn = (h, m) => h.W < h.count * sinkWeight(m) * SINK_TUNE.floatScale;
+// Whether medium cell (i, j, l) is at the top of its medium: nothing of it,
+// nor a cell the sinker moved out and still keeps, over it.
+function sinkSurfaceCell(M, F, i, j, l) {
+  const k = fricKey(i, j, l + 1);
+  if (M.rec.has(k)) return false;
+  return !sinkMedium(F ? F.cells.get(k) : voxelAt(i, j, l + 1));
+}
+function sinkHoldSolve(S, O, Od, h, L, acc, K, hull, M, F) {
   if (!_sinkLen) return;
   const wl = 1 / S.mass + (Od ? 1 / O.mass : 0);
   debrisInertiaWorld(S, _skIw, false);
@@ -2449,10 +2639,15 @@ function sinkHoldSolve(S, O, Od, h, L, acc, K, hull) {
     }
   }
   const pd = k1 > 0 ? SINK_TUNE.speedDiv ** 2 / k1 : 0;
+  const wave = FLOAT_SETTLE && S !== playerBody ? SINK_TUNE.speedDiv * Math.sqrt(Math.abs(world.gravity.y) / (Math.PI * BLOCK)) : 0;
   let c0 = 0, mx = 0, my = 0, mz = 0, xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0, cs = 0;
   for (let t = 0; t < n; t++) {
     const k = t * SINK_L, r = L[k + 1];
     let c = sinkShare(L, k, acc) * K * sinkCellHold(L, k);
+    if (wave && MAT_STATS[L[k + 5]].angle === 0 && sinkFloatsIn(hull, L[k + 5]) && sinkSurfaceCell(M, F, L[k + 2], L[k + 3], L[k + 4])) {
+      const g = L[k] * 3, area = (1 - Math.abs(G[g] - L[k + 2])) * (1 - Math.abs(G[g + 2] - L[k + 3]));
+      c += area / Math.max(1, acc[r]) * K * sinkWeight(L[k + 5]) * wave;
+    }
     if (S === playerBody) cs += c;
     if (k1 > 0 && DW[t] > 0 && rate[r] > 0 && acc[r] < 1) {
       const cp = pd * K * sinkWeight(L[k + 5]) * DW[t] * rate[r] / pos[r];
@@ -2691,6 +2886,7 @@ function sinkRelocatePass() {
     }
     const hull = sinkHull(S.debrisMesh, S);
     const scanned = sinkRelocateScan(S, st, hull, step);
+    if (FLOAT_SETTLE && S !== playerBody && S.sleepState !== CANNON.Body.SLEEPING && st.media.has(SINK_GROUND)) sinkLiquidPit(S, hull);
     // Room and carried blocks a piece still has when it stops: the room is
     // filled first (from what it carries, else from the surface round it)
     // even with nothing new taken, then what it carries goes down by the old
@@ -2838,6 +3034,64 @@ function sinkPullSurface(S, M, F, hull, bk, b) {
   sinkStats.moved++; sinkStats.placedGround++; sinkStats.placedBehind++; sinkStats.pulled++;
   sinkUnbehind(M, bk, b);
   return true;
+}
+// FLOAT_SETTLE: a liquid has no slope, so it has no pit either. Water only
+// moves at its surface (the powder rules), so the air a floater's splash or
+// plunge left round it under the water's level stayed open while the piece
+// lay in it, and the piece found its balance there on the little water it
+// still touched: a calmed floater came to rest a block or more too deep, in
+// a dry well. An air cell the piece reaches into but does not take (no
+// cube's middle within moveAt of its middle, so the next scan leaves it be),
+// with a liquid the piece floats in beside it at its level, is filled from
+// the top of the nearest column of that liquid round the piece that stands
+// higher (as sinkPullSurface fills room behind it): one cell moved, none
+// made or lost, and the piece then floats on what a liquid really puts round
+// it. Floaters only: a piece sinking in the liquid goes down as before.
+const SINK_PIT_PER = 4;   // cells filled per piece per pass: a pit fills over a few frames
+function sinkLiquidPit(S, hull) {
+  sinkGridCells(S, hull);
+  const G = _sinkGC, nc = hull.count, near = SINK_TUNE.moveAt;
+  let boxes = null, filled = 0;
+  for (let c = 0; c < nc && filled < SINK_PIT_PER; c++) {
+    const x0 = Math.floor(G[c * 3]), l0 = Math.floor(G[c * 3 + 1]), z0 = Math.floor(G[c * 3 + 2]);
+    for (let d = 0; d < 8 && filled < SINK_PIT_PER; d++) {
+      const i = x0 + (d & 1), l = l0 + ((d >> 1) & 1), j = z0 + (d >> 2);
+      if (!inVoxelRange(i, j, l) || voxelAt(i, j, l) !== AIR || sinkHeldCell(i, j, l)) continue;
+      // The liquid beside it at its level, which would pour in.
+      let m = -1;
+      for (let n = 0; n < 4 && m < 0; n++) {
+        const v = voxelAt(i + (n === 0) - (n === 1), j + (n === 2) - (n === 3), l);
+        if (v !== AIR && MAT_STATS[v]?.powder && MAT_STATS[v].angle === 0 && sinkFloatsIn(hull, v)) m = v;
+      }
+      if (m < 0) continue;
+      let inside = false;
+      for (let e = 0; e < nc && !inside; e++) inside = Math.abs(G[e * 3] - i) < near && Math.abs(G[e * 3 + 1] - l) < near && Math.abs(G[e * 3 + 2] - j) < near;
+      if (inside) continue;
+      const R = SINK_TUNE.placeR;
+      if (!boxes) boxes = sinkBodiesNear(colX(i - R) - BLOCK, colX(i + R) + BLOCK, colZ(j - R) - BLOCK, colZ(j + R) + BLOCK, S).filter((a) => a !== _sinkOwnBox);
+      if (!sinkCellClear(boxes, colX(i), (l + 0.5) * BLOCK, colZ(j))) continue;
+      // Its top, from the nearest column round it whose liquid stands higher
+      // and is not held up by a sinker.
+      let bd = Infinity, bi = 0, bj = 0, bl = 0;
+      for (let r = 1; r <= R && bd === Infinity; r++) {
+        for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) {
+          if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+          const ii = i + di, jj = j + dj;
+          if (ii < 0 || jj < 0 || ii >= GEN_N || jj >= GEN_N) continue;
+          const t = sTop[jj * GEN_N + ii];
+          if (t === NO_COLUMN || t <= l || voxelAt(ii, jj, t) !== m || sinkHeldCell(ii, jj, t)) continue;
+          if (!sinkCellClear(boxes, colX(ii), (t + 1.5) * BLOCK, colZ(jj))) continue;
+          const dd = di * di + dj * dj - t * 1e-3;
+          if (dd < bd) { bd = dd; bi = ii; bj = jj; bl = t; }
+        }
+      }
+      if (bd === Infinity) continue;
+      editBlock(bi, bj, bl, AIR);
+      editBlock(i, j, l, m);
+      sinkStats.moved++; sinkStats.pulled++;
+      filled++;
+    }
+  }
 }
 // Will taking e out of the piece's way open room behind it? Read along the
 // axis it moves most on through the medium, from e back through the cells it
@@ -6845,7 +7099,22 @@ function swapChunkCollider(c, buf, n, cut, wr = colWr[c], lost = colWrLost[c]) {
       if (wb.sleepState !== CANNON.Body.SLEEPING) continue;
       if (wb.aabbNeedsUpdate) wb.updateAABB();
       const lo = wb.aabb.lowerBound, hi = wb.aabb.upperBound;
-      if (hi.x >= cx0 && lo.x <= cx1 && hi.z >= cz0 && lo.z <= cz1) wb.wakeUp();
+      if (!(hi.x >= cx0 && lo.x <= cx1 && hi.z >= cz0 && lo.z <= cz1)) continue;
+      // A floater asleep on a liquid alone: its balance is asked, not assumed lost.
+      if (FLOAT_SETTLE && sinkers.get(wb)?.wet) sinkRecheck.add(wb);
+      else wb.wakeUp();
+    }
+  } else if (FLOAT_SETTLE && sinkers.size) {
+    // Water filling in round a floater lifts it: asked as above.
+    const ci0 = (c % CHUNK_N) * CHUNK, cj0 = ((c / CHUNK_N) | 0) * CHUNK;
+    const ci1 = Math.min(ci0 + CHUNK, GEN_N), cj1 = Math.min(cj0 + CHUNK, GEN_N);
+    const cx0 = colX(ci0) - BLOCK, cx1 = colX(ci1 - 1) + BLOCK;
+    const cz0 = colZ(cj0) - BLOCK, cz1 = colZ(cj1 - 1) + BLOCK;
+    for (const [wb, st] of sinkers) {
+      if (!st.wet || wb.sleepState !== CANNON.Body.SLEEPING) continue;
+      if (wb.aabbNeedsUpdate) wb.updateAABB();
+      const lo = wb.aabb.lowerBound, hi = wb.aabb.upperBound;
+      if (hi.x >= cx0 && lo.x <= cx1 && hi.z >= cz0 && lo.z <= cz1) sinkRecheck.add(wb);
     }
   }
 }
